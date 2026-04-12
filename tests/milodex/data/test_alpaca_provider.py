@@ -34,8 +34,10 @@ def provider(tmp_path):
         mock_creds.return_value = ("test-key", "test-secret")
         with patch("milodex.data.alpaca_provider.get_cache_dir") as mock_cache:
             mock_cache.return_value = tmp_path / "market_cache"
-            with patch("milodex.data.alpaca_provider.StockHistoricalDataClient"):
-                yield AlpacaDataProvider()
+            with patch("milodex.data.alpaca_provider.get_trading_mode", return_value="paper"):
+                with patch("milodex.data.alpaca_provider.StockHistoricalDataClient"):
+                    with patch("milodex.data.alpaca_provider.TradingClient"):
+                        yield AlpacaDataProvider()
 
 
 class TestGetBars:

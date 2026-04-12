@@ -94,7 +94,7 @@ class AlpacaDataProvider(DataProvider):
                     ranges_to_fetch.append((start, min(end, cache_start)))
                 # After cache end (or today needs re-fetch)
                 if end > cache_end or end >= today:
-                    fetch_from = max(start, cache_end)
+                    fetch_from = max(start, cache_end + timedelta(days=1))
                     ranges_to_fetch.append((fetch_from, end))
                 # Gaps in the middle: check for missing dates in range
                 if start >= cache_start and end <= cache_end:
@@ -109,7 +109,7 @@ class AlpacaDataProvider(DataProvider):
                             gap_start = None
                         check += timedelta(days=1)
                     if gap_start is not None:
-                        ranges_to_fetch.append((gap_start, check))
+                        ranges_to_fetch.append((gap_start, min(end, cache_end)))
 
             # Fetch each missing range from Alpaca
             all_new_dfs: list[pd.DataFrame] = []
