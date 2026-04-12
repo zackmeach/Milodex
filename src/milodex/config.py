@@ -47,8 +47,7 @@ def get_trading_mode() -> str:
     mode = os.environ.get("TRADING_MODE", "paper").strip().lower()
     if mode not in ("paper", "live"):
         raise ValueError(
-            f"TRADING_MODE must be 'paper' or 'live', got '{mode}'. "
-            "Check your .env file."
+            f"TRADING_MODE must be 'paper' or 'live', got '{mode}'. Check your .env file."
         )
     return mode
 

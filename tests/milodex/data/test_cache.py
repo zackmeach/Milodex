@@ -21,17 +21,17 @@ def cache(cache_dir):
 
 @pytest.fixture()
 def sample_df():
-    return pd.DataFrame({
-        "timestamp": pd.to_datetime(
-            ["2025-01-13", "2025-01-14", "2025-01-15"], utc=True
-        ),
-        "open": [148.0, 149.0, 150.0],
-        "high": [149.0, 150.0, 152.0],
-        "low": [147.0, 148.5, 149.5],
-        "close": [148.5, 149.5, 151.0],
-        "volume": [900000, 950000, 1000000],
-        "vwap": [148.3, 149.2, 150.8],
-    })
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-01-13", "2025-01-14", "2025-01-15"], utc=True),
+            "open": [148.0, 149.0, 150.0],
+            "high": [149.0, 150.0, 152.0],
+            "low": [147.0, 148.5, 149.5],
+            "close": [148.5, 149.5, 151.0],
+            "volume": [900000, 950000, 1000000],
+            "vwap": [148.3, 149.2, 150.8],
+        }
+    )
 
 
 class TestParquetCache:
@@ -61,30 +61,34 @@ class TestParquetCache:
 
     def test_merge_appends_new_data(self, cache, sample_df):
         cache.write("AAPL", Timeframe.DAY_1, sample_df)
-        new_data = pd.DataFrame({
-            "timestamp": pd.to_datetime(["2025-01-16", "2025-01-17"], utc=True),
-            "open": [151.0, 152.0],
-            "high": [153.0, 154.0],
-            "low": [150.5, 151.5],
-            "close": [152.0, 153.0],
-            "volume": [1100000, 1200000],
-            "vwap": [151.5, 152.5],
-        })
+        new_data = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-16", "2025-01-17"], utc=True),
+                "open": [151.0, 152.0],
+                "high": [153.0, 154.0],
+                "low": [150.5, 151.5],
+                "close": [152.0, 153.0],
+                "volume": [1100000, 1200000],
+                "vwap": [151.5, 152.5],
+            }
+        )
         cache.merge("AAPL", Timeframe.DAY_1, new_data)
         result = cache.read("AAPL", Timeframe.DAY_1)
         assert len(result) == 5
 
     def test_merge_deduplicates_by_timestamp(self, cache, sample_df):
         cache.write("AAPL", Timeframe.DAY_1, sample_df)
-        overlap = pd.DataFrame({
-            "timestamp": pd.to_datetime(["2025-01-15", "2025-01-16"], utc=True),
-            "open": [150.0, 151.0],
-            "high": [152.0, 153.0],
-            "low": [149.5, 150.5],
-            "close": [151.0, 152.0],
-            "volume": [1000000, 1100000],
-            "vwap": [150.8, 151.5],
-        })
+        overlap = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-15", "2025-01-16"], utc=True),
+                "open": [150.0, 151.0],
+                "high": [152.0, 153.0],
+                "low": [149.5, 150.5],
+                "close": [151.0, 152.0],
+                "volume": [1000000, 1100000],
+                "vwap": [150.8, 151.5],
+            }
+        )
         cache.merge("AAPL", Timeframe.DAY_1, overlap)
         result = cache.read("AAPL", Timeframe.DAY_1)
         assert len(result) == 4  # 3 original + 1 new, not 5
@@ -104,38 +108,40 @@ class TestParquetCache:
 
     def test_merge_fills_gap_in_middle(self, cache):
         """Cache has Jan 13-15 and Jan 20-22. Fill Jan 16-19."""
-        early = pd.DataFrame({
-            "timestamp": pd.to_datetime(
-                ["2025-01-13", "2025-01-14", "2025-01-15"], utc=True
-            ),
-            "open": [148.0, 149.0, 150.0],
-            "high": [149.0, 150.0, 152.0],
-            "low": [147.0, 148.5, 149.5],
-            "close": [148.5, 149.5, 151.0],
-            "volume": [900000, 950000, 1000000],
-            "vwap": [148.3, 149.2, 150.8],
-        })
-        late = pd.DataFrame({
-            "timestamp": pd.to_datetime(
-                ["2025-01-20", "2025-01-21", "2025-01-22"], utc=True
-            ),
-            "open": [153.0, 154.0, 155.0],
-            "high": [154.0, 155.0, 156.0],
-            "low": [152.0, 153.0, 154.0],
-            "close": [153.5, 154.5, 155.5],
-            "volume": [1100000, 1200000, 1300000],
-            "vwap": [153.2, 154.2, 155.2],
-        })
+        early = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-13", "2025-01-14", "2025-01-15"], utc=True),
+                "open": [148.0, 149.0, 150.0],
+                "high": [149.0, 150.0, 152.0],
+                "low": [147.0, 148.5, 149.5],
+                "close": [148.5, 149.5, 151.0],
+                "volume": [900000, 950000, 1000000],
+                "vwap": [148.3, 149.2, 150.8],
+            }
+        )
+        late = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-20", "2025-01-21", "2025-01-22"], utc=True),
+                "open": [153.0, 154.0, 155.0],
+                "high": [154.0, 155.0, 156.0],
+                "low": [152.0, 153.0, 154.0],
+                "close": [153.5, 154.5, 155.5],
+                "volume": [1100000, 1200000, 1300000],
+                "vwap": [153.2, 154.2, 155.2],
+            }
+        )
         cache.write("AAPL", Timeframe.DAY_1, pd.concat([early, late]))
-        middle = pd.DataFrame({
-            "timestamp": pd.to_datetime(["2025-01-16", "2025-01-17"], utc=True),
-            "open": [151.0, 152.0],
-            "high": [152.0, 153.0],
-            "low": [150.0, 151.0],
-            "close": [151.5, 152.5],
-            "volume": [1050000, 1100000],
-            "vwap": [151.2, 152.2],
-        })
+        middle = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-16", "2025-01-17"], utc=True),
+                "open": [151.0, 152.0],
+                "high": [152.0, 153.0],
+                "low": [150.0, 151.0],
+                "close": [151.5, 152.5],
+                "volume": [1050000, 1100000],
+                "vwap": [151.2, 152.2],
+            }
+        )
         cache.merge("AAPL", Timeframe.DAY_1, middle)
         result = cache.read("AAPL", Timeframe.DAY_1)
         assert len(result) == 8  # 3 + 2 + 3

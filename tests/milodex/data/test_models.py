@@ -56,17 +56,17 @@ class TestBar:
 class TestBarSet:
     @pytest.fixture()
     def sample_df(self):
-        return pd.DataFrame({
-            "timestamp": pd.to_datetime(
-                ["2025-01-13", "2025-01-14", "2025-01-15"], utc=True
-            ),
-            "open": [148.0, 149.0, 150.0],
-            "high": [149.0, 150.0, 152.0],
-            "low": [147.0, 148.5, 149.5],
-            "close": [148.5, 149.5, 151.0],
-            "volume": [900000, 950000, 1000000],
-            "vwap": [148.3, 149.2, 150.8],
-        })
+        return pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-13", "2025-01-14", "2025-01-15"], utc=True),
+                "open": [148.0, 149.0, 150.0],
+                "high": [149.0, 150.0, 152.0],
+                "low": [147.0, 148.5, 149.5],
+                "close": [148.5, 149.5, 151.0],
+                "volume": [900000, 950000, 1000000],
+                "vwap": [148.3, 149.2, 150.8],
+            }
+        )
 
     def test_create_from_dataframe(self, sample_df):
         barset = BarSet(sample_df)

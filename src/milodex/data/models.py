@@ -13,9 +13,16 @@ from enum import Enum
 import pandas as pd
 
 # Required columns in every BarSet DataFrame
-BARSET_REQUIRED_COLUMNS = frozenset({
-    "timestamp", "open", "high", "low", "close", "volume",
-})
+BARSET_REQUIRED_COLUMNS = frozenset(
+    {
+        "timestamp",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+    }
+)
 # vwap is always present but nullable
 BARSET_ALL_COLUMNS = BARSET_REQUIRED_COLUMNS | {"vwap"}
 
@@ -61,9 +68,7 @@ class BarSet:
     def __init__(self, df: pd.DataFrame) -> None:
         missing = BARSET_REQUIRED_COLUMNS - set(df.columns)
         if missing:
-            raise ValueError(
-                f"BarSet missing required column(s): {', '.join(sorted(missing))}"
-            )
+            raise ValueError(f"BarSet missing required column(s): {', '.join(sorted(missing))}")
 
         # Ensure vwap column exists (nullable)
         if "vwap" not in df.columns:

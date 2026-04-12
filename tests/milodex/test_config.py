@@ -11,10 +11,13 @@ from milodex.config import get_alpaca_credentials, get_cache_dir, get_trading_mo
 
 class TestGetAlpacaCredentials:
     def test_returns_key_and_secret_from_env(self):
-        with patch.dict("os.environ", {
-            "ALPACA_API_KEY": "test-key",
-            "ALPACA_SECRET_KEY": "test-secret",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "ALPACA_API_KEY": "test-key",
+                "ALPACA_SECRET_KEY": "test-secret",
+            },
+        ):
             key, secret = get_alpaca_credentials()
             assert key == "test-key"
             assert secret == "test-secret"

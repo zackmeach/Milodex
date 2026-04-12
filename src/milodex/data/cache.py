@@ -42,9 +42,7 @@ class ParquetCache:
         path = self._path(symbol, timeframe)
         df.to_parquet(path, index=False)
 
-    def get_cached_range(
-        self, symbol: str, timeframe: Timeframe
-    ) -> tuple[date, date] | None:
+    def get_cached_range(self, symbol: str, timeframe: Timeframe) -> tuple[date, date] | None:
         """Return the (start, end) date range of cached data. None if no cache."""
         df = self.read(symbol, timeframe)
         if df is None or df.empty:
@@ -52,9 +50,7 @@ class ParquetCache:
         timestamps = pd.to_datetime(df["timestamp"])
         return timestamps.min().date(), timestamps.max().date()
 
-    def merge(
-        self, symbol: str, timeframe: Timeframe, new_data: pd.DataFrame
-    ) -> None:
+    def merge(self, symbol: str, timeframe: Timeframe, new_data: pd.DataFrame) -> None:
         """Merge new data into existing cache.
 
         Algorithm: load existing -> concatenate -> deduplicate by timestamp
