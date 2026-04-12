@@ -1,0 +1,44 @@
+# Sample Strategy Configuration
+# This file demonstrates the config schema — no real strategy logic.
+# Each strategy gets its own YAML file in configs/.
+
+strategy:
+  name: "example_momentum"
+  version: 1
+  description: "Example momentum strategy config — replace with real parameters."
+  enabled: false
+
+  # Which assets this strategy is allowed to trade
+  universe:
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+
+  # Strategy-specific parameters (varies per strategy type)
+  parameters:
+    lookback_days: 20
+    entry_threshold: 0.02
+    exit_threshold: -0.01
+
+  # Timeframe and holding period
+  tempo:
+    bar_size: "1D"        # Daily bars
+    min_hold_days: 1
+    max_hold_days: 5
+
+  # Per-strategy risk controls (layered on top of global risk_defaults)
+  risk:
+    max_position_pct: 0.10        # Max 10% of portfolio in a single position
+    max_positions: 3              # Max concurrent positions for this strategy
+    daily_loss_cap_pct: 0.02      # Halt this strategy if it loses 2% in a day
+    stop_loss_pct: 0.05           # Per-position stop loss at 5%
+
+  # Promotion pipeline stage
+  # Stages: backtest → paper → micro_live → live
+  stage: "backtest"
+
+  # Backtest assumptions
+  backtest:
+    slippage_pct: 0.001           # 0.1% conservative slippage estimate
+    commission_per_trade: 0.00    # Alpaca is commission-free
+    min_trades_required: 30       # Minimum trades before drawing conclusions

@@ -1,0 +1,32 @@
+# Global Risk Defaults
+# These guardrails apply above any individual strategy's risk config.
+# The risk layer enforces these limits with veto power over all trade execution.
+
+kill_switch:
+  enabled: true
+  # Halt all trading if portfolio drawdown exceeds this threshold
+  max_drawdown_pct: 0.10          # 10% portfolio drawdown triggers full stop
+  # Require manual re-enablement after a kill switch event
+  require_manual_reset: true
+
+portfolio:
+  # Maximum percentage of portfolio in any single position (hard ceiling)
+  max_single_position_pct: 0.20   # No position > 20% of portfolio
+  # Maximum number of concurrent open positions across all strategies
+  max_concurrent_positions: 10
+  # Maximum percentage of portfolio deployed at any time
+  max_total_exposure_pct: 0.80    # Keep at least 20% cash
+
+daily_limits:
+  # Halt all trading if total daily losses exceed this threshold
+  max_daily_loss_pct: 0.03        # 3% daily loss cap across all strategies
+  # Maximum number of trades per day (prevents runaway logic)
+  max_trades_per_day: 20
+
+order_safety:
+  # Fat-finger protection: reject any single order exceeding this portfolio %
+  max_order_value_pct: 0.15       # No single order > 15% of portfolio
+  # Reject duplicate orders for the same symbol within this window
+  duplicate_order_window_seconds: 60
+  # Reject orders if market data is older than this threshold
+  max_data_staleness_seconds: 300  # 5 minutes
