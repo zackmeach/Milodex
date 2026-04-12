@@ -61,7 +61,7 @@ Three methods cover all phase-one needs: historical data for backtesting, latest
 
 ### Local Cache (`data/cache.py`)
 
-- Parquet files at `data/cache/{timeframe}/{SYMBOL}.parquet`
+- Parquet files at `market_cache/{timeframe}/{SYMBOL}.parquet`
 - On `get_bars()`: check cache for existing date range → fetch only missing ranges from Alpaca → merge and save
 - Cache invalidation: today's bar is always re-fetched (market might still be open). Historical bars are immutable.
 - Simple file-based — no database, no expiry config.
@@ -127,9 +127,21 @@ class BrokerClient(ABC):
     @abstractmethod
     def get_account(self) -> AccountInfo:
         """Get account summary."""
+
+    @abstractmethod
+    def cancel_all_orders(self) -> list[Order]:
+        """Cancel all open orders. Used by kill switch for emergency halt."""
+
+    @abstractmethod
+    def get_orders(self, status: str = "all", limit: int = 100) -> list[Order]:
+        """Get recent orders. Supports filtering by status (open/closed/all)."""
+
+    @abstractmethod
+    def is_market_open(self) -> bool:
+        """Check if the market is currently open for trading."""
 ```
 
-Six methods covering order management, position queries, and account info.
+Nine methods covering order management, position queries, account info, market status, and emergency operations.
 
 ### Alpaca Implementation (`broker/alpaca_client.py`)
 
@@ -171,7 +183,7 @@ def get_trading_mode() -> str:
     """Return 'paper' or 'live' from TRADING_MODE env var."""
 
 def get_cache_dir() -> Path:
-    """Return path for local data cache. Default: project_root/data/cache/"""
+    """Return path for local data cache. Default: project_root/market_cache/"""
 ```
 
 - Uses `python-dotenv` to load `.env`
@@ -216,3 +228,51 @@ AlpacaDataProvider    AlpacaBrokerClient    AlpacaBrokerClient
 ```
 
 Nothing outside `data/alpaca_provider.py` and `broker/alpaca_client.py` ever imports `alpaca-py`. Swapping brokers means writing two new files and zero changes to consuming code.
+
+## Edge Cases & Design Decisions
+
+### Kill switch support
+`cancel_all_orders()` exists specifically for the kill switch path. When risk triggers a halt, it calls this single method rather than iterating positions. The risk layer owns kill switch logic; the broker layer provides the emergency lever.
+
+### Market hours
+`is_market_open()` lets the risk layer and CLI prevent order submission outside trading hours. The system runs on evenings/weekends — this check prevents wasted API calls and confusing error states.
+
+### Order history
+`get_orders()` supports analytics trade logging and duplicate order detection. The risk layer uses it with a short lookback to enforce `duplicate_order_window_seconds` from `risk_defaults.yaml`. Analytics uses it for end-of-day trade logs.
+
+### Data staleness
+The risk layer enforces `max_data_staleness_seconds` by comparing `Bar.timestamp` to wall-clock time. `get_latest_bar()` returns the most recent bar the exchange has — on weekends, that's Friday's close. The risk layer must account for market-closed periods when checking staleness (use `is_market_open()` to distinguish stale data from expected weekend gaps).
+
+### Partial fills
+`Order.status == PARTIALLY_FILLED` is surfaced via `get_order()`. The risk layer is responsible for detecting this state and deciding whether to let the partial position stand or cancel the remainder. This is a risk-layer concern, not a broker-layer concern.
+
+### Retry semantics
+The Alpaca implementation does **not** retry on failure — it raises immediately. Callers (risk layer, CLI) decide whether to retry. This keeps the broker layer predictable and testable.
+
+### `get_latest_bar()` when market is closed
+Returns the most recent available bar (e.g., Friday's close on a Saturday). Does not raise. Callers should check `is_market_open()` if they need to distinguish "latest" from "live."
+
+### Cache behavior
+- `ParquetCache` creates directory structure on initialization if it doesn't exist.
+- Cache path: `{project_root}/market_cache/{timeframe}/{SYMBOL}.parquet` (avoids collision with `src/milodex/data/`).
+- Merge algorithm: load existing parquet, identify missing date ranges by comparing requested range to cached timestamps, fetch gaps from Alpaca, concatenate, deduplicate by timestamp, sort, and write back.
+- Test cases must cover: empty cache, partial overlap, gap in middle, today re-fetch rule.
+
+### `BarSet` column contract
+`BarSet` always contains columns: `timestamp`, `open`, `high`, `low`, `close`, `volume`. The `vwap` column is always present but nullable — strategies can safely access it without checking for column existence. All price columns are `float64`; `volume` is `int64`; `timestamp` is timezone-aware `datetime64[ns, UTC]`.
+
+### Backtesting usage
+`get_bars()` returns the full requested range. The backtesting engine is responsible for windowing/slicing the `BarSet` to simulate point-in-time access during walk-forward validation. This is intentional — the data layer provides raw data, the backtest engine provides temporal discipline.
+
+### Universe filtering
+`get_tradeable_assets()` returns the full broker-eligible universe with no filtering. Strategy-level universe filtering (by config's `universe` list, minimum price, volume, etc.) is the strategy layer's responsibility.
+
+## Integration Tests
+
+In addition to the mock-based unit tests, the project should include an integration test suite (in `tests/integration/`) marked with `@pytest.mark.integration` that validates:
+- Alpaca credential loading and authentication
+- Real bar fetching (small request, e.g., 5 days of SPY daily bars)
+- Account info retrieval
+- Market open/closed check
+
+These tests are skipped in CI (`pytest -m "not integration"`) and run manually to catch SDK/API contract changes.
