@@ -42,3 +42,6 @@ logs/*
 
 # Ruff
 .ruff_cache/
+
+# Market data cache (local Parquet files)
+market_cache/
