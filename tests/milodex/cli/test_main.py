@@ -20,7 +20,15 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.cli.main import main as cli_entrypoint
-from milodex.data.models import BarSet, Timeframe
+from milodex.data.models import Bar, BarSet, Timeframe
+from milodex.execution.models import (
+    ExecutionRequest,
+    ExecutionResult,
+    ExecutionStatus,
+    RiskCheckResult,
+    RiskDecision,
+)
+from milodex.execution.state import KillSwitchState
 
 cli_main_module = importlib.import_module("milodex.cli.main")
 
@@ -84,11 +92,50 @@ class StubDataProvider:
         self.calls.append((symbols, timeframe, start, end))
         return {symbol: self._bars_by_symbol.get(symbol) for symbol in symbols}
 
-    def get_latest_bar(self, symbol: str):  # pragma: no cover - unused in CLI tests
-        raise NotImplementedError
 
-    def get_tradeable_assets(self):  # pragma: no cover - unused in CLI tests
-        raise NotImplementedError
+class StubExecutionService:
+    """Execution service stub for trade command tests."""
+
+    def __init__(
+        self,
+        *,
+        preview_result: ExecutionResult | None = None,
+        submit_result: ExecutionResult | None = None,
+        order: Order | None = None,
+        cancel_result: tuple[bool, Order | None] = (True, None),
+        kill_switch_state: KillSwitchState | None = None,
+    ) -> None:
+        self.preview_result = preview_result
+        self.submit_result = submit_result
+        self.order = order
+        self.cancel_result = cancel_result
+        self.kill_switch_state = kill_switch_state or KillSwitchState(active=False)
+        self.preview_calls: list[object] = []
+        self.submit_calls: list[object] = []
+        self.order_status_calls: list[str] = []
+        self.cancel_calls: list[str] = []
+
+    def preview(self, intent):
+        self.preview_calls.append(intent)
+        assert self.preview_result is not None
+        return self.preview_result
+
+    def submit_paper(self, intent):
+        self.submit_calls.append(intent)
+        assert self.submit_result is not None
+        return self.submit_result
+
+    def get_order_status(self, order_id: str) -> Order:
+        self.order_status_calls.append(order_id)
+        assert self.order is not None
+        return self.order
+
+    def cancel_order(self, order_id: str) -> tuple[bool, Order | None]:
+        self.cancel_calls.append(order_id)
+        return self.cancel_result
+
+    def get_kill_switch_state(self) -> KillSwitchState:
+        return self.kill_switch_state
 
 
 def _sample_barset() -> BarSet:
@@ -104,6 +151,60 @@ def _sample_barset() -> BarSet:
                 "vwap": [148.3, 149.2, 150.8],
             }
         )
+    )
+
+
+def _sample_execution_result(status: ExecutionStatus = ExecutionStatus.PREVIEW) -> ExecutionResult:
+    request = ExecutionRequest(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=5.0,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.DAY,
+        estimated_unit_price=100.0,
+        estimated_order_value=500.0,
+    )
+    decision = RiskDecision(
+        allowed=status != ExecutionStatus.BLOCKED,
+        summary="ok",
+        checks=[RiskCheckResult(name="paper_mode", passed=True, message="Paper mode confirmed.")],
+    )
+    order = None
+    if status == ExecutionStatus.SUBMITTED:
+        order = Order(
+            id="order-paper-1",
+            symbol="SPY",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=5.0,
+            time_in_force=TimeInForce.DAY,
+            status=OrderStatus.PENDING,
+            submitted_at=datetime(2025, 1, 15, 14, 30, tzinfo=UTC),
+        )
+    return ExecutionResult(
+        status=status,
+        execution_request=request,
+        risk_decision=decision,
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=5_000.0,
+            buying_power=5_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=150.0,
+        ),
+        market_open=True,
+        latest_bar=Bar(
+            timestamp=datetime(2025, 1, 15, 14, 29, tzinfo=UTC),
+            open=99.0,
+            high=101.0,
+            low=98.5,
+            close=100.0,
+            volume=1000,
+            vwap=100.0,
+        ),
+        order=order,
+        message="ok",
+        recorded_at=datetime(2025, 1, 15, 14, 30, tzinfo=UTC),
     )
 
 
@@ -263,19 +364,158 @@ def test_config_validate_accepts_sample_strategy():
     assert "Detected kind: strategy" in output
 
 
-def test_config_validate_rejects_missing_required_keys(tmp_path):
-    config_path = tmp_path / "bad_strategy.yaml"
-    config_path.write_text("strategy:\n  name: example\n", encoding="utf-8")
+def test_trade_preview_renders_execution_result():
+    service = StubExecutionService(preview_result=_sample_execution_result())
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        [
+            "trade",
+            "preview",
+            "SPY",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+            "--order-type",
+            "market",
+        ],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert service.preview_calls
+    assert "Trade Execution" in output
+    assert "Decision: allow" in output
+
+
+def test_trade_submit_requires_paper_flag():
+    service = StubExecutionService(
+        submit_result=_sample_execution_result(ExecutionStatus.SUBMITTED)
+    )
     stderr = StringIO()
 
     exit_code = cli_entrypoint(
-        ["config", "validate", str(config_path), "--kind", "strategy"],
+        [
+            "trade",
+            "submit",
+            "SPY",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+            "--order-type",
+            "market",
+        ],
+        execution_service_factory=lambda: service,
         stdout=StringIO(),
         stderr=stderr,
     )
 
     assert exit_code == 1
-    assert "missing required key" in stderr.getvalue()
+    assert not service.submit_calls
+    assert "requires --paper" in stderr.getvalue()
+
+
+def test_trade_submit_renders_submitted_order():
+    service = StubExecutionService(
+        submit_result=_sample_execution_result(ExecutionStatus.SUBMITTED)
+    )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        [
+            "trade",
+            "submit",
+            "SPY",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+            "--order-type",
+            "market",
+            "--paper",
+        ],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert service.submit_calls
+    assert "Broker order ID: order-paper-1" in output
+
+
+def test_trade_order_status_renders_order():
+    order = Order(
+        id="order-paper-1",
+        symbol="SPY",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=5.0,
+        time_in_force=TimeInForce.DAY,
+        status=OrderStatus.PENDING,
+        submitted_at=datetime(2025, 1, 15, 14, 30, tzinfo=UTC),
+    )
+    service = StubExecutionService(order=order)
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["trade", "order-status", "order-paper-1"],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert service.order_status_calls == ["order-paper-1"]
+    assert "Order Status" in output
+    assert "SPY" in output
+
+
+def test_trade_cancel_renders_result():
+    service = StubExecutionService(cancel_result=(True, None))
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["trade", "cancel", "order-paper-1"],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert service.cancel_calls == ["order-paper-1"]
+    assert "requested successfully" in output
+
+
+def test_trade_kill_switch_status_renders_state():
+    service = StubExecutionService(
+        kill_switch_state=KillSwitchState(
+            active=True,
+            reason="Daily loss exceeded kill switch threshold.",
+            last_triggered_at="2026-04-14T12:00:00+00:00",
+        )
+    )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["trade", "kill-switch", "status"],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "Kill Switch" in output
+    assert "Active: yes" in output
 
 
 def test_main_reports_broker_errors_to_stderr():

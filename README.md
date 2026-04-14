@@ -26,7 +26,7 @@ Set the following values in `.env` before running the app:
 
 ## Running the App
 
-Milodex currently ships as a read-only CLI. The first commands available are:
+Milodex currently ships as a CLI. It now supports read-only operator commands plus paper-trade preview/submission scaffolding:
 
 ```powershell
 milodex --help
@@ -35,6 +35,11 @@ milodex positions --sort market-value --limit 10
 milodex orders --status open --symbol SPY --verbose
 milodex data bars SPY --timeframe 1d --start 2025-01-01 --end 2025-01-31
 milodex config validate configs\sample_strategy.yaml
+milodex trade preview SPY --side buy --quantity 1 --order-type market
+milodex trade submit SPY --side buy --quantity 1 --order-type market --paper
+milodex trade order-status <order-id>
+milodex trade cancel <order-id>
+milodex trade kill-switch status
 ```
 
 If the `milodex` command is not available in your shell yet, run it through the project venv:
@@ -46,6 +51,7 @@ If the `milodex` command is not available in your shell yet, run it through the 
 .\.venv\Scripts\python.exe -m milodex.cli.main orders
 .\.venv\Scripts\python.exe -m milodex.cli.main data bars SPY --timeframe 1d --start 2025-01-01 --end 2025-01-31
 .\.venv\Scripts\python.exe -m milodex.cli.main config validate configs\sample_strategy.yaml
+.\.venv\Scripts\python.exe -m milodex.cli.main trade preview SPY --side buy --quantity 1 --order-type market
 ```
 
 Current CLI scope:
@@ -55,6 +61,9 @@ Current CLI scope:
 - `orders` lists recent orders and supports status/symbol filters plus verbose details
 - `data bars` fetches OHLCV bars for a symbol and timeframe over a date range
 - `config validate` validates strategy and risk YAML files before they are used
+- `trade preview` runs normalization plus all paper-mode risk checks without broker submission
+- `trade submit --paper` submits paper orders only after risk evaluation
+- `trade order-status`, `trade cancel`, and `trade kill-switch status` support execution testing and operator visibility
 
 There is no desktop GUI yet.
 

@@ -71,3 +71,18 @@ def get_cache_dir() -> Path:
 
     # Fallback: relative to cwd
     return Path.cwd() / "market_cache"
+
+
+def get_logs_dir() -> Path:
+    """Return path for local runtime logs and state files."""
+    override = os.environ.get("MILODEX_LOG_DIR", "").strip()
+    if override:
+        return Path(override)
+
+    current = Path(__file__).resolve().parent
+    while current != current.parent:
+        if (current / "pyproject.toml").exists():
+            return current / "logs"
+        current = current.parent
+
+    return Path.cwd() / "logs"
