@@ -244,7 +244,10 @@ class AlpacaBrokerClient(BrokerClient):
         """Get account summary from Alpaca."""
         acct = self._client.get_account()
         equity = float(acct.equity)
-        prev_close = float(acct.equity_previous_close)
+        prev_close_raw = getattr(acct, "equity_previous_close", None)
+        if prev_close_raw is None:
+            prev_close_raw = getattr(acct, "last_equity", equity)
+        prev_close = float(prev_close_raw)
         return AccountInfo(
             equity=equity,
             cash=float(acct.cash),

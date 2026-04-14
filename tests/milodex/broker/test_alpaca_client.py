@@ -167,6 +167,21 @@ class TestGetAccount:
         assert result.equity == 10000.0
         assert result.daily_pnl == 150.0  # 10000 - 9850
 
+    def test_get_account_falls_back_to_last_equity(self, client):
+        acct = MagicMock()
+        acct.equity = "10000.0"
+        acct.cash = "5000.0"
+        acct.buying_power = "5000.0"
+        acct.portfolio_value = "10000.0"
+        del acct.equity_previous_close
+        acct.last_equity = "9900.0"
+
+        client._client.get_account.return_value = acct
+        result = client.get_account()
+
+        assert isinstance(result, AccountInfo)
+        assert result.daily_pnl == 100.0
+
 
 class TestIsMarketOpen:
     def test_market_open(self, client):
