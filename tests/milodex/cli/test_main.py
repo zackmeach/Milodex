@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import importlib
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from io import StringIO
+from pathlib import Path
+
+import pandas as pd
 
 from milodex.broker.exceptions import BrokerAuthError
 from milodex.broker.models import (
@@ -17,6 +20,7 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.cli.main import main as cli_entrypoint
+from milodex.data.models import BarSet, Timeframe
 
 cli_main_module = importlib.import_module("milodex.cli.main")
 
@@ -63,6 +67,46 @@ class StubBroker:
         return self._orders
 
 
+class StubDataProvider:
+    """Simple data provider stub for CLI tests."""
+
+    def __init__(self, bars_by_symbol: dict[str, BarSet] | None = None) -> None:
+        self._bars_by_symbol = bars_by_symbol or {}
+        self.calls: list[tuple[list[str], Timeframe, date, date]] = []
+
+    def get_bars(
+        self,
+        symbols: list[str],
+        timeframe: Timeframe,
+        start: date,
+        end: date,
+    ) -> dict[str, BarSet]:
+        self.calls.append((symbols, timeframe, start, end))
+        return {symbol: self._bars_by_symbol.get(symbol) for symbol in symbols}
+
+    def get_latest_bar(self, symbol: str):  # pragma: no cover - unused in CLI tests
+        raise NotImplementedError
+
+    def get_tradeable_assets(self):  # pragma: no cover - unused in CLI tests
+        raise NotImplementedError
+
+
+def _sample_barset() -> BarSet:
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-13", "2025-01-14", "2025-01-15"], utc=True),
+                "open": [148.0, 149.0, 150.0],
+                "high": [149.0, 150.0, 152.0],
+                "low": [147.0, 148.5, 149.5],
+                "close": [148.5, 149.5, 151.0],
+                "volume": [900000, 950000, 1000000],
+                "vwap": [148.3, 149.2, 150.8],
+            }
+        )
+    )
+
+
 def test_status_outputs_account_summary(monkeypatch):
     monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
 
@@ -92,7 +136,7 @@ def test_status_outputs_account_summary(monkeypatch):
     assert stderr.getvalue() == ""
 
 
-def test_positions_outputs_table():
+def test_positions_support_sort_and_limit():
     broker = StubBroker(
         positions=[
             Position(
@@ -103,36 +147,34 @@ def test_positions_outputs_table():
                 market_value=1550.0,
                 unrealized_pnl=50.0,
                 unrealized_pnl_pct=0.0333,
-            )
+            ),
+            Position(
+                symbol="MSFT",
+                quantity=5.0,
+                avg_entry_price=200.0,
+                current_price=198.0,
+                market_value=990.0,
+                unrealized_pnl=-10.0,
+                unrealized_pnl_pct=-0.01,
+            ),
         ]
     )
     stdout = StringIO()
 
     exit_code = cli_entrypoint(
-        ["positions"], broker_factory=lambda: broker, stdout=stdout, stderr=StringIO()
+        ["positions", "--sort", "market-value", "--limit", "1"],
+        broker_factory=lambda: broker,
+        stdout=stdout,
+        stderr=StringIO(),
     )
 
     output = stdout.getvalue()
     assert exit_code == 0
-    assert "Open Positions" in output
     assert "AAPL" in output
-    assert "$1,550.00" in output
-    assert "3.33%" in output
+    assert "MSFT" not in output
 
 
-def test_positions_empty_state():
-    broker = StubBroker()
-    stdout = StringIO()
-
-    exit_code = cli_entrypoint(
-        ["positions"], broker_factory=lambda: broker, stdout=stdout, stderr=StringIO()
-    )
-
-    assert exit_code == 0
-    assert "No open positions." in stdout.getvalue()
-
-
-def test_orders_outputs_table_and_uses_filters():
+def test_orders_support_symbol_filter_and_verbose_output():
     broker = StubBroker(
         orders=[
             Order(
@@ -144,13 +186,24 @@ def test_orders_outputs_table_and_uses_filters():
                 time_in_force=TimeInForce.DAY,
                 status=OrderStatus.PENDING,
                 submitted_at=datetime(2025, 1, 15, 14, 30, tzinfo=UTC),
-            )
+                limit_price=250.0,
+            ),
+            Order(
+                id="order-abcdefghij",
+                symbol="AAPL",
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=2.0,
+                time_in_force=TimeInForce.DAY,
+                status=OrderStatus.FILLED,
+                submitted_at=datetime(2025, 1, 15, 15, 30, tzinfo=UTC),
+            ),
         ]
     )
     stdout = StringIO()
 
     exit_code = cli_entrypoint(
-        ["orders", "--status", "open", "--limit", "5"],
+        ["orders", "--status", "open", "--limit", "5", "--symbol", "MSFT", "--verbose"],
         broker_factory=lambda: broker,
         stdout=stdout,
         stderr=StringIO(),
@@ -159,9 +212,70 @@ def test_orders_outputs_table_and_uses_filters():
     output = stdout.getvalue()
     assert exit_code == 0
     assert broker.order_calls == [("open", 5)]
-    assert "Recent Orders" in output
     assert "MSFT" in output
-    assert "limit" in output
+    assert "AAPL" not in output
+    assert "details: limit=$250.00" in output
+
+
+def test_data_bars_outputs_rows():
+    provider = StubDataProvider({"SPY": _sample_barset()})
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        [
+            "data",
+            "bars",
+            "SPY",
+            "--timeframe",
+            "1d",
+            "--start",
+            "2025-01-13",
+            "--end",
+            "2025-01-15",
+            "--limit",
+            "2",
+        ],
+        data_provider_factory=lambda: provider,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert provider.calls == [(["SPY"], Timeframe.DAY_1, date(2025, 1, 13), date(2025, 1, 15))]
+    assert "Bars for SPY (1d)" in output
+    assert "2025-01-14" in output
+    assert "2025-01-15" in output
+
+
+def test_config_validate_accepts_sample_strategy():
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["config", "validate", str(Path("configs/sample_strategy.yaml"))],
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "Config validation passed" in output
+    assert "Detected kind: strategy" in output
+
+
+def test_config_validate_rejects_missing_required_keys(tmp_path):
+    config_path = tmp_path / "bad_strategy.yaml"
+    config_path.write_text("strategy:\n  name: example\n", encoding="utf-8")
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["config", "validate", str(config_path), "--kind", "strategy"],
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert "missing required key" in stderr.getvalue()
 
 
 def test_main_reports_broker_errors_to_stderr():

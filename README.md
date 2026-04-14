@@ -31,8 +31,10 @@ Milodex currently ships as a read-only CLI. The first commands available are:
 ```powershell
 milodex --help
 milodex status
-milodex positions
-milodex orders
+milodex positions --sort market-value --limit 10
+milodex orders --status open --symbol SPY --verbose
+milodex data bars SPY --timeframe 1d --start 2025-01-01 --end 2025-01-31
+milodex config validate configs\sample_strategy.yaml
 ```
 
 If the `milodex` command is not available in your shell yet, run it through the project venv:
@@ -42,13 +44,17 @@ If the `milodex` command is not available in your shell yet, run it through the 
 .\.venv\Scripts\python.exe -m milodex.cli.main status
 .\.venv\Scripts\python.exe -m milodex.cli.main positions
 .\.venv\Scripts\python.exe -m milodex.cli.main orders
+.\.venv\Scripts\python.exe -m milodex.cli.main data bars SPY --timeframe 1d --start 2025-01-01 --end 2025-01-31
+.\.venv\Scripts\python.exe -m milodex.cli.main config validate configs\sample_strategy.yaml
 ```
 
 Current CLI scope:
 
 - `status` shows trading mode, market open/closed, and account summary
-- `positions` lists open positions
-- `orders` lists recent orders
+- `positions` lists open positions and supports sorting and limiting
+- `orders` lists recent orders and supports status/symbol filters plus verbose details
+- `data bars` fetches OHLCV bars for a symbol and timeframe over a date range
+- `config validate` validates strategy and risk YAML files before they are used
 
 There is no desktop GUI yet.
 

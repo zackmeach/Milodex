@@ -15,6 +15,7 @@ dependencies = [
     "pyarrow>=15.0",
     "python-dotenv>=1.0",
     "pytz>=2024.1",
+    "PyYAML>=6.0",
 ]
 
 [project.scripts]
