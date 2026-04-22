@@ -7,11 +7,11 @@ from pathlib import Path
 
 from milodex.broker import BrokerClient, Order
 from milodex.broker.models import OrderType
-from milodex.config import get_logs_dir, get_trading_mode
+from milodex.config import get_data_dir, get_logs_dir, get_trading_mode
+from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.data import DataProvider
 from milodex.execution.config import (
     StrategyExecutionConfig,
-    load_risk_defaults,
     load_strategy_execution_config,
 )
 from milodex.execution.models import (
@@ -20,8 +20,9 @@ from milodex.execution.models import (
     ExecutionStatus,
     TradeIntent,
 )
-from milodex.execution.risk import EvaluationContext, RiskEvaluator
 from milodex.execution.state import KillSwitchStateStore
+from milodex.risk import EvaluationContext, RiskEvaluator, load_risk_defaults
+from milodex.strategies.loader import compute_config_hash
 
 
 class ExecutionService:
@@ -35,24 +36,30 @@ class ExecutionService:
         risk_defaults_path: Path | None = None,
         kill_switch_store: KillSwitchStateStore | None = None,
         risk_evaluator: RiskEvaluator | None = None,
+        event_store: EventStore | None = None,
     ) -> None:
         self._broker = broker_client
         self._data_provider = data_provider
         self._risk_defaults_path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+        self._event_store = event_store or EventStore(get_data_dir() / "milodex.db")
         self._kill_switch_store = kill_switch_store or KillSwitchStateStore(
-            get_logs_dir() / "kill_switch_state.json"
+            event_store=self._event_store,
+            legacy_path=get_logs_dir() / "kill_switch_state.json",
         )
         self._risk_evaluator = risk_evaluator or RiskEvaluator()
 
     def preview(self, intent: TradeIntent) -> ExecutionResult:
         """Preview a trade without submitting to the broker."""
-        return self._evaluate(intent, preview_only=True)
+        result = self._evaluate(intent, preview_only=True)
+        self._record_execution(intent, result, decision_type="preview")
+        return result
 
-    def submit_paper(self, intent: TradeIntent) -> ExecutionResult:
+    def submit_paper(self, intent: TradeIntent, *, session_id: str | None = None) -> ExecutionResult:
         """Submit a paper trade after passing risk evaluation."""
         result = self._evaluate(intent, preview_only=False)
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
+            self._record_execution(intent, result, decision_type="submit", session_id=session_id)
             return result
 
         order = self._broker.submit_order(
@@ -65,7 +72,7 @@ class ExecutionService:
             time_in_force=result.execution_request.time_in_force,
         )
 
-        return ExecutionResult(
+        submitted_result = ExecutionResult(
             status=ExecutionStatus.SUBMITTED,
             execution_request=result.execution_request,
             risk_decision=result.risk_decision,
@@ -76,6 +83,8 @@ class ExecutionService:
             message=f"Order submitted successfully: {order.id}",
             recorded_at=datetime.now(tz=UTC),
         )
+        self._record_execution(intent, submitted_result, decision_type="submit", session_id=session_id)
+        return submitted_result
 
     def get_order_status(self, order_id: str) -> Order:
         """Return the current broker order state."""
@@ -95,6 +104,65 @@ class ExecutionService:
     def get_kill_switch_state(self):
         """Return current kill-switch state."""
         return self._kill_switch_store.get_state()
+
+    def trigger_kill_switch(self, reason: str) -> None:
+        """Activate the kill switch. Single entry point for every trigger source.
+
+        Callers include the risk-threshold path (daily-loss breach) and the
+        operator-initiated SIGINT path in :class:`StrategyRunner`. Routing
+        every activation through here keeps the audit trail in one place.
+        """
+        self._kill_switch_store.activate(reason)
+
+    def record_no_action(
+        self,
+        *,
+        strategy_name: str,
+        strategy_stage: str,
+        strategy_config_path: Path,
+        config_hash: str | None,
+        symbol: str,
+        latest_bar_timestamp: datetime,
+        latest_bar_close: float,
+        session_id: str,
+        message: str = "No trade intents emitted for this bar.",
+    ) -> None:
+        """Record a hold decision (no trade intents emitted) for the event log.
+
+        Routed through the service so every explanation event — preview,
+        submit, hold — is constructed in one place.
+        """
+        account = self._broker.get_account()
+        self._event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=datetime.now(tz=UTC),
+                decision_type="strategy_evaluate",
+                status="no_action",
+                strategy_name=strategy_name,
+                strategy_stage=strategy_stage,
+                strategy_config_path=str(strategy_config_path),
+                config_hash=config_hash,
+                symbol=symbol,
+                side="hold",
+                quantity=0.0,
+                order_type="none",
+                time_in_force="day",
+                submitted_by="strategy_runner",
+                market_open=self._broker.is_market_open(),
+                latest_bar_timestamp=latest_bar_timestamp,
+                latest_bar_close=latest_bar_close,
+                account_equity=account.equity,
+                account_cash=account.cash,
+                account_portfolio_value=account.portfolio_value,
+                account_daily_pnl=account.daily_pnl,
+                risk_allowed=True,
+                risk_summary="No strategy action required.",
+                reason_codes=[],
+                risk_checks=[],
+                context={"message": message},
+                session_id=session_id,
+            )
+        )
 
     def _evaluate(self, intent: TradeIntent, *, preview_only: bool) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
@@ -216,4 +284,97 @@ class ExecutionService:
 
     def _maybe_activate_kill_switch(self, result: ExecutionResult) -> None:
         if "kill_switch_threshold_breached" in result.risk_decision.reason_codes:
-            self._kill_switch_store.activate("Daily loss exceeded kill switch threshold.")
+            self.trigger_kill_switch("Daily loss exceeded kill switch threshold.")
+
+    def _record_execution(
+        self,
+        intent: TradeIntent,
+        result: ExecutionResult,
+        *,
+        decision_type: str,
+        session_id: str | None = None,
+    ) -> None:
+        explanation_id = self._event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=result.recorded_at or datetime.now(tz=UTC),
+                decision_type=decision_type,
+                status=result.status.value,
+                strategy_name=result.execution_request.strategy_name,
+                strategy_stage=result.execution_request.strategy_stage,
+                strategy_config_path=(
+                    str(result.execution_request.strategy_config_path)
+                    if result.execution_request.strategy_config_path is not None
+                    else None
+                ),
+                config_hash=(
+                    None
+                    if result.execution_request.strategy_config_path is None
+                    else compute_config_hash(result.execution_request.strategy_config_path)
+                ),
+                symbol=result.execution_request.symbol,
+                side=result.execution_request.side.value,
+                quantity=result.execution_request.quantity,
+                order_type=result.execution_request.order_type.value,
+                time_in_force=result.execution_request.time_in_force.value,
+                submitted_by=intent.submitted_by,
+                market_open=result.market_open,
+                latest_bar_timestamp=(
+                    None if result.latest_bar is None else result.latest_bar.timestamp
+                ),
+                latest_bar_close=None if result.latest_bar is None else result.latest_bar.close,
+                account_equity=result.account.equity,
+                account_cash=result.account.cash,
+                account_portfolio_value=result.account.portfolio_value,
+                account_daily_pnl=result.account.daily_pnl,
+                risk_allowed=result.risk_decision.allowed,
+                risk_summary=result.risk_decision.summary,
+                reason_codes=list(result.risk_decision.reason_codes),
+                risk_checks=[
+                    {
+                        "name": check.name,
+                        "passed": check.passed,
+                        "message": check.message,
+                        "reason_code": check.reason_code,
+                    }
+                    for check in result.risk_decision.checks
+                ],
+                context={
+                    "message": result.message,
+                    "latest_price": (
+                        None if result.latest_bar is None else result.latest_bar.close
+                    ),
+                    "estimated_unit_price": result.execution_request.estimated_unit_price,
+                    "estimated_order_value": result.execution_request.estimated_order_value,
+                },
+                session_id=session_id,
+            )
+        )
+        self._event_store.append_trade(
+            TradeEvent(
+                explanation_id=explanation_id,
+                recorded_at=result.recorded_at or datetime.now(tz=UTC),
+                status=result.status.value,
+                source="paper",
+                symbol=result.execution_request.symbol,
+                side=result.execution_request.side.value,
+                quantity=result.execution_request.quantity,
+                order_type=result.execution_request.order_type.value,
+                time_in_force=result.execution_request.time_in_force.value,
+                estimated_unit_price=result.execution_request.estimated_unit_price,
+                estimated_order_value=result.execution_request.estimated_order_value,
+                strategy_name=result.execution_request.strategy_name,
+                strategy_stage=result.execution_request.strategy_stage,
+                strategy_config_path=(
+                    str(result.execution_request.strategy_config_path)
+                    if result.execution_request.strategy_config_path is not None
+                    else None
+                ),
+                submitted_by=intent.submitted_by,
+                broker_order_id=None if result.order is None else result.order.id,
+                broker_status=(
+                    None if result.order is None else result.order.status.value
+                ),
+                message=result.message,
+                session_id=session_id,
+            )
+        )

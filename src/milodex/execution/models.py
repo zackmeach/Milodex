@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
 from milodex.broker.models import AccountInfo, Order, OrderSide, OrderType, TimeInForce
 from milodex.data.models import Bar
+from milodex.risk.models import RiskDecision
 
 
 class ExecutionStatus(Enum):
@@ -55,26 +56,6 @@ class ExecutionRequest:
     strategy_name: str | None = None
     strategy_stage: str | None = None
     strategy_config_path: Path | None = None
-
-
-@dataclass(frozen=True)
-class RiskCheckResult:
-    """Single risk check outcome."""
-
-    name: str
-    passed: bool
-    message: str
-    reason_code: str | None = None
-
-
-@dataclass(frozen=True)
-class RiskDecision:
-    """Aggregate risk decision."""
-
-    allowed: bool
-    summary: str
-    checks: list[RiskCheckResult]
-    reason_codes: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

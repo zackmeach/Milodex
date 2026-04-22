@@ -1,15 +1,32 @@
-"""Risk scaffolding for paper execution."""
+"""Risk evaluator and supporting types.
+
+The risk layer sits between every strategy decision and every trade
+execution with veto power. ``RiskEvaluator.evaluate`` runs every rule
+defined by `docs/RISK_POLICY.md` and returns a structured
+``RiskDecision`` — the rest of the system never bypasses it.
+
+This module lives in ``milodex.risk`` to match the module map documented
+in ``CLAUDE.md`` / ``AGENTS.md`` / ``docs/VISION.md``. The old import
+path ``milodex.execution.risk`` is preserved as a thin re-export for
+backwards compatibility.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
-from milodex.broker.models import AccountInfo, Order, OrderSide, OrderStatus, Position
-from milodex.data.models import Bar
-from milodex.execution.config import RiskDefaults, StrategyExecutionConfig
-from milodex.execution.models import ExecutionRequest, RiskCheckResult, RiskDecision, TradeIntent
-from milodex.execution.state import KillSwitchState
+from milodex.broker.models import OrderSide, OrderStatus
+from milodex.risk.config import RiskDefaults
+from milodex.risk.models import RiskCheckResult, RiskDecision
+
+if TYPE_CHECKING:
+    from milodex.broker.models import AccountInfo, Order, Position
+    from milodex.data.models import Bar
+    from milodex.execution.config import StrategyExecutionConfig
+    from milodex.execution.models import ExecutionRequest, TradeIntent
+    from milodex.execution.state import KillSwitchState
 
 
 @dataclass(frozen=True)

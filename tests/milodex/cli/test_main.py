@@ -25,10 +25,9 @@ from milodex.execution.models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
-    RiskCheckResult,
-    RiskDecision,
 )
 from milodex.execution.state import KillSwitchState
+from milodex.risk import RiskCheckResult, RiskDecision
 
 cli_main_module = importlib.import_module("milodex.cli.main")
 
@@ -136,6 +135,16 @@ class StubExecutionService:
 
     def get_kill_switch_state(self) -> KillSwitchState:
         return self.kill_switch_state
+
+
+class StubStrategyRunner:
+    """Strategy runner stub for CLI tests."""
+
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    def run(self) -> None:
+        self.run_calls += 1
 
 
 def _sample_barset() -> BarSet:
@@ -420,7 +429,7 @@ def test_trade_submit_requires_paper_flag():
     assert "requires --paper" in stderr.getvalue()
 
 
-def test_trade_submit_renders_submitted_order():
+def test_trade_submit_renders_submitted_order(tmp_path):
     service = StubExecutionService(
         submit_result=_sample_execution_result(ExecutionStatus.SUBMITTED)
     )
@@ -440,6 +449,7 @@ def test_trade_submit_renders_submitted_order():
             "--paper",
         ],
         execution_service_factory=lambda: service,
+        locks_dir=tmp_path,
         stdout=stdout,
         stderr=StringIO(),
     )
@@ -516,6 +526,37 @@ def test_trade_kill_switch_status_renders_state():
     assert exit_code == 0
     assert "Kill Switch" in output
     assert "Active: yes" in output
+
+
+def test_strategy_run_requires_paper_mode(monkeypatch):
+    monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "live")
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "run", "regime.daily.sma200_rotation.spy_shy.v1"],
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert "paper-only" in stderr.getvalue()
+
+
+def test_strategy_run_dispatches_runner(monkeypatch):
+    monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
+    runner = StubStrategyRunner()
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "run", "regime.daily.sma200_rotation.spy_shy.v1"],
+        strategy_runner_factory=lambda strategy_id: runner,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    assert runner.run_calls == 1
+    assert "Running strategy: regime.daily.sma200_rotation.spy_shy.v1" in stdout.getvalue()
 
 
 def test_main_reports_broker_errors_to_stderr():

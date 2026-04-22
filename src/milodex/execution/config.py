@@ -1,4 +1,9 @@
-"""Configuration loaders for execution and risk services."""
+"""Configuration loaders for execution services.
+
+Global risk guardrails (``RiskDefaults`` + ``load_risk_defaults``) live
+in :mod:`milodex.risk.config` per ADR 0019. This module holds only
+execution-layer config: per-strategy execution caps.
+"""
 
 from __future__ import annotations
 
@@ -7,23 +12,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-
-
-@dataclass(frozen=True)
-class RiskDefaults:
-    """Global execution and risk guardrails."""
-
-    kill_switch_enabled: bool
-    kill_switch_max_drawdown_pct: float
-    require_manual_reset: bool
-    max_single_position_pct: float
-    max_concurrent_positions: int
-    max_total_exposure_pct: float
-    max_daily_loss_pct: float
-    max_trades_per_day: int
-    max_order_value_pct: float
-    duplicate_order_window_seconds: int
-    max_data_staleness_seconds: int
 
 
 @dataclass(frozen=True)
@@ -36,31 +24,8 @@ class StrategyExecutionConfig:
     max_position_pct: float
     max_positions: int
     daily_loss_cap_pct: float
-    stop_loss_pct: float
+    stop_loss_pct: float | None
     path: Path
-
-
-def load_risk_defaults(path: Path) -> RiskDefaults:
-    """Load global risk defaults from YAML."""
-    data = _load_yaml(path)
-    kill_switch = _mapping(data.get("kill_switch"), "kill_switch", path)
-    portfolio = _mapping(data.get("portfolio"), "portfolio", path)
-    daily_limits = _mapping(data.get("daily_limits"), "daily_limits", path)
-    order_safety = _mapping(data.get("order_safety"), "order_safety", path)
-
-    return RiskDefaults(
-        kill_switch_enabled=bool(kill_switch["enabled"]),
-        kill_switch_max_drawdown_pct=float(kill_switch["max_drawdown_pct"]),
-        require_manual_reset=bool(kill_switch["require_manual_reset"]),
-        max_single_position_pct=float(portfolio["max_single_position_pct"]),
-        max_concurrent_positions=int(portfolio["max_concurrent_positions"]),
-        max_total_exposure_pct=float(portfolio["max_total_exposure_pct"]),
-        max_daily_loss_pct=float(daily_limits["max_daily_loss_pct"]),
-        max_trades_per_day=int(daily_limits["max_trades_per_day"]),
-        max_order_value_pct=float(order_safety["max_order_value_pct"]),
-        duplicate_order_window_seconds=int(order_safety["duplicate_order_window_seconds"]),
-        max_data_staleness_seconds=int(order_safety["max_data_staleness_seconds"]),
-    )
 
 
 def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
@@ -70,13 +35,15 @@ def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
     risk = _mapping(strategy.get("risk"), "strategy.risk", path)
 
     return StrategyExecutionConfig(
-        name=str(strategy["name"]),
+        name=str(strategy.get("name") or strategy.get("id")),
         enabled=bool(strategy["enabled"]),
         stage=str(strategy["stage"]),
         max_position_pct=float(risk["max_position_pct"]),
         max_positions=int(risk["max_positions"]),
         daily_loss_cap_pct=float(risk["daily_loss_cap_pct"]),
-        stop_loss_pct=float(risk["stop_loss_pct"]),
+        stop_loss_pct=(
+            None if risk.get("stop_loss_pct") is None else float(risk["stop_loss_pct"])
+        ),
         path=path,
     )
 
