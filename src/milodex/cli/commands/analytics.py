@@ -14,6 +14,7 @@ from milodex.cli._shared import (
     CommandContext,
     add_global_flags,
     format_money,
+    performance_metrics_to_dict,
 )
 from milodex.cli.formatter import CommandResult
 from milodex.core.event_store import EventStore
@@ -209,31 +210,6 @@ def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
     )
 
 
-def _metrics_to_dict(m: PerformanceMetrics) -> dict[str, Any]:
-    return {
-        "run_id": m.run_id,
-        "strategy_id": m.strategy_id,
-        "start_date": m.start_date.isoformat(),
-        "end_date": m.end_date.isoformat(),
-        "initial_equity": m.initial_equity,
-        "final_equity": m.final_equity,
-        "total_return_pct": m.total_return_pct,
-        "cagr_pct": m.cagr_pct,
-        "max_drawdown_pct": m.max_drawdown_pct,
-        "sharpe_ratio": m.sharpe_ratio,
-        "sortino_ratio": m.sortino_ratio,
-        "trade_count": m.trade_count,
-        "buy_count": m.buy_count,
-        "sell_count": m.sell_count,
-        "win_rate_pct": m.win_rate_pct,
-        "avg_hold_days": m.avg_hold_days,
-        "winning_trades": m.winning_trades,
-        "losing_trades": m.losing_trades,
-        "trading_days": m.trading_days,
-        "confidence_label": m.confidence_label,
-    }
-
-
 def _build_metrics_lines(m: PerformanceMetrics, label: str = "Strategy") -> list[str]:
     lines = [
         f"  {label}:",
@@ -286,8 +262,8 @@ def _build_analytics_metrics_result(
         lines.append("")
         lines.extend(_build_metrics_lines(benchmark_metrics, label="SPY Benchmark"))
     data: dict[str, Any] = {
-        "strategy": _metrics_to_dict(strategy_metrics),
-        "benchmark": _metrics_to_dict(benchmark_metrics) if benchmark_metrics else None,
+        "strategy": performance_metrics_to_dict(strategy_metrics),
+        "benchmark": performance_metrics_to_dict(benchmark_metrics) if benchmark_metrics else None,
     }
     return CommandResult(command="analytics.metrics", data=data, human_lines=lines)
 
@@ -346,7 +322,10 @@ def _build_analytics_compare_result(
     lines.extend(_build_metrics_lines(metrics_b, label=f"Run B ({metrics_b.run_id[:8]}…)"))
     return CommandResult(
         command="analytics.compare",
-        data={"run_a": _metrics_to_dict(metrics_a), "run_b": _metrics_to_dict(metrics_b)},
+        data={
+            "run_a": performance_metrics_to_dict(metrics_a),
+            "run_b": performance_metrics_to_dict(metrics_b),
+        },
         human_lines=lines,
     )
 

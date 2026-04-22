@@ -15,6 +15,7 @@ from datetime import date
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from milodex.analytics.metrics import PerformanceMetrics
 from milodex.broker import OrderSide, OrderType, TimeInForce
 from milodex.broker.models import AccountInfo, Order, Position
 from milodex.cli.formatter import CommandResult
@@ -167,6 +168,36 @@ def order_to_dict(order: Order) -> dict[str, Any]:
     }
 
 
+def performance_metrics_to_dict(m: PerformanceMetrics) -> dict[str, Any]:
+    """Serialize :class:`PerformanceMetrics` to a JSON-safe dict.
+
+    Shared by ``analytics`` and ``report`` so the R-ANA-006 minimum analytics
+    set has a single JSON shape across every CLI surface.
+    """
+    return {
+        "run_id": m.run_id,
+        "strategy_id": m.strategy_id,
+        "start_date": m.start_date.isoformat(),
+        "end_date": m.end_date.isoformat(),
+        "initial_equity": m.initial_equity,
+        "final_equity": m.final_equity,
+        "total_return_pct": m.total_return_pct,
+        "cagr_pct": m.cagr_pct,
+        "max_drawdown_pct": m.max_drawdown_pct,
+        "sharpe_ratio": m.sharpe_ratio,
+        "sortino_ratio": m.sortino_ratio,
+        "trade_count": m.trade_count,
+        "buy_count": m.buy_count,
+        "sell_count": m.sell_count,
+        "win_rate_pct": m.win_rate_pct,
+        "avg_hold_days": m.avg_hold_days,
+        "winning_trades": m.winning_trades,
+        "losing_trades": m.losing_trades,
+        "trading_days": m.trading_days,
+        "confidence_label": m.confidence_label,
+    }
+
+
 def error_result(command: str, message: str, code: str = "error") -> CommandResult:
     return CommandResult(
         command=command,
@@ -184,6 +215,7 @@ def command_name_from_args(args: argparse.Namespace) -> str:
         "trade_command",
         "strategy_command",
         "analytics_command",
+        "report_command",
     ):
         value = getattr(args, attr, None)
         if value:

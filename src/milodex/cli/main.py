@@ -21,6 +21,7 @@ from milodex.cli.commands import (
     backtest,
     data,
     promote,
+    report,
     status,
     strategy,
     trade,
@@ -39,7 +40,17 @@ from milodex.execution.state import KillSwitchStateStore
 from milodex.strategies.loader import StrategyLoader
 from milodex.strategies.runner import StrategyRunner
 
-_COMMAND_MODULES = (status, data, config_cmd, trade, strategy, backtest, analytics, promote)
+_COMMAND_MODULES = (
+    status,
+    data,
+    config_cmd,
+    trade,
+    strategy,
+    backtest,
+    analytics,
+    promote,
+    report,
+)
 
 _DISPATCH = {
     "status": status,
@@ -52,6 +63,7 @@ _DISPATCH = {
     "backtest": backtest,
     "analytics": analytics,
     "promote": promote,
+    "report": report,
 }
 
 
