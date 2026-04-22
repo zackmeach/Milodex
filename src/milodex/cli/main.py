@@ -21,6 +21,7 @@ from milodex.cli.commands import (
     backtest,
     data,
     promote,
+    reconcile,
     report,
     status,
     strategy,
@@ -50,6 +51,7 @@ _COMMAND_MODULES = (
     analytics,
     promote,
     report,
+    reconcile,
 )
 
 _DISPATCH = {
@@ -64,6 +66,7 @@ _DISPATCH = {
     "analytics": analytics,
     "promote": promote,
     "report": report,
+    "reconcile": reconcile,
 }
 
 
