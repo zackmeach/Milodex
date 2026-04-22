@@ -1,6 +1,6 @@
 # Milodex
 
-Personal autonomous trading system. See `docs/VISION.md` for full project vision.
+Personal autonomous trading system. See `docs/VISION.md` for the full project vision, and **`docs/FOUNDER_INTENT.md` for the founder's personal intent** — the deeper "why" that should guide product, UX, and documentation decisions. When in doubt about tone, scope, or tradeoffs, defer to FOUNDER_INTENT.
 
 ## Commands
 
@@ -13,14 +13,16 @@ ruff format src/ tests/       # Format
 
 ## Architecture
 
-src-layout Python package (`src/milodex/`). Seven modules:
+src-layout Python package (`src/milodex/`). Nine modules:
 
 - **broker/** — Brokerage API integration (Alpaca). All broker access goes through this interface.
 - **strategies/** — Config-driven strategy definitions. No hardcoded strategy logic — parameters live in `configs/*.yaml`.
 - **risk/** — Risk management layer. Sits between strategies and execution with **veto power** over all trades. Never bypass.
-- **backtesting/** — Backtest engine with walk-forward validation. Minimum 30 trades before statistical conclusions.
+- **execution/** — Trade orchestration service. Single chokepoint from intent → trade: invokes the risk layer, records explanations, submits to broker. No code path reaches the broker without passing through here.
+- **backtesting/** — Backtest engine with walk-forward validation. Minimum 30 trades before statistical conclusions. Intentionally below the risk layer — risk is enforced at promotion, not simulation.
 - **data/** — Market data acquisition. Start with free sources (Alpaca, Yahoo Finance). Premium only if testing justifies cost.
 - **analytics/** — Performance metrics, trade logging, benchmark comparison (vs SPY).
+- **core/** — Shared infrastructure: SQLite event store (ADR 0011), advisory locks, schema migrations. Source of truth for trade, explanation, kill-switch, strategy-run, and backtest-run history. Durable state lives under `data/` per ADR 0018.
 - **cli/** — Command-line interface. Primary interaction surface.
 
 ## Key Design Rules
@@ -29,7 +31,8 @@ src-layout Python package (`src/milodex/`). Seven modules:
 - **Strategies are config-driven.** Strategy parameters live in `configs/*.yaml`, not in code. The code defines behavior; config defines tuning.
 - **Promotion pipeline is mandatory.** Stages: backtest → paper → micro_live → live. No skipping stages. Thresholds: Sharpe > 0.5, max drawdown < 15%, minimum 30 trades.
 - **Kill switch requires manual reset.** When triggered, trading halts. Auto-resume is never acceptable.
-- **Three actions always require human review:** re-enabling after kill switch, deploying to live capital, increasing position size limits.
+- **Actions that always require explicit human approval:** promoting any strategy to live, allocating or increasing real capital to a live strategy, re-enabling after any kill switch or major risk event, changing core risk limits for live, granting a new broker live-trade permission, overriding a blocked or rejected execution decision, retiring or replacing a live strategy with a materially different version. See `docs/VISION.md` "Autonomy Boundary" for the authoritative list.
+- **Two strategies, two purposes.** Phase 1 runs a **lifecycle-proof strategy** (SPY/SHY 200-DMA regime) to validate the platform end-to-end, and a **mean-reversion research-target strategy** as the first real edge hunt. The two are configured and promoted separately — the lifecycle-proof strategy is exempt from the 30-trade / Sharpe thresholds because a regime strategy can't produce them. See `docs/SRS.md` Key Terms.
 
 ## Config Schema
 
