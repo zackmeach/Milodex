@@ -1,6 +1,6 @@
 # Phase 1 Completion Roadmap
 
-**Status as of 2026-04-21:** Phase 1.0 and 1.1 complete. Phase 1.2 in progress (event-store + strategy foundation + regime strategy landed). Phase 1.3 and 1.4 not started. Estimated completion: **55–65%** of Phase 1 scope.
+**Status as of 2026-04-22:** Phase 1.0 and 1.1 complete. Phase 1.2 in progress (event-store + strategy foundation + both strategies landed with golden tests; StrategyRunner + dual-stop dialog still pending). Phase 1.3 and 1.4 not started. Estimated completion: **60–70%** of Phase 1 scope.
 
 This roadmap is the explicit, ordered plan to finish Phase 1. It is written against the authoritative scope in [VISION.md](VISION.md#detailed-roadmap), [SRS.md](SRS.md#phase-1-success-criteria), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), and the ADRs. Requirement codes (`R-XX-NNN`) refer to entries in SRS.md.
 
@@ -29,7 +29,7 @@ This roadmap is the explicit, ordered plan to finish Phase 1. It is written agai
 
 | Module | Current state | Needed for |
 |---|---|---|
-| `src/milodex/strategies/` | Base contract + loader + regime strategy landed; meanrev + runner still missing | Phase 1.2 |
+| `src/milodex/strategies/` | Base contract + loader + regime + meanrev strategies landed (both with golden tests); runner still missing | Phase 1.2 |
 | `src/milodex/backtesting/` | Docstring only (`__init__.py`, 7 lines) | Phase 1.2 / 1.3 |
 | `src/milodex/analytics/` | Docstring only (`__init__.py`, 7 lines) | Phase 1.3 |
 | SQLite event store | Landed in `src/milodex/core/`; strategy/backtest/promotion consumers still missing | 1.2 → 1.4 |
@@ -95,10 +95,10 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - [x] Golden-output test: given a fixed historical bar window, signals match a hand-computed expected sequence exactly.
 - [x] **Evidence target:** this strategy is how we validate SC-3 and SC-6 end-to-end without claiming edge.
 
-#### 4.1.4 Meanrev Strategy — RSI(2) Pullback
-- [ ] `src/milodex/strategies/meanrev_rsi2_pullback.py` implementing `Strategy`. Logic per [strategy-families.md](strategy-families.md) and the config at `configs/meanrev_daily_rsi2pullback_v1.yaml`: entries on RSI(2) < threshold with price > 200-DMA filter; exits on RSI(2) > exit threshold or N-day timeout; ranking rule when multiple candidates.
-- [ ] Universe loading from `configs/universe_phase1_v1.yaml`.
-- [ ] Golden-output test covering entry, exit, timeout, and multi-candidate ranking paths.
+#### 4.1.4 Meanrev Strategy — RSI(2) Pullback *(built)*
+- [x] `src/milodex/strategies/meanrev_rsi2_pullback.py` implementing `Strategy`. Logic per [strategy-families.md](strategy-families.md) and the config at `configs/meanrev_daily_rsi2pullback_v1.yaml`: entries on RSI(2) < threshold with price > 200-DMA filter; exits on RSI(2) > exit threshold or N-day timeout; ranking rule when multiple candidates.
+- [x] Universe loading from `configs/universe_phase1_v1.yaml`.
+- [x] Golden-output test covering entry, exit, timeout, and multi-candidate ranking paths.
 
 #### 4.1.5 Runner + Shutdown Dialog
 - [ ] `src/milodex/strategies/runner.py` — `StrategyRunner` class:
@@ -223,9 +223,9 @@ A suggested linear path through the above, grouped into shippable units:
 1. **SQLite event store + migration of kill-switch state.** (§4.1.1) — foundation. **Completed 2026-04-21.**
 2. **Strategy base class + loader + config hashing.** (§4.1.2) — completed 2026-04-21.
 3. **Regime strategy implementation + golden tests.** (§4.1.3) — completed 2026-04-21.
-4. **StrategyRunner + dual-stop dialog + `strategy run` CLI.** (§4.1.5) — next up.
-5. **Regime strategy paper-session shakeout + kill-switch exercise.** (achieves SC-3, SC-4, SC-5 against the simpler strategy.)
-6. **Meanrev strategy implementation + golden tests.** (§4.1.4)
+4. **Meanrev strategy implementation + golden tests.** (§4.1.4) — completed 2026-04-22.
+5. **StrategyRunner + dual-stop dialog + `strategy run` CLI.** (§4.1.5) — next up.
+6. **Regime strategy paper-session shakeout + kill-switch exercise.** (achieves SC-3, SC-4, SC-5 against the simpler strategy.)
 7. **Meanrev paper-session shakeout.**
 8. **Backtest engine + walk-forward splitter + `backtest` CLI.** (§5.1.1)
 9. **Analytics metrics + SPY benchmark + trust report + `analytics` CLI.** (§5.1.2 / §5.1.3)
