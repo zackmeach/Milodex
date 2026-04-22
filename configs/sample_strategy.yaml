@@ -1,18 +1,18 @@
 # Sample Strategy Configuration
-# This file demonstrates the config schema — no real strategy logic.
-# Each strategy gets its own YAML file in configs/.
+# This file demonstrates the Phase 1 strategy-config schema only.
+# It is not tied to a real implemented strategy class.
 
 strategy:
-  name: "example_momentum"
+  id: "sample.daily.example.curated.v1"
+  family: "sample"
+  template: "daily.example"
+  variant: "curated"
   version: 1
   description: "Example momentum strategy config — replace with real parameters."
   enabled: false
 
-  # Which assets this strategy is allowed to trade
-  universe:
-    - "SPY"
-    - "QQQ"
-    - "IWM"
+  # Strategies may either inline a universe or reference a frozen universe manifest.
+  universe_ref: "universe.phase1.curated.v1"
 
   # Strategy-specific parameters (varies per strategy type)
   parameters:
@@ -42,3 +42,6 @@ strategy:
     slippage_pct: 0.001           # 0.1% conservative slippage estimate
     commission_per_trade: 0.00    # Alpaca is commission-free
     min_trades_required: 30       # Minimum trades before drawing conclusions
+
+  # Family-default disable conditions can be extended, not reduced.
+  disable_conditions_additional: []

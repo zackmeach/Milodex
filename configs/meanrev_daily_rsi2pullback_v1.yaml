@@ -1,0 +1,63 @@
+# Mean-Reversion Daily RSI(2) Pullback — v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `meanrev` family — market behavior exploited,
+# semantic invariants, entry/exit/ranking rules, default disable conditions —
+# lives in docs/strategy-families.md. Do not restate those rules here.
+#
+# See ADR 0015 for the identifier scheme, version-vs-variant rule, and the
+# frozen-manifest requirement that governs promotion.
+
+strategy:
+  id: "meanrev.daily.pullback_rsi2.curated_largecap.v1"
+  family: "meanrev"
+  template: "daily.pullback_rsi2"
+  variant: "curated_largecap"
+  version: 1
+  description: >
+    Long-only daily mean-reversion swing on a curated large-cap universe.
+    First research-target strategy for Phase 1. Family spec: docs/strategy-families.md#family-meanrev.
+  enabled: true
+
+  # References the frozen Phase 1 universe manifest. Strategies do not
+  # inline symbol lists — see configs/universe_phase1_v1.yaml and SRS R-DAT-016.
+  universe_ref: "universe.phase1.curated.v1"
+
+  parameters:
+    rsi_lookback: 2
+    rsi_entry_threshold: 10
+    rsi_exit_threshold: 50
+    ma_filter_length: 200
+    stop_loss_pct: 0.05
+    max_hold_days: 5
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.10
+    ranking_enabled: true
+    ranking_metric: "rsi_ascending"
+    market_regime_symbol: ""
+    market_regime_ma_length: 200
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+
+  stage: "paper"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  # Additional disable conditions beyond the family defaults (see
+  # docs/strategy-families.md#family-meanrev). Family defaults always apply;
+  # this list extends them.
+  disable_conditions_additional: []

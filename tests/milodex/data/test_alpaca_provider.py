@@ -8,6 +8,7 @@ from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from alpaca.data.enums import DataFeed
 
 from milodex.data.alpaca_provider import AlpacaDataProvider
 from milodex.data.models import Bar, BarSet, Timeframe
@@ -64,6 +65,19 @@ class TestGetBars:
         assert "ZZZZZ" in result
         assert len(result["ZZZZZ"]) == 0
 
+    def test_requests_iex_feed_for_stock_bars(self, provider, mock_alpaca_bar):
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert request.feed == DataFeed.IEX
+
 
 class TestGetLatestBar:
     def test_returns_bar(self, provider, mock_alpaca_bar):
@@ -72,6 +86,14 @@ class TestGetLatestBar:
         assert isinstance(result, Bar)
         assert result.close == 151.0
         assert result.vwap == 150.8
+
+    def test_requests_iex_feed_for_latest_bar(self, provider, mock_alpaca_bar):
+        provider._client.get_stock_latest_bar.return_value = {"AAPL": mock_alpaca_bar}
+
+        provider.get_latest_bar("AAPL")
+
+        request = provider._client.get_stock_latest_bar.call_args.args[0]
+        assert request.feed == DataFeed.IEX
 
 
 class TestGetBarsCaching:
@@ -118,6 +140,31 @@ class TestGetBarsCaching:
             end=today,
         )
         assert provider._client.get_stock_bars.call_count > first_count
+
+    def test_today_refetch_never_requests_start_after_end(self, provider, mock_alpaca_bar):
+        """When today is already cached, refetch logic must not generate an invalid range."""
+        today = datetime.now(tz=UTC).date()
+        mock_alpaca_bar.timestamp = datetime(today.year, today.month, today.day, 14, 30, tzinfo=UTC)
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=today,
+            end=today,
+        )
+        first_count = provider._client.get_stock_bars.call_count
+
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=today,
+            end=today,
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert request.start.date() <= request.end.date()
+        assert provider._client.get_stock_bars.call_count == first_count + 1
 
 
 class TestGetTradeableAssets:

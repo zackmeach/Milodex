@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 import pytest
 
-from milodex.config import get_alpaca_credentials, get_cache_dir, get_logs_dir, get_trading_mode
+from milodex.config import (
+    get_alpaca_credentials,
+    get_cache_dir,
+    get_data_dir,
+    get_logs_dir,
+    get_trading_mode,
+)
 
 
 class TestGetAlpacaCredentials:
@@ -70,3 +76,13 @@ class TestGetLogsDir:
     def test_default_is_logs(self):
         result = get_logs_dir()
         assert result.name == "logs"
+
+
+class TestGetDataDir:
+    def test_returns_path_object(self):
+        result = get_data_dir()
+        assert isinstance(result, Path)
+
+    def test_default_is_data(self):
+        result = get_data_dir()
+        assert result.name == "data"

@@ -8,9 +8,11 @@ being returned to callers.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockBarsRequest, StockLatestBarRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -93,23 +95,35 @@ class AlpacaDataProvider(DataProvider):
                 if start < cache_start:
                     ranges_to_fetch.append((start, min(end, cache_start)))
                 # After cache end (or today needs re-fetch)
-                if end > cache_end or end >= today:
+                if end >= today:
+                    fetch_from = max(start, today)
+                    if fetch_from <= end:
+                        ranges_to_fetch.append((fetch_from, end))
+                elif end > cache_end:
                     fetch_from = max(start, cache_end + timedelta(days=1))
-                    ranges_to_fetch.append((fetch_from, end))
-                # Gaps in the middle: check for missing dates in range
+                    if fetch_from <= end:
+                        ranges_to_fetch.append((fetch_from, end))
+                # Gaps in the middle: check for missing dates in range.
+                # Only scan the recent window — historical data from initial
+                # backtest fetches is assumed complete. Skip weekend-only gaps
+                # that produce empty API responses and are never written to cache.
+                recent_gap_start = max(start, cache_start, today - timedelta(days=60))
                 if start >= cache_start and end <= cache_end:
-                    check = max(start, cache_start)
+                    check = recent_gap_start
                     gap_start = None
                     while check <= min(end, cache_end):
                         if check not in cached_dates:
                             if gap_start is None:
                                 gap_start = check
                         elif gap_start is not None:
-                            ranges_to_fetch.append((gap_start, check))
+                            if _range_has_weekday(gap_start, check - timedelta(days=1)):
+                                ranges_to_fetch.append((gap_start, check))
                             gap_start = None
                         check += timedelta(days=1)
                     if gap_start is not None:
-                        ranges_to_fetch.append((gap_start, min(end, cache_end)))
+                        gap_end = min(end, cache_end)
+                        if _range_has_weekday(gap_start, gap_end):
+                            ranges_to_fetch.append((gap_start, gap_end))
 
             # Fetch each missing range from Alpaca
             all_new_dfs: list[pd.DataFrame] = []
@@ -117,6 +131,7 @@ class AlpacaDataProvider(DataProvider):
                 request = StockBarsRequest(
                     symbol_or_symbols=symbol,
                     timeframe=alpaca_tf,
+                    feed=DataFeed.IEX,
                     start=datetime(
                         fetch_start.year,
                         fetch_start.month,
@@ -134,6 +149,7 @@ class AlpacaDataProvider(DataProvider):
                     ),
                 )
                 response = self._client.get_stock_bars(request)
+                time.sleep(0.35)
                 bars_data = response.data.get(symbol, [])
                 if bars_data:
                     df = pd.DataFrame(
@@ -184,7 +200,7 @@ class AlpacaDataProvider(DataProvider):
     def get_latest_bar(self, symbol: str) -> Bar:
         """Fetch the most recent bar from Alpaca."""
         response = self._client.get_stock_latest_bar(
-            StockLatestBarRequest(symbol_or_symbols=symbol)
+            StockLatestBarRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         )
         alpaca_bar = response[symbol]
         return Bar(
@@ -206,3 +222,17 @@ class AlpacaDataProvider(DataProvider):
             if a.tradable
             and str(a.status.value if hasattr(a.status, "value") else a.status) == "active"
         ]
+
+
+def _range_has_weekday(start: date, end: date) -> bool:
+    """Return True if [start, end] contains at least one weekday (Mon–Fri).
+
+    Used to skip fetching weekend-only gap ranges that never contain market
+    data and are never written back to cache.
+    """
+    check = start
+    while check <= end:
+        if check.weekday() < 5:
+            return True
+        check += timedelta(days=1)
+    return False

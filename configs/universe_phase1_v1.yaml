@@ -1,0 +1,65 @@
+# Phase 1 Curated Universe — v1
+#
+# Frozen universe manifest. Strategies reference this by id; they do not
+# inline their own lists. The rules that govern universe construction,
+# versioning, and eligibility live in docs/strategy-families.md and
+# docs/SRS.md (Data domain); this file carries only the frozen membership.
+#
+# Any membership change creates a new version (universe_phase1_v2, etc.).
+# The current version is never silently edited in place — see ADR 0015 for
+# the frozen-manifest principle, applied here to the universe.
+
+universe:
+  id: "universe.phase1.curated.v1"
+  version: 1
+  description: >
+    Small curated universe of highly liquid U.S. common stocks and plain
+    ETFs for Phase 1 research-target strategies. Chosen for stable
+    liquidity, clean data, simple corporate actions. Subject to the
+    instrument whitelist in ADR 0016.
+
+  # ETFs — broad index, sector, and commodity/bond exposures
+  etfs:
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+    - "DIA"
+    - "XLK"
+    - "XLF"
+    - "XLE"
+    - "XLV"
+    - "XLI"
+    - "XLP"
+    - "XLU"
+    - "XLY"
+    - "XLB"
+    - "XLRE"
+    - "SMH"
+    - "SOXX"
+    - "GLD"
+    - "SLV"
+    - "TLT"
+    - "SHY"
+
+  # Common stocks — large-cap, highly liquid
+  stocks:
+    - "AAPL"
+    - "MSFT"
+    - "NVDA"
+    - "AMZN"
+    - "META"
+    - "GOOGL"
+    - "TSLA"
+    - "JPM"
+    - "BAC"
+    - "XOM"
+    - "CVX"
+    - "JNJ"
+    - "UNH"
+    - "PG"
+    - "HD"
+    - "COST"
+    - "AVGO"
+    - "AMD"
+    - "NFLX"
+    - "WMT"

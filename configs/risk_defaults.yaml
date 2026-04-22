@@ -1,6 +1,15 @@
 # Global Risk Defaults
 # These guardrails apply above any individual strategy's risk config.
 # The risk layer enforces these limits with veto power over all trade execution.
+# Human-readable rationale: docs/RISK_POLICY.md
+
+paper_evaluation:
+  # Phase 1 default starting paper capital baseline.
+  starting_capital_usd: 100000
+
+sizing:
+  # Simple fixed-percent sizing on current equity. Not volatility-aware in Phase 1.
+  per_position_target_pct: 0.10
 
 kill_switch:
   enabled: true
@@ -8,25 +17,47 @@ kill_switch:
   max_drawdown_pct: 0.10          # 10% portfolio drawdown triggers full stop
   # Require manual re-enablement after a kill switch event
   require_manual_reset: true
+  # Scope: Milodex supports both strategy-level and account-level kill switches.
+  # See docs/RISK_POLICY.md "Kill-Switch Scope".
+  supports_strategy_level: true
+  supports_account_level: true
 
 portfolio:
-  # Maximum percentage of portfolio in any single position (hard ceiling)
-  max_single_position_pct: 0.20   # No position > 20% of portfolio
-  # Maximum number of concurrent open positions across all strategies
+  # Maximum percentage of portfolio in any single position (hard ceiling).
+  # Matches per_position_target_pct to prevent one name from dominating.
+  max_single_position_pct: 0.10
+  # Maximum percentage of portfolio deployed at any time.
+  # Phase 1 deliberately keeps at least half in cash.
+  max_total_exposure_pct: 0.50
+  # Maximum percentage of portfolio in any single sector.
+  max_sector_exposure_pct: 0.20
+  # Maximum concurrent positions expressing effectively the same trade idea.
+  max_correlated_positions_per_idea: 2
+  # Maximum number of concurrent open positions across all strategies.
   max_concurrent_positions: 10
-  # Maximum percentage of portfolio deployed at any time
-  max_total_exposure_pct: 0.80    # Keep at least 20% cash
 
 daily_limits:
-  # Halt all trading if total daily losses exceed this threshold
-  max_daily_loss_pct: 0.03        # 3% daily loss cap across all strategies
+  # Daily loss is computed as realized + unrealized P&L vs start-of-day equity snapshot.
+  # Breach trips the kill switch.
+  max_daily_loss_pct: 0.03
+  loss_reference: "start_of_day_equity"
+  loss_includes: "realized_plus_unrealized"
   # Maximum number of trades per day (prevents runaway logic)
   max_trades_per_day: 20
 
 order_safety:
   # Fat-finger protection: reject any single order exceeding this portfolio %
-  max_order_value_pct: 0.15       # No single order > 15% of portfolio
-  # Reject duplicate orders for the same symbol within this window
+  max_order_value_pct: 0.15
+  # Duplicate-order policy: BLOCK on uncertainty (see docs/RISK_POLICY.md).
+  # Detection keys off strategy instance, symbol, side, action type, target qty/exposure, window.
   duplicate_order_window_seconds: 60
+  duplicate_block_on_uncertainty: true
   # Reject orders if market data is older than this threshold
-  max_data_staleness_seconds: 300  # 5 minutes
+  max_data_staleness_seconds: 300
+
+exposure_policy:
+  # Exposure-increasing orders run the full risk/approval/kill-switch check set.
+  # Exposure-reducing orders use a more permissive policy because they move toward safety.
+  # Sells that close or shrink positions remain allowed even during an active kill switch.
+  reducing_orders_permissive: true
+  reducing_allowed_during_kill_switch: true

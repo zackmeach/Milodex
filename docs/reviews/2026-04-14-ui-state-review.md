@@ -1,5 +1,7 @@
 # Milodex UI State Review
 
+> **Status: Superseded** by [`PROJECT_STATE_ASSESSMENT_2026-04-21.md`](./PROJECT_STATE_ASSESSMENT_2026-04-21.md). Findings below describe the repo at 2026-04-14 (pre-Phase 1.1/1.2 landings) and are retained for history. Do not cite as current state.
+
 Date: 2026-04-14
 Reviewer: Codex
 

@@ -1,0 +1,53 @@
+# SPY/SHY 200-DMA Regime — Lifecycle Proof v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `regime` family — market behavior rationale,
+# semantic invariants, rotation rule, default disable conditions, and the
+# exemption from statistical promotion thresholds — lives in
+# docs/strategy-families.md. Do not restate those rules here.
+#
+# This is the LIFECYCLE-PROOF strategy for Phase 1 (see docs/VISION.md and
+# SRS Key Terms). Its purpose is to exercise the full platform end to end.
+# Promotion is gated operationally, not statistically; see SRS R-PRM-004.
+
+strategy:
+  id: "regime.daily.sma200_rotation.spy_shy.v1"
+  family: "regime"
+  template: "daily.sma200_rotation"
+  variant: "spy_shy"
+  version: 1
+  description: >
+    Long-only daily regime rotation between SPY and SHY using a 200-DMA
+    trend filter. Family spec: docs/strategy-families.md#family-regime.
+  enabled: true
+
+  universe:
+    - "SPY"
+    - "SHY"
+
+  parameters:
+    ma_filter_length: 200
+    risk_on_symbol: "SPY"
+    risk_off_symbol: "SHY"
+    allocation_pct: 1.00
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: null
+
+  risk:
+    max_position_pct: 1.00
+    max_positions: 1
+    daily_loss_cap_pct: 0.05
+    stop_loss_pct: null
+
+  stage: "paper"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: null    # exempt per SRS R-PRM-004
+    walk_forward_windows: 1
+
+  disable_conditions_additional: []

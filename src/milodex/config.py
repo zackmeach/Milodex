@@ -73,6 +73,21 @@ def get_cache_dir() -> Path:
     return Path.cwd() / "market_cache"
 
 
+def get_data_dir() -> Path:
+    """Return path for local stateful app data."""
+    override = os.environ.get("MILODEX_DATA_DIR", "").strip()
+    if override:
+        return Path(override)
+
+    current = Path(__file__).resolve().parent
+    while current != current.parent:
+        if (current / "pyproject.toml").exists():
+            return current / "data"
+        current = current.parent
+
+    return Path.cwd() / "data"
+
+
 def get_logs_dir() -> Path:
     """Return path for local runtime logs and state files."""
     override = os.environ.get("MILODEX_LOG_DIR", "").strip()
@@ -86,3 +101,15 @@ def get_logs_dir() -> Path:
         current = current.parent
 
     return Path.cwd() / "logs"
+
+
+def get_locks_dir() -> Path:
+    """Return path for advisory lock files used for single-process serialization.
+
+    Defaults to ``<data_dir>/locks`` so all durable Milodex-authoritative
+    state stays under one root. Override with ``MILODEX_LOCKS_DIR``.
+    """
+    override = os.environ.get("MILODEX_LOCKS_DIR", "").strip()
+    if override:
+        return Path(override)
+    return get_data_dir() / "locks"

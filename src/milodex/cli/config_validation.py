@@ -7,6 +7,8 @@ from typing import Any
 
 import yaml
 
+from milodex.strategies.loader import load_strategy_config
+
 _STRATEGY_REQUIRED_KEYS: dict[str, set[str]] = {
     "strategy": {
         "name",
@@ -84,43 +86,7 @@ def _infer_kind(path: Path) -> str:
 
 
 def _validate_strategy_config(data: dict[str, Any], path: Path) -> None:
-    _require_keys(data, {"strategy"}, "root", path)
-
-    strategy = _as_mapping(data["strategy"], "strategy", path)
-    _require_keys(strategy, _STRATEGY_REQUIRED_KEYS["strategy"], "strategy", path)
-
-    tempo = _as_mapping(strategy["tempo"], "strategy.tempo", path)
-    _require_keys(tempo, _STRATEGY_REQUIRED_KEYS["strategy.tempo"], "strategy.tempo", path)
-
-    risk = _as_mapping(strategy["risk"], "strategy.risk", path)
-    _require_keys(risk, _STRATEGY_REQUIRED_KEYS["strategy.risk"], "strategy.risk", path)
-
-    backtest = _as_mapping(strategy["backtest"], "strategy.backtest", path)
-    _require_keys(
-        backtest,
-        _STRATEGY_REQUIRED_KEYS["strategy.backtest"],
-        "strategy.backtest",
-        path,
-    )
-
-    universe = strategy["universe"]
-    if not isinstance(universe, list) or not universe or not all(
-        isinstance(symbol, str) and symbol.strip() for symbol in universe
-    ):
-        msg = f"{path}: strategy.universe must be a non-empty list of symbols"
-        raise ValueError(msg)
-
-    if strategy["stage"] not in _VALID_STAGES:
-        msg = (
-            f"{path}: strategy.stage must be one of "
-            f"{', '.join(sorted(_VALID_STAGES))}"
-        )
-        raise ValueError(msg)
-
-    if tempo["bar_size"] not in _VALID_BAR_SIZES:
-        valid_sizes = ", ".join(sorted(_VALID_BAR_SIZES))
-        msg = f"{path}: strategy.tempo.bar_size must be one of {valid_sizes}"
-        raise ValueError(msg)
+    load_strategy_config(path)
 
 
 def _validate_risk_config(data: dict[str, Any], path: Path) -> None:

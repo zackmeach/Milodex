@@ -16,6 +16,7 @@ from milodex.broker.models import (
     Position,
     TimeInForce,
 )
+from milodex.core.event_store import EventStore
 from milodex.data.models import Bar
 from milodex.execution import ExecutionService, ExecutionStatus, TradeIntent
 from milodex.execution.state import KillSwitchStateStore
@@ -443,3 +444,156 @@ def test_kill_switch_status_and_activation(
 
     assert "kill_switch_threshold_breached" in result.risk_decision.reason_codes
     assert state.active is True
+
+
+def test_preview_and_submit_record_explanations_and_trades(
+    tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+):
+    broker = StubBroker(
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    preview = service.preview(intent)
+    submit = service.submit_paper(intent)
+
+    explanations = event_store.list_explanations()
+    trades = event_store.list_trades()
+
+    assert preview.status == ExecutionStatus.PREVIEW
+    assert submit.status == ExecutionStatus.SUBMITTED
+    assert [record.decision_type for record in explanations] == ["preview", "submit"]
+    assert [record.status for record in trades] == ["preview", "submitted"]
+    assert trades[0].explanation_id == explanations[0].id
+    assert trades[1].explanation_id == explanations[1].id
+    assert len(explanations[0].risk_checks) == 11
+    assert explanations[1].risk_allowed is True
+
+
+def test_strategy_config_hash_is_recorded_on_explanations(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    strategy_file,
+):
+    broker = StubBroker(
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    service.preview(
+        TradeIntent(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            quantity=5,
+            order_type=OrderType.MARKET,
+            strategy_config_path=strategy_file,
+        )
+    )
+
+    explanations = event_store.list_explanations()
+
+    assert len(explanations) == 1
+    assert explanations[0].config_hash is not None
+
+
+def test_kill_switch_events_are_persisted_in_event_store(
+    tmp_path, risk_defaults_file, latest_bar, submitted_order
+):
+    account = AccountInfo(
+        equity=10_000.0,
+        cash=8_000.0,
+        buying_power=8_000.0,
+        portfolio_value=10_000.0,
+        daily_pnl=-1_500.0,
+    )
+    broker = StubBroker(
+        account=account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert "kill_switch_threshold_breached" in result.risk_decision.reason_codes
+    assert [event.event_type for event in event_store.list_kill_switch_events()] == ["activated"]
+
+
+def test_submit_paper_records_runner_session_id(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    broker = StubBroker(
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+        session_id="session-123",
+    )
+
+    explanations = event_store.list_explanations()
+    trades = event_store.list_trades()
+
+    assert explanations[0].session_id == "session-123"
+    assert trades[0].session_id == "session-123"

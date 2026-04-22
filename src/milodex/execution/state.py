@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+from milodex.core.event_store import EventStore, KillSwitchEvent
 
 
 @dataclass(frozen=True)
@@ -18,39 +20,80 @@ class KillSwitchState:
 
 
 class KillSwitchStateStore:
-    """File-backed kill-switch state store."""
+    """Event-store-backed kill-switch state store with JSON migration support."""
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._path.parent.mkdir(parents=True, exist_ok=True)
+    def __init__(
+        self,
+        path: Path | None = None,
+        *,
+        event_store: EventStore | None = None,
+        legacy_path: Path | None = None,
+    ) -> None:
+        self._legacy_path = legacy_path or path
+        if self._legacy_path is not None:
+            self._legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        self._event_store = event_store or EventStore(self._default_db_path(self._legacy_path))
 
     def get_state(self) -> KillSwitchState:
-        if not self._path.exists():
+        self._migrate_legacy_state_if_needed()
+        latest_event = self._event_store.get_latest_kill_switch_event()
+        if latest_event is None or latest_event.event_type == "reset":
             return KillSwitchState(active=False)
-
-        with self._path.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-
         return KillSwitchState(
-            active=bool(data.get("active", False)),
-            reason=data.get("reason"),
-            last_triggered_at=data.get("last_triggered_at"),
+            active=True,
+            reason=latest_event.reason,
+            last_triggered_at=latest_event.recorded_at.isoformat(),
         )
 
     def activate(self, reason: str) -> KillSwitchState:
-        state = KillSwitchState(
-            active=True,
-            reason=reason,
-            last_triggered_at=datetime.now(tz=UTC).isoformat(),
+        self._migrate_legacy_state_if_needed()
+        self._event_store.append_kill_switch_event(
+            KillSwitchEvent(
+                event_type="activated",
+                recorded_at=datetime.now(tz=UTC),
+                reason=reason,
+            )
         )
-        self._write_state(state)
-        return state
+        return self.get_state()
 
     def reset(self) -> KillSwitchState:
-        state = KillSwitchState(active=False)
-        self._write_state(state)
-        return state
+        self._migrate_legacy_state_if_needed()
+        self._event_store.append_kill_switch_event(
+            KillSwitchEvent(
+                event_type="reset",
+                recorded_at=datetime.now(tz=UTC),
+                reason=None,
+            )
+        )
+        return self.get_state()
 
-    def _write_state(self, state: KillSwitchState) -> None:
-        with self._path.open("w", encoding="utf-8") as handle:
-            json.dump(asdict(state), handle, indent=2)
+    def _migrate_legacy_state_if_needed(self) -> None:
+        if self._legacy_path is None or not self._legacy_path.exists():
+            return
+        if self._event_store.get_latest_kill_switch_event() is not None:
+            return
+
+        with self._legacy_path.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+
+        if not bool(data.get("active", False)):
+            return
+
+        recorded_at = data.get("last_triggered_at")
+        self._event_store.append_kill_switch_event(
+            KillSwitchEvent(
+                event_type="activated",
+                recorded_at=(
+                    datetime.fromisoformat(recorded_at)
+                    if isinstance(recorded_at, str)
+                    else datetime.now(tz=UTC)
+                ),
+                reason=data.get("reason"),
+            )
+        )
+
+    def _default_db_path(self, legacy_path: Path | None) -> Path:
+        if legacy_path is None:
+            msg = "KillSwitchStateStore requires either a legacy path or an EventStore."
+            raise ValueError(msg)
+        return legacy_path.with_name("milodex.db")

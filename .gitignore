@@ -40,6 +40,10 @@ htmlcov/
 logs/*
 !logs/.gitkeep
 
+# Durable Milodex-authoritative state (event store + locks; see ADR 0018)
+data/*
+!data/.gitkeep
+
 # Ruff
 .ruff_cache/
 
