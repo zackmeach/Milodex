@@ -198,6 +198,20 @@ Every preview and every submit writes an audit record (an explanation record per
 
 Submit records are linked by ID back to the preview they originated from when one exists, so the path from "considered" → "proposed" → "approved" → "submitted" → "filled" is reconstructable end-to-end from durable state alone.
 
+### Strategy reasoning payload (`context.reasoning`)
+
+Every audit record now includes a `context.reasoning` JSON object populated by `Strategy.evaluate()` — the strategy-internal "why" that previously never left the evaluator. The shape is the `asdict()` of `milodex.strategies.base.DecisionReasoning`:
+
+- `rule` — canonical rule ID the strategy fired (`regime.ma_filter_cross`, `regime.hold`, `meanrev.rsi_entry`, `meanrev.rsi_exit`, `meanrev.stop_loss`, `meanrev.max_hold`, or `no_signal` for a cycle that proposed nothing).
+- `narrative` — one-sentence operator-readable summary (e.g. `"latest close 450.12 above 200-DMA 432.05 → rotate to SPY"`).
+- `triggering_values` / `threshold` — the inputs the rule compared and the threshold side.
+- `ranking` / `rejected_alternatives` — for cross-sectional families, the scored candidate list and per-candidate rejection reasons.
+- `extras` — strategy-specific debugging fields.
+
+Non-firing cycles (empty `intents`) also write a single `decision_type="no_trade"`, `status="no_signal"` row carrying the same payload, so a backtest that fires once in 250 days still has 249 auditable "why not" rows. Legacy records from before this change retain an empty `context.reasoning` — the contract is forward-only.
+
+Operators can surface the reasoning via `milodex analytics trades --json` (the full `context` dict is in the trade rows) or via the trust report's `recent_decisions` section.
+
 ---
 
 ## Relationship to SRS and Other Docs

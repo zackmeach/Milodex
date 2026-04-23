@@ -138,7 +138,7 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - [x] Minimum-trade enforcement per `R-BKT-003`: statistical metrics for meanrev require ≥30 trades; regime is exempt per `R-PRM-004`. *Implemented as a CLI-layer label (`insufficient evidence` / `evidence_basis=operational`), not an engine-side gate — presentation-layer concern.*
 - [x] CLI command: `milodex backtest <strategy_id> --start YYYY-MM-DD --end YYYY-MM-DD [--walk-forward]`.
 - [x] Tests: walk-forward window math, slippage applied correctly, regime strategy backtest matches hand-computed golden output ([test_engine_golden_regime.py](../tests/milodex/backtesting/test_engine_golden_regime.py)), minimum-trade gate produces a clearly-flagged low-evidence result instead of a garbage Sharpe.
-- **Deferred to §5.1.2:** R-XC-008 "triggering event / alternatives rejected / rule threshold" explanation fields require a `Strategy.evaluate()` signature extension (strategies returning reasoning alongside `TradeIntent`). Engine-side completeness (rule name, config hash, bar timestamp) landed in commit 04ba89d.
+- [x] R-XC-008 "triggering event / alternatives rejected / rule threshold" explanation fields — `Strategy.evaluate()` now returns `StrategyDecision(intents, reasoning)`; reasoning persists into `ExplanationEvent.context["reasoning"]` for both paper and backtest paths, plus a no-trade row per non-firing cycle. Closed by plan [2026-04-23-r-xc-008-strategy-reasoning.md](superpowers/plans/2026-04-23-r-xc-008-strategy-reasoning.md) (commits through 2f20b51).
 
 #### 5.1.2 Analytics & Metrics
 - [x] `src/milodex/analytics/metrics.py` — pure functions over a trade ledger:
@@ -161,7 +161,7 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - [x] **`--json` flag on every read command.** Adds the CLI formatter abstraction per ADR 0014. Human text remains the default. Locks a stable JSON contract now, before any future GUI.
 - [x] Tests: metric computation golden values, SPY benchmark fetch mocked, export format validators, reconcile flags deliberate state mismatches correctly.
 
-**Surviving deferral:** R-XC-008 ("triggering event / alternatives rejected / rule threshold" explanation fields) requires a `Strategy.evaluate()` signature change — tracked separately from §5.1.2/§5.1.3 because it touches the strategy-interface sacred surface.
+**No surviving Phase 1.3 deferrals.** R-XC-008 closed 2026-04-23 via the `StrategyDecision` / `DecisionReasoning` interface change (see §5.1.1 entry).
 
 ### 5.2 Phase 1.3 Definition of Done
 
