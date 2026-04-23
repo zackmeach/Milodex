@@ -57,9 +57,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    import sys
+
     from milodex.core.event_store import PromotionEvent
     from milodex.promotion import check_gate, validate_stage_transition
     from milodex.strategies.loader import load_strategy_config
+
+    print(
+        "DEPRECATION: 'milodex promote' will be removed in the next slice; "
+        "use 'milodex promotion promote' (requires --recommendation and --risk).",
+        file=sys.stderr,
+    )
 
     config_path = resolve_strategy_config(args.strategy_id, ctx.config_dir)
     config = load_strategy_config(config_path)
