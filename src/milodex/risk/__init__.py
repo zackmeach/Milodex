@@ -13,12 +13,22 @@ depends on ``risk/``, never the reverse.
 from milodex.risk.config import RiskDefaults, load_risk_defaults
 from milodex.risk.evaluator import EvaluationContext, RiskEvaluator
 from milodex.risk.models import RiskCheckResult, RiskDecision
+from milodex.risk.policy import (
+    BYPASS_SUMMARY,
+    NullRiskEvaluator,
+    RiskPolicy,
+    synthetic_bypass_decision,
+)
 
 __all__ = [
+    "BYPASS_SUMMARY",
     "EvaluationContext",
+    "NullRiskEvaluator",
     "RiskCheckResult",
     "RiskDecision",
     "RiskDefaults",
     "RiskEvaluator",
+    "RiskPolicy",
     "load_risk_defaults",
+    "synthetic_bypass_decision",
 ]
