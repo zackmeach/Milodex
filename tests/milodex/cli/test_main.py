@@ -113,6 +113,7 @@ class StubExecutionService:
         self.submit_calls: list[object] = []
         self.order_status_calls: list[str] = []
         self.cancel_calls: list[str] = []
+        self.reset_kill_switch_calls = 0
 
     def preview(self, intent):
         self.preview_calls.append(intent)
@@ -135,6 +136,10 @@ class StubExecutionService:
 
     def get_kill_switch_state(self) -> KillSwitchState:
         return self.kill_switch_state
+
+    def reset_kill_switch(self) -> None:
+        self.reset_kill_switch_calls += 1
+        self.kill_switch_state = KillSwitchState(active=False)
 
 
 class StubStrategyRunner:
@@ -531,6 +536,49 @@ def test_trade_kill_switch_status_renders_state():
     assert exit_code == 0
     assert "Kill Switch" in output
     assert "Active: yes" in output
+
+
+def test_trade_kill_switch_reset_requires_confirm():
+    service = StubExecutionService(
+        kill_switch_state=KillSwitchState(active=True, reason="test")
+    )
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["trade", "kill-switch", "reset"],
+        execution_service_factory=lambda: service,
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert "--confirm" in stderr.getvalue()
+    assert service.reset_kill_switch_calls == 0
+
+
+def test_trade_kill_switch_reset_clears_with_confirm():
+    service = StubExecutionService(
+        kill_switch_state=KillSwitchState(
+            active=True,
+            reason="Operator requested kill switch.",
+            last_triggered_at="2026-04-23T14:19:23+00:00",
+        )
+    )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["trade", "kill-switch", "reset", "--confirm"],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert service.reset_kill_switch_calls == 1
+    assert "Kill Switch Reset" in output
+    assert "Previously active: yes" in output
+    assert "Now active: no" in output
 
 
 def test_strategy_run_requires_paper_mode(monkeypatch):

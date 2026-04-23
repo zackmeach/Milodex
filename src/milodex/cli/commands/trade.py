@@ -68,6 +68,18 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     add_global_flags(kill_switch_status_parser)
 
+    kill_switch_reset_parser = kill_switch_subparsers.add_parser(
+        "reset",
+        help="Manually clear an active kill switch. Requires --confirm.",
+    )
+    add_global_flags(kill_switch_reset_parser)
+    kill_switch_reset_parser.add_argument(
+        "--confirm",
+        action="store_true",
+        help="Required acknowledgement that the operator has investigated "
+        "the cause of the original kill-switch activation.",
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     service = ctx.get_execution_service()
@@ -99,6 +111,16 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.trade_command == "kill-switch" and args.kill_switch_command == "status":
         state = service.get_kill_switch_state()
         return _build_kill_switch_result(state.active, state.reason, state.last_triggered_at)
+    if args.trade_command == "kill-switch" and args.kill_switch_command == "reset":
+        if not args.confirm:
+            raise ValueError(
+                "trade kill-switch reset requires --confirm. Investigate the "
+                "cause of the original activation before re-enabling trading."
+            )
+        previous = service.get_kill_switch_state()
+        service.reset_kill_switch()
+        new_state = service.get_kill_switch_state()
+        return _build_kill_switch_reset_result(previous, new_state)
     raise ValueError(f"Unsupported trade command: {args.trade_command}")
 
 
@@ -245,6 +267,34 @@ def _build_cancel_result(cancelled: bool, order: Order | None, order_id: str) ->
         errors=[]
         if cancelled
         else [{"code": "cancel_failed", "message": f"Order could not be cancelled: {order_id}"}],
+    )
+
+
+def _build_kill_switch_reset_result(previous, new_state) -> CommandResult:
+    lines = [
+        "Kill Switch Reset",
+        f"Previously active: {'yes' if previous.active else 'no'}",
+    ]
+    if previous.reason:
+        lines.append(f"Previous reason: {previous.reason}")
+    if previous.last_triggered_at:
+        lines.append(f"Previously triggered: {previous.last_triggered_at}")
+    lines.append(f"Now active: {'yes' if new_state.active else 'no'}")
+    return CommandResult(
+        command="trade.kill-switch.reset",
+        data={
+            "previous": {
+                "active": previous.active,
+                "reason": previous.reason,
+                "last_triggered_at": previous.last_triggered_at,
+            },
+            "current": {
+                "active": new_state.active,
+                "reason": new_state.reason,
+                "last_triggered_at": new_state.last_triggered_at,
+            },
+        },
+        human_lines=lines,
     )
 
 

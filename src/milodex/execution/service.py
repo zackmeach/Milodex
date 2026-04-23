@@ -114,6 +114,12 @@ class ExecutionService:
         """
         self._kill_switch_store.activate(reason)
 
+    def reset_kill_switch(self) -> None:
+        """Clear the kill switch. Operator-only path; manual confirmation
+        is enforced at the CLI surface, not here.
+        """
+        self._kill_switch_store.reset()
+
     def record_no_action(
         self,
         *,
