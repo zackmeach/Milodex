@@ -226,8 +226,13 @@ def test_promote_approved_by_recorded(tmp_path: Path) -> None:
 
     _run_cli(
         [
-            "promote", _STRATEGY_ID, "--to", "paper",
-            "--lifecycle-exempt", "--approved-by", "alice",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--lifecycle-exempt",
+            "--approved-by",
+            "alice",
         ],
         tmp_path,
     )
@@ -243,8 +248,13 @@ def test_promote_notes_recorded(tmp_path: Path) -> None:
 
     _run_cli(
         [
-            "promote", _STRATEGY_ID, "--to", "paper",
-            "--lifecycle-exempt", "--notes", "Phase 1 paper evidence filed.",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--lifecycle-exempt",
+            "--notes",
+            "Phase 1 paper evidence filed.",
         ],
         tmp_path,
     )
@@ -254,22 +264,24 @@ def test_promote_notes_recorded(tmp_path: Path) -> None:
 
 
 def test_promote_sequential_promotions(tmp_path: Path) -> None:
-    """Promote backtest→paper then paper→micro_live; two events recorded."""
+    """Promote backtest→paper; the paper→micro_live step is blocked in Phase 1."""
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     _write_config(config_dir, stage="backtest")
 
     _run_cli(["promote", _STRATEGY_ID, "--to", "paper", "--lifecycle-exempt"], tmp_path)
-    _run_cli(["promote", _STRATEGY_ID, "--to", "micro_live", "--lifecycle-exempt"], tmp_path)
+
+    exit_code, _, err = _run_cli(
+        ["promote", _STRATEGY_ID, "--to", "micro_live", "--lifecycle-exempt"],
+        tmp_path,
+    )
+    assert exit_code != 0
+    assert "blocked during Phase 1" in err.getvalue()
 
     store = EventStore(tmp_path / "data" / "milodex.db")
     promotions = store.list_promotions()
-    assert len(promotions) == 2
+    assert len(promotions) == 1
     assert promotions[0].to_stage == "paper"
-    assert promotions[1].to_stage == "micro_live"
-    latest = store.get_latest_promotion_for_strategy(_STRATEGY_ID)
-    assert latest is not None
-    assert latest.to_stage == "micro_live"
 
 
 # ---------------------------------------------------------------------------
@@ -277,37 +289,19 @@ def test_promote_sequential_promotions(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_promote_to_live_requires_confirm(tmp_path: Path) -> None:
+def test_promote_to_live_refused_in_phase_one(tmp_path: Path) -> None:
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     _write_config(config_dir, stage="micro_live")
 
     exit_code, _, err = _run_cli(
-        ["promote", _STRATEGY_ID, "--to", "live", "--lifecycle-exempt"],
+        ["promote", _STRATEGY_ID, "--to", "live", "--lifecycle-exempt", "--confirm"],
         tmp_path,
     )
 
     assert exit_code != 0
-    assert "--confirm" in err.getvalue()
-
-
-def test_promote_to_live_with_confirm_succeeds(tmp_path: Path) -> None:
-    config_dir = tmp_path / "configs"
-    config_dir.mkdir()
-    _write_config(config_dir, stage="micro_live")
-
-    exit_code, out, _ = _run_cli(
-        [
-            "promote", _STRATEGY_ID, "--to", "live",
-            "--lifecycle-exempt", "--confirm",
-        ],
-        tmp_path,
-    )
-
-    assert exit_code == 0
-    store = EventStore(tmp_path / "data" / "milodex.db")
-    p = store.list_promotions()[0]
-    assert p.to_stage == "live"
+    assert "blocked during Phase 1" in err.getvalue()
+    assert "ADR 0004" in err.getvalue()
 
 
 # ---------------------------------------------------------------------------

@@ -21,16 +21,20 @@ from milodex.promotion import (
 # ---------------------------------------------------------------------------
 
 
+def test_backtest_to_paper_is_valid() -> None:
+    validate_stage_transition("backtest", "paper")  # must not raise
+
+
 @pytest.mark.parametrize(
     ("from_stage", "to_stage"),
     [
-        ("backtest", "paper"),
         ("paper", "micro_live"),
         ("micro_live", "live"),
     ],
 )
-def test_valid_stage_transitions(from_stage: str, to_stage: str) -> None:
-    validate_stage_transition(from_stage, to_stage)  # must not raise
+def test_phase_one_blocks_micro_live_and_live(from_stage: str, to_stage: str) -> None:
+    with pytest.raises(ValueError, match="blocked during Phase 1"):
+        validate_stage_transition(from_stage, to_stage)
 
 
 def test_same_stage_raises() -> None:

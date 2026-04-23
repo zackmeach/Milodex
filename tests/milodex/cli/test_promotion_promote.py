@@ -260,3 +260,70 @@ def test_promotion_promote_json_output(tmp_path):
     assert payload["data"]["from_stage"] == "backtest"
     assert payload["data"]["to_stage"] == "paper"
     assert payload["data"]["evidence"]["schema_version"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 live-stage refusal (R-PRM-006, ADR 0004)
+# ---------------------------------------------------------------------------
+
+
+def test_promotion_promote_refuses_live_stage_in_phase_one(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="micro_live")
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "live",
+            "--recommendation",
+            "ready for live",
+            "--risk",
+            "a risk",
+            "--lifecycle-exempt",
+            "--confirm",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    stderr = err.getvalue()
+    assert "blocked during Phase 1" in stderr
+    assert "ADR 0004" in stderr
+    assert "R-PRM-006" in stderr
+
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert store.list_promotions() == []
+    assert store.list_strategy_manifests() == []
+    assert 'stage: "micro_live"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_refuses_micro_live_in_phase_one(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="paper")
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "micro_live",
+            "--recommendation",
+            "ready for micro_live",
+            "--risk",
+            "a risk",
+            "--lifecycle-exempt",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert "blocked during Phase 1" in err.getvalue()
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert store.list_promotions() == []
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")

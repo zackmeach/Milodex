@@ -34,6 +34,12 @@ if TYPE_CHECKING:
 
 STAGE_ORDER: list[str] = ["backtest", "paper", "micro_live", "live"]
 
+# Phase 1 blocks promotion to these stages (ADR 0004, R-PRM-006). The risk
+# layer's R-EXE-007 provides runtime defense-in-depth; this constant provides
+# the promotion-time refusal. Remove this — and the check in
+# validate_stage_transition — in the future ADR that lifts the live-lock.
+PHASE_ONE_BLOCKED_STAGES: frozenset[str] = frozenset({"micro_live", "live"})
+
 MIN_SHARPE: float = 0.5
 MAX_DRAWDOWN_PCT: float = 15.0
 MIN_TRADES: int = 30
@@ -76,6 +82,14 @@ def validate_stage_transition(from_stage: str, to_stage: str) -> None:
         msg = (
             f"Skipping stages is not allowed: '{from_stage}' → '{to_stage}'. "
             f"Next valid stage is '{STAGE_ORDER[from_idx + 1]}'."
+        )
+        raise ValueError(msg)
+
+    if to_stage in PHASE_ONE_BLOCKED_STAGES:
+        msg = (
+            f"Promotion to '{to_stage}' is blocked during Phase 1 "
+            f"(ADR 0004, R-PRM-006). Paper-only period — the live-stage lock "
+            f"lifts via a future ADR, not a config edit."
         )
         raise ValueError(msg)
 
