@@ -1,8 +1,8 @@
 # ADR 0015 — Strategy Identifier, Versioning, and Frozen Instance Manifest
 
-**Status:** Implemented (runtime drift check, freeze CLI, state machine, evidence package) — live-stage refusal hook pending slice 3
+**Status:** Implemented (runtime drift check, freeze CLI, state machine, evidence package, live-stage refusal) — ADR complete for Phase 1
 **Date:** 2026-04-21
-**Implementation:** Phase 1.4 slice 1 landed 2026-04-23 (`docs/superpowers/plans/2026-04-23-phase-1-4-slice-1-frozen-manifest.md`). Slice 2 landed 2026-04-23 (`docs/superpowers/plans/2026-04-23-phase-1-4-slice-2-state-machine-evidence.md`) — adds `milodex promotion promote / demote / history`, transactional auto-freeze on promote, and the structured evidence package (R-PRM-003, R-PRM-008, R-PRM-010). Slice 3 (live-stage refusal hook per R-PRM-006) remains pending.
+**Implementation:** Phase 1.4 landed across three slices on 2026-04-23. Slice 1 added the frozen manifest + runtime drift check + freeze CLI (`docs/superpowers/plans/2026-04-23-phase-1-4-slice-1-frozen-manifest.md`). Slice 2 added the transactional state machine + evidence package + promote/demote/history CLIs (`docs/superpowers/plans/2026-04-23-phase-1-4-slice-2-state-machine-evidence.md`). Slice 3 added the Phase 1 live-stage refusal hook per R-PRM-006 (`docs/superpowers/plans/2026-04-23-phase-1-4-slice-3-live-stage-refusal.md`). Lifting the live-lock is out of scope for Phase 1 and requires a future ADR per ADR 0004.
 
 ## Context
 

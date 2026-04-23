@@ -230,6 +230,7 @@ Operators onboarding a strategy for the first time run the freeze command once a
 - `milodex promotion promote <strategy_id> --to <stage> --recommendation "..." --risk "..."` — governed promotion (slice 2). Assembles the evidence package, runs gate checks (Sharpe / max-drawdown / trade count unless `--lifecycle-exempt`), auto-freezes the manifest, and updates the YAML's `stage:` line — all transactionally. Refuses without `--recommendation` and at least one `--risk` (R-PRM-008).
 - `milodex promotion demote <strategy_id> --to {backtest,disabled} --reason "..."` — governed demotion. Always allowed; records `promotion_type=demotion` with `reverses_event_id` linking the prior promotion (R-PRM-010). `--to backtest` edits the YAML; `--to disabled` is ledger-only (runtime refusal lands in slice 3).
 - `milodex promotion history <strategy_id> [--limit N]` — newest-first audit log. Reversals are marked with a `↩` glyph pointing at the reversed promotion id.
+- **Phase 1 lock:** `--to micro_live` and `--to live` are refused by the state machine with a message citing ADR 0004 / R-PRM-006. The lock lifts only via a future ADR, not a config edit. R-EXE-007 at the risk layer is the runtime defense-in-depth.
 
 All commands honor the global `--json` flag for scripting (ADR 0014). The legacy top-level `milodex promote` still works but prints a one-slice deprecation banner — prefer `milodex promotion promote`.
 

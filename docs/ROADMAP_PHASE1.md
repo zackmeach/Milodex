@@ -197,10 +197,10 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - [x] `milodex promotion demote <strategy_id> --to {backtest,disabled}` — always allowed, records `reverses_event_id` chain per R-PRM-010.
 - [x] `milodex promotion history <strategy_id>` — read-only evidence audit with `↩` reversal-chain rendering.
 - [x] Tests: state machine transitions legal/illegal, evidence gate failures reported with specific reason codes, missing-evidence refusal. (429 tests green.)
-- [ ] Live-stage refusal hook (slice 3) — CLI-level refusal of `--to live` during Phase 1 per ADR 0004.
+- [x] Live-stage refusal hook (slice 3) — CLI-level refusal of `--to live` (and `--to micro_live`) during Phase 1 per ADR 0004. (Slice 3, 2026-04-23.)
 
 #### 6.1.4 Live-Trading Gate (Paper-Only Safeguard)
-- [ ] Even with the state machine in place, Phase 1 remains **paper-only** per ADR 0004. The `live` stage is implemented-but-locked: attempting to promote to `live` returns a clear "Phase 1 forbids live; see ADR 0004" rejection, logged. Confirms the boundary without leaving a hole.
+- [x] Even with the state machine in place, Phase 1 remains **paper-only** per ADR 0004. The `live` stage is implemented-but-locked: attempting to promote to `live` (or `micro_live`) returns a clear refusal citing ADR 0004 / R-PRM-006 at the state-machine level, and R-EXE-007 remains as runtime defense-in-depth. (Slice 3, 2026-04-23.)
 
 ### 6.2 Phase 1.4 Definition of Done
 
