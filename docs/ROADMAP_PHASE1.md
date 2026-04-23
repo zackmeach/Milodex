@@ -37,7 +37,7 @@ This roadmap is the explicit, ordered plan to finish Phase 1. It is written agai
 | Promotion state machine | Stages validated at risk layer, no transition machinery | Phase 1.4 |
 | CLI commands: `strategy run`, `backtest`, `analytics`/`report`, `promote`/`demote`, `reconcile` | Not in CLI | 1.2 → 1.4 |
 | CLI `--json` output | Not implemented (`R-CLI-009` unmet) | 1.3 (supports reporting contract) |
-| Config fingerprinting / frozen manifest (ADR 0015) | Not implemented | Phase 1.4 |
+| Config fingerprinting / frozen manifest (ADR 0015) | Slice 1 implemented (freeze + runtime drift check); state machine + evidence package pending | Phase 1.4 |
 
 ---
 
@@ -180,8 +180,9 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 ### 6.1 Work Items
 
 #### 6.1.1 Frozen Manifest (ADR 0015)
-- [ ] `src/milodex/promotion/manifest.py` — on every stage transition, snapshot the full strategy config + universe config + resolved parameters + SHA-256 hash, written to event store as `strategy_manifests`.
-- [ ] Risk-layer check: refuse execution if the runtime config hash differs from the frozen manifest at the strategy's current stage. Closes the "operator edits YAML after promotion" escape per `R-STR-011`..`R-STR-014`.
+- [x] `src/milodex/promotion/manifest.py` — `freeze_manifest(config_path)` snapshots the canonicalized strategy YAML + SHA-256 hash at the strategy's declared stage, written to event store as `strategy_manifests` (append-only, keyed on `(strategy_id, stage)`). Landed 2026-04-23 via Phase 1.4 slice 1. Note: scope is strategy YAML only — universe/risk_defaults hashing is deferred per slice-1 decision.
+- [x] Risk-layer check (`_check_manifest_drift`): refuses execution with `manifest_drift` or `no_frozen_manifest` reason codes when the runtime config hash differs from (or is missing) the frozen manifest at `paper`/`micro_live`/`live` stage. Closes the "operator edits YAML after promotion" escape per `R-STR-011`..`R-STR-014`.
+- [x] CLI: `milodex promotion freeze <strategy_id>` + `milodex promotion manifest <strategy_id>`.
 
 #### 6.1.2 Promotion State Machine
 - [ ] `src/milodex/promotion/state_machine.py` — legal transitions only: `backtest → paper → micro_live → live`. No skipping. No downgrades except to `disabled`.

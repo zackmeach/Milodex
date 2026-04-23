@@ -212,6 +212,24 @@ Non-firing cycles (empty `intents`) also write a single `decision_type="no_trade
 
 Operators can surface the reasoning via `milodex analytics trades --json` (the full `context` dict is in the trade rows) or via the trust report's `recent_decisions` section.
 
+### Frozen manifests and runtime drift (`manifest_drift`, `no_frozen_manifest`)
+
+Strategies at `paper`, `micro_live`, or `live` stage must have a frozen manifest recorded in the event store. The manifest is a hash of the strategy's YAML captured at the moment the operator ran `milodex promotion freeze`. On every evaluation the risk layer compares the runtime YAML's hash against the latest frozen hash for the strategy's current stage and emits one of two blocking reason codes when they disagree:
+
+- `no_frozen_manifest` — the strategy is at paper+ stage but has never been frozen. Remedy: run `milodex promotion freeze <strategy_id>` once. (`backtest`-stage strategies and manual operator trades are exempt.)
+- `manifest_drift` — the live YAML has changed since the last freeze. Remedy: revert the edit, or re-freeze intentionally if the new config is the one you want to promote. The audit trail keeps every freeze event, so re-freezing is append-only and auditable.
+
+Both codes are hard blocks, not warnings — the refuse-by-default posture matches the kill-switch philosophy. The intent is that config edits to a promoted strategy require an explicit human freeze action, so the evidence behind the promotion decision stays tied to the config the strategy actually ran under.
+
+Operators onboarding a strategy for the first time run the freeze command once at the current stage; subsequent stage changes (slice 2) will freeze automatically as part of the promote transition.
+
+### `milodex promotion` operator surface
+
+- `milodex promotion freeze <strategy_id>` — snapshot the strategy's current YAML at its declared stage into the event store. Refuses `backtest` stage (nothing to freeze). Supports `--frozen-by <name>` for attribution.
+- `milodex promotion manifest <strategy_id>` — read-only; print the active frozen manifest for the strategy's current stage, or "No active manifest" if none exists.
+
+Both commands honor the global `--json` flag for scripting (ADR 0014).
+
 ---
 
 ## Relationship to SRS and Other Docs

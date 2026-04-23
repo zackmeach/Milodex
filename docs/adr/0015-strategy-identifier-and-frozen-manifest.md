@@ -1,7 +1,8 @@
 # ADR 0015 — Strategy Identifier, Versioning, and Frozen Instance Manifest
 
-**Status:** Accepted
+**Status:** Implemented (runtime drift check, freeze CLI) — state machine pending slice 2
 **Date:** 2026-04-21
+**Implementation:** Phase 1.4 slice 1 landed 2026-04-23. See `docs/superpowers/plans/2026-04-23-phase-1-4-slice-1-frozen-manifest.md`. Slices 2 (promotion state machine + evidence package) and 3 (live-stage refusal hook) remain pending.
 
 ## Context
 
