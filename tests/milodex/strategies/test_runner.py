@@ -33,12 +33,14 @@ class StubBroker:
         account: AccountInfo,
         positions: list[Position] | None = None,
         orders: list[Order] | None = None,
+        market_open: bool = True,
     ) -> None:
         self.account = account
         self.positions = positions or []
         self.orders = orders or []
         self.submit_calls: list[dict[str, object]] = []
         self.cancel_all_orders_calls = 0
+        self._market_open = market_open
 
     def get_account(self) -> AccountInfo:
         return self.account
@@ -56,7 +58,7 @@ class StubBroker:
         return list(self.orders)[:limit]
 
     def is_market_open(self) -> bool:
-        return True
+        return self._market_open
 
     def submit_order(self, **kwargs) -> Order:
         self.submit_calls.append(kwargs)
