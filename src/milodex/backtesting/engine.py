@@ -272,6 +272,21 @@ class BacktestEngine:
             decision = self._loaded.strategy.evaluate(primary_bars, context)
             intents = decision.intents
 
+            if not intents:
+                latest_bar = primary_bars.latest()
+                execution_service.record_no_action(
+                    strategy_name=self._loaded.config.strategy_id,
+                    strategy_stage=self._loaded.config.stage,
+                    strategy_config_path=self._loaded.config.path,
+                    config_hash=self._loaded.context.config_hash,
+                    symbol=universe[0],
+                    latest_bar_timestamp=latest_bar.timestamp,
+                    latest_bar_close=latest_bar.close,
+                    session_id=run_id,
+                    reasoning=decision.reasoning,
+                    submitted_by="backtest_engine",
+                )
+
             # Process SELLs first to free up cash for BUYs on the same day.
             for intent in intents:
                 if intent.side is not OrderSide.SELL:

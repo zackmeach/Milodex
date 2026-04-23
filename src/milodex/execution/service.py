@@ -202,6 +202,8 @@ class ExecutionService:
         latest_bar_close: float,
         session_id: str,
         message: str = "No trade intents emitted for this bar.",
+        reasoning: DecisionReasoning | None = None,
+        submitted_by: str = "strategy_runner",
     ) -> None:
         """Record a hold decision (no trade intents emitted) for the event log.
 
@@ -209,11 +211,14 @@ class ExecutionService:
         submit, hold — is constructed in one place.
         """
         account = self._broker.get_account()
+        context: dict[str, object | None] = {"message": message}
+        if reasoning is not None:
+            context["reasoning"] = reasoning.asdict()
         self._event_store.append_explanation(
             ExplanationEvent(
                 recorded_at=datetime.now(tz=UTC),
-                decision_type="strategy_evaluate",
-                status="no_action",
+                decision_type="no_trade",
+                status="no_signal" if reasoning is not None else "no_action",
                 strategy_name=strategy_name,
                 strategy_stage=strategy_stage,
                 strategy_config_path=str(strategy_config_path),
@@ -223,7 +228,7 @@ class ExecutionService:
                 quantity=0.0,
                 order_type="none",
                 time_in_force="day",
-                submitted_by="strategy_runner",
+                submitted_by=submitted_by,
                 market_open=self._broker.is_market_open(),
                 latest_bar_timestamp=latest_bar_timestamp,
                 latest_bar_close=latest_bar_close,
@@ -235,7 +240,7 @@ class ExecutionService:
                 risk_summary="No strategy action required.",
                 reason_codes=[],
                 risk_checks=[],
-                context={"message": message},
+                context=context,
                 session_id=session_id,
             )
         )

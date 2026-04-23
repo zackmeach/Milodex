@@ -181,6 +181,45 @@ def test_submit_backtest_threads_reasoning_and_replaces_fill_simulation(
     assert context["reasoning"]["rule"] == "meanrev.rsi_entry"
 
 
+def test_record_no_action_threads_reasoning_and_writes_no_trade_row(
+    tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+):
+    """AD-4: a cycle with zero intents still produces one explanation row."""
+    from datetime import datetime as _dt
+
+    service, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+
+    reasoning = DecisionReasoning(
+        rule="no_signal",
+        narrative="latest close 98.00 below 200-DMA 110.00 — stay in SHY",
+        triggering_values={"latest_close": 98.0, "ma_200": 110.0},
+        threshold={"ma_200": 110.0},
+    )
+    service.record_no_action(
+        strategy_name="regime.daily.sma200_rotation.spy_shy.v1",
+        strategy_stage="paper",
+        strategy_config_path=Path("configs/sample.yaml"),
+        config_hash="deadbeef",
+        symbol="SPY",
+        latest_bar_timestamp=_dt.now(tz=UTC),
+        latest_bar_close=98.0,
+        session_id="sess-1",
+        reasoning=reasoning,
+    )
+
+    explanations = event_store.list_explanations()
+    assert len(explanations) == 1
+    row = explanations[0]
+    assert row.decision_type == "no_trade"
+    assert row.status == "no_signal"
+    assert row.context["reasoning"]["rule"] == "no_signal"
+    assert row.context["reasoning"]["narrative"].startswith("latest close 98.00")
+    # No associated trade row — no-trade decisions are explanations-only.
+    assert not event_store.list_trades()
+
+
 def test_submit_without_reasoning_leaves_context_reasoning_absent(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):

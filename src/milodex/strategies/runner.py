@@ -16,6 +16,7 @@ from milodex.core.event_store import EventStore, StrategyRunEvent
 from milodex.data import DataProvider, Timeframe
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
+from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
 
 
@@ -107,7 +108,9 @@ class StrategyRunner:
         self._last_processed_bar_at = latest_bar.timestamp
 
         if not intents:
-            self._record_no_action(latest_bar.timestamp, latest_bar.close)
+            self._record_no_action(
+                latest_bar.timestamp, latest_bar.close, reasoning=decision.reasoning
+            )
             if self._on_cycle_result is not None:
                 self._on_cycle_result([])
             return []
@@ -237,7 +240,13 @@ class StrategyRunner:
             submitted_by="strategy_runner",
         )
 
-    def _record_no_action(self, latest_bar_timestamp: datetime, latest_bar_close: float) -> None:
+    def _record_no_action(
+        self,
+        latest_bar_timestamp: datetime,
+        latest_bar_close: float,
+        *,
+        reasoning: DecisionReasoning | None = None,
+    ) -> None:
         self._execution_service.record_no_action(
             strategy_name=self._strategy_id,
             strategy_stage=self._loaded.config.stage,
@@ -247,6 +256,7 @@ class StrategyRunner:
             latest_bar_timestamp=latest_bar_timestamp,
             latest_bar_close=latest_bar_close,
             session_id=self._session_id,
+            reasoning=reasoning,
         )
 
     def _handle_sigint(self, signum, frame) -> None:  # noqa: ARG002

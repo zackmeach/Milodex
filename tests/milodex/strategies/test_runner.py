@@ -317,8 +317,8 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
     assert results == []
     explanations = event_store.list_explanations()
     assert len(explanations) == 1
-    assert explanations[0].decision_type == "strategy_evaluate"
-    assert explanations[0].status == "no_action"
+    assert explanations[0].decision_type == "no_trade"
+    assert explanations[0].status in {"no_signal", "no_action"}
     assert explanations[0].session_id == runner.session_id
     assert event_store.list_trades() == []
 
