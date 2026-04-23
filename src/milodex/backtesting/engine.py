@@ -269,7 +269,8 @@ class BacktestEngine:
                 entry_state=entry_state,
             )
 
-            intents = self._loaded.strategy.evaluate(primary_bars, context)
+            decision = self._loaded.strategy.evaluate(primary_bars, context)
+            intents = decision.intents
 
             # Process SELLs first to free up cash for BUYs on the same day.
             for intent in intents:

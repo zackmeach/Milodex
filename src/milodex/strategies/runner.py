@@ -102,7 +102,8 @@ class StrategyRunner:
             bars_by_symbol=bars_by_symbol,
             entry_state=self._build_entry_state(),
         )
-        intents = self._loaded.strategy.evaluate(primary_bars, context)
+        decision = self._loaded.strategy.evaluate(primary_bars, context)
+        intents = decision.intents
         self._last_processed_bar_at = latest_bar.timestamp
 
         if not intents:

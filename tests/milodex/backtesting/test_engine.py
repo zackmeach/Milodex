@@ -19,6 +19,16 @@ from milodex.backtesting.engine import (
 )
 from milodex.core.event_store import EventStore
 from milodex.data.models import BarSet
+from milodex.strategies.base import DecisionReasoning, StrategyDecision
+
+
+def _decision(intents: list) -> StrategyDecision:
+    """Wrap a list of intents in a ``StrategyDecision`` for mocked strategies."""
+    return StrategyDecision(
+        intents=list(intents),
+        reasoning=DecisionReasoning(rule="no_signal", narrative="test stub"),
+    )
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -114,7 +124,7 @@ def _make_loaded_strategy(
     )
 
     strategy = MagicMock()
-    strategy.evaluate.return_value = []
+    strategy.evaluate.return_value = _decision([])
 
     loaded = MagicMock()
     loaded.config = config
@@ -233,18 +243,25 @@ def test_engine_buy_sell_round_trip():
         current_day = timestamps.dt.date.max()
         day_calls.append(current_day)
         if current_day == start:
-            return [
-                TradeIntent(
-                    symbol="SPY", side=OrderSide.BUY, quantity=10.0, order_type=OrderType.MARKET
-                )
-            ]
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY", side=OrderSide.BUY, quantity=10.0, order_type=OrderType.MARKET
+                    )
+                ]
+            )
         if current_day == date(2024, 1, 4):
-            return [
-                TradeIntent(
-                    symbol="SPY", side=OrderSide.SELL, quantity=10.0, order_type=OrderType.MARKET
-                )
-            ]
-        return []
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.SELL,
+                        quantity=10.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
 
     loaded.strategy.evaluate.side_effect = fake_evaluate
 
@@ -281,11 +298,13 @@ def test_engine_skips_buy_when_insufficient_cash():
     universe = ("SPY",)
     loaded = _make_loaded_strategy("test.strat.v1", universe)
 
-    loaded.strategy.evaluate.return_value = [
-        TradeIntent(
-            symbol="SPY", side=OrderSide.BUY, quantity=99_999.0, order_type=OrderType.MARKET
-        )
-    ]
+    loaded.strategy.evaluate.return_value = _decision(
+        [
+            TradeIntent(
+                symbol="SPY", side=OrderSide.BUY, quantity=99_999.0, order_type=OrderType.MARKET
+            )
+        ]
+    )
 
     barset = _make_barset([500.0, 500.0], start=start)
     provider = MagicMock()
@@ -340,9 +359,9 @@ def test_engine_slippage_increases_buy_cost():
     end = date(2024, 1, 2)
     universe = ("SPY",)
     loaded = _make_loaded_strategy("test.strat.v1", universe)
-    loaded.strategy.evaluate.return_value = [
-        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET)
-    ]
+    loaded.strategy.evaluate.return_value = _decision(
+        [TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET)]
+    )
 
     barset = _make_barset([100.0], start=start)
     provider = MagicMock()

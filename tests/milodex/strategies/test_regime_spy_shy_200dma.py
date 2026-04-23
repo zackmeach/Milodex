@@ -40,7 +40,8 @@ def test_regime_strategy_matches_golden_signal_sequence():
             allocation_pct=1.0,
             equity=10_000.0,
         )
-        intents = strategy.evaluate(build_barset(closes[: idx + 1]), context)
+        decision = strategy.evaluate(build_barset(closes[: idx + 1]), context)
+        intents = decision.intents
         actual.append([(intent.side.value, intent.symbol, intent.quantity) for intent in intents])
         positions = apply_position_changes(positions, intents)
 
@@ -56,9 +57,10 @@ def test_regime_strategy_requires_no_rebalance_when_already_in_target():
         equity=10_000.0,
     )
 
-    intents = strategy.evaluate(build_barset([10.0, 10.0, 10.0, 12.0]), context)
+    decision = strategy.evaluate(build_barset([10.0, 10.0, 10.0, 12.0]), context)
 
-    assert intents == []
+    assert decision.intents == []
+    assert decision.reasoning.rule == "regime.hold"
 
 
 def test_regime_strategy_skips_buy_when_equity_cannot_afford_a_share():
@@ -70,9 +72,28 @@ def test_regime_strategy_skips_buy_when_equity_cannot_afford_a_share():
         equity=5.0,
     )
 
-    intents = strategy.evaluate(build_barset([10.0, 10.0, 10.0]), context)
+    decision = strategy.evaluate(build_barset([10.0, 10.0, 10.0]), context)
 
-    assert intents == []
+    assert decision.intents == []
+    assert decision.reasoning.rule == "no_signal"
+
+
+def test_regime_strategy_returns_reasoning_on_rotation() -> None:
+    strategy = RegimeSpyShy200DmaStrategy()
+    context = build_strategy_context(
+        positions={},
+        ma_filter_length=3,
+        allocation_pct=1.0,
+        equity=10_000.0,
+    )
+
+    decision = strategy.evaluate(build_barset([10.0, 10.0, 10.0, 12.0]), context)
+
+    assert decision.reasoning.rule == "regime.ma_filter_cross"
+    assert "SPY" in decision.reasoning.narrative
+    assert decision.reasoning.triggering_values["latest_close"] == 12.0
+    assert decision.reasoning.triggering_values["target_symbol"] == "SPY"
+    assert "ma_3" in decision.reasoning.threshold
 
 
 def test_default_strategy_loader_resolves_regime_strategy():
@@ -130,9 +151,7 @@ def build_barset(closes: list[float]) -> BarSet:
     return BarSet(dataframe)
 
 
-def apply_position_changes(
-    positions: dict[str, float], intents: list
-) -> dict[str, float]:
+def apply_position_changes(positions: dict[str, float], intents: list) -> dict[str, float]:
     updated = dict(positions)
     for intent in intents:
         if intent.side == OrderSide.SELL:

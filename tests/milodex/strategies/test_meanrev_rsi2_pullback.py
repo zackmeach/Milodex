@@ -38,7 +38,7 @@ def test_meanrev_selects_lowest_rsi_above_ma_and_sizes_with_equity() -> None:
         },
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
 
     intent_tuples = [(intent.side.value, intent.symbol, intent.quantity) for intent in intents]
     assert intent_tuples == [
@@ -63,7 +63,7 @@ def test_meanrev_exits_when_rsi_above_exit_threshold() -> None:
         bars_by_symbol={"EEE": _barset(closes)},
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
 
     assert [(intent.side.value, intent.symbol, intent.quantity) for intent in intents] == [
         ("sell", "EEE", 100.0),
@@ -85,7 +85,7 @@ def test_meanrev_exits_on_stop_loss_from_entry_state() -> None:
         entry_state={"FFF": {"entry_price": 100.0, "held_days": 1}},
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
 
     assert [(intent.side.value, intent.symbol, intent.quantity) for intent in intents] == [
         ("sell", "FFF", 50.0),
@@ -107,7 +107,7 @@ def test_meanrev_exits_on_max_hold_days_from_entry_state() -> None:
         entry_state={"GGG": {"entry_price": 100.0, "held_days": 5}},
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
 
     assert [(intent.side.value, intent.symbol, intent.quantity) for intent in intents] == [
         ("sell", "GGG", 10.0),
@@ -132,7 +132,7 @@ def test_meanrev_ranking_disabled_keeps_universe_order() -> None:
         bars_by_symbol=bars,
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
 
     assert [intent.symbol for intent in intents] == ["AAA", "BBB"]
 
@@ -150,7 +150,7 @@ def test_meanrev_skips_symbols_above_rsi_entry_threshold() -> None:
         bars_by_symbol={"HHH": _barset(closes_above)},
     )
 
-    assert strategy.evaluate(_barset([1.0]), context) == []
+    assert strategy.evaluate(_barset([1.0]), context).intents == []
 
 
 def test_meanrev_rejects_invalid_parameters() -> None:
@@ -184,7 +184,7 @@ def test_meanrev_regime_filter_blocks_entries_in_bearish_market() -> None:
         override_parameters={"market_regime_symbol": "SPY", "market_regime_ma_length": 200},
     )
 
-    assert strategy.evaluate(_barset([1.0]), context) == []
+    assert strategy.evaluate(_barset([1.0]), context).intents == []
 
 
 def test_meanrev_regime_filter_bearish_still_allows_exits() -> None:
@@ -202,7 +202,7 @@ def test_meanrev_regime_filter_bearish_still_allows_exits() -> None:
         override_parameters={"market_regime_symbol": "SPY", "market_regime_ma_length": 200},
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
     assert len(intents) == 1
     assert intents[0].side.value == "sell"
 
@@ -222,7 +222,7 @@ def test_meanrev_regime_filter_bullish_allows_entries() -> None:
         override_parameters={"market_regime_symbol": "SPY", "market_regime_ma_length": 200},
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
     assert len(intents) == 1
     assert intents[0].side.value == "buy"
 
@@ -241,8 +241,82 @@ def test_meanrev_regime_filter_missing_data_fails_open() -> None:
         override_parameters={"market_regime_symbol": "SPY", "market_regime_ma_length": 200},
     )
 
-    intents = strategy.evaluate(_barset([1.0]), context)
+    intents = strategy.evaluate(_barset([1.0]), context).intents
     assert len(intents) == 1, "Regime filter should fail-open when regime bars are absent"
+
+
+def test_meanrev_entry_reasoning_captures_ranking_and_rejections() -> None:
+    strategy = MeanrevRsi2PullbackStrategy()
+    universe = ("AAA", "BBB", "CCC", "DDD")
+
+    aaa_closes = _ramp_with_drop(base=100.0, drop_pct=0.04)
+    bbb_closes = _ramp_with_drop(base=100.0, drop_pct=0.02)
+    ccc_closes = _ramp_with_drop(base=100.0, drop_pct=0.06)
+    ddd_closes = _flat_below_ma(base=50.0)
+
+    context = _context(
+        universe=universe,
+        positions={},
+        equity=10_000.0,
+        max_concurrent_positions=2,
+        ranking_enabled=True,
+        bars_by_symbol={
+            "AAA": _barset(aaa_closes),
+            "BBB": _barset(bbb_closes),
+            "CCC": _barset(ccc_closes),
+            "DDD": _barset(ddd_closes),
+        },
+    )
+
+    decision = strategy.evaluate(_barset([1.0]), context)
+
+    assert decision.reasoning.rule == "meanrev.rsi_entry"
+    assert decision.reasoning.ranking is not None
+    assert len(decision.reasoning.ranking) >= 1
+    # DDD trades below its MA; it should be rejected with a close-vs-SMA reason.
+    rejections = {
+        entry["symbol"]: entry["reason"] for entry in decision.reasoning.rejected_alternatives
+    }
+    assert "DDD" in rejections
+    assert "SMA" in rejections["DDD"] or "not above" in rejections["DDD"]
+    assert "rsi_entry_threshold" in decision.reasoning.threshold
+
+
+def test_meanrev_returns_no_signal_reasoning_when_nothing_qualifies() -> None:
+    strategy = MeanrevRsi2PullbackStrategy()
+    context = _context(
+        universe=("HHH",),
+        positions={},
+        equity=10_000.0,
+        max_concurrent_positions=2,
+        ranking_enabled=True,
+        bars_by_symbol={"HHH": _barset(_flat_series(100.0, length=260))},
+    )
+
+    decision = strategy.evaluate(_barset([1.0]), context)
+
+    assert decision.intents == []
+    assert decision.reasoning.rule == "no_signal"
+
+
+def test_meanrev_exit_reasoning_names_the_rule() -> None:
+    strategy = MeanrevRsi2PullbackStrategy()
+    closes = _flat_series(94.0, length=260)
+
+    context = _context(
+        universe=("FFF",),
+        positions={"FFF": 50.0},
+        equity=5_000.0,
+        max_concurrent_positions=2,
+        ranking_enabled=True,
+        bars_by_symbol={"FFF": _barset(closes)},
+        entry_state={"FFF": {"entry_price": 100.0, "held_days": 1}},
+    )
+
+    decision = strategy.evaluate(_barset([1.0]), context)
+
+    assert decision.reasoning.rule == "meanrev.stop_loss"
+    assert "FFF" in decision.reasoning.narrative
 
 
 def test_default_strategy_loader_resolves_meanrev_strategy() -> None:
@@ -392,7 +466,7 @@ def test_meanrev_matches_golden_signal_sequence() -> None:
                 "BBB": _barset(bbb_closes[: idx + 1]),
             },
         )
-        intents = strategy.evaluate(_barset([1.0]), context)
+        intents = strategy.evaluate(_barset([1.0]), context).intents
         actual.append([(intent.side.value, intent.symbol, intent.quantity) for intent in intents])
         positions, entry_state = _apply_golden_intents(
             positions=positions,
