@@ -16,7 +16,7 @@ from milodex.promotion import (
     resolve_strategy_config_path,
     validate_stage_transition,
 )
-from milodex.promotion.state_machine import transition
+from milodex.promotion.state_machine import demote, transition
 from milodex.strategies.loader import canonicalize_config_data, load_strategy_config
 
 
@@ -98,6 +98,35 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Optional free-form notes recorded with the promotion.",
     )
 
+    demote_parser = promotion_subparsers.add_parser(
+        "demote",
+        help="Demote a strategy to backtest or disabled (always allowed).",
+    )
+    add_global_flags(demote_parser)
+    demote_parser.add_argument("strategy_id", help="Strategy identifier from YAML config.")
+    demote_parser.add_argument(
+        "--to",
+        required=True,
+        dest="to_stage",
+        choices=("backtest", "disabled"),
+        help="Demotion target.",
+    )
+    demote_parser.add_argument(
+        "--reason",
+        required=True,
+        help="Required: why the strategy is being demoted (non-blank).",
+    )
+    demote_parser.add_argument(
+        "--evidence-ref",
+        default=None,
+        help="Optional ticket / incident ID supporting the demotion.",
+    )
+    demote_parser.add_argument(
+        "--approved-by",
+        default="operator",
+        help="Operator approving the demotion.",
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.promotion_command == "freeze":
@@ -106,6 +135,8 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _manifest_show(args, ctx)
     if args.promotion_command == "promote":
         return _promote(args, ctx)
+    if args.promotion_command == "demote":
+        return _demote(args, ctx)
     raise ValueError(f"Unsupported promotion command: {args.promotion_command}")
 
 
@@ -213,6 +244,43 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         "Result:          promotion recorded, manifest frozen, YAML updated.",
     ]
     return CommandResult(command="promotion.promote", data=data, human_lines=lines)
+
+
+def _demote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    config_path = resolve_strategy_config_path(args.strategy_id, ctx.config_dir)
+    event_store = ctx.get_event_store()
+
+    promotion = demote(
+        config_path=config_path,
+        to_stage=args.to_stage,
+        reason=args.reason,
+        approved_by=args.approved_by,
+        event_store=event_store,
+        evidence_ref=args.evidence_ref,
+    )
+
+    data = {
+        "strategy_id": args.strategy_id,
+        "from_stage": promotion.from_stage,
+        "to_stage": promotion.to_stage,
+        "promotion_type": "demotion",
+        "promotion_id": promotion.id,
+        "reverses_event_id": promotion.reverses_event_id,
+        "reason": args.reason,
+        "evidence_ref": args.evidence_ref,
+    }
+    lines = [
+        "Strategy Demotion",
+        f"Strategy:        {args.strategy_id}",
+        f"Stage:           {promotion.from_stage} -> {promotion.to_stage}",
+        f"Reverses event:  {promotion.reverses_event_id or '(none)'}",
+        f"Reason:          {args.reason}",
+    ]
+    if promotion.to_stage == "backtest":
+        lines.append("Config YAML:     stage line updated to 'backtest'.")
+    else:
+        lines.append("Config YAML:     unchanged (ledger-only demotion).")
+    return CommandResult(command="promotion.demote", data=data, human_lines=lines)
 
 
 def _require_evidence_inputs(args: argparse.Namespace) -> None:

@@ -237,6 +237,91 @@ def transition(
     )
 
 
+_DEMOTE_TARGETS = frozenset({"backtest", "disabled"})
+
+
+def demote(
+    *,
+    config_path: Path,
+    to_stage: str,
+    reason: str,
+    approved_by: str,
+    event_store: EventStore,
+    evidence_ref: str | None = None,
+    now: datetime | None = None,
+) -> PromotionEvent:
+    """Demote ``strategy_id`` to ``to_stage`` (``backtest`` or ``disabled``).
+
+    Demotion is always allowed — operator intent is authoritative, no gate
+    check runs (plan AD-6). Writes a ``PromotionEvent`` with
+    ``promotion_type='demotion'`` and ``reverses_event_id`` pointing at the
+    most recent non-reversed promotion for the strategy, producing the
+    reversal chain that ``history`` will walk.
+
+    Side effects:
+      - ``to_stage='backtest'``: updates the YAML ``stage:`` line from the
+        current stage to ``backtest`` so the runner treats it as pre-paper.
+      - ``to_stage='disabled'``: YAML untouched; the demotion lives only in
+        the governance ledger. (Runtime refusal lands in slice 3.)
+
+    ``reason`` is required and must be non-blank; passing an empty string
+    raises ``ValueError`` before any DB write.
+    """
+    if to_stage not in _DEMOTE_TARGETS:
+        msg = (
+            f"Demote target '{to_stage}' is not supported in slice 2. "
+            f"Valid targets: {sorted(_DEMOTE_TARGETS)}."
+        )
+        raise ValueError(msg)
+    if reason is None or not reason.strip():
+        msg = "Demote requires a non-blank --reason."
+        raise ValueError(msg)
+
+    config = load_strategy_config(config_path)
+    from_stage = config.stage
+    if from_stage == to_stage:
+        msg = f"Strategy is already at stage '{from_stage}'."
+        raise ValueError(msg)
+
+    prior = event_store.get_latest_promotion_for_strategy(config.strategy_id)
+    reverses_event_id: int | None = None
+    if prior is not None and prior.promotion_type != "demotion":
+        reverses_event_id = prior.id
+
+    recorded_at = now or datetime.now(tz=UTC)
+    notes_parts = [reason.strip()]
+    if evidence_ref and evidence_ref.strip():
+        notes_parts.append(f"evidence_ref={evidence_ref.strip()}")
+    notes = " | ".join(notes_parts)
+
+    promotion = PromotionEvent(
+        strategy_id=config.strategy_id,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        promotion_type="demotion",
+        approved_by=approved_by,
+        recorded_at=recorded_at,
+        notes=notes,
+        reverses_event_id=reverses_event_id,
+    )
+    promotion_id = event_store.append_promotion(promotion)
+
+    if to_stage == "backtest":
+        _update_stage_in_yaml(config_path, from_stage, "backtest")
+
+    return PromotionEvent(
+        strategy_id=promotion.strategy_id,
+        from_stage=promotion.from_stage,
+        to_stage=promotion.to_stage,
+        promotion_type=promotion.promotion_type,
+        approved_by=promotion.approved_by,
+        recorded_at=promotion.recorded_at,
+        notes=promotion.notes,
+        reverses_event_id=promotion.reverses_event_id,
+        id=promotion_id,
+    )
+
+
 def _raw_data_with_stage(raw_data: dict, to_stage: str) -> dict:
     """Return a deep-ish copy of ``raw_data`` with ``strategy.stage`` set to ``to_stage``."""
     strategy = dict(raw_data["strategy"])
