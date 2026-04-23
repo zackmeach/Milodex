@@ -135,4 +135,43 @@ def _build_backtest_result(
     if walk_forward_windows:
         lines.append(f"Walk-forward windows: {len(walk_forward_windows)}")
         data["walk_forward_windows"] = walk_forward_windows
+
+    _attach_uncertainty_label(result, data, lines)
     return CommandResult(command="backtest", data=data, human_lines=lines)
+
+
+# Statistical minimum before a backtest is considered evidence-bearing
+# per ROADMAP promotion thresholds. Regime-family strategies are
+# exempt (R-PRM-004) because rotation can't produce trade counts at
+# this scale over reasonable windows.
+_STATISTICAL_MIN_TRADES = 30
+
+
+def _strategy_family(strategy_id: str) -> str:
+    """Return the first dot-segment of a strategy_id — the family.
+
+    Example: ``regime.daily.sma200_rotation.spy_shy.v1`` → ``regime``.
+    """
+    return strategy_id.split(".", 1)[0] if strategy_id else ""
+
+
+def _attach_uncertainty_label(
+    result: BacktestResult, data: dict[str, Any], lines: list[str]
+) -> None:
+    """Annotate output with R-CLI-014 confidence labels, R-PRM-004-aware.
+
+    Regime-family runs get ``evidence_basis='operational'`` — the
+    lifecycle-proof platform check, not a statistical one. Non-regime
+    runs below the 30-trade minimum are labeled ``'insufficient
+    evidence'`` per R-CLI-014.
+    """
+    family = _strategy_family(result.strategy_id)
+    if family == "regime":
+        data["evidence_basis"] = "operational"
+        lines.append("Evidence basis: operational (regime strategy, R-PRM-004)")
+        return
+    if result.trade_count < _STATISTICAL_MIN_TRADES:
+        reason = f"trade count {result.trade_count} < {_STATISTICAL_MIN_TRADES} statistical minimum"
+        data["uncertainty_label"] = "insufficient evidence"
+        data["uncertainty_reason"] = reason
+        lines.append(f"Confidence:     insufficient evidence ({reason})")
