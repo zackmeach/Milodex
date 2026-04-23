@@ -141,25 +141,27 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - **Deferred to §5.1.2:** R-XC-008 "triggering event / alternatives rejected / rule threshold" explanation fields require a `Strategy.evaluate()` signature extension (strategies returning reasoning alongside `TradeIntent`). Engine-side completeness (rule name, config hash, bar timestamp) landed in commit 04ba89d.
 
 #### 5.1.2 Analytics & Metrics
-- [ ] `src/milodex/analytics/metrics.py` — pure functions over a trade ledger:
+- [x] `src/milodex/analytics/metrics.py` — pure functions over a trade ledger:
   - Total return, CAGR
   - Max drawdown, max drawdown duration
   - Sharpe ratio, Sortino ratio
   - Win rate, avg win / avg loss, profit factor
   - Avg holding period
   - Per [REPORTING.md](REPORTING.md). Each returns a value + a confidence label (`R-CLI-014`) tied to trade count.
-- [ ] `src/milodex/analytics/benchmark.py` — SPY benchmark comparison: fetches SPY bars over the same window, computes SPY total return + drawdown, returns delta. Per `R-ANA-003`.
-- [ ] `src/milodex/analytics/snapshots.py` — daily portfolio snapshots (positions, cash, equity) written to event store at session end.
-- [ ] `src/milodex/analytics/reports.py` — assembles a "trust report" (per [REPORTING.md](REPORTING.md)): metrics, benchmark delta, uncertainty labels, open questions.
+- [x] `src/milodex/analytics/benchmark.py` — SPY benchmark comparison: fetches SPY bars over the same window, computes SPY total return + drawdown, returns delta. Per `R-ANA-003`.
+- [x] `src/milodex/analytics/snapshots.py` — daily portfolio snapshots (positions, cash, equity) written to event store at session end. *Module + `portfolio_snapshots` migration + event-store helpers landed; wiring into `StrategyRunner` / `BacktestEngine` deferred to §5.2 (lifecycle) per plan-answer.*
+- [x] `src/milodex/analytics/reports.py` — assembles a "trust report" (per [REPORTING.md](REPORTING.md)): metrics, benchmark delta, uncertainty labels, open questions.
 
 #### 5.1.3 CLI — Reporting Surface
-- [ ] `milodex analytics metrics <strategy_id>` — prints the trust-report metric set.
-- [ ] `milodex analytics trades <strategy_id>` — lists the trade ledger (paper + backtest, filterable).
-- [ ] `milodex analytics compare <strategy_id>` — strategy vs SPY over same window.
-- [ ] `milodex analytics export <strategy_id> --format {csv,json,md}` — per `R-ANA-006`.
-- [ ] `milodex reconcile` — compares local open-orders/positions against broker state, reports mismatches, per `R-OPS-004` and [OPERATIONS.md](OPERATIONS.md).
-- [ ] **`--json` flag on every read command.** Adds the CLI formatter abstraction per ADR 0014. Human text remains the default. Locks a stable JSON contract now, before any future GUI.
-- [ ] Tests: metric computation golden values, SPY benchmark fetch mocked, export format validators, reconcile flags deliberate state mismatches correctly.
+- [x] `milodex analytics metrics <strategy_id>` — prints the trust-report metric set.
+- [x] `milodex analytics trades <strategy_id>` — lists the trade ledger (paper + backtest, filterable).
+- [x] `milodex analytics compare <strategy_id>` — strategy vs SPY over same window.
+- [x] `milodex analytics export <strategy_id> --format {csv,json,md}` — per `R-ANA-006`.
+- [x] `milodex reconcile` — compares local open-orders/positions against broker state, reports mismatches, per `R-OPS-004` and [OPERATIONS.md](OPERATIONS.md).
+- [x] **`--json` flag on every read command.** Adds the CLI formatter abstraction per ADR 0014. Human text remains the default. Locks a stable JSON contract now, before any future GUI.
+- [x] Tests: metric computation golden values, SPY benchmark fetch mocked, export format validators, reconcile flags deliberate state mismatches correctly.
+
+**Surviving deferral:** R-XC-008 ("triggering event / alternatives rejected / rule threshold" explanation fields) requires a `Strategy.evaluate()` signature change — tracked separately from §5.1.2/§5.1.3 because it touches the strategy-interface sacred surface.
 
 ### 5.2 Phase 1.3 Definition of Done
 
