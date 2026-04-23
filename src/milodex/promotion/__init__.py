@@ -1,9 +1,12 @@
-"""Promotion lifecycle surface — frozen manifests and (future) state transitions.
+"""Promotion lifecycle surface — frozen manifests and stage-transition governance.
 
-This slice ships the frozen-manifest half of ADR 0015: a snapshot of the
-strategy YAML at its current stage, plus a helper for the risk layer to read
-back the active hash. The promotion state machine and evidence-package
-assembly arrive in slice 2.
+Slice 1 shipped the frozen-manifest half of ADR 0015: a snapshot of the strategy
+YAML at its current stage plus a helper for the risk layer to read back the
+active hash.
+
+Slice 2 adds the state-machine surface (stage-transition validation + gate
+checks) that was previously under ``milodex.strategies.promotion``. The evidence
+package and transactional ``transition()`` helper land in subsequent commits.
 """
 
 from milodex.promotion.manifest import (
@@ -11,9 +14,25 @@ from milodex.promotion.manifest import (
     get_active_manifest_hash,
     resolve_strategy_config_path,
 )
+from milodex.promotion.state_machine import (
+    MAX_DRAWDOWN_PCT,
+    MIN_SHARPE,
+    MIN_TRADES,
+    STAGE_ORDER,
+    PromotionCheckResult,
+    check_gate,
+    validate_stage_transition,
+)
 
 __all__ = [
+    "MAX_DRAWDOWN_PCT",
+    "MIN_SHARPE",
+    "MIN_TRADES",
+    "STAGE_ORDER",
+    "PromotionCheckResult",
+    "check_gate",
     "freeze_manifest",
     "get_active_manifest_hash",
     "resolve_strategy_config_path",
+    "validate_stage_transition",
 ]

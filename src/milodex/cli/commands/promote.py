@@ -58,8 +58,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     from milodex.core.event_store import PromotionEvent
+    from milodex.promotion import check_gate, validate_stage_transition
     from milodex.strategies.loader import load_strategy_config
-    from milodex.strategies.promotion import check_gate, validate_stage_transition
 
     config_path = resolve_strategy_config(args.strategy_id, ctx.config_dir)
     config = load_strategy_config(config_path)

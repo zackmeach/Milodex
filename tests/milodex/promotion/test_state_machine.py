@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pytest
 
-from milodex.strategies.promotion import (
+from milodex.promotion import (
     MAX_DRAWDOWN_PCT,
     MIN_SHARPE,
     MIN_TRADES,
