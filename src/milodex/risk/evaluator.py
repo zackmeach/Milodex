@@ -45,6 +45,8 @@ class EvaluationContext:
     kill_switch_state: KillSwitchState
     risk_defaults: RiskDefaults
     strategy_config: StrategyExecutionConfig | None = None
+    runtime_config_hash: str | None = None
+    frozen_manifest_hash: str | None = None
 
 
 class RiskEvaluator:
@@ -55,6 +57,7 @@ class RiskEvaluator:
             self._check_kill_switch(context),
             self._check_trading_mode(context),
             self._check_strategy_stage(context),
+            self._check_manifest_drift(context),
             self._check_market_open(context),
             self._check_data_staleness(context),
             self._check_daily_loss(context),
@@ -67,9 +70,7 @@ class RiskEvaluator:
 
         allowed = all(check.passed for check in checks)
         reason_codes = [
-            check.reason_code
-            for check in checks
-            if not check.passed and check.reason_code
+            check.reason_code for check in checks if not check.passed and check.reason_code
         ]
         summary = "Allowed" if allowed else "Blocked by risk checks"
         return RiskDecision(
@@ -128,6 +129,63 @@ class RiskEvaluator:
             "strategy_stage",
             True,
             f"Strategy '{context.strategy_config.name}' is eligible for paper execution.",
+        )
+
+    def _check_manifest_drift(self, context: EvaluationContext) -> RiskCheckResult:
+        """ADR 0015: refuse execution when YAML has drifted from the frozen snapshot.
+
+        Scoped to promoted stages (``paper``, ``micro_live``, ``live``). Manual
+        operator trades (no ``strategy_config``) and ``backtest``-stage strategies
+        are exempt — the former have no strategy to anchor, the latter have no
+        promoted state to freeze.
+        """
+        if context.strategy_config is None:
+            return RiskCheckResult(
+                "manifest_drift",
+                True,
+                "Manual trade; manifest drift check not applicable.",
+            )
+        if context.strategy_config.stage not in {"paper", "micro_live", "live"}:
+            return RiskCheckResult(
+                "manifest_drift",
+                True,
+                f"Stage '{context.strategy_config.stage}' is exempt from manifest drift.",
+            )
+        if context.runtime_config_hash is None:
+            # Service did not populate the runtime hash (e.g. legacy test harness
+            # that doesn't exercise the manifest plumbing). Pass — the service
+            # populates both hashes in the commit-4 wiring.
+            return RiskCheckResult(
+                "manifest_drift",
+                True,
+                "Runtime config hash not supplied; drift check skipped.",
+            )
+        if context.frozen_manifest_hash is None:
+            return RiskCheckResult(
+                name="manifest_drift",
+                passed=False,
+                message=(
+                    f"Strategy '{context.strategy_config.name}' has no frozen manifest "
+                    f"at stage '{context.strategy_config.stage}'. Run "
+                    "'milodex promotion freeze' to snapshot the current config."
+                ),
+                reason_code="no_frozen_manifest",
+            )
+        if context.runtime_config_hash != context.frozen_manifest_hash:
+            return RiskCheckResult(
+                name="manifest_drift",
+                passed=False,
+                message=(
+                    f"Runtime config hash {context.runtime_config_hash[:12]} "
+                    f"differs from frozen manifest {context.frozen_manifest_hash[:12]} "
+                    f"at stage '{context.strategy_config.stage}'."
+                ),
+                reason_code="manifest_drift",
+            )
+        return RiskCheckResult(
+            "manifest_drift",
+            True,
+            "Runtime config matches frozen manifest.",
         )
 
     def _check_market_open(self, context: EvaluationContext) -> RiskCheckResult:
@@ -250,11 +308,7 @@ class RiskEvaluator:
         if context.intent.side == OrderSide.BUY and symbol not in existing:
             projected_count += 1
         if context.intent.side == OrderSide.SELL and symbol in existing:
-            position = next(
-                position
-                for position in context.positions
-                if position.symbol == symbol
-            )
+            position = next(position for position in context.positions if position.symbol == symbol)
             if context.intent.quantity >= position.quantity:
                 projected_count -= 1
 
@@ -264,8 +318,7 @@ class RiskEvaluator:
                 name="concurrent_positions",
                 passed=False,
                 message=(
-                    f"Projected open positions {projected_count} exceeds limit "
-                    f"{max_positions}."
+                    f"Projected open positions {projected_count} exceeds limit {max_positions}."
                 ),
                 reason_code="max_concurrent_positions_exceeded",
             )

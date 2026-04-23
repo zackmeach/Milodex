@@ -98,6 +98,8 @@ def make_context(
     trading_mode: str = "paper",
     kill_switch_active: bool = False,
     latest_bar: Bar | None = None,
+    runtime_config_hash: str | None = None,
+    frozen_manifest_hash: str | None = None,
 ) -> EvaluationContext:
     """Build an ``EvaluationContext`` pre-configured to pass every rule
     except the one under test."""
@@ -141,6 +143,8 @@ def make_context(
         kill_switch_state=KillSwitchState(active=kill_switch_active),
         risk_defaults=risk_defaults,
         strategy_config=strategy_config,
+        runtime_config_hash=runtime_config_hash,
+        frozen_manifest_hash=frozen_manifest_hash,
     )
 
 
@@ -216,26 +220,20 @@ def test_daily_loss_cap_tightened_by_strategy_config():
 
 def test_order_value_passes_below_cap():
     # cap = 10,000 * 0.15 = 1,500. Order value 1,000 is under.
-    decision = RiskEvaluator().evaluate(
-        make_context(estimated_order_value=1_000.0)
-    )
+    decision = RiskEvaluator().evaluate(make_context(estimated_order_value=1_000.0))
 
     assert check_result(decision, "order_value").passed is True
 
 
 def test_order_value_passes_at_cap_exactly():
     # Rule uses strict `>`, so equality passes.
-    decision = RiskEvaluator().evaluate(
-        make_context(estimated_order_value=1_500.0)
-    )
+    decision = RiskEvaluator().evaluate(make_context(estimated_order_value=1_500.0))
 
     assert check_result(decision, "order_value").passed is True
 
 
 def test_order_value_fails_above_cap():
-    decision = RiskEvaluator().evaluate(
-        make_context(estimated_order_value=1_500.01)
-    )
+    decision = RiskEvaluator().evaluate(make_context(estimated_order_value=1_500.01))
 
     result = check_result(decision, "order_value")
     assert result.passed is False
@@ -320,9 +318,7 @@ def test_single_position_allows_sell_that_reduces_position():
 
 def test_total_exposure_passes_fresh_buy_below_cap():
     # Cap = 10,000 * 0.80 = 8,000. Buy $1,000 → exposure 1,000.
-    decision = RiskEvaluator().evaluate(
-        make_context(estimated_order_value=1_000.0)
-    )
+    decision = RiskEvaluator().evaluate(make_context(estimated_order_value=1_000.0))
 
     assert check_result(decision, "total_exposure").passed is True
 
@@ -378,9 +374,7 @@ def test_concurrent_positions_passes_when_buy_fits_within_limit():
     # Two held + 1 new = 3 under default limit of 3 (strict `>`, equality
     # passes).
     held = [_position("QQQ", 10.0), _position("IWM", 5.0)]
-    decision = RiskEvaluator().evaluate(
-        make_context(positions=held, estimated_order_value=500.0)
-    )
+    decision = RiskEvaluator().evaluate(make_context(positions=held, estimated_order_value=500.0))
 
     assert check_result(decision, "concurrent_positions").passed is True
 
@@ -392,9 +386,7 @@ def test_concurrent_positions_fails_when_new_symbol_exceeds_limit():
         _position("IWM", 5.0),
         _position("DIA", 2.0),
     ]
-    decision = RiskEvaluator().evaluate(
-        make_context(positions=held, estimated_order_value=500.0)
-    )
+    decision = RiskEvaluator().evaluate(make_context(positions=held, estimated_order_value=500.0))
 
     result = check_result(decision, "concurrent_positions")
     assert result.passed is False
@@ -409,9 +401,7 @@ def test_concurrent_positions_passes_when_buying_more_of_existing():
         _position("IWM", 5.0),
         _position("DIA", 2.0),
     ]
-    decision = RiskEvaluator().evaluate(
-        make_context(positions=held, estimated_order_value=500.0)
-    )
+    decision = RiskEvaluator().evaluate(make_context(positions=held, estimated_order_value=500.0))
 
     assert check_result(decision, "concurrent_positions").passed is True
 
@@ -485,9 +475,7 @@ def _with_overrides(**overrides) -> RiskDefaults:
         max_concurrent_positions=overrides.get(
             "max_concurrent_positions", base.max_concurrent_positions
         ),
-        max_total_exposure_pct=overrides.get(
-            "max_total_exposure_pct", base.max_total_exposure_pct
-        ),
+        max_total_exposure_pct=overrides.get("max_total_exposure_pct", base.max_total_exposure_pct),
         max_daily_loss_pct=overrides.get("max_daily_loss_pct", base.max_daily_loss_pct),
         max_trades_per_day=overrides.get("max_trades_per_day", base.max_trades_per_day),
         max_order_value_pct=overrides.get("max_order_value_pct", base.max_order_value_pct),
@@ -498,6 +486,98 @@ def _with_overrides(**overrides) -> RiskDefaults:
             "max_data_staleness_seconds", base.max_data_staleness_seconds
         ),
     )
+
+
+# --- _check_manifest_drift -------------------------------------------------
+
+
+def _strategy_config(stage: str = "paper", enabled: bool = True) -> StrategyExecutionConfig:
+    from pathlib import Path as _Path
+
+    return StrategyExecutionConfig(
+        name="demo_strategy",
+        enabled=enabled,
+        stage=stage,
+        max_position_pct=0.10,
+        max_positions=1,
+        daily_loss_cap_pct=0.05,
+        stop_loss_pct=None,
+        path=_Path("configs/demo.yaml"),
+    )
+
+
+def test_manifest_drift_passes_for_manual_trade():
+    """Manual trades (no strategy_config) are exempt."""
+    decision = RiskEvaluator().evaluate(make_context(strategy_config=None))
+
+    assert check_result(decision, "manifest_drift").passed is True
+
+
+def test_manifest_drift_passes_for_backtest_stage():
+    """Backtest stage has no promoted state to freeze."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="backtest"),
+            runtime_config_hash=None,
+            frozen_manifest_hash=None,
+        )
+    )
+
+    assert check_result(decision, "manifest_drift").passed is True
+
+
+def test_manifest_drift_blocks_paper_stage_without_frozen_manifest():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="paper"),
+            runtime_config_hash="abc" * 10,
+            frozen_manifest_hash=None,
+        )
+    )
+
+    result = check_result(decision, "manifest_drift")
+    assert result.passed is False
+    assert result.reason_code == "no_frozen_manifest"
+
+
+def test_manifest_drift_blocks_when_hashes_diverge():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="paper"),
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="b" * 64,
+        )
+    )
+
+    result = check_result(decision, "manifest_drift")
+    assert result.passed is False
+    assert result.reason_code == "manifest_drift"
+
+
+def test_manifest_drift_passes_when_hashes_match():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="paper"),
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="a" * 64,
+        )
+    )
+
+    assert check_result(decision, "manifest_drift").passed is True
+
+
+def test_manifest_drift_applies_at_micro_live_and_live_stages():
+    for stage in ("micro_live", "live"):
+        decision = RiskEvaluator().evaluate(
+            make_context(
+                strategy_config=_strategy_config(stage=stage),
+                runtime_config_hash="a" * 64,
+                frozen_manifest_hash="b" * 64,
+            )
+        )
+        result = check_result(decision, "manifest_drift")
+        assert result.passed is False, f"stage={stage} should be blocked on drift"
+        assert result.reason_code == "manifest_drift"
 
 
 # --- sanity: reference the pytest and Order/OrderStatus imports so ruff

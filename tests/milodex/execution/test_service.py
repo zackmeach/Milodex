@@ -480,7 +480,7 @@ def test_preview_and_submit_record_explanations_and_trades(
     assert [record.status for record in trades] == ["preview", "submitted"]
     assert trades[0].explanation_id == explanations[0].id
     assert trades[1].explanation_id == explanations[1].id
-    assert len(explanations[0].risk_checks) == 11
+    assert len(explanations[0].risk_checks) == 12
     assert explanations[1].risk_allowed is True
 
 
