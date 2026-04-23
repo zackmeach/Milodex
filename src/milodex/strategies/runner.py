@@ -118,6 +118,7 @@ class StrategyRunner:
                 self._execution_service.submit_paper(
                     self._runner_intent(intent),
                     session_id=self._session_id,
+                    reasoning=decision.reasoning,
                 )
             )
         if self._on_cycle_result is not None:

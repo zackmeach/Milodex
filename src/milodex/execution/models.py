@@ -6,10 +6,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from milodex.broker.models import AccountInfo, Order, OrderSide, OrderType, TimeInForce
 from milodex.data.models import Bar
 from milodex.risk.models import RiskDecision
+
+if TYPE_CHECKING:
+    from milodex.strategies.base import DecisionReasoning
 
 
 class ExecutionStatus(Enum):
@@ -56,6 +60,7 @@ class ExecutionRequest:
     strategy_name: str | None = None
     strategy_stage: str | None = None
     strategy_config_path: Path | None = None
+    reasoning: DecisionReasoning | None = None
 
 
 @dataclass(frozen=True)

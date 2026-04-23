@@ -211,8 +211,13 @@ def test_submit_backtest_consults_null_evaluator_not_real_risk(tmp_path, risk_de
     assert evaluator.calls == 1
 
 
-def test_submit_backtest_enriches_explanation_context(tmp_path, risk_defaults_file):
-    """R-XC-008: backtest explanation rows carry rule/config_hash/bar_timestamp."""
+def test_submit_backtest_without_reasoning_omits_rule_placeholder(tmp_path, risk_defaults_file):
+    """R-XC-008: the old ``fill_simulation`` rule placeholder is gone.
+
+    The strategy now owns reasoning; when the caller does not pass one,
+    ``context`` carries no ``rule``/``bar_timestamp`` keys.  When reasoning
+    *is* passed, see ``test_service_reasoning.py``.
+    """
     service, _, store = _make_service(tmp_path, risk_defaults_file)
     run_row_id = _seed_backtest_run(store)
     service.submit_backtest(
@@ -223,9 +228,9 @@ def test_submit_backtest_enriches_explanation_context(tmp_path, risk_defaults_fi
     explanations = store.list_explanations()
     assert len(explanations) == 1
     context = explanations[0].context
-    assert context["rule"] == "fill_simulation"
-    assert "config_hash" in context
-    assert context["bar_timestamp"] is not None
+    assert "rule" not in context
+    assert "bar_timestamp" not in context
+    assert "reasoning" not in context
 
 
 def test_submit_paper_omits_backtest_context_fields(tmp_path, risk_defaults_file):

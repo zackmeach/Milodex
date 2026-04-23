@@ -288,6 +288,7 @@ class BacktestEngine:
                     decorated,
                     session_id=run_id,
                     backtest_run_id=db_run_id,
+                    reasoning=decision.reasoning,
                 )
                 if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
                     continue
@@ -335,6 +336,7 @@ class BacktestEngine:
                     decorated,
                     session_id=run_id,
                     backtest_run_id=db_run_id,
+                    reasoning=decision.reasoning,
                 )
                 if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
                     continue

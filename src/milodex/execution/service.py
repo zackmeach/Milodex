@@ -4,12 +4,16 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from milodex.broker import BrokerClient, Order
 from milodex.broker.models import OrderType
 from milodex.config import get_data_dir, get_logs_dir, get_trading_mode
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.data import DataProvider
+
+if TYPE_CHECKING:
+    from milodex.strategies.base import DecisionReasoning
 from milodex.execution.config import (
     StrategyExecutionConfig,
     load_strategy_execution_config,
@@ -53,17 +57,26 @@ class ExecutionService:
         )
         self._risk_evaluator = risk_evaluator or RiskEvaluator()
 
-    def preview(self, intent: TradeIntent) -> ExecutionResult:
+    def preview(
+        self,
+        intent: TradeIntent,
+        *,
+        reasoning: DecisionReasoning | None = None,
+    ) -> ExecutionResult:
         """Preview a trade without submitting to the broker."""
-        result = self._evaluate(intent, preview_only=True)
+        result = self._evaluate(intent, preview_only=True, reasoning=reasoning)
         self._record_execution(intent, result, decision_type="preview")
         return result
 
     def submit_paper(
-        self, intent: TradeIntent, *, session_id: str | None = None
+        self,
+        intent: TradeIntent,
+        *,
+        session_id: str | None = None,
+        reasoning: DecisionReasoning | None = None,
     ) -> ExecutionResult:
         """Submit a paper trade after passing risk evaluation."""
-        return self._submit(intent, source="paper", session_id=session_id)
+        return self._submit(intent, source="paper", session_id=session_id, reasoning=reasoning)
 
     def submit_backtest(
         self,
@@ -71,6 +84,7 @@ class ExecutionService:
         *,
         session_id: str | None = None,
         backtest_run_id: int | None = None,
+        reasoning: DecisionReasoning | None = None,
     ) -> ExecutionResult:
         """Submit a backtest trade through the same path as paper.
 
@@ -86,6 +100,7 @@ class ExecutionService:
             source="backtest",
             session_id=session_id,
             backtest_run_id=backtest_run_id,
+            reasoning=reasoning,
         )
 
     def _submit(
@@ -95,8 +110,9 @@ class ExecutionService:
         source: str,
         session_id: str | None = None,
         backtest_run_id: int | None = None,
+        reasoning: DecisionReasoning | None = None,
     ) -> ExecutionResult:
-        result = self._evaluate(intent, preview_only=False)
+        result = self._evaluate(intent, preview_only=False, reasoning=reasoning)
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
             self._record_execution(
@@ -224,7 +240,13 @@ class ExecutionService:
             )
         )
 
-    def _evaluate(self, intent: TradeIntent, *, preview_only: bool) -> ExecutionResult:
+    def _evaluate(
+        self,
+        intent: TradeIntent,
+        *,
+        preview_only: bool,
+        reasoning: DecisionReasoning | None = None,
+    ) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
         bypass_mode = isinstance(self._risk_evaluator, NullRiskEvaluator)
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
@@ -237,6 +259,7 @@ class ExecutionService:
             normalized_intent,
             latest_bar.close,
             strategy_config,
+            reasoning=reasoning,
         )
 
         if bypass_mode:
@@ -320,6 +343,8 @@ class ExecutionService:
         intent: TradeIntent,
         latest_price: float,
         strategy_config: StrategyExecutionConfig | None,
+        *,
+        reasoning: DecisionReasoning | None = None,
     ) -> ExecutionRequest:
         estimated_unit_price = self._estimate_unit_price(intent, latest_price)
         return ExecutionRequest(
@@ -335,6 +360,7 @@ class ExecutionService:
             strategy_name=strategy_config.name if strategy_config else None,
             strategy_stage=strategy_config.stage if strategy_config else None,
             strategy_config_path=intent.strategy_config_path,
+            reasoning=reasoning,
         )
 
     def _estimate_unit_price(self, intent: TradeIntent, latest_price: float) -> float:
@@ -375,18 +401,8 @@ class ExecutionService:
             "estimated_unit_price": result.execution_request.estimated_unit_price,
             "estimated_order_value": result.execution_request.estimated_order_value,
         }
-        if source == "backtest":
-            # R-XC-008 record completeness for the backtest path: capture
-            # the rule name that governed the synthetic fill, the config
-            # hash the simulation ran against, and the bar timestamp that
-            # anchored the fill price. Fuller "triggering event /
-            # alternatives rejected" reasoning is deferred to §5.1.2,
-            # which requires a Strategy.evaluate() signature change.
-            context["rule"] = "fill_simulation"
-            context["config_hash"] = config_hash
-            context["bar_timestamp"] = (
-                None if result.latest_bar is None else result.latest_bar.timestamp.isoformat()
-            )
+        if result.execution_request.reasoning is not None:
+            context["reasoning"] = result.execution_request.reasoning.asdict()
         explanation_id = self._event_store.append_explanation(
             ExplanationEvent(
                 recorded_at=result.recorded_at or datetime.now(tz=UTC),
