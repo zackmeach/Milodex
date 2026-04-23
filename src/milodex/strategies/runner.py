@@ -33,6 +33,7 @@ class StrategyRunner:
         event_store: EventStore,
         poll_interval_seconds: float = 5.0,
         prompt_fn: Callable[[], str] | None = None,
+        on_cycle_result: Callable[[list[ExecutionResult]], None] | None = None,
     ) -> None:
         self._strategy_id = strategy_id
         self._config_dir = config_dir
@@ -42,6 +43,7 @@ class StrategyRunner:
         self._event_store = event_store
         self._poll_interval_seconds = poll_interval_seconds
         self._prompt_fn = prompt_fn or self._prompt_shutdown_choice
+        self._on_cycle_result = on_cycle_result
         self._loaded = StrategyLoader().load(self._resolve_config_path())
         self._session_id = str(uuid4())
         self._started_at = datetime.now(tz=UTC)
@@ -54,6 +56,14 @@ class StrategyRunner:
     def session_id(self) -> str:
         """Return the current strategy-run session identifier."""
         return self._session_id
+
+    def set_on_cycle_result(self, callback: Callable[[list[ExecutionResult]], None] | None) -> None:
+        """Register (or clear) a listener invoked after every ``run_cycle``.
+
+        Lets the CLI stream per-decision output without the runner knowing
+        about stdout; tests that don't install a callback remain silent.
+        """
+        self._on_cycle_result = callback
 
     def run(self) -> None:
         """Run the strategy loop until the operator stops it."""
@@ -97,6 +107,8 @@ class StrategyRunner:
 
         if not intents:
             self._record_no_action(latest_bar.timestamp, latest_bar.close)
+            if self._on_cycle_result is not None:
+                self._on_cycle_result([])
             return []
 
         results: list[ExecutionResult] = []
@@ -107,6 +119,8 @@ class StrategyRunner:
                     session_id=self._session_id,
                 )
             )
+        if self._on_cycle_result is not None:
+            self._on_cycle_result(results)
         return results
 
     def shutdown(self, *, mode: str) -> None:
@@ -157,10 +171,7 @@ class StrategyRunner:
     def _evaluation_symbol(self) -> str:
         if self._loaded.context.universe:
             return self._loaded.context.universe[0]
-        msg = (
-            f"Strategy '{self._strategy_id}' has no resolvable universe "
-            "for runtime execution."
-        )
+        msg = f"Strategy '{self._strategy_id}' has no resolvable universe for runtime execution."
         raise ValueError(msg)
 
     def _build_entry_state(self) -> dict[str, dict[str, Any]]:

@@ -101,16 +101,16 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - [x] Golden-output test covering entry, exit, timeout, and multi-candidate ranking paths.
 
 #### 4.1.5 Runner + Shutdown Dialog
-- [ ] `src/milodex/strategies/runner.py` — `StrategyRunner` class:
+- [x] `src/milodex/strategies/runner.py` — `StrategyRunner` class:
   - Loads strategy, subscribes to daily bar close via `DataProvider`
   - On each close, calls `strategy.evaluate(...)`, pipes intents to `ExecutionService.submit_paper(...)`
   - Records `strategy_runs` session row; stamps every explanation record with the session-id
-- [ ] SIGINT handler implementing the **dual-stop dialog** (ADR 0012):
+- [x] SIGINT handler implementing the **dual-stop dialog** (ADR 0012):
   - First Ctrl-C → prompt: *"Controlled stop (c) or kill switch (k)?"*
   - Controlled → finish current evaluation, exit cleanly, no open-order cancel
   - Kill switch → activate `KillSwitchStateStore`, cancel all open orders via `BrokerClient`, exit
-- [ ] CLI command: `milodex strategy run <strategy_id>`. Refuses to start if any `trading_mode != paper` (Phase 1 is paper-only per ADR 0004).
-- [ ] Integration test: runner against a mock `DataProvider` with scripted bars + a stub `BrokerClient`, verifying signals → intents → submissions → explanation records end-to-end.
+- [x] CLI command: `milodex strategy run <strategy_id>`. Refuses to start if any `trading_mode != paper` (Phase 1 is paper-only per ADR 0004).
+- [x] Integration test: runner against a mock `DataProvider` with scripted bars + a stub `BrokerClient`, verifying signals → intents → submissions → explanation records end-to-end.
 
 ### 4.2 Phase 1.2 Definition of Done
 

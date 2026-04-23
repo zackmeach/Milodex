@@ -110,9 +110,14 @@ class _ExecutionService:
 class _StrategyRunner:
     def __init__(self):
         self.run_calls = 0
+        self.session_id = "test-session"
+        self.on_cycle_result = None
 
     def run(self):
         self.run_calls += 1
+
+    def set_on_cycle_result(self, callback):
+        self.on_cycle_result = callback
 
 
 def _sample_execution_result(status: ExecutionStatus = ExecutionStatus.PREVIEW) -> ExecutionResult:

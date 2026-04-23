@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import signal
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
@@ -810,3 +811,155 @@ strategy:
 
     # Should not raise; primary symbol comes from resolved context.universe
     assert runner._evaluation_symbol() in ("AAPL", "MSFT")
+
+
+# ---------------------------------------------------------------------------
+# SIGINT dual-stop dialog (ADR 0012)
+# ---------------------------------------------------------------------------
+
+
+def _build_sigint_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    prompt_fn,
+):
+    """Wire a runner + stub broker/provider for SIGINT path tests."""
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, kill_switch_store = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        poll_interval_seconds=0.0,
+        prompt_fn=prompt_fn,
+    )
+    return runner, broker, event_store, kill_switch_store
+
+
+def test_runner_sigint_controlled_path_finishes_current_eval_cleanly(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """First Ctrl-C + operator picks 'c' => clean exit, no order cancel."""
+    runner, broker, event_store, kill_switch_store = _build_sigint_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        prompt_fn=lambda: "c",
+    )
+
+    # Simulate SIGINT arriving during the post-cycle sleep of the first loop turn.
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        if fired["count"] == 0:
+            fired["count"] += 1
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    assert broker.cancel_all_orders_calls == 0
+    assert kill_switch_store.get_state().active is False
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason == "controlled_stop"
+
+
+def test_runner_sigint_kill_path_cancels_orders_and_activates_halt(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """First Ctrl-C + operator picks 'k' => cancel_all_orders + kill_switch on."""
+    runner, broker, event_store, kill_switch_store = _build_sigint_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        prompt_fn=lambda: "k",
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        if fired["count"] == 0:
+            fired["count"] += 1
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    assert broker.cancel_all_orders_calls == 1
+    assert kill_switch_store.get_state().active is True
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason == "kill_switch"
+
+
+def test_runner_second_sigint_during_prompt_forces_kill_switch(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Second Ctrl-C while prompt is open => safer-when-in-doubt kill switch (ADR 0012)."""
+
+    def interrupted_prompt() -> str:
+        raise KeyboardInterrupt
+
+    runner, broker, event_store, kill_switch_store = _build_sigint_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        prompt_fn=interrupted_prompt,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        if fired["count"] == 0:
+            fired["count"] += 1
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    assert broker.cancel_all_orders_calls == 1
+    assert kill_switch_store.get_state().active is True
+    assert event_store.list_strategy_runs()[0].exit_reason == "kill_switch"

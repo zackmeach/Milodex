@@ -168,6 +168,7 @@ def main(
         get_trading_mode=lambda: get_trading_mode(),
         config_dir=config_dir,
         locks_dir=_locks_dir,
+        stdout=stdout,
     )
 
     module = _DISPATCH.get(args.command)

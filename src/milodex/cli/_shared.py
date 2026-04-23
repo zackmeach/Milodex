@@ -9,11 +9,12 @@ that command's module instead.
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TextIO
 
 from milodex.analytics.metrics import PerformanceMetrics
 from milodex.broker import OrderSide, OrderType, TimeInForce
@@ -67,6 +68,7 @@ class CommandContext:
     get_trading_mode: Callable[[], str]
     config_dir: Path
     locks_dir: Path
+    stdout: TextIO = field(default_factory=lambda: sys.stdout)
 
 
 def add_global_flags(parser: argparse.ArgumentParser) -> None:

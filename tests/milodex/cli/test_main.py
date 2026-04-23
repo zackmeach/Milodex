@@ -142,9 +142,14 @@ class StubStrategyRunner:
 
     def __init__(self) -> None:
         self.run_calls = 0
+        self.session_id = "test-session"
+        self.on_cycle_result = None
 
     def run(self) -> None:
         self.run_calls += 1
+
+    def set_on_cycle_result(self, callback) -> None:
+        self.on_cycle_result = callback
 
 
 def _sample_barset() -> BarSet:
@@ -556,7 +561,11 @@ def test_strategy_run_dispatches_runner(monkeypatch):
 
     assert exit_code == 0
     assert runner.run_calls == 1
-    assert "Running strategy: regime.daily.sma200_rotation.spy_shy.v1" in stdout.getvalue()
+    output = stdout.getvalue()
+    assert "session: test-session" in output
+    assert "strategy: regime.daily.sma200_rotation.spy_shy.v1" in output
+    assert "mode: paper" in output
+    assert "Session test-session ended." in output
 
 
 def test_main_reports_broker_errors_to_stderr():

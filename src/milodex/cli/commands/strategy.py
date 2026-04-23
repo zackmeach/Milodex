@@ -8,6 +8,7 @@ from milodex.cli._shared import CommandContext, add_global_flags
 from milodex.cli.formatter import CommandResult
 from milodex.config import get_locks_dir
 from milodex.core.advisory_lock import AdvisoryLock
+from milodex.execution.models import ExecutionResult, ExecutionStatus
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -24,6 +25,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
+def _format_decision_line(result: ExecutionResult) -> str:
+    req = result.execution_request
+    side = req.side.value.upper()
+    if result.status is ExecutionStatus.SUBMITTED:
+        return f"fired {side} {req.symbol} x{req.quantity:g} — allowed"
+    reason = result.risk_decision.summary or (result.message or "rejected")
+    return f"rejected {side} {req.symbol} x{req.quantity:g} — {reason}"
+
+
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.strategy_command != "run":
         raise ValueError(f"Unsupported strategy command: {args.strategy_command}")
@@ -35,9 +45,35 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         holder_name=f"milodex strategy run {args.strategy_id}",
     ):
         runner = ctx.get_strategy_runner(args.strategy_id)
+        as_json = bool(getattr(args, "json_output", False))
+
+        if not as_json:
+
+            def on_cycle(results: list[ExecutionResult]) -> None:
+                if not results:
+                    print(
+                        "no_action — strategy did not fire this cycle",
+                        file=ctx.stdout,
+                        flush=True,
+                    )
+                    return
+                for result in results:
+                    print(_format_decision_line(result), file=ctx.stdout, flush=True)
+
+            runner.set_on_cycle_result(on_cycle)
+            print(
+                f"session: {runner.session_id}  strategy: {args.strategy_id}  "
+                f"mode: {ctx.get_trading_mode()}",
+                file=ctx.stdout,
+                flush=True,
+            )
         runner.run()
         return CommandResult(
             command="strategy.run",
-            data={"strategy_id": args.strategy_id, "trading_mode": ctx.get_trading_mode()},
-            human_lines=[f"Running strategy: {args.strategy_id}"],
+            data={
+                "strategy_id": args.strategy_id,
+                "trading_mode": ctx.get_trading_mode(),
+                "session_id": runner.session_id,
+            },
+            human_lines=[f"Session {runner.session_id} ended."],
         )
