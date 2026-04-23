@@ -301,3 +301,66 @@ def test_analytics_export_with_strategy_shortcut(tmp_path: Path) -> None:
     assert exit_code == 0
     assert (output_dir / "bt-export_trades.csv").exists()
     assert (output_dir / "bt-export_equity.csv").exists()
+
+
+def test_analytics_export_json_format(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_run(store, run_id="bt-json", strategy_id="regime.v1", trade_pairs=2)
+
+    output_dir = tmp_path / "export-json"
+    exit_code, _out, _err = _run(
+        [
+            "analytics",
+            "export",
+            "bt-json",
+            "--output",
+            str(output_dir),
+            "--format",
+            "json",
+        ],
+        tmp_path,
+    )
+    assert exit_code == 0
+    trades_path = output_dir / "bt-json_trades.json"
+    equity_path = output_dir / "bt-json_equity.json"
+    assert trades_path.exists()
+    assert equity_path.exists()
+
+    trades_payload = json.loads(trades_path.read_text(encoding="utf-8"))
+    assert isinstance(trades_payload, list)
+    assert len(trades_payload) == 4  # 2 pairs × 2 sides
+    assert {"recorded_at", "symbol", "side", "quantity"} <= set(trades_payload[0].keys())
+
+    equity_payload = json.loads(equity_path.read_text(encoding="utf-8"))
+    assert isinstance(equity_payload, list)
+    assert equity_payload and {"date", "portfolio_value"} <= set(equity_payload[0].keys())
+
+
+def test_analytics_export_markdown_format(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_run(store, run_id="bt-md", strategy_id="regime.v1", trade_pairs=2)
+
+    output_dir = tmp_path / "export-md"
+    exit_code, _out, _err = _run(
+        [
+            "analytics",
+            "export",
+            "bt-md",
+            "--output",
+            str(output_dir),
+            "--format",
+            "md",
+        ],
+        tmp_path,
+    )
+    assert exit_code == 0
+    report_path = output_dir / "bt-md_report.md"
+    assert report_path.exists()
+
+    body = report_path.read_text(encoding="utf-8")
+    assert "## Metrics" in body
+    assert "## Trades" in body
+    assert "## Equity Curve" in body
+    assert "| metric | value | confidence |" in body
+    assert "| date | symbol | side | qty | price |" in body
+    assert "| date | value |" in body

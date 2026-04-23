@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -104,7 +105,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     export_parser.add_argument(
         "--output",
         required=True,
-        help="Output directory path for exported CSV files.",
+        help="Output directory path for exported files.",
+    )
+    export_parser.add_argument(
+        "--format",
+        dest="export_format",
+        choices=("csv", "json", "md"),
+        default="csv",
+        help="Export format (default: csv).",
     )
 
     list_parser = analytics_subparsers.add_parser(
@@ -219,8 +227,21 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         output_dir.mkdir(parents=True, exist_ok=True)
         trades = event_store.list_trades_for_backtest_run(run_.id)
         equity_curve = equity_curve_from_trades(trades, run_.metadata or {})
-        _export_trades_csv(trades, output_dir / f"{run_id}_trades.csv")
-        _export_equity_curve_csv(equity_curve, output_dir / f"{run_id}_equity.csv")
+        fmt = getattr(args, "export_format", "csv")
+        if fmt == "csv":
+            _export_trades_csv(trades, output_dir / f"{run_id}_trades.csv")
+            _export_equity_curve_csv(equity_curve, output_dir / f"{run_id}_equity.csv")
+        elif fmt == "json":
+            _export_trades_json(trades, output_dir / f"{run_id}_trades.json")
+            _export_equity_curve_json(equity_curve, output_dir / f"{run_id}_equity.json")
+        elif fmt == "md":
+            metrics = metrics_for_run(run_, event_store)
+            _export_report_markdown(
+                metrics=metrics,
+                trades=trades,
+                equity_curve=equity_curve,
+                path=output_dir / f"{run_id}_report.md",
+            )
         return _build_analytics_export_result(run_id, output_dir)
 
     raise ValueError(f"Unsupported analytics command: {args.analytics_command}")
@@ -515,3 +536,89 @@ def _export_equity_curve_csv(equity_curve: list[tuple[date, float]], path: Path)
         writer.writeheader()
         for d, v in equity_curve:
             writer.writerow({"date": d.isoformat(), "portfolio_value": v})
+
+
+def _export_trades_json(trades: list, path: Path) -> None:
+    payload = [
+        {
+            "recorded_at": t.recorded_at.isoformat(),
+            "symbol": t.symbol,
+            "side": t.side,
+            "quantity": t.quantity,
+            "estimated_unit_price": t.estimated_unit_price,
+            "estimated_order_value": t.estimated_order_value,
+            "status": t.status,
+        }
+        for t in trades
+    ]
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _export_equity_curve_json(equity_curve: list[tuple[date, float]], path: Path) -> None:
+    payload = [{"date": d.isoformat(), "portfolio_value": v} for d, v in equity_curve]
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def _export_report_markdown(
+    *,
+    metrics: PerformanceMetrics,
+    trades: list,
+    equity_curve: list[tuple[date, float]],
+    path: Path,
+) -> None:
+    lines: list[str] = [f"# Backtest Report — {metrics.run_id}", ""]
+
+    lines.append("## Metrics")
+    lines.append("")
+    lines.append("| metric | value | confidence |")
+    lines.append("| --- | --- | --- |")
+    confidence = metrics.confidence_label
+    for name, value in _metrics_rows(metrics):
+        lines.append(f"| {name} | {value} | {confidence} |")
+    lines.append("")
+
+    lines.append("## Trades")
+    lines.append("")
+    lines.append("| date | symbol | side | qty | price |")
+    lines.append("| --- | --- | --- | --- | --- |")
+    for t in trades:
+        lines.append(
+            f"| {str(t.recorded_at)[:10]} | {t.symbol} | {t.side} | "
+            f"{t.quantity:g} | {t.estimated_unit_price:.2f} |"
+        )
+    lines.append("")
+
+    lines.append("## Equity Curve")
+    lines.append("")
+    lines.append("| date | value |")
+    lines.append("| --- | --- |")
+    for d, v in equity_curve:
+        lines.append(f"| {d.isoformat()} | {v:.2f} |")
+    lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _metrics_rows(m: PerformanceMetrics) -> list[tuple[str, str]]:
+    def _fmt(value: float | None, suffix: str = "", precision: int = 2) -> str:
+        if value is None:
+            return "n/a"
+        return f"{value:.{precision}f}{suffix}"
+
+    return [
+        ("strategy_id", m.strategy_id),
+        ("period", f"{m.start_date} to {m.end_date}"),
+        ("trading_days", str(m.trading_days)),
+        ("total_return_pct", _fmt(m.total_return_pct, "%")),
+        ("cagr_pct", _fmt(m.cagr_pct, "%")),
+        ("max_drawdown_pct", _fmt(m.max_drawdown_pct, "%")),
+        ("max_drawdown_duration_days", str(m.max_drawdown_duration_days)),
+        ("sharpe_ratio", _fmt(m.sharpe_ratio)),
+        ("sortino_ratio", _fmt(m.sortino_ratio)),
+        ("win_rate_pct", _fmt(m.win_rate_pct, "%", 1)),
+        ("avg_win_usd", _fmt(m.avg_win_usd)),
+        ("avg_loss_usd", _fmt(m.avg_loss_usd)),
+        ("profit_factor", _fmt(m.profit_factor)),
+        ("avg_hold_days", _fmt(m.avg_hold_days, "", 1)),
+        ("trade_count", str(m.trade_count)),
+    ]
