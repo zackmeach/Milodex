@@ -25,6 +25,7 @@ from milodex.execution.models import (
     TradeIntent,
 )
 from milodex.execution.state import KillSwitchStateStore
+from milodex.promotion import get_active_manifest_hash
 from milodex.risk import (
     EvaluationContext,
     NullRiskEvaluator,
@@ -273,6 +274,20 @@ class ExecutionService:
             # not exist in a backtest environment.
             decision = self._risk_evaluator.evaluate(None)  # type: ignore[arg-type]
         else:
+            runtime_config_hash = (
+                compute_config_hash(normalized_intent.strategy_config_path)
+                if normalized_intent.strategy_config_path is not None
+                else None
+            )
+            frozen_manifest_hash = (
+                get_active_manifest_hash(
+                    strategy_config.name,
+                    strategy_config.stage,
+                    self._event_store,
+                )
+                if strategy_config is not None
+                else None
+            )
             context = EvaluationContext(
                 intent=normalized_intent,
                 request=request,
@@ -286,6 +301,8 @@ class ExecutionService:
                 kill_switch_state=self._kill_switch_store.get_state(),
                 risk_defaults=load_risk_defaults(self._risk_defaults_path),
                 strategy_config=strategy_config,
+                runtime_config_hash=runtime_config_hash,
+                frozen_manifest_hash=frozen_manifest_hash,
             )
             decision = self._risk_evaluator.evaluate(context)
         status = (

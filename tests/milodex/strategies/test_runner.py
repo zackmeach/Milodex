@@ -254,6 +254,10 @@ def test_runner_submits_regime_signal_through_execution_service(
         event_store=event_store,
     )
 
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, strategy_config_dir / "regime_runner.yaml")
+
     results = runner.run_cycle()
     runner.shutdown(mode="controlled")
 
@@ -538,6 +542,9 @@ def test_runner_meanrev_fires_entry_signal_via_bars_by_symbol(
         provider=provider,
         risk_defaults_file=risk_defaults_file,
     )
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, meanrev_config_dir / "meanrev_runner.yaml")
     runner = StrategyRunner(
         strategy_id="meanrev.daily.pullback_rsi2.test_runner.v1",
         config_dir=meanrev_config_dir,
