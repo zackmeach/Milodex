@@ -29,7 +29,7 @@ strategy:
     ma_filter_length: 200
     risk_on_symbol: "SPY"
     risk_off_symbol: "SHY"
-    allocation_pct: 1.00
+    allocation_pct: 0.09
 
   tempo:
     bar_size: "1D"
@@ -37,7 +37,7 @@ strategy:
     max_hold_days: null
 
   risk:
-    max_position_pct: 1.00
+    max_position_pct: 0.10
     max_positions: 1
     daily_loss_cap_pct: 0.05
     stop_loss_pct: null
