@@ -1,24 +1,22 @@
 """Backtest engine: replays a strategy day-by-day over historical bars.
 
-Simulation rules
-----------------
-- Bars are fetched for the full range ``(start_date - warmup) … end_date``.
-- Only days that appear in the bar data are iterated (weekends / holidays are
-  naturally skipped because Alpaca returns no bars for them).
-- Fill price is the day's closing price adjusted for slippage:
-    BUY  fill = close * (1 + slippage_pct)
-    SELL fill = close * (1 - slippage_pct)
-- Commission is deducted per executed trade.
-- BUY orders are skipped if available cash is insufficient to cover the full
-  order cost (no fractional-cash execution).
-- Risk layer is intentionally NOT applied — the backtest engine is below the
-  risk layer in the architecture.  Risk limits are enforced at promotion time,
-  not during simulation.
-- Both strategy families are supported:
-    - ``regime``: ``bars`` arg = primary symbol bars; ``bars_by_symbol``
-      populated from universe.
-    - ``meanrev``: ``bars`` arg ignored; ``context.bars_by_symbol`` carries
-      all universe bars.
+The engine rides the **same** execution path the live paper runner uses:
+every ``TradeIntent`` emitted by ``Strategy.evaluate()`` is submitted
+through :class:`milodex.execution.service.ExecutionService`. Two
+dependencies are swapped for the backtest:
+
+- :class:`milodex.broker.simulated.SimulatedBroker` fills at the
+  simulation day's close (with slippage and commission applied).
+- :class:`milodex.risk.NullRiskEvaluator` makes risk evaluation a no-op.
+  Backtesting is intentionally below the risk layer per ``CLAUDE.md``;
+  the bypass is **declared** (injected), not implicit.
+
+The engine still owns cash / position / equity bookkeeping — it
+snapshot-injects the broker's reported account and positions at the
+top of each day's loop so that intents submitted through
+``ExecutionService`` observe consistent state. This is the
+data-layer counterpart to the architectural "same strategy code runs
+historical and live with no branches" guarantee.
 """
 
 from __future__ import annotations
@@ -30,8 +28,15 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
-from milodex.core.event_store import BacktestRunEvent, EventStore, ExplanationEvent, TradeEvent
+from milodex.broker.models import AccountInfo, OrderSide, Position
+from milodex.broker.simulated import SimulatedBroker
+from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.models import BarSet, Timeframe
+from milodex.data.simulated import SimulatedDataProvider
+from milodex.execution.models import ExecutionStatus, TradeIntent
+from milodex.execution.service import ExecutionService
+from milodex.execution.state import KillSwitchStateStore
+from milodex.risk import NullRiskEvaluator
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
@@ -64,7 +69,7 @@ class BacktestEngine:
 
     Args:
         loaded: Strategy + config produced by :class:`~milodex.strategies.loader.StrategyLoader`.
-        data_provider: Market data source.
+        data_provider: Market data source (used only to prefetch bars for the run window).
         event_store: Persistent ledger for backtest runs and simulated trades.
         initial_equity: Starting simulated account equity in USD.
         slippage_pct: Per-trade fill slippage as a fraction (e.g. ``0.001`` = 0.1%).
@@ -154,7 +159,6 @@ class BacktestEngine:
             status="completed",
             ended_at=datetime.now(tz=UTC),
         )
-        # Persist equity curve and summary stats in metadata for analytics queries
         self._event_store.update_backtest_run_metadata(
             effective_run_id,
             metadata={
@@ -213,10 +217,21 @@ class BacktestEngine:
                 db_id=db_run_id,
             )
 
+        sim_broker = SimulatedBroker(
+            slippage_pct=self._slippage_pct,
+            commission_per_trade=self._commission,
+        )
+        sim_data_provider = SimulatedDataProvider(all_bars)
+        execution_service = ExecutionService(
+            broker_client=sim_broker,
+            data_provider=sim_data_provider,
+            kill_switch_store=KillSwitchStateStore(event_store=self._event_store),
+            risk_evaluator=NullRiskEvaluator(),
+            event_store=self._event_store,
+        )
+
         cash = self._initial_equity
-        # positions: symbol -> (quantity, entry_price)
         positions: dict[str, tuple[float, float]] = {}
-        # entry_state: symbol -> {"entry_price": float, "held_days": int}
         entry_state: dict[str, dict] = {}
 
         equity_curve: list[tuple[date, float]] = []
@@ -225,7 +240,6 @@ class BacktestEngine:
         trade_count = 0
 
         for day in trading_days:
-            # Increment held_days for every open position
             for sym in entry_state:
                 entry_state[sym]["held_days"] = int(entry_state[sym]["held_days"]) + 1
 
@@ -237,6 +251,16 @@ class BacktestEngine:
             latest_closes = _latest_closes(bars_by_symbol)
             equity = _compute_equity(cash, positions, latest_closes)
 
+            self._sync_broker_state(
+                sim_broker=sim_broker,
+                sim_data_provider=sim_data_provider,
+                day=day,
+                closes=latest_closes,
+                cash=cash,
+                equity=equity,
+                positions=positions,
+            )
+
             context = replace(
                 self._loaded.context,
                 positions={sym: qty for sym, (qty, _) in positions.items()},
@@ -247,132 +271,82 @@ class BacktestEngine:
 
             intents = self._loaded.strategy.evaluate(primary_bars, context)
 
-            # Process SELLs first to free up cash
+            # Process SELLs first to free up cash for BUYs on the same day.
             for intent in intents:
-                if intent.side.value.upper() != "SELL":
+                if intent.side is not OrderSide.SELL:
                     continue
                 sym = intent.symbol.upper()
                 if sym not in positions:
                     continue
-                qty, _ = positions[sym]
-                latest_close = latest_closes.get(sym)
-                if latest_close is None or latest_close <= 0:
+                if latest_closes.get(sym, 0.0) <= 0:
                     continue
-                fill_price = latest_close * (1.0 - self._slippage_pct)
+
+                qty, _ = positions[sym]
+                decorated = self._decorate_intent(intent, quantity_override=qty)
+                result = execution_service.submit_backtest(
+                    decorated,
+                    session_id=run_id,
+                    backtest_run_id=db_run_id,
+                )
+                if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                    continue
+
+                fill_price = float(result.order.filled_avg_price or 0.0)
                 proceeds = fill_price * qty - self._commission
-                entry_p = entry_state.get(sym, {}).get("entry_price", fill_price)
                 cash += proceeds
                 del positions[sym]
                 entry_state.pop(sym, None)
-
-                explanation_id = self._record_explanation(
-                    day=day,
-                    sym=sym,
-                    side="sell",
-                    qty=qty,
-                    fill_price=fill_price,
-                    equity=equity,
-                    cash=cash,
-                    strategy_name=self._loaded.config.strategy_id,
-                    strategy_stage=self._loaded.config.stage,
-                    config_path=str(self._loaded.config.path),
-                    config_hash=self._loaded.context.config_hash,
-                    context={"entry_price": entry_p, "proceeds": proceeds},
-                )
-                self._event_store.append_trade(
-                    TradeEvent(
-                        explanation_id=explanation_id,
-                        recorded_at=_day_to_dt(day),
-                        status="filled",
-                        source="backtest",
-                        symbol=sym,
-                        side="sell",
-                        quantity=qty,
-                        order_type="market",
-                        time_in_force="day",
-                        estimated_unit_price=fill_price,
-                        estimated_order_value=fill_price * qty,
-                        strategy_name=self._loaded.config.strategy_id,
-                        strategy_stage=self._loaded.config.stage,
-                        strategy_config_path=str(self._loaded.config.path),
-                        submitted_by="backtest_engine",
-                        broker_order_id=None,
-                        broker_status="filled",
-                        message=None,
-                        session_id=run_id,
-                        backtest_run_id=db_run_id,
-                    )
-                )
                 sell_count += 1
                 trade_count += 1
 
-            # Recompute equity and closes after sells
+            # Re-sync after sells so BUY affordability checks reflect freed cash.
             latest_closes = _latest_closes(bars_by_symbol)
             equity = _compute_equity(cash, positions, latest_closes)
+            self._sync_broker_state(
+                sim_broker=sim_broker,
+                sim_data_provider=sim_data_provider,
+                day=day,
+                closes=latest_closes,
+                cash=cash,
+                equity=equity,
+                positions=positions,
+            )
 
-            # Process BUYs
             for intent in intents:
-                if intent.side.value.upper() != "BUY":
+                if intent.side is not OrderSide.BUY:
                     continue
                 sym = intent.symbol.upper()
                 if sym in positions:
                     continue
-                qty = intent.quantity
+                qty = float(intent.quantity)
                 if qty <= 0:
                     continue
                 latest_close = latest_closes.get(sym)
                 if latest_close is None or latest_close <= 0:
                     continue
-                fill_price = latest_close * (1.0 + self._slippage_pct)
-                cost = fill_price * qty + self._commission
+                projected_fill = latest_close * (1.0 + self._slippage_pct)
+                cost = projected_fill * qty + self._commission
                 if cash < cost:
                     continue
-                cash -= cost
+
+                decorated = self._decorate_intent(intent)
+                result = execution_service.submit_backtest(
+                    decorated,
+                    session_id=run_id,
+                    backtest_run_id=db_run_id,
+                )
+                if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                    continue
+
+                fill_price = float(result.order.filled_avg_price or 0.0)
+                realized_cost = fill_price * qty + self._commission
+                cash -= realized_cost
                 positions[sym] = (qty, fill_price)
                 entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
-
-                explanation_id = self._record_explanation(
-                    day=day,
-                    sym=sym,
-                    side="buy",
-                    qty=qty,
-                    fill_price=fill_price,
-                    equity=equity,
-                    cash=cash,
-                    strategy_name=self._loaded.config.strategy_id,
-                    strategy_stage=self._loaded.config.stage,
-                    config_path=str(self._loaded.config.path),
-                    config_hash=self._loaded.context.config_hash,
-                    context={"cost": cost},
-                )
-                self._event_store.append_trade(
-                    TradeEvent(
-                        explanation_id=explanation_id,
-                        recorded_at=_day_to_dt(day),
-                        status="filled",
-                        source="backtest",
-                        symbol=sym,
-                        side="buy",
-                        quantity=qty,
-                        order_type="market",
-                        time_in_force="day",
-                        estimated_unit_price=fill_price,
-                        estimated_order_value=fill_price * qty,
-                        strategy_name=self._loaded.config.strategy_id,
-                        strategy_stage=self._loaded.config.stage,
-                        strategy_config_path=str(self._loaded.config.path),
-                        submitted_by="backtest_engine",
-                        broker_order_id=None,
-                        broker_status="filled",
-                        message=None,
-                        session_id=run_id,
-                        backtest_run_id=db_run_id,
-                    )
-                )
                 buy_count += 1
                 trade_count += 1
 
-            # Final equity for this day (mark-to-market)
+            # Mark-to-market at end of day.
             latest_closes = _latest_closes(bars_by_symbol)
             equity = _compute_equity(cash, positions, latest_closes)
             equity_curve.append((day, equity))
@@ -398,60 +372,75 @@ class BacktestEngine:
             db_id=db_run_id,
         )
 
+    def _decorate_intent(
+        self, intent: TradeIntent, *, quantity_override: float | None = None
+    ) -> TradeIntent:
+        """Attach strategy + submitter metadata to a bare strategy intent.
+
+        Mirrors what :class:`milodex.strategies.runner.StrategyRunner`
+        does for the paper path, so the recorded trade rows carry the
+        same provenance whether they came from a live session or a
+        backtest replay.
+        """
+        return TradeIntent(
+            symbol=intent.symbol,
+            side=intent.side,
+            quantity=float(quantity_override if quantity_override is not None else intent.quantity),
+            order_type=intent.order_type,
+            time_in_force=intent.time_in_force,
+            limit_price=intent.limit_price,
+            stop_price=intent.stop_price,
+            strategy_config_path=self._loaded.config.path,
+            submitted_by="backtest_engine",
+        )
+
+    def _sync_broker_state(
+        self,
+        *,
+        sim_broker: SimulatedBroker,
+        sim_data_provider: SimulatedDataProvider,
+        day: date,
+        closes: dict[str, float],
+        cash: float,
+        equity: float,
+        positions: dict[str, tuple[float, float]],
+    ) -> None:
+        day_dt = _day_to_dt(day)
+        sim_broker.set_simulation_day(day=day_dt, closes=closes)
+        sim_data_provider.set_simulation_day(day)
+        sim_broker.update_account(
+            AccountInfo(
+                equity=equity,
+                cash=cash,
+                buying_power=cash,
+                portfolio_value=equity,
+                daily_pnl=0.0,
+            )
+        )
+        reported_positions = []
+        for sym, (qty, entry_price) in positions.items():
+            current_price = closes.get(sym, entry_price)
+            reported_positions.append(
+                Position(
+                    symbol=sym,
+                    quantity=qty,
+                    avg_entry_price=entry_price,
+                    current_price=current_price,
+                    market_value=current_price * qty,
+                    unrealized_pnl=(current_price - entry_price) * qty,
+                    unrealized_pnl_pct=(
+                        0.0 if entry_price == 0 else (current_price - entry_price) / entry_price
+                    ),
+                )
+            )
+        sim_broker.set_positions(reported_positions)
+
     def _warmup_calendar_days(self) -> int:
         integer_params = [
-            v
-            for v in self._loaded.config.parameters.values()
-            if isinstance(v, int) and v > 0
+            v for v in self._loaded.config.parameters.values() if isinstance(v, int) and v > 0
         ]
         largest = max(integer_params, default=30)
         return max(365, largest * 3)
-
-    def _record_explanation(
-        self,
-        *,
-        day: date,
-        sym: str,
-        side: str,
-        qty: float,
-        fill_price: float,
-        equity: float,
-        cash: float,
-        strategy_name: str,
-        strategy_stage: str,
-        config_path: str,
-        config_hash: str,
-        context: dict,
-    ) -> int:
-        return self._event_store.append_explanation(
-            ExplanationEvent(
-                recorded_at=_day_to_dt(day),
-                decision_type="backtest_fill",
-                status="filled",
-                strategy_name=strategy_name,
-                strategy_stage=strategy_stage,
-                strategy_config_path=config_path,
-                config_hash=config_hash,
-                symbol=sym,
-                side=side,
-                quantity=qty,
-                order_type="market",
-                time_in_force="day",
-                submitted_by="backtest_engine",
-                market_open=False,
-                latest_bar_timestamp=_day_to_dt(day),
-                latest_bar_close=fill_price,
-                account_equity=equity,
-                account_cash=cash,
-                account_portfolio_value=equity,
-                account_daily_pnl=0.0,
-                risk_allowed=True,
-                risk_summary="Backtest fill — risk layer not applied.",
-                reason_codes=[],
-                risk_checks=[],
-                context={**context, "simulation_day": day.isoformat()},
-            )
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -506,8 +495,7 @@ def _compute_equity(
     latest_closes: dict[str, float],
 ) -> float:
     market_value = sum(
-        qty * latest_closes.get(sym, entry_p)
-        for sym, (qty, entry_p) in positions.items()
+        qty * latest_closes.get(sym, entry_p) for sym, (qty, entry_p) in positions.items()
     )
     return cash + market_value
 

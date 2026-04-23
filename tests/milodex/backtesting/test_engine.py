@@ -44,16 +44,51 @@ def _make_barset(closes: list[float], start: date) -> BarSet:
     return BarSet(pd.DataFrame(rows))
 
 
-def _make_loaded_strategy(strategy_id: str, universe: tuple[str, ...]):
+_STRATEGY_YAML = """\
+strategy:
+  name: "test_strategy"
+  version: 1
+  description: "Test strategy for engine tests."
+  enabled: true
+  universe: ["SPY"]
+  parameters: {}
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+  risk:
+    max_position_pct: 0.10
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+  stage: "backtest"
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.0
+    min_trades_required: 30
+"""
+
+
+def _write_strategy_yaml(tmp_dir: Path) -> Path:
+    path = tmp_dir / "strategy.yaml"
+    path.write_text(_STRATEGY_YAML, encoding="utf-8")
+    return path
+
+
+def _make_loaded_strategy(
+    strategy_id: str, universe: tuple[str, ...], config_path: Path | None = None
+):
     """Return a mock LoadedStrategy for engine tests."""
     from milodex.strategies.base import StrategyContext
+
+    effective_path = config_path or _write_strategy_yaml(Path(tempfile.mkdtemp()))
 
     config = MagicMock()
     config.strategy_id = strategy_id
     config.family = "regime"
     config.template = "daily.sma200_rotation"
     config.stage = "backtest"
-    config.path = Path("configs/fake.yaml")
+    config.path = effective_path
     config.parameters = {"ma_filter_length": 3, "allocation_pct": 0.9}
     config.backtest = {"slippage_pct": 0.001, "commission_per_trade": 0.0}
     config.universe = universe
@@ -65,8 +100,12 @@ def _make_loaded_strategy(strategy_id: str, universe: tuple[str, ...]):
         variant="test",
         version=1,
         config_hash="abc123",
-        parameters={"ma_filter_length": 3, "allocation_pct": 0.9,
-                    "risk_on_symbol": "SPY", "risk_off_symbol": "SHY"},
+        parameters={
+            "ma_filter_length": 3,
+            "allocation_pct": 0.9,
+            "risk_on_symbol": "SPY",
+            "risk_off_symbol": "SHY",
+        },
         universe=universe,
         universe_ref=None,
         disable_conditions=(),
@@ -194,11 +233,17 @@ def test_engine_buy_sell_round_trip():
         current_day = timestamps.dt.date.max()
         day_calls.append(current_day)
         if current_day == start:
-            return [TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=10.0,
-                                order_type=OrderType.MARKET)]
+            return [
+                TradeIntent(
+                    symbol="SPY", side=OrderSide.BUY, quantity=10.0, order_type=OrderType.MARKET
+                )
+            ]
         if current_day == date(2024, 1, 4):
-            return [TradeIntent(symbol="SPY", side=OrderSide.SELL, quantity=10.0,
-                                order_type=OrderType.MARKET)]
+            return [
+                TradeIntent(
+                    symbol="SPY", side=OrderSide.SELL, quantity=10.0, order_type=OrderType.MARKET
+                )
+            ]
         return []
 
     loaded.strategy.evaluate.side_effect = fake_evaluate
@@ -237,8 +282,9 @@ def test_engine_skips_buy_when_insufficient_cash():
     loaded = _make_loaded_strategy("test.strat.v1", universe)
 
     loaded.strategy.evaluate.return_value = [
-        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=99_999.0,
-                    order_type=OrderType.MARKET)
+        TradeIntent(
+            symbol="SPY", side=OrderSide.BUY, quantity=99_999.0, order_type=OrderType.MARKET
+        )
     ]
 
     barset = _make_barset([500.0, 500.0], start=start)
@@ -280,9 +326,7 @@ def test_engine_status_set_to_completed():
 def test_engine_invalid_date_range_raises():
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
     store = _make_event_store()
-    engine = BacktestEngine(
-        loaded=loaded, data_provider=MagicMock(), event_store=store
-    )
+    engine = BacktestEngine(loaded=loaded, data_provider=MagicMock(), event_store=store)
     with pytest.raises(ValueError, match="end_date"):
         engine.run(date(2024, 6, 1), date(2024, 5, 1))
 
@@ -297,8 +341,7 @@ def test_engine_slippage_increases_buy_cost():
     universe = ("SPY",)
     loaded = _make_loaded_strategy("test.strat.v1", universe)
     loaded.strategy.evaluate.return_value = [
-        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=1.0,
-                    order_type=OrderType.MARKET)
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET)
     ]
 
     barset = _make_barset([100.0], start=start)

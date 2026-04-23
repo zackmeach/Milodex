@@ -21,7 +21,12 @@ from milodex.execution.models import (
     TradeIntent,
 )
 from milodex.execution.state import KillSwitchStateStore
-from milodex.risk import EvaluationContext, RiskEvaluator, load_risk_defaults
+from milodex.risk import (
+    EvaluationContext,
+    NullRiskEvaluator,
+    RiskEvaluator,
+    load_risk_defaults,
+)
 from milodex.strategies.loader import compute_config_hash
 
 
@@ -221,36 +226,40 @@ class ExecutionService:
 
     def _evaluate(self, intent: TradeIntent, *, preview_only: bool) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
-        risk_defaults = load_risk_defaults(self._risk_defaults_path)
+        bypass_mode = isinstance(self._risk_evaluator, NullRiskEvaluator)
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
 
         latest_bar = self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
         account = self._broker.get_account()
-        positions = self._broker.get_positions()
-        recent_orders = self._broker.get_orders(limit=100)
         market_open = self._broker.is_market_open()
-        trading_mode = get_trading_mode()
 
         request = self._build_execution_request(
             normalized_intent,
             latest_bar.close,
             strategy_config,
         )
-        context = EvaluationContext(
-            intent=normalized_intent,
-            request=request,
-            account=account,
-            positions=positions,
-            recent_orders=recent_orders,
-            latest_bar=latest_bar,
-            market_open=market_open,
-            trading_mode=trading_mode,
-            preview_only=preview_only,
-            kill_switch_state=self._kill_switch_store.get_state(),
-            risk_defaults=risk_defaults,
-            strategy_config=strategy_config,
-        )
-        decision = self._risk_evaluator.evaluate(context)
+
+        if bypass_mode:
+            # Skip loading risk_defaults and querying positions / recent
+            # orders — NullRiskEvaluator ignores them and the files may
+            # not exist in a backtest environment.
+            decision = self._risk_evaluator.evaluate(None)  # type: ignore[arg-type]
+        else:
+            context = EvaluationContext(
+                intent=normalized_intent,
+                request=request,
+                account=account,
+                positions=self._broker.get_positions(),
+                recent_orders=self._broker.get_orders(limit=100),
+                latest_bar=latest_bar,
+                market_open=market_open,
+                trading_mode=get_trading_mode(),
+                preview_only=preview_only,
+                kill_switch_state=self._kill_switch_store.get_state(),
+                risk_defaults=load_risk_defaults(self._risk_defaults_path),
+                strategy_config=strategy_config,
+            )
+            decision = self._risk_evaluator.evaluate(context)
         status = (
             ExecutionStatus.PREVIEW
             if preview_only
@@ -410,6 +419,16 @@ class ExecutionService:
                 session_id=session_id,
             )
         )
+        # When the broker has already reported a fill (synchronous path —
+        # backtest, or a broker that fills immediately), prefer the actual
+        # fill price over the pre-submission estimate so the trade row
+        # reflects what really happened.
+        recorded_unit_price = result.execution_request.estimated_unit_price
+        recorded_order_value = result.execution_request.estimated_order_value
+        if result.order is not None and result.order.filled_avg_price is not None:
+            recorded_unit_price = float(result.order.filled_avg_price)
+            recorded_order_value = recorded_unit_price * result.execution_request.quantity
+
         self._event_store.append_trade(
             TradeEvent(
                 explanation_id=explanation_id,
@@ -421,8 +440,8 @@ class ExecutionService:
                 quantity=result.execution_request.quantity,
                 order_type=result.execution_request.order_type.value,
                 time_in_force=result.execution_request.time_in_force.value,
-                estimated_unit_price=result.execution_request.estimated_unit_price,
-                estimated_order_value=result.execution_request.estimated_order_value,
+                estimated_unit_price=recorded_unit_price,
+                estimated_order_value=recorded_order_value,
                 strategy_name=result.execution_request.strategy_name,
                 strategy_stage=result.execution_request.strategy_stage,
                 strategy_config_path=(
