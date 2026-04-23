@@ -199,10 +199,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     if not isinstance(disable_conditions, list) or not all(
         isinstance(item, str) and item.strip() for item in disable_conditions
     ):
-        msg = (
-            f"{path}: strategy.disable_conditions_additional must be a list "
-            "of non-empty strings"
-        )
+        msg = f"{path}: strategy.disable_conditions_additional must be a list of non-empty strings"
         raise ValueError(msg)
 
     universe, universe_ref = _load_universe(strategy, path)
@@ -212,8 +209,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
         raise ValueError(msg)
     if tempo["bar_size"] not in _VALID_BAR_SIZES:
         msg = (
-            f"{path}: strategy.tempo.bar_size must be one of "
-            f"{', '.join(sorted(_VALID_BAR_SIZES))}"
+            f"{path}: strategy.tempo.bar_size must be one of {', '.join(sorted(_VALID_BAR_SIZES))}"
         )
         raise ValueError(msg)
 
@@ -297,8 +293,10 @@ def _load_universe(strategy: dict[str, Any], path: Path) -> tuple[tuple[str, ...
         raise ValueError(msg)
     if has_inline_universe:
         universe = strategy["universe"]
-        if not isinstance(universe, list) or not universe or not all(
-            isinstance(symbol, str) and symbol.strip() for symbol in universe
+        if (
+            not isinstance(universe, list)
+            or not universe
+            or not all(isinstance(symbol, str) and symbol.strip() for symbol in universe)
         ):
             msg = f"{path}: strategy.universe must be a non-empty list of symbols"
             raise ValueError(msg)
@@ -344,6 +342,16 @@ def _require_keys(value: dict[str, Any], required: set[str], label: str, path: P
     if missing:
         msg = f"{path}: missing required key(s) in {label}: {', '.join(missing)}"
         raise ValueError(msg)
+
+
+def canonicalize_config_data(value: Any) -> Any:
+    """Return ``value`` with dict keys sorted recursively (canonical form).
+
+    Shared between :func:`compute_config_hash` and the frozen-manifest freeze
+    path so the ``config_hash`` column and the ``config_json`` column are
+    always derived from the exact same canonical representation.
+    """
+    return _canonicalize_data(value)
 
 
 def _canonicalize_data(value: Any) -> Any:
