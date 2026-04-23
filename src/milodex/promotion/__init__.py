@@ -9,6 +9,7 @@ checks) that was previously under ``milodex.strategies.promotion``. The evidence
 package and transactional ``transition()`` helper land in subsequent commits.
 """
 
+from milodex.promotion.evidence import EvidencePackage, assemble_evidence_package
 from milodex.promotion.manifest import (
     freeze_manifest,
     get_active_manifest_hash,
@@ -29,7 +30,9 @@ __all__ = [
     "MIN_SHARPE",
     "MIN_TRADES",
     "STAGE_ORDER",
+    "EvidencePackage",
     "PromotionCheckResult",
+    "assemble_evidence_package",
     "check_gate",
     "freeze_manifest",
     "get_active_manifest_hash",
