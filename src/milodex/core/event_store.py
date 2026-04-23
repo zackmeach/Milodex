@@ -146,6 +146,21 @@ class BacktestRunEvent:
     id: int | None = None
 
 
+@dataclass(frozen=True)
+class PortfolioSnapshotEvent:
+    """Daily portfolio snapshot row (equity, cash, positions)."""
+
+    recorded_at: datetime
+    session_id: str
+    strategy_id: str
+    equity: float
+    cash: float
+    portfolio_value: float
+    daily_pnl: float
+    positions: list[dict[str, Any]]
+    id: int | None = None
+
+
 class EventStore:
     """Append-only SQLite event store with forward-only migrations."""
 
@@ -332,9 +347,7 @@ class EventStore:
 
     def list_explanations(self) -> list[ExplanationEvent]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM explanations ORDER BY id ASC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM explanations ORDER BY id ASC").fetchall()
         return [_explanation_from_row(row) for row in rows]
 
     def list_trades(self) -> list[TradeEvent]:
@@ -344,9 +357,7 @@ class EventStore:
 
     def list_kill_switch_events(self) -> list[KillSwitchEvent]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM kill_switch_events ORDER BY id ASC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM kill_switch_events ORDER BY id ASC").fetchall()
         return [_kill_switch_from_row(row) for row in rows]
 
     def get_latest_kill_switch_event(self) -> KillSwitchEvent | None:
@@ -358,9 +369,7 @@ class EventStore:
 
     def list_strategy_runs(self) -> list[StrategyRunEvent]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM strategy_runs ORDER BY id ASC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM strategy_runs ORDER BY id ASC").fetchall()
         return [_strategy_run_from_row(row) for row in rows]
 
     def append_backtest_run(self, event: BacktestRunEvent) -> int:
@@ -432,9 +441,7 @@ class EventStore:
 
     def list_backtest_runs(self) -> list[BacktestRunEvent]:
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM backtest_runs ORDER BY id ASC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM backtest_runs ORDER BY id ASC").fetchall()
         return [_backtest_run_from_row(row) for row in rows]
 
     def append_promotion(self, event: PromotionEvent) -> int:
@@ -477,9 +484,7 @@ class EventStore:
     def list_promotions(self) -> list[PromotionEvent]:
         """Return all promotion records ordered by id ascending."""
         with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM promotions ORDER BY id ASC"
-            ).fetchall()
+            rows = connection.execute("SELECT * FROM promotions ORDER BY id ASC").fetchall()
         return [_promotion_from_row(row) for row in rows]
 
     def get_latest_promotion_for_strategy(self, strategy_id: str) -> PromotionEvent | None:
@@ -506,6 +511,55 @@ class EventStore:
                 (backtest_run_id,),
             ).fetchall()
         return [_trade_from_row(row) for row in rows]
+
+    def append_portfolio_snapshot(self, event: PortfolioSnapshotEvent) -> int:
+        """Insert a portfolio snapshot row and return its autoincrement id."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO portfolio_snapshots (
+                    recorded_at,
+                    session_id,
+                    strategy_id,
+                    equity,
+                    cash,
+                    portfolio_value,
+                    daily_pnl,
+                    positions_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dt(event.recorded_at),
+                    event.session_id,
+                    event.strategy_id,
+                    event.equity,
+                    event.cash,
+                    event.portfolio_value,
+                    event.daily_pnl,
+                    _dump_json(event.positions),
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_portfolio_snapshots_for_session(self, session_id: str) -> list[PortfolioSnapshotEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM portfolio_snapshots WHERE session_id = ? ORDER BY id ASC",
+                (session_id,),
+            ).fetchall()
+        return [_portfolio_snapshot_from_row(row) for row in rows]
+
+    def list_portfolio_snapshots_for_strategy(
+        self, strategy_id: str
+    ) -> list[PortfolioSnapshotEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM portfolio_snapshots WHERE strategy_id = ? ORDER BY id ASC",
+                (strategy_id,),
+            ).fetchall()
+        return [_portfolio_snapshot_from_row(row) for row in rows]
 
     def _apply_migrations(self) -> None:
         migrations = self._load_migrations()
@@ -665,15 +719,25 @@ def _backtest_run_from_row(row: sqlite3.Row) -> BacktestRunEvent:
         started_at=_parse_datetime(row["started_at"]),
         ended_at=_parse_datetime(row["ended_at"]),
         status=str(row["status"]),
-        slippage_pct=(
-            None if row["slippage_pct"] is None else float(row["slippage_pct"])
-        ),
+        slippage_pct=(None if row["slippage_pct"] is None else float(row["slippage_pct"])),
         commission_per_trade=(
-            None
-            if row["commission_per_trade"] is None
-            else float(row["commission_per_trade"])
+            None if row["commission_per_trade"] is None else float(row["commission_per_trade"])
         ),
         metadata=dict(_load_json(row["metadata_json"])),
+    )
+
+
+def _portfolio_snapshot_from_row(row: sqlite3.Row) -> PortfolioSnapshotEvent:
+    return PortfolioSnapshotEvent(
+        id=int(row["id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        session_id=str(row["session_id"]),
+        strategy_id=str(row["strategy_id"]),
+        equity=float(row["equity"]),
+        cash=float(row["cash"]),
+        portfolio_value=float(row["portfolio_value"]),
+        daily_pnl=float(row["daily_pnl"]),
+        positions=list(_load_json(row["positions_json"])),
     )
 
 
