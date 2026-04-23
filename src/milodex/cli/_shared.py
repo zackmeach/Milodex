@@ -221,6 +221,7 @@ def command_name_from_args(args: argparse.Namespace) -> str:
         "trade_command",
         "strategy_command",
         "analytics_command",
+        "promotion_command",
         "report_command",
     ):
         value = getattr(args, attr, None)
