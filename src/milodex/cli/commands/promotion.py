@@ -127,6 +127,19 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Operator approving the demotion.",
     )
 
+    history_parser = promotion_subparsers.add_parser(
+        "history",
+        help="Show promotion + demotion history for a strategy (newest first).",
+    )
+    add_global_flags(history_parser)
+    history_parser.add_argument("strategy_id", help="Strategy identifier from YAML config.")
+    history_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Maximum number of rows to return (default: all).",
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.promotion_command == "freeze":
@@ -137,6 +150,8 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _promote(args, ctx)
     if args.promotion_command == "demote":
         return _demote(args, ctx)
+    if args.promotion_command == "history":
+        return _history(args, ctx)
     raise ValueError(f"Unsupported promotion command: {args.promotion_command}")
 
 
@@ -346,6 +361,50 @@ def _promote_blocked_result(
         human_lines=lines,
         errors=[{"code": "gate_check_failed", "message": f} for f in gate_result.failures],
     )
+
+
+def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    event_store = ctx.get_event_store()
+    events = event_store.list_promotions_for_strategy(args.strategy_id, limit=args.limit)
+
+    data = {
+        "strategy_id": args.strategy_id,
+        "count": len(events),
+        "events": [
+            {
+                "id": e.id,
+                "recorded_at": e.recorded_at.isoformat(),
+                "from_stage": e.from_stage,
+                "to_stage": e.to_stage,
+                "promotion_type": e.promotion_type,
+                "approved_by": e.approved_by,
+                "manifest_id": e.manifest_id,
+                "reverses_event_id": e.reverses_event_id,
+                "notes": e.notes,
+            }
+            for e in events
+        ],
+    }
+
+    if not events:
+        lines = [f"No promotion history for {args.strategy_id}."]
+        return CommandResult(command="promotion.history", data=data, human_lines=lines)
+
+    lines = [
+        f"Promotion History — {args.strategy_id}",
+        f"{'id':<12}{'recorded_at':<22}{'from':<12}{'to':<12}{'type':<18}manifest",
+    ]
+    for e in events:
+        id_cell = f"{e.id}"
+        if e.reverses_event_id is not None:
+            id_cell = f"{e.id} (\u21a9{e.reverses_event_id})"
+        recorded = e.recorded_at.isoformat(timespec="seconds")
+        manifest_cell = "-" if e.manifest_id is None else f"mid={e.manifest_id}"
+        lines.append(
+            f"{id_cell:<12}{recorded:<22}{e.from_stage:<12}{e.to_stage:<12}"
+            f"{e.promotion_type:<18}{manifest_cell}"
+        )
+    return CommandResult(command="promotion.history", data=data, human_lines=lines)
 
 
 def _manifest_show(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:

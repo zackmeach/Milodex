@@ -526,6 +526,19 @@ class EventStore:
             ).fetchone()
         return None if row is None else _promotion_from_row(row)
 
+    def list_promotions_for_strategy(
+        self, strategy_id: str, limit: int | None = None
+    ) -> list[PromotionEvent]:
+        """Return promotions for ``strategy_id`` newest-first, optionally limited."""
+        query = "SELECT * FROM promotions WHERE strategy_id = ? ORDER BY id DESC"
+        params: tuple[Any, ...] = (strategy_id,)
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (strategy_id, int(limit))
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_promotion_from_row(row) for row in rows]
+
     def get_latest_promotion_for_strategy(self, strategy_id: str) -> PromotionEvent | None:
         """Return the most recent promotion for ``strategy_id``, or None."""
         with self._connect() as connection:
