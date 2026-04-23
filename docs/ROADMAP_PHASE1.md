@@ -130,14 +130,15 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 ### 5.1 Work Items
 
 #### 5.1.1 Backtest Engine
-- [ ] `src/milodex/backtesting/engine.py` — `BacktestEngine`:
-  - Replays historical bars day-by-day through the **same** `Strategy.evaluate()` code path used live. No divergent branches (per VISION §1.2).
+- [x] `src/milodex/backtesting/engine.py` — `BacktestEngine`:
+  - Replays historical bars day-by-day through the **same** `Strategy.evaluate()` code path used live. No divergent branches (per VISION §1.2). *Structural guarantee landed 2026-04-23: engine now rides `ExecutionService.submit_backtest()` with `SimulatedBroker` + `NullRiskEvaluator` injected; no parallel loop exists.*
   - Applies slippage (default 0.1% per [RISK_POLICY.md](RISK_POLICY.md)) and commission (0 for Phase 1 Alpaca per ADR 0016).
   - Writes backtest trades to the event store under `trades` with a `source=backtest` tag plus a `backtest_runs` row.
-- [ ] `src/milodex/backtesting/walk_forward.py` — rolling train/test window splitter per `R-BKT-002`. Parameters: window length, step size, holdout tail.
-- [ ] Minimum-trade enforcement per `R-BKT-003`: statistical metrics for meanrev require ≥30 trades; regime is exempt per `R-PRM-004`.
-- [ ] CLI command: `milodex backtest <strategy_id> --start YYYY-MM-DD --end YYYY-MM-DD [--walk-forward]`.
-- [ ] Tests: walk-forward window math, slippage applied correctly, regime strategy backtest matches hand-computed golden output, minimum-trade gate produces a clearly-flagged low-evidence result instead of a garbage Sharpe.
+- [x] `src/milodex/backtesting/walk_forward.py` — rolling train/test window splitter per `R-BKT-002`. Parameters: window length, step size, holdout tail.
+- [x] Minimum-trade enforcement per `R-BKT-003`: statistical metrics for meanrev require ≥30 trades; regime is exempt per `R-PRM-004`. *Implemented as a CLI-layer label (`insufficient evidence` / `evidence_basis=operational`), not an engine-side gate — presentation-layer concern.*
+- [x] CLI command: `milodex backtest <strategy_id> --start YYYY-MM-DD --end YYYY-MM-DD [--walk-forward]`.
+- [x] Tests: walk-forward window math, slippage applied correctly, regime strategy backtest matches hand-computed golden output ([test_engine_golden_regime.py](../tests/milodex/backtesting/test_engine_golden_regime.py)), minimum-trade gate produces a clearly-flagged low-evidence result instead of a garbage Sharpe.
+- **Deferred to §5.1.2:** R-XC-008 "triggering event / alternatives rejected / rule threshold" explanation fields require a `Strategy.evaluate()` signature extension (strategies returning reasoning alongside `TradeIntent`). Engine-side completeness (rule name, config hash, bar timestamp) landed in commit 04ba89d.
 
 #### 5.1.2 Analytics & Metrics
 - [ ] `src/milodex/analytics/metrics.py` — pure functions over a trade ledger:
