@@ -9,6 +9,8 @@ from milodex.core.event_store import (
     EventStore,
     ExplanationEvent,
     KillSwitchEvent,
+    PromotionEvent,
+    StrategyManifestEvent,
     StrategyRunEvent,
     TradeEvent,
 )
@@ -20,7 +22,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 6
+    assert store.schema_version == 7
     assert {
         "_schema_version",
         "explanations",
@@ -295,3 +297,65 @@ def test_event_store_paper_trade_has_null_backtest_run_id(tmp_path):
     assert len(trades) == 1
     assert trades[0].source == "paper"
     assert trades[0].backtest_run_id is None
+
+
+def test_promotion_event_roundtrips_evidence_fields(tmp_path):
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    recorded_at = datetime(2026, 4, 23, 18, 0, tzinfo=UTC)
+
+    manifest_id = store.append_strategy_manifest(
+        StrategyManifestEvent(
+            strategy_id="regime.daily.sma200_rotation.cli_test.v1",
+            stage="paper",
+            config_hash="a" * 64,
+            config_json={"strategy": {"id": "regime.daily.sma200_rotation.cli_test.v1"}},
+            config_path="configs/test.yaml",
+            frozen_at=recorded_at,
+            frozen_by="operator",
+        )
+    )
+
+    first_id = store.append_promotion(
+        PromotionEvent(
+            strategy_id="regime.daily.sma200_rotation.cli_test.v1",
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="lifecycle_exempt",
+            approved_by="operator",
+            recorded_at=recorded_at,
+            manifest_id=manifest_id,
+            evidence_json={
+                "schema_version": 1,
+                "recommendation": "promote",
+                "known_risks": ["risk A"],
+            },
+        )
+    )
+
+    reversal_id = store.append_promotion(
+        PromotionEvent(
+            strategy_id="regime.daily.sma200_rotation.cli_test.v1",
+            from_stage="paper",
+            to_stage="backtest",
+            promotion_type="demotion",
+            approved_by="operator",
+            recorded_at=recorded_at,
+            reverses_event_id=first_id,
+        )
+    )
+
+    fetched = store.get_promotion(first_id)
+    assert fetched is not None
+    assert fetched.manifest_id == manifest_id
+    assert fetched.evidence_json == {
+        "schema_version": 1,
+        "recommendation": "promote",
+        "known_risks": ["risk A"],
+    }
+    assert fetched.reverses_event_id is None
+
+    reversal = store.get_promotion(reversal_id)
+    assert reversal is not None
+    assert reversal.reverses_event_id == first_id
+    assert reversal.manifest_id is None
+    assert reversal.evidence_json is None

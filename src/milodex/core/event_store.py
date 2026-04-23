@@ -119,6 +119,9 @@ class PromotionEvent:
     max_drawdown_pct: float | None = None
     trade_count: int | None = None
     notes: str | None = None
+    manifest_id: int | None = None
+    reverses_event_id: int | None = None
+    evidence_json: dict[str, Any] | None = None
     id: int | None = None
 
 
@@ -481,9 +484,12 @@ class EventStore:
                     sharpe_ratio,
                     max_drawdown_pct,
                     trade_count,
-                    notes
+                    notes,
+                    manifest_id,
+                    reverses_event_id,
+                    evidence_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _dt(event.recorded_at),
@@ -497,6 +503,9 @@ class EventStore:
                     event.max_drawdown_pct,
                     event.trade_count,
                     event.notes,
+                    event.manifest_id,
+                    event.reverses_event_id,
+                    None if event.evidence_json is None else _dump_json(event.evidence_json),
                 ),
             )
             connection.commit()
@@ -507,6 +516,15 @@ class EventStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM promotions ORDER BY id ASC").fetchall()
         return [_promotion_from_row(row) for row in rows]
+
+    def get_promotion(self, promotion_id: int) -> PromotionEvent | None:
+        """Return a single promotion row by id, or ``None`` if absent."""
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM promotions WHERE id = ? LIMIT 1",
+                (promotion_id,),
+            ).fetchone()
+        return None if row is None else _promotion_from_row(row)
 
     def get_latest_promotion_for_strategy(self, strategy_id: str) -> PromotionEvent | None:
         """Return the most recent promotion for ``strategy_id``, or None."""
@@ -778,6 +796,11 @@ def _promotion_from_row(row: sqlite3.Row) -> PromotionEvent:
         ),
         trade_count=None if row["trade_count"] is None else int(row["trade_count"]),
         notes=row["notes"],
+        manifest_id=None if row["manifest_id"] is None else int(row["manifest_id"]),
+        reverses_event_id=(
+            None if row["reverses_event_id"] is None else int(row["reverses_event_id"])
+        ),
+        evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
     )
 
 
