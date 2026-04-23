@@ -364,6 +364,29 @@ class ExecutionService:
         source: str = "paper",
         backtest_run_id: int | None = None,
     ) -> None:
+        config_hash = (
+            None
+            if result.execution_request.strategy_config_path is None
+            else compute_config_hash(result.execution_request.strategy_config_path)
+        )
+        context: dict[str, object | None] = {
+            "message": result.message,
+            "latest_price": (None if result.latest_bar is None else result.latest_bar.close),
+            "estimated_unit_price": result.execution_request.estimated_unit_price,
+            "estimated_order_value": result.execution_request.estimated_order_value,
+        }
+        if source == "backtest":
+            # R-XC-008 record completeness for the backtest path: capture
+            # the rule name that governed the synthetic fill, the config
+            # hash the simulation ran against, and the bar timestamp that
+            # anchored the fill price. Fuller "triggering event /
+            # alternatives rejected" reasoning is deferred to §5.1.2,
+            # which requires a Strategy.evaluate() signature change.
+            context["rule"] = "fill_simulation"
+            context["config_hash"] = config_hash
+            context["bar_timestamp"] = (
+                None if result.latest_bar is None else result.latest_bar.timestamp.isoformat()
+            )
         explanation_id = self._event_store.append_explanation(
             ExplanationEvent(
                 recorded_at=result.recorded_at or datetime.now(tz=UTC),
@@ -376,11 +399,7 @@ class ExecutionService:
                     if result.execution_request.strategy_config_path is not None
                     else None
                 ),
-                config_hash=(
-                    None
-                    if result.execution_request.strategy_config_path is None
-                    else compute_config_hash(result.execution_request.strategy_config_path)
-                ),
+                config_hash=config_hash,
                 symbol=result.execution_request.symbol,
                 side=result.execution_request.side.value,
                 quantity=result.execution_request.quantity,
@@ -408,14 +427,7 @@ class ExecutionService:
                     }
                     for check in result.risk_decision.checks
                 ],
-                context={
-                    "message": result.message,
-                    "latest_price": (
-                        None if result.latest_bar is None else result.latest_bar.close
-                    ),
-                    "estimated_unit_price": result.execution_request.estimated_unit_price,
-                    "estimated_order_value": result.execution_request.estimated_order_value,
-                },
+                context=context,
                 session_id=session_id,
             )
         )

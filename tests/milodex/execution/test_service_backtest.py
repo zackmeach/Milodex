@@ -211,6 +211,37 @@ def test_submit_backtest_consults_null_evaluator_not_real_risk(tmp_path, risk_de
     assert evaluator.calls == 1
 
 
+def test_submit_backtest_enriches_explanation_context(tmp_path, risk_defaults_file):
+    """R-XC-008: backtest explanation rows carry rule/config_hash/bar_timestamp."""
+    service, _, store = _make_service(tmp_path, risk_defaults_file)
+    run_row_id = _seed_backtest_run(store)
+    service.submit_backtest(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+        session_id="bt-session",
+        backtest_run_id=run_row_id,
+    )
+    explanations = store.list_explanations()
+    assert len(explanations) == 1
+    context = explanations[0].context
+    assert context["rule"] == "fill_simulation"
+    assert "config_hash" in context
+    assert context["bar_timestamp"] is not None
+
+
+def test_submit_paper_omits_backtest_context_fields(tmp_path, risk_defaults_file):
+    """Paper-path explanations should NOT carry the backtest-only context keys."""
+    service, _, store = _make_service(tmp_path, risk_defaults_file)
+    service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+        session_id="paper-session",
+    )
+    explanations = store.list_explanations()
+    assert len(explanations) == 1
+    context = explanations[0].context
+    assert "rule" not in context
+    assert "bar_timestamp" not in context
+
+
 def test_submit_paper_still_writes_source_paper(tmp_path, risk_defaults_file):
     service, _, store = _make_service(tmp_path, risk_defaults_file)
     service.submit_paper(
