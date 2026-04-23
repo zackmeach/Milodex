@@ -33,7 +33,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Show performance metrics for a backtest run.",
     )
     add_global_flags(metrics_parser)
-    metrics_parser.add_argument("run_id", help="Backtest run ID.")
+    metrics_parser.add_argument(
+        "run_id",
+        nargs="?",
+        help="Backtest run ID. Omit and pass --strategy to use the latest run.",
+    )
+    metrics_parser.add_argument(
+        "--strategy",
+        dest="strategy_id",
+        help="Resolve to the latest backtest run for this strategy.",
+    )
     metrics_parser.add_argument(
         "--compare-spy",
         action="store_true",
@@ -45,7 +54,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="List trades for a backtest run.",
     )
     add_global_flags(trades_parser)
-    trades_parser.add_argument("run_id", help="Backtest run ID.")
+    trades_parser.add_argument(
+        "run_id",
+        nargs="?",
+        help="Backtest run ID. Omit and pass --strategy to use the latest run.",
+    )
+    trades_parser.add_argument(
+        "--strategy",
+        dest="strategy_id",
+        help="Resolve to the latest backtest run for this strategy.",
+    )
     trades_parser.add_argument(
         "--limit", type=int, default=50, help="Maximum number of trades to show."
     )
@@ -55,15 +73,34 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Side-by-side metrics comparison for two backtest runs.",
     )
     add_global_flags(compare_parser)
-    compare_parser.add_argument("run_id_a", help="First backtest run ID.")
-    compare_parser.add_argument("run_id_b", help="Second backtest run ID.")
+    compare_parser.add_argument("run_id_a", nargs="?", help="First backtest run ID.")
+    compare_parser.add_argument("run_id_b", nargs="?", help="Second backtest run ID.")
+    compare_parser.add_argument(
+        "--strategy-a",
+        dest="strategy_a",
+        help="Latest-run shortcut for the left side of the comparison.",
+    )
+    compare_parser.add_argument(
+        "--strategy-b",
+        dest="strategy_b",
+        help="Latest-run shortcut for the right side of the comparison.",
+    )
 
     export_parser = analytics_subparsers.add_parser(
         "export",
         help="Export equity curve and trades for a backtest run as CSV.",
     )
     add_global_flags(export_parser)
-    export_parser.add_argument("run_id", help="Backtest run ID.")
+    export_parser.add_argument(
+        "run_id",
+        nargs="?",
+        help="Backtest run ID. Omit and pass --strategy to use the latest run.",
+    )
+    export_parser.add_argument(
+        "--strategy",
+        dest="strategy_id",
+        help="Resolve to the latest backtest run for this strategy.",
+    )
     export_parser.add_argument(
         "--output",
         required=True,
@@ -88,11 +125,16 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _build_analytics_list_result(all_runs, limit=args.limit)
 
     if args.analytics_command == "metrics":
-        run_ = event_store.get_backtest_run(args.run_id)
+        run_id = _resolve_run_arg(
+            event_store,
+            run_id=args.run_id,
+            strategy_id=getattr(args, "strategy_id", None),
+        )
+        run_ = event_store.get_backtest_run(run_id)
         if run_ is None:
-            raise ValueError(f"Backtest run not found: {args.run_id}")
+            raise ValueError(f"Backtest run not found: {run_id}")
         if run_.id is None:
-            raise ValueError(f"Backtest run has no DB id: {args.run_id}")
+            raise ValueError(f"Backtest run has no DB id: {run_id}")
         raw_trades = event_store.list_trades_for_backtest_run(run_.id)
         equity_curve = equity_curve_from_trades(raw_trades, run_.metadata or {})
         trades_dicts = [
@@ -126,40 +168,95 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _build_analytics_metrics_result(strategy_metrics, benchmark_metrics)
 
     if args.analytics_command == "trades":
-        run_ = event_store.get_backtest_run(args.run_id)
+        run_id = _resolve_run_arg(
+            event_store,
+            run_id=args.run_id,
+            strategy_id=getattr(args, "strategy_id", None),
+        )
+        run_ = event_store.get_backtest_run(run_id)
         if run_ is None:
-            raise ValueError(f"Backtest run not found: {args.run_id}")
+            raise ValueError(f"Backtest run not found: {run_id}")
         if run_.id is None:
-            raise ValueError(f"Backtest run has no DB id: {args.run_id}")
+            raise ValueError(f"Backtest run has no DB id: {run_id}")
         trades = event_store.list_trades_for_backtest_run(run_.id)
-        return _build_analytics_trades_result(args.run_id, trades, limit=args.limit)
+        return _build_analytics_trades_result(run_id, trades, limit=args.limit)
 
     if args.analytics_command == "compare":
-        run_a = event_store.get_backtest_run(args.run_id_a)
-        run_b = event_store.get_backtest_run(args.run_id_b)
+        run_id_a = _resolve_run_arg(
+            event_store,
+            run_id=args.run_id_a,
+            strategy_id=getattr(args, "strategy_a", None),
+            flag_label="strategy-a",
+        )
+        run_id_b = _resolve_run_arg(
+            event_store,
+            run_id=args.run_id_b,
+            strategy_id=getattr(args, "strategy_b", None),
+            flag_label="strategy-b",
+        )
+        run_a = event_store.get_backtest_run(run_id_a)
+        run_b = event_store.get_backtest_run(run_id_b)
         if run_a is None:
-            raise ValueError(f"Backtest run not found: {args.run_id_a}")
+            raise ValueError(f"Backtest run not found: {run_id_a}")
         if run_b is None:
-            raise ValueError(f"Backtest run not found: {args.run_id_b}")
+            raise ValueError(f"Backtest run not found: {run_id_b}")
         metrics_a = metrics_for_run(run_a, event_store)
         metrics_b = metrics_for_run(run_b, event_store)
         return _build_analytics_compare_result(metrics_a, metrics_b)
 
     if args.analytics_command == "export":
-        run_ = event_store.get_backtest_run(args.run_id)
+        run_id = _resolve_run_arg(
+            event_store,
+            run_id=args.run_id,
+            strategy_id=getattr(args, "strategy_id", None),
+        )
+        run_ = event_store.get_backtest_run(run_id)
         if run_ is None:
-            raise ValueError(f"Backtest run not found: {args.run_id}")
+            raise ValueError(f"Backtest run not found: {run_id}")
         if run_.id is None:
-            raise ValueError(f"Backtest run has no DB id: {args.run_id}")
+            raise ValueError(f"Backtest run has no DB id: {run_id}")
         output_dir = Path(args.output)
         output_dir.mkdir(parents=True, exist_ok=True)
         trades = event_store.list_trades_for_backtest_run(run_.id)
         equity_curve = equity_curve_from_trades(trades, run_.metadata or {})
-        _export_trades_csv(trades, output_dir / f"{args.run_id}_trades.csv")
-        _export_equity_curve_csv(equity_curve, output_dir / f"{args.run_id}_equity.csv")
-        return _build_analytics_export_result(args.run_id, output_dir)
+        _export_trades_csv(trades, output_dir / f"{run_id}_trades.csv")
+        _export_equity_curve_csv(equity_curve, output_dir / f"{run_id}_equity.csv")
+        return _build_analytics_export_result(run_id, output_dir)
 
     raise ValueError(f"Unsupported analytics command: {args.analytics_command}")
+
+
+def _resolve_run_arg(
+    event_store: EventStore,
+    *,
+    run_id: str | None,
+    strategy_id: str | None,
+    flag_label: str = "strategy",
+) -> str:
+    """Resolve a command's run_id from either the positional arg or --strategy.
+
+    ``run_id`` and ``strategy_id`` are mutually exclusive. Exactly one must be
+    provided. When ``strategy_id`` is supplied, the event store is queried for
+    the most-recent backtest run for that strategy.
+    """
+    if run_id and strategy_id:
+        raise ValueError(f"Specify either a run_id positional or --{flag_label}, not both.")
+    if not run_id and not strategy_id:
+        raise ValueError(f"A run_id or --{flag_label} is required.")
+    if run_id:
+        return run_id
+    return _latest_run_id_for_strategy(event_store, strategy_id)
+
+
+def _latest_run_id_for_strategy(event_store: EventStore, strategy_id: str) -> str:
+    runs = [r for r in event_store.list_backtest_runs() if r.strategy_id == strategy_id]
+    if not runs:
+        raise ValueError(
+            f"No backtest runs found for strategy '{strategy_id}'. "
+            f"Run 'milodex backtest {strategy_id}' first or use --run-id explicitly."
+        )
+    # list_backtest_runs returns ascending by id → last is most recent.
+    return runs[-1].run_id
 
 
 def equity_curve_from_trades(
