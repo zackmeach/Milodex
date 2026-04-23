@@ -156,3 +156,85 @@ def test_assemble_trust_report_computes_benchmark_delta(tmp_path: Path) -> None:
     assert report.total_return_vs_benchmark_pct is not None
     assert report.total_return_vs_benchmark_pct < 0
     assert report.max_drawdown_vs_benchmark_pct is not None
+
+
+def test_assemble_trust_report_surfaces_recent_decisions(tmp_path: Path) -> None:
+    """R-XC-008 step E: recent reasoning narratives ride the trust report."""
+    from datetime import UTC
+
+    from milodex.core.event_store import ExplanationEvent
+
+    store = EventStore(tmp_path / "milodex.db")
+    metrics = _flat_metrics("regime.v1")
+
+    def _append(rule: str, narrative: str, recorded_at: datetime) -> None:
+        store.append_explanation(
+            ExplanationEvent(
+                recorded_at=recorded_at,
+                decision_type="no_trade",
+                status="no_signal",
+                strategy_name="regime.v1",
+                strategy_stage="paper",
+                strategy_config_path="configs/x.yaml",
+                config_hash="abc",
+                symbol="SPY",
+                side="hold",
+                quantity=0.0,
+                order_type="none",
+                time_in_force="day",
+                submitted_by="strategy_runner",
+                market_open=True,
+                latest_bar_timestamp=recorded_at,
+                latest_bar_close=100.0,
+                account_equity=100_000.0,
+                account_cash=100_000.0,
+                account_portfolio_value=100_000.0,
+                account_daily_pnl=0.0,
+                risk_allowed=True,
+                risk_summary="",
+                reason_codes=[],
+                risk_checks=[],
+                context={"reasoning": {"rule": rule, "narrative": narrative}},
+            )
+        )
+
+    base = datetime(2024, 1, 2, 16, 0, tzinfo=UTC)
+    _append("regime.hold", "already in SHY", base)
+    _append("regime.ma_filter_cross", "latest close above 200-DMA → SPY", base + timedelta(days=1))
+    # An unrelated strategy's row should NOT appear.
+    store.append_explanation(
+        ExplanationEvent(
+            recorded_at=base + timedelta(days=2),
+            decision_type="no_trade",
+            status="no_signal",
+            strategy_name="other.strategy.v1",
+            strategy_stage="paper",
+            strategy_config_path="configs/y.yaml",
+            config_hash="def",
+            symbol="SPY",
+            side="hold",
+            quantity=0.0,
+            order_type="none",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=base,
+            latest_bar_close=100.0,
+            account_equity=100_000.0,
+            account_cash=100_000.0,
+            account_portfolio_value=100_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="",
+            reason_codes=[],
+            risk_checks=[],
+            context={"reasoning": {"rule": "x", "narrative": "y"}},
+        )
+    )
+
+    report = assemble_trust_report(metrics=metrics, event_store=store, include_benchmark=False)
+
+    assert len(report.recent_decisions) == 2
+    rules = [d.rule for d in report.recent_decisions]
+    assert rules == ["regime.hold", "regime.ma_filter_cross"]
+    assert report.recent_decisions[-1].narrative.startswith("latest close above")

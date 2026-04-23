@@ -32,6 +32,15 @@ class SnapshotSummary:
 
 
 @dataclass(frozen=True)
+class DecisionSummary:
+    """One row in the ``recent_decisions`` trust-report section."""
+
+    recorded_at: str
+    rule: str
+    narrative: str
+
+
+@dataclass(frozen=True)
 class TrustReport:
     """Composed view of strategy metrics, benchmark delta, and snapshot history."""
 
@@ -46,6 +55,7 @@ class TrustReport:
     confidence_label: str
     snapshot_summary: SnapshotSummary
     open_questions: list[str] = field(default_factory=list)
+    recent_decisions: list[DecisionSummary] = field(default_factory=list)
 
 
 def assemble_trust_report(
@@ -94,6 +104,7 @@ def assemble_trust_report(
     snapshot_summary = _summarize_snapshots(snapshots)
 
     open_questions = _derive_open_questions(metrics, benchmark, snapshot_summary)
+    recent_decisions = _recent_decisions(event_store, metrics.strategy_id)
 
     return TrustReport(
         run_id=metrics.run_id,
@@ -107,6 +118,7 @@ def assemble_trust_report(
         confidence_label=metrics.confidence_label,
         snapshot_summary=snapshot_summary,
         open_questions=open_questions,
+        recent_decisions=recent_decisions,
     )
 
 
@@ -126,6 +138,32 @@ def _summarize_snapshots(snapshots: list[PortfolioSnapshotEvent]) -> SnapshotSum
         first_equity=snapshots[0].equity,
         last_equity=snapshots[-1].equity,
     )
+
+
+def _recent_decisions(
+    event_store: EventStore, strategy_id: str, limit: int = 10
+) -> list[DecisionSummary]:
+    """Return the most recent ``limit`` decisions for ``strategy_id`` that carry reasoning.
+
+    Rows missing ``context.reasoning`` are skipped — legacy rows from
+    before R-XC-008 have no narrative to surface.
+    """
+    rows = [row for row in event_store.list_explanations() if row.strategy_name == strategy_id]
+    summaries: list[DecisionSummary] = []
+    for row in reversed(rows):
+        reasoning = row.context.get("reasoning") if isinstance(row.context, dict) else None
+        if not isinstance(reasoning, dict):
+            continue
+        summaries.append(
+            DecisionSummary(
+                recorded_at=row.recorded_at.isoformat(),
+                rule=str(reasoning.get("rule", "")),
+                narrative=str(reasoning.get("narrative", "")),
+            )
+        )
+        if len(summaries) >= limit:
+            break
+    return list(reversed(summaries))
 
 
 def _derive_open_questions(
