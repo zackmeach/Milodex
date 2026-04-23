@@ -392,7 +392,7 @@ def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     lines = [
         f"Promotion History — {args.strategy_id}",
-        f"{'id':<12}{'recorded_at':<22}{'from':<12}{'to':<12}{'type':<18}manifest",
+        f"{'id':<12}{'recorded_at':<28}{'from':<12}{'to':<12}{'type':<18}manifest",
     ]
     for e in events:
         id_cell = f"{e.id}"
@@ -401,7 +401,7 @@ def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         recorded = e.recorded_at.isoformat(timespec="seconds")
         manifest_cell = "-" if e.manifest_id is None else f"mid={e.manifest_id}"
         lines.append(
-            f"{id_cell:<12}{recorded:<22}{e.from_stage:<12}{e.to_stage:<12}"
+            f"{id_cell:<12}{recorded:<28}{e.from_stage:<12}{e.to_stage:<12}"
             f"{e.promotion_type:<18}{manifest_cell}"
         )
     return CommandResult(command="promotion.history", data=data, human_lines=lines)
