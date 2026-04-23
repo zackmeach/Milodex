@@ -54,12 +54,54 @@ class ExecutionService:
         self._record_execution(intent, result, decision_type="preview")
         return result
 
-    def submit_paper(self, intent: TradeIntent, *, session_id: str | None = None) -> ExecutionResult:
+    def submit_paper(
+        self, intent: TradeIntent, *, session_id: str | None = None
+    ) -> ExecutionResult:
         """Submit a paper trade after passing risk evaluation."""
+        return self._submit(intent, source="paper", session_id=session_id)
+
+    def submit_backtest(
+        self,
+        intent: TradeIntent,
+        *,
+        session_id: str | None = None,
+        backtest_run_id: int | None = None,
+    ) -> ExecutionResult:
+        """Submit a backtest trade through the same path as paper.
+
+        Risk enforcement is delegated to whichever :class:`RiskEvaluator` was
+        injected — backtest callers wire in
+        :class:`milodex.risk.NullRiskEvaluator` so every intent is allowed
+        with the synthetic bypass decision. The recording path tags the
+        resulting :class:`TradeEvent` with ``source='backtest'`` and the
+        originating ``backtest_run_id``.
+        """
+        return self._submit(
+            intent,
+            source="backtest",
+            session_id=session_id,
+            backtest_run_id=backtest_run_id,
+        )
+
+    def _submit(
+        self,
+        intent: TradeIntent,
+        *,
+        source: str,
+        session_id: str | None = None,
+        backtest_run_id: int | None = None,
+    ) -> ExecutionResult:
         result = self._evaluate(intent, preview_only=False)
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
-            self._record_execution(intent, result, decision_type="submit", session_id=session_id)
+            self._record_execution(
+                intent,
+                result,
+                decision_type="submit",
+                session_id=session_id,
+                source=source,
+                backtest_run_id=backtest_run_id,
+            )
             return result
 
         order = self._broker.submit_order(
@@ -83,7 +125,14 @@ class ExecutionService:
             message=f"Order submitted successfully: {order.id}",
             recorded_at=datetime.now(tz=UTC),
         )
-        self._record_execution(intent, submitted_result, decision_type="submit", session_id=session_id)
+        self._record_execution(
+            intent,
+            submitted_result,
+            decision_type="submit",
+            session_id=session_id,
+            source=source,
+            backtest_run_id=backtest_run_id,
+        )
         return submitted_result
 
     def get_order_status(self, order_id: str) -> Order:
@@ -202,11 +251,15 @@ class ExecutionService:
             strategy_config=strategy_config,
         )
         decision = self._risk_evaluator.evaluate(context)
-        status = ExecutionStatus.PREVIEW if preview_only else (
-            ExecutionStatus.SUBMITTED if decision.allowed else ExecutionStatus.BLOCKED
+        status = (
+            ExecutionStatus.PREVIEW
+            if preview_only
+            else (ExecutionStatus.SUBMITTED if decision.allowed else ExecutionStatus.BLOCKED)
         )
-        message = "Preview complete." if preview_only else (
-            "Order blocked by risk checks." if not decision.allowed else "Ready to submit."
+        message = (
+            "Preview complete."
+            if preview_only
+            else ("Order blocked by risk checks." if not decision.allowed else "Ready to submit.")
         )
         return ExecutionResult(
             status=status,
@@ -299,6 +352,8 @@ class ExecutionService:
         *,
         decision_type: str,
         session_id: str | None = None,
+        source: str = "paper",
+        backtest_run_id: int | None = None,
     ) -> None:
         explanation_id = self._event_store.append_explanation(
             ExplanationEvent(
@@ -360,7 +415,7 @@ class ExecutionService:
                 explanation_id=explanation_id,
                 recorded_at=result.recorded_at or datetime.now(tz=UTC),
                 status=result.status.value,
-                source="paper",
+                source=source,
                 symbol=result.execution_request.symbol,
                 side=result.execution_request.side.value,
                 quantity=result.execution_request.quantity,
@@ -377,10 +432,9 @@ class ExecutionService:
                 ),
                 submitted_by=intent.submitted_by,
                 broker_order_id=None if result.order is None else result.order.id,
-                broker_status=(
-                    None if result.order is None else result.order.status.value
-                ),
+                broker_status=(None if result.order is None else result.order.status.value),
                 message=result.message,
                 session_id=session_id,
+                backtest_run_id=backtest_run_id,
             )
         )
