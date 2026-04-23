@@ -10,7 +10,7 @@ from milodex.analytics.metrics import (
     PerformanceMetrics,
     _cagr,
     _daily_returns,
-    _max_drawdown,
+    _max_drawdown_stats,
     _sharpe,
     _sortino,
     _trade_stats,
@@ -64,17 +64,31 @@ def test_cagr_none_for_single_day():
 
 def test_max_drawdown_no_drawdown():
     curve = _equity_curve([100.0, 110.0, 120.0, 130.0], start=date(2024, 1, 1))
-    assert _max_drawdown(curve) == pytest.approx(0.0)
+    dd, duration = _max_drawdown_stats(curve)
+    assert dd == pytest.approx(0.0)
+    assert duration == 0
 
 
 def test_max_drawdown_simple_case():
     curve = _equity_curve([100.0, 120.0, 80.0, 90.0], start=date(2024, 1, 1))
-    dd = _max_drawdown(curve)
+    dd, duration = _max_drawdown_stats(curve)
     assert dd == pytest.approx((120.0 - 80.0) / 120.0)
+    # Peak at index 1 (Jan 2), trough at index 2 (Jan 3) → 1 day
+    assert duration == 1
 
 
 def test_max_drawdown_empty_curve():
-    assert _max_drawdown([]) == 0.0
+    dd, duration = _max_drawdown_stats([])
+    assert dd == 0.0
+    assert duration == 0
+
+
+def test_max_drawdown_duration_extended():
+    # Peak at day 2, trough at day 5 → duration 3 days
+    curve = _equity_curve([100.0, 110.0, 120.0, 115.0, 100.0, 80.0, 95.0], start=date(2024, 1, 1))
+    dd, duration = _max_drawdown_stats(curve)
+    assert dd == pytest.approx((120.0 - 80.0) / 120.0)
+    assert duration == 3
 
 
 def test_sharpe_positive_returns():
@@ -109,11 +123,14 @@ def test_sortino_mixed_returns():
 
 
 def test_trade_stats_empty():
-    wr, hold, w, loss_count = _trade_stats([])
+    wr, hold, w, loss_count, avg_w, avg_l, pf = _trade_stats([])
     assert wr is None
     assert hold is None
     assert w == 0
     assert loss_count == 0
+    assert avg_w is None
+    assert avg_l is None
+    assert pf is None
 
 
 def test_trade_stats_profitable_round_trip():
@@ -122,11 +139,17 @@ def test_trade_stats_profitable_round_trip():
         _trade("SPY", "buy", 10.0, 100.0, start),
         _trade("SPY", "sell", 10.0, 110.0, start + timedelta(days=3)),
     ]
-    wr, hold, w, loss_count = _trade_stats(trades)
+    wr, hold, w, loss_count, avg_w, avg_l, pf = _trade_stats(trades)
     assert wr == 1.0
     assert w == 1
     assert loss_count == 0
     assert hold == pytest.approx(3.0)
+    assert avg_w == pytest.approx(100.0)  # (110-100)*10
+    assert avg_l is None
+    # gross profit 100, gross loss 0 → inf
+    import math as _math
+
+    assert pf == _math.inf
 
 
 def test_trade_stats_losing_round_trip():
@@ -135,10 +158,13 @@ def test_trade_stats_losing_round_trip():
         _trade("SPY", "buy", 10.0, 100.0, start),
         _trade("SPY", "sell", 10.0, 90.0, start + timedelta(days=2)),
     ]
-    wr, hold, w, loss_count = _trade_stats(trades)
+    wr, hold, w, loss_count, avg_w, avg_l, pf = _trade_stats(trades)
     assert wr == 0.0
     assert w == 0
     assert loss_count == 1
+    assert avg_w is None
+    assert avg_l == pytest.approx(-100.0)
+    assert pf == pytest.approx(0.0)
 
 
 def test_trade_stats_multiple_symbols():
@@ -149,10 +175,33 @@ def test_trade_stats_multiple_symbols():
         _trade("AAPL", "sell", 5.0, 110.0, d + timedelta(days=3)),
         _trade("SPY", "sell", 10.0, 180.0, d + timedelta(days=3)),
     ]
-    wr, hold, w, loss_count = _trade_stats(trades)
+    wr, hold, w, loss_count, avg_w, avg_l, pf = _trade_stats(trades)
     assert w == 1
     assert loss_count == 1
     assert wr == pytest.approx(0.5)
+    # AAPL: +$50 win, SPY: -$200 loss
+    assert avg_w == pytest.approx(50.0)
+    assert avg_l == pytest.approx(-200.0)
+    assert pf == pytest.approx(50.0 / 200.0)
+
+
+def test_trade_stats_profit_factor_known_sequence():
+    d = date(2024, 1, 2)
+    # Three round-trips: +$200, -$50, +$100 → PF = 300/50 = 6.0
+    trades = [
+        _trade("SPY", "buy", 10.0, 100.0, d),
+        _trade("SPY", "sell", 10.0, 120.0, d + timedelta(days=1)),
+        _trade("SPY", "buy", 10.0, 100.0, d + timedelta(days=2)),
+        _trade("SPY", "sell", 10.0, 95.0, d + timedelta(days=3)),
+        _trade("SPY", "buy", 10.0, 100.0, d + timedelta(days=4)),
+        _trade("SPY", "sell", 10.0, 110.0, d + timedelta(days=5)),
+    ]
+    wr, hold, w, loss_count, avg_w, avg_l, pf = _trade_stats(trades)
+    assert w == 2
+    assert loss_count == 1
+    assert avg_w == pytest.approx(150.0)  # (200+100)/2
+    assert avg_l == pytest.approx(-50.0)
+    assert pf == pytest.approx(6.0)
 
 
 # ---------------------------------------------------------------------------

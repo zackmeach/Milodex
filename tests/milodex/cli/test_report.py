@@ -423,6 +423,7 @@ def test_report_strategy_happy_path(tmp_path: Path) -> None:
         "total_return_pct",
         "cagr_pct",
         "max_drawdown_pct",
+        "max_drawdown_duration_days",
         "sharpe_ratio",
         "sortino_ratio",
         "trade_count",
@@ -432,6 +433,9 @@ def test_report_strategy_happy_path(tmp_path: Path) -> None:
         "avg_hold_days",
         "winning_trades",
         "losing_trades",
+        "avg_win_usd",
+        "avg_loss_usd",
+        "profit_factor",
         "trading_days",
         "confidence_label",
     }

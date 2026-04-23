@@ -186,6 +186,7 @@ def performance_metrics_to_dict(m: PerformanceMetrics) -> dict[str, Any]:
         "total_return_pct": m.total_return_pct,
         "cagr_pct": m.cagr_pct,
         "max_drawdown_pct": m.max_drawdown_pct,
+        "max_drawdown_duration_days": m.max_drawdown_duration_days,
         "sharpe_ratio": m.sharpe_ratio,
         "sortino_ratio": m.sortino_ratio,
         "trade_count": m.trade_count,
@@ -195,6 +196,9 @@ def performance_metrics_to_dict(m: PerformanceMetrics) -> dict[str, Any]:
         "avg_hold_days": m.avg_hold_days,
         "winning_trades": m.winning_trades,
         "losing_trades": m.losing_trades,
+        "avg_win_usd": m.avg_win_usd,
+        "avg_loss_usd": m.avg_loss_usd,
+        "profit_factor": m.profit_factor,
         "trading_days": m.trading_days,
         "confidence_label": m.confidence_label,
     }

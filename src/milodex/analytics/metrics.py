@@ -34,6 +34,7 @@ class PerformanceMetrics:
 
     # Risk metrics
     max_drawdown_pct: float
+    max_drawdown_duration_days: int
     sharpe_ratio: float | None
     sortino_ratio: float | None
 
@@ -45,6 +46,9 @@ class PerformanceMetrics:
     avg_hold_days: float | None
     winning_trades: int
     losing_trades: int
+    avg_win_usd: float | None
+    avg_loss_usd: float | None
+    profit_factor: float | None
 
     # Meta
     trading_days: int
@@ -88,7 +92,7 @@ def compute_metrics(
     daily_returns = _daily_returns(equity_curve)
 
     cagr = _cagr(total_return, trading_days) if trading_days > 1 else None
-    max_dd = _max_drawdown(equity_curve)
+    max_dd, max_dd_duration = _max_drawdown_stats(equity_curve)
     sharpe = _sharpe(daily_returns) if len(daily_returns) >= 2 else None
     sortino = _sortino(daily_returns) if len(daily_returns) >= 2 else None
 
@@ -96,7 +100,15 @@ def compute_metrics(
     sell_count = sum(1 for t in trades if str(t.get("side", "")).lower() == "sell")
     trade_count = buy_count + sell_count
 
-    win_rate, avg_hold, winning, losing = _trade_stats(trades)
+    (
+        win_rate,
+        avg_hold,
+        winning,
+        losing,
+        avg_win_usd,
+        avg_loss_usd,
+        profit_factor,
+    ) = _trade_stats(trades)
 
     confidence = _confidence_label(trade_count)
 
@@ -110,6 +122,7 @@ def compute_metrics(
         total_return_pct=total_return * 100.0,
         cagr_pct=cagr * 100.0 if cagr is not None else None,
         max_drawdown_pct=max_dd * 100.0,
+        max_drawdown_duration_days=max_dd_duration,
         sharpe_ratio=sharpe,
         sortino_ratio=sortino,
         trade_count=trade_count,
@@ -119,6 +132,9 @@ def compute_metrics(
         avg_hold_days=avg_hold,
         winning_trades=winning,
         losing_trades=losing,
+        avg_win_usd=avg_win_usd,
+        avg_loss_usd=avg_loss_usd,
+        profit_factor=profit_factor,
         trading_days=trading_days,
         confidence_label=confidence,
         equity_curve=equity_curve,
@@ -151,19 +167,32 @@ def _cagr(total_return: float, trading_days: int) -> float | None:
     return (1.0 + total_return) ** (1.0 / years) - 1.0
 
 
-def _max_drawdown(equity_curve: list[tuple[date, float]]) -> float:
+def _max_drawdown_stats(equity_curve: list[tuple[date, float]]) -> tuple[float, int]:
+    """Return ``(magnitude, duration_days)`` for the worst drawdown.
+
+    Magnitude is the fractional peak-to-trough loss. Duration is the
+    calendar-day span from the peak that preceded the max drawdown to its
+    trough. If no drawdown occurs, both values are zero.
+    """
     if not equity_curve:
-        return 0.0
+        return 0.0, 0
     peak = equity_curve[0][1]
+    peak_date = equity_curve[0][0]
     max_dd = 0.0
-    for _, value in equity_curve:
+    max_dd_peak_date = peak_date
+    max_dd_trough_date = peak_date
+    for day, value in equity_curve:
         if value > peak:
             peak = value
+            peak_date = day
         if peak > 0:
             dd = (peak - value) / peak
             if dd > max_dd:
                 max_dd = dd
-    return max_dd
+                max_dd_peak_date = peak_date
+                max_dd_trough_date = day
+    duration = (max_dd_trough_date - max_dd_peak_date).days if max_dd > 0 else 0
+    return max_dd, duration
 
 
 def _sharpe(daily_returns: list[float], risk_free_daily: float = 0.0) -> float | None:
@@ -195,11 +224,25 @@ def _sortino(daily_returns: list[float], risk_free_daily: float = 0.0) -> float 
 
 def _trade_stats(
     trades: list[dict],
-) -> tuple[float | None, float | None, int, int]:
-    """Return ``(win_rate, avg_hold_days, winning_count, losing_count)``.
+) -> tuple[
+    float | None,
+    float | None,
+    int,
+    int,
+    float | None,
+    float | None,
+    float | None,
+]:
+    """Return trade-pair statistics.
 
-    Pairs BUY/SELL trades using FIFO per symbol.  Only fully-matched round
-    trips contribute to the statistics.
+    Tuple shape: ``(win_rate, avg_hold_days, winning_count, losing_count,
+    avg_win_usd, avg_loss_usd, profit_factor)``.
+
+    Pairs BUY/SELL trades using FIFO per symbol. Only fully-matched round
+    trips contribute to the statistics. ``avg_loss_usd`` is the mean of
+    losing-pair dollar PnL (reported as a negative number for clarity);
+    ``profit_factor`` is ``gross_profit / gross_loss`` (absolute). A pair
+    with exactly zero PnL is counted as a loss (win_rate floor behavior).
     """
     from collections import defaultdict, deque
     from datetime import datetime
@@ -218,9 +261,7 @@ def _trade_stats(
         recorded_at_raw = trade.get("recorded_at")
         try:
             trade_date = (
-                datetime.fromisoformat(str(recorded_at_raw)).date()
-                if recorded_at_raw
-                else None
+                datetime.fromisoformat(str(recorded_at_raw)).date() if recorded_at_raw else None
             )
         except ValueError:
             trade_date = None
@@ -243,13 +284,25 @@ def _trade_stats(
                     pending[sym].popleft()
 
     if not pnls:
-        return None, None, 0, 0
+        return None, None, 0, 0, None, None, None
 
-    winning = sum(1 for p in pnls if p > 0)
-    losing = sum(1 for p in pnls if p <= 0)
+    winning_pnls = [p for p in pnls if p > 0]
+    losing_pnls = [p for p in pnls if p <= 0]
+    winning = len(winning_pnls)
+    losing = len(losing_pnls)
     win_rate = winning / len(pnls)
     avg_hold = sum(hold_days) / len(hold_days) if hold_days else None
-    return win_rate, avg_hold, winning, losing
+    avg_win_usd = sum(winning_pnls) / winning if winning else None
+    avg_loss_usd = sum(losing_pnls) / losing if losing else None
+    gross_profit = sum(winning_pnls)
+    gross_loss_abs = abs(sum(losing_pnls))
+    if gross_loss_abs > 0:
+        profit_factor = gross_profit / gross_loss_abs
+    elif gross_profit > 0:
+        profit_factor = math.inf
+    else:
+        profit_factor = None
+    return win_rate, avg_hold, winning, losing, avg_win_usd, avg_loss_usd, profit_factor
 
 
 def _confidence_label(trade_count: int) -> str:
