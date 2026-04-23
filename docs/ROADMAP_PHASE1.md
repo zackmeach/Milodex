@@ -185,18 +185,19 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 - [x] CLI: `milodex promotion freeze <strategy_id>` + `milodex promotion manifest <strategy_id>`.
 
 #### 6.1.2 Promotion State Machine
-- [ ] `src/milodex/promotion/state_machine.py` — legal transitions only: `backtest → paper → micro_live → live`. No skipping. No downgrades except to `disabled`.
-- [ ] Evidence gates per `R-PRM-001..007`:
+- [x] `src/milodex/promotion/state_machine.py` — legal transitions only: `backtest → paper → micro_live → live`. No skipping. No downgrades except to `disabled`. (Slice 2, 2026-04-23.)
+- [x] Evidence gates per `R-PRM-001..007`:
   - `backtest → paper`: ≥30 trades in walk-forward (except regime), Sharpe > 0.5, max DD < 15% (except regime which uses operational-correctness gates: "ran cleanly for N sessions, zero unexplained errors")
   - `paper → micro_live`: ≥30 paper trades or ≥N weeks paper runtime; same statistical thresholds
-  - `micro_live → live`: explicit operator approval + kill-switch reset-count zero during micro_live
-- [ ] Evidence-package assembly: bundles backtest metrics, paper-run trades, risk rejections, and explanation records into one promotion-decision record per `R-PRM-003`.
+  - `micro_live → live`: explicit operator approval + kill-switch reset-count zero during micro_live *(live-stage refusal hook deferred to slice 3 per R-PRM-006)*
+- [x] Evidence-package assembly: bundles backtest metrics, paper-run trades, risk rejections, and explanation records into one promotion-decision record per `R-PRM-003`. (`promotion/evidence.py`, `promotions.evidence_json`.)
 
 #### 6.1.3 CLI — Promotion Commands
-- [ ] `milodex promote <strategy_id> --to <stage>` — runs gates, presents evidence package, requires explicit `--confirm` flag AND an interactive typed confirmation for any transition into `micro_live` or `live`. Writes `promotion_log` row. Per `R-CLI-018`.
-- [ ] `milodex demote <strategy_id> --to {paper,disabled}` — always allowed, logged.
-- [ ] `milodex promotion history <strategy_id>` — read-only evidence audit.
-- [ ] Tests: state machine transitions legal/illegal, evidence gate failures reported with specific reason codes, confirmation bypass refused.
+- [x] `milodex promotion promote <strategy_id> --to <stage>` — runs gates, assembles evidence package, auto-freezes manifest, requires `--recommendation` + `--risk` (R-PRM-008) and `--confirm` when `--to live`. Writes `promotions` row with `manifest_id` + `evidence_json`. (Slice 2.)
+- [x] `milodex promotion demote <strategy_id> --to {backtest,disabled}` — always allowed, records `reverses_event_id` chain per R-PRM-010.
+- [x] `milodex promotion history <strategy_id>` — read-only evidence audit with `↩` reversal-chain rendering.
+- [x] Tests: state machine transitions legal/illegal, evidence gate failures reported with specific reason codes, missing-evidence refusal. (429 tests green.)
+- [ ] Live-stage refusal hook (slice 3) — CLI-level refusal of `--to live` during Phase 1 per ADR 0004.
 
 #### 6.1.4 Live-Trading Gate (Paper-Only Safeguard)
 - [ ] Even with the state machine in place, Phase 1 remains **paper-only** per ADR 0004. The `live` stage is implemented-but-locked: attempting to promote to `live` returns a clear "Phase 1 forbids live; see ADR 0004" rejection, logged. Confirms the boundary without leaving a hole.

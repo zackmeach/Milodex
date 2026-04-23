@@ -8,17 +8,19 @@ Promotion in Milodex is governed, not ceremonial. The purpose of each package is
 
 ## Evidence Package: backtest → paper
 
-A strategy may advance from `backtest` to `paper` only when a complete promotion evidence package exists and is attached to the governance artifact (below). The package must include, at minimum:
+A strategy may advance from `backtest` to `paper` only when a complete promotion evidence package exists and is attached to the governance artifact (below). The package must include, at minimum (markers: **[machine]** = assembled automatically by `milodex promotion promote` into `promotions.evidence_json`; **[human]** = operator-authored via CLI flag and refused if blank per R-PRM-008; **[artifact]** = produced by a separate workflow that the operator references):
 
-- the exact frozen strategy instance manifest and config fingerprint
-- a reproducible backtest run with stated assumptions
-- in-sample and out-of-sample results produced by the approved walk-forward method
-- the required backtest report metrics and benchmark comparisons (per R-BKT-005 and R-ANA- series)
-- confirmation that the strategy cleared the minimum evidence thresholds **for its strategy class** (research-target thresholds per R-PRM-004, or the operational gate for the lifecycle-proof strategy)
-- sensitivity or robustness checks across a small approved parameter range
-- confirmation that data-quality checks passed, or an explicit record of any exclusions
-- a short human-readable explanation of what the strategy is doing and why the result should or should not be trusted
-- a written promotion recommendation that enumerates known risks, weaknesses, and unresolved concerns
+- **[machine]** the exact frozen strategy instance manifest and config fingerprint (`manifest_hash`, `manifest_id` FK; auto-frozen in the same transaction as the promotion)
+- **[machine / artifact]** a reproducible backtest run with stated assumptions — the `backtest_run_id` reference is machine-captured when `--run-id` is passed; the run itself is produced by `milodex backtest`
+- **[artifact]** in-sample and out-of-sample results produced by the approved walk-forward method
+- **[machine]** the required backtest report metrics (`metrics_snapshot`: Sharpe, max-drawdown, trade count) — benchmark comparisons per R-BKT-005 / R-ANA- remain artifact-side
+- **[machine]** gate outcome (`gate_check_outcome.promotion_type`: `statistical` or `lifecycle_exempt`; `failures` list) — confirms the strategy cleared the minimum evidence thresholds **for its strategy class** (research-target per R-PRM-004, or the operational gate for the lifecycle-proof strategy)
+- **[artifact]** sensitivity or robustness checks across a small approved parameter range
+- **[artifact]** confirmation that data-quality checks passed, or an explicit record of any exclusions
+- **[human]** a short human-readable explanation of what the strategy is doing and why the result should or should not be trusted — carried in `--recommendation`
+- **[human]** a written promotion recommendation that enumerates known risks, weaknesses, and unresolved concerns — at least one `--risk` required; multiple allowed
+
+The structured-JSON blob is versioned by `schema_version` inside `evidence_json` itself (AD-2). Additional fields — `paper_trade_count`, `paper_rejection_count`, `kill_switch_trip_count`, `assembled_at` — are filled by the assembler for promotions *out of* paper; they read as `null` for `backtest → paper`.
 
 Promotion to `paper` means: **this strategy is credible enough to be tested in live market conditions without real capital** — it does not mean the strategy is trusted with money.
 

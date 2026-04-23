@@ -227,8 +227,35 @@ Operators onboarding a strategy for the first time run the freeze command once a
 
 - `milodex promotion freeze <strategy_id>` — snapshot the strategy's current YAML at its declared stage into the event store. Refuses `backtest` stage (nothing to freeze). Supports `--frozen-by <name>` for attribution.
 - `milodex promotion manifest <strategy_id>` — read-only; print the active frozen manifest for the strategy's current stage, or "No active manifest" if none exists.
+- `milodex promotion promote <strategy_id> --to <stage> --recommendation "..." --risk "..."` — governed promotion (slice 2). Assembles the evidence package, runs gate checks (Sharpe / max-drawdown / trade count unless `--lifecycle-exempt`), auto-freezes the manifest, and updates the YAML's `stage:` line — all transactionally. Refuses without `--recommendation` and at least one `--risk` (R-PRM-008).
+- `milodex promotion demote <strategy_id> --to {backtest,disabled} --reason "..."` — governed demotion. Always allowed; records `promotion_type=demotion` with `reverses_event_id` linking the prior promotion (R-PRM-010). `--to backtest` edits the YAML; `--to disabled` is ledger-only (runtime refusal lands in slice 3).
+- `milodex promotion history <strategy_id> [--limit N]` — newest-first audit log. Reversals are marked with a `↩` glyph pointing at the reversed promotion id.
 
-Both commands honor the global `--json` flag for scripting (ADR 0014).
+All commands honor the global `--json` flag for scripting (ADR 0014). The legacy top-level `milodex promote` still works but prints a one-slice deprecation banner — prefer `milodex promotion promote`.
+
+#### Standard promotion ceremony
+
+```bash
+# 1. Confirm the current ledger + active manifest.
+milodex promotion history <strategy_id>
+milodex promotion manifest <strategy_id>
+
+# 2. Promote with full evidence. Lifecycle-exempt strategies bypass statistical gates.
+milodex promotion promote <strategy_id> \
+  --to paper \
+  --recommendation "Ready for paper: <one sentence>" \
+  --risk "<risk 1>" \
+  --risk "<risk 2>" \
+  [--run-id <uuid>]          # statistical promotions only
+  [--lifecycle-exempt]        # regime / lifecycle-proof strategies only
+  [--confirm]                 # required when --to live
+
+# 3. If something goes wrong, demote with a reason.
+milodex promotion demote <strategy_id> \
+  --to backtest \
+  --reason "Post-incident: <what happened>" \
+  [--evidence-ref INC-1234]
+```
 
 ---
 
