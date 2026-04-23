@@ -20,7 +20,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 5
+    assert store.schema_version == 6
     assert {
         "_schema_version",
         "explanations",
@@ -30,6 +30,7 @@ def test_event_store_applies_initial_schema(tmp_path):
         "backtest_runs",
         "promotions",
         "portfolio_snapshots",
+        "strategy_manifests",
     }.issubset(set(store.list_table_names()))
 
 

@@ -147,6 +147,27 @@ class BacktestRunEvent:
 
 
 @dataclass(frozen=True)
+class StrategyManifestEvent:
+    """Frozen snapshot of a strategy's YAML config at a promoted stage.
+
+    The ``config_hash`` is SHA-256 over the canonicalized YAML (matching
+    :func:`milodex.strategies.loader.compute_config_hash`). ``config_json`` is
+    the canonicalized form that was fed into the hash — "what you hashed is
+    what you stored" — so slice 2's evidence package can reproduce the exact
+    config that was frozen.
+    """
+
+    strategy_id: str
+    stage: str
+    config_hash: str
+    config_json: dict[str, Any]
+    config_path: str
+    frozen_at: datetime
+    frozen_by: str
+    id: int | None = None
+
+
+@dataclass(frozen=True)
 class PortfolioSnapshotEvent:
     """Daily portfolio snapshot row (equity, cash, positions)."""
 
@@ -551,6 +572,59 @@ class EventStore:
             ).fetchall()
         return [_portfolio_snapshot_from_row(row) for row in rows]
 
+    def append_strategy_manifest(self, event: StrategyManifestEvent) -> int:
+        """Insert a frozen manifest row and return its autoincrement id."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO strategy_manifests (
+                    strategy_id,
+                    stage,
+                    config_hash,
+                    config_json,
+                    config_path,
+                    frozen_at,
+                    frozen_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.strategy_id,
+                    event.stage,
+                    event.config_hash,
+                    _dump_json(event.config_json),
+                    event.config_path,
+                    _dt(event.frozen_at),
+                    event.frozen_by,
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_strategy_manifests(self) -> list[StrategyManifestEvent]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM strategy_manifests ORDER BY id ASC").fetchall()
+        return [_strategy_manifest_from_row(row) for row in rows]
+
+    def get_active_manifest_for_strategy(
+        self, strategy_id: str, stage: str
+    ) -> StrategyManifestEvent | None:
+        """Return the most recent frozen manifest for ``(strategy_id, stage)``.
+
+        ``None`` when the strategy has never been frozen at that stage.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM strategy_manifests
+                WHERE strategy_id = ? AND stage = ?
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (strategy_id, stage),
+            ).fetchone()
+        return None if row is None else _strategy_manifest_from_row(row)
+
     def list_portfolio_snapshots_for_strategy(
         self, strategy_id: str
     ) -> list[PortfolioSnapshotEvent]:
@@ -724,6 +798,19 @@ def _backtest_run_from_row(row: sqlite3.Row) -> BacktestRunEvent:
             None if row["commission_per_trade"] is None else float(row["commission_per_trade"])
         ),
         metadata=dict(_load_json(row["metadata_json"])),
+    )
+
+
+def _strategy_manifest_from_row(row: sqlite3.Row) -> StrategyManifestEvent:
+    return StrategyManifestEvent(
+        id=int(row["id"]),
+        strategy_id=str(row["strategy_id"]),
+        stage=str(row["stage"]),
+        config_hash=str(row["config_hash"]),
+        config_json=dict(_load_json(row["config_json"])),
+        config_path=str(row["config_path"]),
+        frozen_at=_parse_datetime(row["frozen_at"]),
+        frozen_by=str(row["frozen_by"]),
     )
 
 
