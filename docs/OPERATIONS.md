@@ -115,6 +115,10 @@ Phase 1 uses a **single-operator, serialized-critical-action** concurrency model
 
 Concurrency guards are implemented via file locks under `state/locks/` (per R-XC-006). The goal is to avoid race conditions and keep runtime behavior easy to audit. This also dovetails with R-EXE-013 (single strategy runs at a time in Phase 1).
 
+### Runner and intraday 1D bars
+
+`milodex strategy run` is safe to start at any point in the trading day. On a 1D tempo, the in-progress bar fetched during market hours shares its timestamp with the post-close finalized bar, so the runner withholds its `last_processed_bar_at` watermark until the market is closed. The post-close cycle re-evaluates the now-finalized same-timestamp bar exactly once, and subsequent polls are suppressed by the watermark — no duplicate records.
+
 ---
 
 ## Command Safety Classification

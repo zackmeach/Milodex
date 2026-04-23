@@ -972,3 +972,92 @@ def test_runner_second_sigint_during_prompt_forces_kill_switch(
     assert broker.cancel_all_orders_calls == 1
     assert kill_switch_store.get_state().active is True
     assert event_store.list_strategy_runs()[0].exit_reason == "kill_switch"
+
+
+# ---------------------------------------------------------------------------
+# Regression: in-progress bar must not poison _last_processed_bar_at
+# ---------------------------------------------------------------------------
+
+
+def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """An in-progress bar must not poison the same-timestamp post-close bar.
+
+    Regression for the 2026-04-23 bug: a mid-day cycle used to mark today's
+    in-progress bar as seen, which caused the same-timestamp finalized bar
+    to be skipped forever by the ``already_seen`` check.
+
+    The fix still allows run_cycle to evaluate (and possibly submit) during
+    market hours — that's the runner's intended design — but withholds the
+    ``_last_processed_bar_at`` watermark update until the market is closed.
+    That way the post-close cycle finds ``_last_processed_bar_at = None``
+    (or ``< today``) and re-evaluates the now-finalized bar.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=True,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, strategy_config_dir / "regime_runner.yaml")
+
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    # --- Cycle 1: market is open, bar is in-progress -------------------------
+    results_during_market = runner.run_cycle()
+
+    assert len(results_during_market) >= 1, (
+        "Runner must still evaluate during market hours; only the watermark update is withheld."
+    )
+    assert runner._last_processed_bar_at is None, (
+        "In-progress bar must not advance _last_processed_bar_at; doing so "
+        "would suppress the same-timestamp finalized-bar evaluation below."
+    )
+
+    # --- Cycle 2: market closed, same bar is now final ------------------------
+    broker._market_open = False
+    results_post_close = runner.run_cycle()
+
+    assert len(results_post_close) >= 1, (
+        "Once the market closes on the same-day bar, the runner must "
+        "re-evaluate it instead of skipping forever."
+    )
+    assert runner._last_processed_bar_at is not None, (
+        "Post-close evaluation must advance the watermark so subsequent "
+        "cycles on the same bar are correctly treated as already-seen."
+    )
+
+    # --- Cycle 3: still post-close, same bar, watermark now set --------------
+    results_next_poll = runner.run_cycle()
+    assert results_next_poll == [], (
+        "Once the watermark is set, further polls on the same bar must be treated as already-seen."
+    )

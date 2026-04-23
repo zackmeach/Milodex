@@ -84,7 +84,14 @@ class StrategyRunner:
         self.shutdown(mode=self._requested_shutdown or "controlled")
 
     def run_cycle(self) -> list[ExecutionResult]:
-        """Process one new daily close when available."""
+        """Process one new daily close when available.
+
+        Only records ``_last_processed_bar_at`` when the market is closed: a
+        1D bar fetched while the market is open is still in-progress and
+        shares its timestamp with the post-close finalized bar, so advancing
+        the watermark mid-session would suppress the authoritative close
+        evaluation via the same-timestamp ``already_seen`` check.
+        """
         bars_by_symbol = self._fetch_bars_by_symbol()
         primary_bars = bars_by_symbol[self._evaluation_symbol()]
         latest_bar = primary_bars.latest()
@@ -105,7 +112,8 @@ class StrategyRunner:
         )
         decision = self._loaded.strategy.evaluate(primary_bars, context)
         intents = decision.intents
-        self._last_processed_bar_at = latest_bar.timestamp
+        if not self._broker.is_market_open():
+            self._last_processed_bar_at = latest_bar.timestamp
 
         if not intents:
             self._record_no_action(
