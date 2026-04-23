@@ -619,6 +619,90 @@ class EventStore:
             connection.commit()
             return int(cursor.lastrowid)
 
+    def append_manifest_and_promotion(
+        self,
+        *,
+        manifest: StrategyManifestEvent,
+        promotion: PromotionEvent,
+    ) -> tuple[int, int]:
+        """Insert a manifest row and a promotion row in a single transaction.
+
+        The returned promotion carries ``manifest_id`` set to the newly-inserted
+        manifest's id. Both inserts share one ``_connect()`` context so a
+        failure on either side rolls the whole thing back — promotion evidence
+        and the manifest it references are always written together or not at
+        all (slice-2 plan AD-5).
+        """
+        with self._connect() as connection:
+            manifest_cursor = connection.execute(
+                """
+                INSERT INTO strategy_manifests (
+                    strategy_id,
+                    stage,
+                    config_hash,
+                    config_json,
+                    config_path,
+                    frozen_at,
+                    frozen_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    manifest.strategy_id,
+                    manifest.stage,
+                    manifest.config_hash,
+                    _dump_json(manifest.config_json),
+                    manifest.config_path,
+                    _dt(manifest.frozen_at),
+                    manifest.frozen_by,
+                ),
+            )
+            manifest_id = int(manifest_cursor.lastrowid)
+            promotion_cursor = connection.execute(
+                """
+                INSERT INTO promotions (
+                    recorded_at,
+                    strategy_id,
+                    from_stage,
+                    to_stage,
+                    promotion_type,
+                    approved_by,
+                    backtest_run_id,
+                    sharpe_ratio,
+                    max_drawdown_pct,
+                    trade_count,
+                    notes,
+                    manifest_id,
+                    reverses_event_id,
+                    evidence_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dt(promotion.recorded_at),
+                    promotion.strategy_id,
+                    promotion.from_stage,
+                    promotion.to_stage,
+                    promotion.promotion_type,
+                    promotion.approved_by,
+                    promotion.backtest_run_id,
+                    promotion.sharpe_ratio,
+                    promotion.max_drawdown_pct,
+                    promotion.trade_count,
+                    promotion.notes,
+                    manifest_id,
+                    promotion.reverses_event_id,
+                    (
+                        None
+                        if promotion.evidence_json is None
+                        else _dump_json(promotion.evidence_json)
+                    ),
+                ),
+            )
+            promotion_id = int(promotion_cursor.lastrowid)
+            connection.commit()
+        return manifest_id, promotion_id
+
     def list_strategy_manifests(self) -> list[StrategyManifestEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM strategy_manifests ORDER BY id ASC").fetchall()

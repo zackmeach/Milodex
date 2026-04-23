@@ -18,7 +18,19 @@ Lifecycle-exempt strategies (promotion_type='lifecycle_exempt')
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+from milodex.core.event_store import PromotionEvent, StrategyManifestEvent
+from milodex.strategies.loader import canonicalize_config_data, load_strategy_config
+
+if TYPE_CHECKING:
+    from milodex.core.event_store import EventStore
+    from milodex.promotion.evidence import EvidencePackage
 
 STAGE_ORDER: list[str] = ["backtest", "paper", "micro_live", "live"]
 
@@ -105,9 +117,7 @@ def check_gate(
         )
 
     if trade_count is None or trade_count < MIN_TRADES:
-        failures.append(
-            f"Trade count must be >= {MIN_TRADES} (got {_fmt_or_none(trade_count)})"
-        )
+        failures.append(f"Trade count must be >= {MIN_TRADES} (got {_fmt_or_none(trade_count)})")
 
     return PromotionCheckResult(
         allowed=len(failures) == 0,
@@ -121,3 +131,134 @@ def check_gate(
 
 def _fmt_or_none(value: float | int | None) -> str:
     return "None" if value is None else str(value)
+
+
+def transition(
+    *,
+    config_path: Path,
+    to_stage: str,
+    gate_result: PromotionCheckResult,
+    evidence: EvidencePackage,
+    approved_by: str,
+    event_store: EventStore,
+    backtest_run_id: str | None = None,
+    notes: str | None = None,
+    now: datetime | None = None,
+) -> PromotionEvent:
+    """Atomic promotion: freeze + append + YAML update (plan AD-5).
+
+    Sequence:
+      1. Build the manifest for ``to_stage`` from the YAML with its ``stage:``
+         line mentally set to the target — the hash must match what the runtime
+         will see AFTER step 3.
+      2. Insert manifest + promotion (with evidence_json) in a single event-store
+         transaction via :meth:`EventStore.append_manifest_and_promotion`.
+      3. After the durable commit succeeds, update the YAML's ``stage:`` line
+         in-place. A failure here leaves durable state coherent (manifest and
+         promotion are written, YAML is stale) and the next cycle's drift check
+         surfaces the discrepancy — the standard "durable log first, side
+         effects after" pattern.
+
+    Callers must have already:
+      - called :func:`validate_stage_transition`
+      - obtained a passing ``gate_result`` from :func:`check_gate`
+      - assembled ``evidence`` via ``assemble_evidence_package`` with a
+        ``manifest_hash`` matching the post-update YAML hash
+    """
+    if not gate_result.allowed:
+        msg = (
+            "transition() called with a failed gate check — refuse. "
+            f"Failures: {gate_result.failures}"
+        )
+        raise ValueError(msg)
+
+    config = load_strategy_config(config_path)
+    from_stage = config.stage
+    recorded_at = now or datetime.now(tz=UTC)
+
+    canonical = canonicalize_config_data(_raw_data_with_stage(config.raw_data, to_stage))
+    config_hash = _hash_canonical(canonical)
+
+    if config_hash != evidence.manifest_hash:
+        msg = (
+            "Evidence manifest_hash does not match the post-update YAML hash. "
+            f"Expected {config_hash}, evidence carried {evidence.manifest_hash}. "
+            "Re-assemble the evidence package with the correct hash and retry."
+        )
+        raise ValueError(msg)
+
+    manifest = StrategyManifestEvent(
+        strategy_id=config.strategy_id,
+        stage=to_stage,
+        config_hash=config_hash,
+        config_json=canonical,
+        config_path=str(config_path),
+        frozen_at=recorded_at,
+        frozen_by=approved_by,
+    )
+    promotion = PromotionEvent(
+        strategy_id=config.strategy_id,
+        from_stage=from_stage,
+        to_stage=to_stage,
+        promotion_type=gate_result.promotion_type,
+        approved_by=approved_by,
+        recorded_at=recorded_at,
+        backtest_run_id=backtest_run_id,
+        sharpe_ratio=gate_result.sharpe_ratio,
+        max_drawdown_pct=gate_result.max_drawdown_pct,
+        trade_count=gate_result.trade_count,
+        notes=notes,
+        evidence_json=evidence.as_dict(),
+    )
+
+    manifest_id, promotion_id = event_store.append_manifest_and_promotion(
+        manifest=manifest,
+        promotion=promotion,
+    )
+
+    _update_stage_in_yaml(config_path, from_stage, to_stage)
+
+    return PromotionEvent(
+        strategy_id=promotion.strategy_id,
+        from_stage=promotion.from_stage,
+        to_stage=promotion.to_stage,
+        promotion_type=promotion.promotion_type,
+        approved_by=promotion.approved_by,
+        recorded_at=promotion.recorded_at,
+        backtest_run_id=promotion.backtest_run_id,
+        sharpe_ratio=promotion.sharpe_ratio,
+        max_drawdown_pct=promotion.max_drawdown_pct,
+        trade_count=promotion.trade_count,
+        notes=promotion.notes,
+        manifest_id=manifest_id,
+        reverses_event_id=None,
+        evidence_json=promotion.evidence_json,
+        id=promotion_id,
+    )
+
+
+def _raw_data_with_stage(raw_data: dict, to_stage: str) -> dict:
+    """Return a deep-ish copy of ``raw_data`` with ``strategy.stage`` set to ``to_stage``."""
+    strategy = dict(raw_data["strategy"])
+    strategy["stage"] = to_stage
+    return {**raw_data, "strategy": strategy}
+
+
+def _hash_canonical(canonical: dict) -> str:
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _update_stage_in_yaml(path: Path, from_stage: str, to_stage: str) -> None:
+    """Replace the ``stage:`` line in the YAML in-place (preserves comments/formatting)."""
+    content = path.read_text(encoding="utf-8")
+    old = f'stage: "{from_stage}"'
+    new = f'stage: "{to_stage}"'
+    if old not in content:
+        msg = (
+            f"Could not find 'stage: \"{from_stage}\"' in {path}. "
+            "Durable state is written, but the YAML could not be updated; "
+            "the next cycle's drift check will flag this discrepancy."
+        )
+        raise ValueError(msg)
+    path.write_text(content.replace(old, new, 1), encoding="utf-8")
