@@ -1,6 +1,6 @@
 # Phase 1 Completion Roadmap
 
-**Status as of 2026-04-22:** Phase 1.0 and 1.1 complete. Phase 1.2 in progress (event-store + strategy foundation + both strategies landed with golden tests; StrategyRunner + dual-stop dialog still pending). Phase 1.3 and 1.4 not started. Estimated completion: **60–70%** of Phase 1 scope.
+**Status as of 2026-04-23:** Phase 1.0, 1.1, 1.2 complete. SC-3, SC-4, SC-5 evidenced live against Alpaca paper during the regime shakeout (see §2). Phase 1.3 and 1.4 not started. Estimated completion: **70–75%** of Phase 1 scope.
 
 This roadmap is the explicit, ordered plan to finish Phase 1. It is written against the authoritative scope in [VISION.md](VISION.md#detailed-roadmap), [SRS.md](SRS.md#phase-1-success-criteria), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), and the ADRs. Requirement codes (`R-XX-NNN`) refer to entries in SRS.md.
 
@@ -45,11 +45,11 @@ This roadmap is the explicit, ordered plan to finish Phase 1. It is written agai
 
 From [SRS.md §Phase 1 Success Criteria](SRS.md#phase-1-success-criteria). Phase 1 is done when **all six** are simultaneously true. This roadmap is anchored to these.
 
-- [ ] **SC-1.** Both strategies (SPY/SHY 200-DMA regime + meanrev RSI2 pullback) defined entirely in `configs/*.yaml`. — *Already ✅ for config. Still requires matching runtime.*
+- [ ] **SC-1.** Both strategies (SPY/SHY 200-DMA regime + meanrev RSI2 pullback) defined entirely in `configs/*.yaml`. — *Already ✅ for config and runtime; will close formally with the Phase 1.4 frozen-manifest work.*
 - [ ] **SC-2.** Each strategy backtestable from the CLI over a multi-year range. Meanrev produces core metrics; regime produces deterministic output + explanation records per `R-XC-008`.
-- [ ] **SC-3.** Each strategy, unchanged, runs in paper mode against Alpaca and submits real paper orders when its rule fires.
-- [ ] **SC-4.** `RiskEvaluator` has rejected at least one real attempted trade in development (non-synthetic evidence).
-- [ ] **SC-5.** Kill switch has been triggered in practice, verified to halt, verified to require manual reset.
+- [x] **SC-3.** Each strategy, unchanged, runs in paper mode against Alpaca and submits real paper orders when its rule fires. — *Regime evidenced 2026-04-23: session `09877e1e-aed0-4b6d-bc76-c4a1bce504fd` fired `BUY SPY x12 — allowed`, broker order `cfa3e348-35a` filled at $710.21. Audit row: `explanations#9320`. Meanrev half pending its own shakeout (§8 item 7).*
+- [x] **SC-4.** `RiskEvaluator` has rejected at least one real attempted trade in development (non-synthetic evidence). — *Evidenced 2026-04-23: session `ac0a6620-1a22-4728-bc08-6c7a8f4551ae` attempted `BUY SPY x141` ($100k notional) and was rejected by four simultaneous risk checks (`max_order_value_exceeded`, `max_single_position_exceeded`, `max_total_exposure_exceeded`, `max_concurrent_positions_exceeded`). Audit row: `explanations#9319`. Driving config defect (`allocation_pct: 1.00`) fixed in commit `ca76985`.*
+- [x] **SC-5.** Kill switch has been triggered in practice, verified to halt, verified to require manual reset. — *Evidenced 2026-04-23: activated via runner `k` shutdown (`kill_switch_events#3`), then a manual `trade submit SPY` was refused with reason `kill_switch_active` (`explanations#9322`), reset via the new `trade kill-switch reset --confirm` (`kill_switch_events#4`), and the same trade then succeeded (`explanations#9347`). The reset CLI was missing entirely until commit `a56de90`.*
 - [ ] **SC-6.** Operator can answer *"is this strategy making or losing money, and how does it compare to SPY?"* from the CLI alone.
 
 ---
@@ -224,9 +224,9 @@ A suggested linear path through the above, grouped into shippable units:
 2. **Strategy base class + loader + config hashing.** (§4.1.2) — completed 2026-04-21.
 3. **Regime strategy implementation + golden tests.** (§4.1.3) — completed 2026-04-21.
 4. **Meanrev strategy implementation + golden tests.** (§4.1.4) — completed 2026-04-22.
-5. **StrategyRunner + dual-stop dialog + `strategy run` CLI.** (§4.1.5) — next up.
-6. **Regime strategy paper-session shakeout + kill-switch exercise.** (achieves SC-3, SC-4, SC-5 against the simpler strategy.)
-7. **Meanrev paper-session shakeout.**
+5. **StrategyRunner + dual-stop dialog + `strategy run` CLI.** (§4.1.5) — completed 2026-04-22; per-cycle stdout streaming added 2026-04-23 (commit `9b0ecc1`).
+6. **Regime strategy paper-session shakeout + kill-switch exercise.** (achieves SC-3, SC-4, SC-5 against the simpler strategy.) — completed 2026-04-23. Two findings landed during the shakeout: regime `allocation_pct` was 1.00 against a 0.10 global cap (commit `ca76985`); `trade kill-switch` had no operator-facing reset subcommand (commit `a56de90`). Adjacent test-isolation pollution leak fixed in commit `048d4fc`.
+7. **Meanrev paper-session shakeout.** — next up.
 8. **Backtest engine + walk-forward splitter + `backtest` CLI.** (§5.1.1)
 9. **Analytics metrics + SPY benchmark + trust report + `analytics` CLI.** (§5.1.2 / §5.1.3)
 10. **CLI `--json` formatter abstraction + `reconcile` command.** (§5.1.3 bottom)
