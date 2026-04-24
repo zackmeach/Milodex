@@ -1,4 +1,15 @@
-"""backtest command."""
+"""backtest command.
+
+Two paths:
+
+- Without ``--walk-forward``: single whole-period backtest. Metrics reflect
+  the full ``[start, end]`` window and are reported as-is.
+- With ``--walk-forward``: runs the walk-forward orchestrator which simulates
+  each OOS test window independently and reports OOS-aggregate metrics (the
+  ones the promotion gate looks at). Per-window results and stability
+  diagnostics are attached so a reviewer can see whether the aggregate signal
+  comes from the whole history or leans on a single lucky window.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +17,8 @@ import argparse
 from typing import Any
 
 from milodex.backtesting.engine import BacktestResult
-from milodex.backtesting.walk_forward import WalkForwardSplitter
+from milodex.backtesting.walk_forward_runner import WalkForwardResult, run_walk_forward
 from milodex.cli._shared import (
-    TIMEFRAME_CHOICES,
     CommandContext,
     add_global_flags,
     format_money,
@@ -41,7 +51,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     backtest_parser.add_argument(
         "--walk-forward",
         action="store_true",
-        help="Run walk-forward validation windows in addition to the full window.",
+        help=(
+            "Run walk-forward validation: simulate each OOS test window "
+            "independently and report OOS-aggregate metrics."
+        ),
     )
     backtest_parser.add_argument(
         "--run-id",
@@ -60,49 +73,48 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         engine_kwargs["slippage_pct"] = args.slippage
 
     engine = ctx.get_backtest_engine(args.strategy_id, **engine_kwargs)
-    backtest_result = engine.run(start, end, run_id=args.run_id)
 
-    walk_windows = None
     if args.walk_forward:
-        loaded = engine._loaded  # noqa: SLF001
-        from milodex.backtesting.engine import _trading_days_in_range
+        return _run_walk_forward(engine, start, end, args)
 
-        all_bars = ctx.data_provider_factory().get_bars(
-            symbols=list(loaded.context.universe),
-            timeframe=TIMEFRAME_CHOICES["1d"],
-            start=start,
-            end=end,
+    backtest_result = engine.run(start, end, run_id=args.run_id)
+    return _build_backtest_result(backtest_result)
+
+
+def _run_walk_forward(engine, start, end, args) -> CommandResult:
+    loaded = engine._loaded  # noqa: SLF001
+    wf_config = loaded.config.backtest
+    wf_windows_count = int(wf_config.get("walk_forward_windows", 4))
+
+    from milodex.backtesting.engine import _trading_days_in_range
+
+    all_bars = engine.prefetch_bars(start, end)
+    trading_days = _trading_days_in_range(all_bars, start, end)
+    total_days = len(trading_days)
+    if total_days < 2:
+        raise ValueError(f"Not enough trading days in [{start}, {end}] for walk-forward.")
+    test_days = max(1, total_days // (wf_windows_count + 1))
+    train_days = total_days - wf_windows_count * test_days
+    if train_days < 1:
+        raise ValueError(
+            f"Walk-forward window math yields train_days={train_days}. "
+            f"Widen the date range or reduce walk_forward_windows."
         )
-        trading_days = _trading_days_in_range(all_bars, start, end)
-        wf_config = loaded.config.backtest
-        wf_windows_count = int(wf_config.get("walk_forward_windows", 4))
-        total_days = len(trading_days)
-        if total_days >= 2:
-            test_days = max(1, total_days // (wf_windows_count + 1))
-            train_days = total_days - wf_windows_count * test_days
-            if train_days >= 1:
-                splitter = WalkForwardSplitter()
-                walk_windows = [
-                    {
-                        "train_start": ts.isoformat(),
-                        "train_end": te.isoformat(),
-                        "test_start": vs.isoformat(),
-                        "test_end": ve.isoformat(),
-                    }
-                    for ts, te, vs, ve in splitter.split(
-                        trading_days,
-                        train_days=train_days,
-                        test_days=test_days,
-                        step_days=test_days,
-                    )
-                ]
 
-    return _build_backtest_result(backtest_result, walk_forward_windows=walk_windows)
+    result = run_walk_forward(
+        engine,
+        start_date=start,
+        end_date=end,
+        train_days=train_days,
+        test_days=test_days,
+        step_days=test_days,
+        initial_equity=args.initial_equity,
+        run_id=args.run_id,
+    )
+    return _build_walk_forward_result(result)
 
 
-def _build_backtest_result(
-    result: BacktestResult, *, walk_forward_windows: list | None
-) -> CommandResult:
+def _build_backtest_result(result: BacktestResult) -> CommandResult:
     trade_summary = f"{result.trade_count} ({result.buy_count} buys, {result.sell_count} sells)"
     lines = [
         "Backtest Result",
@@ -132,12 +144,114 @@ def _build_backtest_result(
         "slippage_pct": result.slippage_pct,
         "commission_per_trade": result.commission_per_trade,
     }
-    if walk_forward_windows:
-        lines.append(f"Walk-forward windows: {len(walk_forward_windows)}")
-        data["walk_forward_windows"] = walk_forward_windows
-
-    _attach_uncertainty_label(result, data, lines)
+    _attach_uncertainty_label(
+        family=_strategy_family(result.strategy_id),
+        trade_count=result.trade_count,
+        data=data,
+        lines=lines,
+    )
     return CommandResult(command="backtest", data=data, human_lines=lines)
+
+
+def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
+    stability = result.stability
+    lines = [
+        "Backtest Result (walk-forward)",
+        f"Strategy:       {result.strategy_id}",
+        f"Run ID:         {result.run_id}",
+        f"Period:         {result.start_date} to {result.end_date}",
+        f"Windows:        {len(result.windows)} "
+        f"(train={result.train_days}d, test={result.test_days}d, step={result.step_days}d)",
+        f"Initial equity: {format_money(result.initial_equity)}",
+        "",
+        "OOS aggregate (metrics the promotion gate evaluates):",
+        f"  Trading days: {result.oos_trading_days}",
+        f"  Trades:       {result.oos_trade_count}",
+        f"  Total return: {result.oos_total_return_pct:+.2f}%",
+        f"  Sharpe:       {_fmt_optional(result.oos_sharpe, '.2f')}",
+        f"  Max drawdown: {result.oos_max_drawdown_pct:.2f}%",
+        "",
+        "Stability across windows:",
+        f"  Sharpe min/max/std: "
+        f"{_fmt_optional(stability.sharpe_min, '.2f')} / "
+        f"{_fmt_optional(stability.sharpe_max, '.2f')} / "
+        f"{_fmt_optional(stability.sharpe_std, '.2f')}",
+        f"  Positive windows: {stability.windows_positive} / {len(result.windows)}",
+        f"  Negative windows: {stability.windows_negative} / {len(result.windows)}",
+        f"  Single-window dependency: {'YES' if stability.single_window_dependency else 'no'}",
+    ]
+    if result.windows:
+        lines.append("")
+        lines.append("Per-window OOS results:")
+        for window in result.windows:
+            lines.append(
+                f"  #{window.index}  "
+                f"{window.test_start} -> {window.test_end}  "
+                f"trades={window.trade_count}  "
+                f"return={window.total_return_pct:+.2f}%  "
+                f"sharpe={_fmt_optional(window.sharpe, '.2f')}  "
+                f"maxDD={window.max_drawdown_pct:.2f}%"
+            )
+
+    data: dict[str, Any] = {
+        "run_id": result.run_id,
+        "strategy_id": result.strategy_id,
+        "start_date": result.start_date.isoformat(),
+        "end_date": result.end_date.isoformat(),
+        "walk_forward": True,
+        "train_days": result.train_days,
+        "test_days": result.test_days,
+        "step_days": result.step_days,
+        "initial_equity": result.initial_equity,
+        "oos_aggregate": {
+            "trading_days": result.oos_trading_days,
+            "trade_count": result.oos_trade_count,
+            "total_return_pct": result.oos_total_return_pct,
+            "sharpe": result.oos_sharpe,
+            "max_drawdown_pct": result.oos_max_drawdown_pct,
+        },
+        "stability": {
+            "sharpe_min": stability.sharpe_min,
+            "sharpe_max": stability.sharpe_max,
+            "sharpe_std": stability.sharpe_std,
+            "windows_positive": stability.windows_positive,
+            "windows_negative": stability.windows_negative,
+            "single_window_dependency": stability.single_window_dependency,
+        },
+        "windows": [
+            {
+                "index": w.index,
+                "train_start": w.train_start.isoformat(),
+                "train_end": w.train_end.isoformat(),
+                "test_start": w.test_start.isoformat(),
+                "test_end": w.test_end.isoformat(),
+                "trading_days": w.trading_days,
+                "trade_count": w.trade_count,
+                "total_return_pct": w.total_return_pct,
+                "sharpe": w.sharpe,
+                "max_drawdown_pct": w.max_drawdown_pct,
+            }
+            for w in result.windows
+        ],
+    }
+    _attach_uncertainty_label(
+        family=_strategy_family(result.strategy_id),
+        trade_count=result.oos_trade_count,
+        data=data,
+        lines=lines,
+    )
+    if stability.single_window_dependency:
+        lines.append(
+            "WARNING: aggregate return depends on a single window — "
+            "dropping the best-returning window flips the sign. Treat as fragile."
+        )
+    return CommandResult(command="backtest", data=data, human_lines=lines)
+
+
+def _fmt_optional(value: float | None, spec: str) -> str:
+    if value is None:
+        return "n/a"
+    return format(value, spec)
 
 
 # Statistical minimum before a backtest is considered evidence-bearing
@@ -148,30 +262,18 @@ _STATISTICAL_MIN_TRADES = 30
 
 
 def _strategy_family(strategy_id: str) -> str:
-    """Return the first dot-segment of a strategy_id — the family.
-
-    Example: ``regime.daily.sma200_rotation.spy_shy.v1`` → ``regime``.
-    """
     return strategy_id.split(".", 1)[0] if strategy_id else ""
 
 
 def _attach_uncertainty_label(
-    result: BacktestResult, data: dict[str, Any], lines: list[str]
+    *, family: str, trade_count: int, data: dict[str, Any], lines: list[str]
 ) -> None:
-    """Annotate output with R-CLI-014 confidence labels, R-PRM-004-aware.
-
-    Regime-family runs get ``evidence_basis='operational'`` — the
-    lifecycle-proof platform check, not a statistical one. Non-regime
-    runs below the 30-trade minimum are labeled ``'insufficient
-    evidence'`` per R-CLI-014.
-    """
-    family = _strategy_family(result.strategy_id)
     if family == "regime":
         data["evidence_basis"] = "operational"
         lines.append("Evidence basis: operational (regime strategy, R-PRM-004)")
         return
-    if result.trade_count < _STATISTICAL_MIN_TRADES:
-        reason = f"trade count {result.trade_count} < {_STATISTICAL_MIN_TRADES} statistical minimum"
+    if trade_count < _STATISTICAL_MIN_TRADES:
+        reason = f"trade count {trade_count} < {_STATISTICAL_MIN_TRADES} statistical minimum"
         data["uncertainty_label"] = "insufficient evidence"
         data["uncertainty_reason"] = reason
         lines.append(f"Confidence:     insufficient evidence ({reason})")

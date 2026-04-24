@@ -33,7 +33,6 @@ def _result(strategy_id: str, trade_count: int) -> BacktestResult:
 def test_statistical_strategy_below_threshold_flagged_insufficient():
     result = _build_backtest_result(
         _result("meanrev.daily.rsi2pullback.v1", trade_count=12),
-        walk_forward_windows=None,
     )
     assert result.data["uncertainty_label"] == "insufficient evidence"
     assert "12 < 30" in result.data["uncertainty_reason"]
@@ -43,7 +42,6 @@ def test_statistical_strategy_below_threshold_flagged_insufficient():
 def test_statistical_strategy_at_or_above_threshold_not_flagged():
     result = _build_backtest_result(
         _result("meanrev.daily.rsi2pullback.v1", trade_count=30),
-        walk_forward_windows=None,
     )
     assert "uncertainty_label" not in result.data
     assert not any("insufficient" in ln for ln in result.human_lines)
@@ -52,7 +50,6 @@ def test_statistical_strategy_at_or_above_threshold_not_flagged():
 def test_regime_strategy_gets_operational_evidence_basis():
     result = _build_backtest_result(
         _result("regime.daily.sma200_rotation.spy_shy.v1", trade_count=2),
-        walk_forward_windows=None,
     )
     assert result.data["evidence_basis"] == "operational"
     assert "uncertainty_label" not in result.data
@@ -63,7 +60,6 @@ def test_regime_strategy_exempt_even_at_high_trade_count():
     """Regime never gets a statistical label, regardless of trade count."""
     result = _build_backtest_result(
         _result("regime.daily.sma200_rotation.spy_shy.v1", trade_count=500),
-        walk_forward_windows=None,
     )
     assert result.data["evidence_basis"] == "operational"
     assert "uncertainty_label" not in result.data

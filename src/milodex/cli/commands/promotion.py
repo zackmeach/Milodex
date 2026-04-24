@@ -316,6 +316,15 @@ def _require_evidence_inputs(args: argparse.Namespace) -> None:
 def _metrics_from_run(
     run_id: str | None, event_store: Any
 ) -> tuple[float | None, float | None, int | None]:
+    """Sharpe, max-drawdown, trade-count for a backtest run.
+
+    For walk-forward runs, returns the OOS-aggregate metrics stored in run
+    metadata by the orchestrator — *not* the whole-period numbers. This is the
+    promotion-gate hookup for ADR 0021: the gate evaluates evidence from
+    out-of-sample data, not from data the strategy implicitly had access to.
+    For single whole-period runs, falls through to :func:`metrics_for_run`
+    which derives metrics from recorded trades.
+    """
     if run_id is None:
         return None, None, None
     from milodex.cli.commands.analytics import metrics_for_run
@@ -323,6 +332,14 @@ def _metrics_from_run(
     run_ = event_store.get_backtest_run(run_id)
     if run_ is None:
         raise ValueError(f"Backtest run not found: {run_id}")
+    metadata = run_.metadata or {}
+    if metadata.get("walk_forward") and isinstance(metadata.get("oos_aggregate"), dict):
+        oos = metadata["oos_aggregate"]
+        return (
+            oos.get("sharpe"),
+            oos.get("max_drawdown_pct"),
+            oos.get("trade_count"),
+        )
     metrics = metrics_for_run(run_, event_store)
     return metrics.sharpe_ratio, metrics.max_drawdown_pct, metrics.trade_count
 
