@@ -63,10 +63,17 @@ class MeanrevRsi2PullbackStrategy(Strategy):
         _ = bars
 
         parameters = _validated_parameters(context)
+        # Scope "open positions" to this strategy's declared universe. A
+        # position on a symbol outside the universe was not opened by this
+        # strategy and is not ours to unwind — the broker account is shared
+        # across strategies in paper mode. Without this filter, meanrev sees
+        # e.g. the regime strategy's SPY position, decides RSI > 50, and
+        # emits a SELL intent against the other strategy's holdings.
+        universe_symbols = {symbol.upper() for symbol in context.universe}
         open_positions = {
             symbol.upper(): float(quantity)
             for symbol, quantity in context.positions.items()
-            if float(quantity) > 0
+            if float(quantity) > 0 and symbol.upper() in universe_symbols
         }
         bars_by_symbol = {
             symbol.upper(): barset for symbol, barset in context.bars_by_symbol.items()

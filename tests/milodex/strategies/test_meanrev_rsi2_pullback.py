@@ -70,6 +70,38 @@ def test_meanrev_exits_when_rsi_above_exit_threshold() -> None:
     ]
 
 
+def test_meanrev_ignores_positions_outside_declared_universe() -> None:
+    """Regression: a position on a symbol outside this strategy's universe
+    belongs to some other strategy (or to the operator). Meanrev must not
+    treat it as its own and emit an exit. Observed 2026-04-24 against a
+    paper account that already held SPY from a regime-strategy session.
+    """
+    strategy = MeanrevRsi2PullbackStrategy()
+    universe = ("AAA",)
+    aaa_closes = _flat_series(100.0, length=260)
+    # SPY bars with RSI > 50 — would trigger rsi_exit if SPY were treated
+    # as an open meanrev position. It's not in meanrev's universe.
+    spy_closes = _ramp_with_recovery(base=100.0)
+
+    context = _context(
+        universe=universe,
+        positions={"SPY": 13.0},
+        equity=10_000.0,
+        max_concurrent_positions=2,
+        ranking_enabled=True,
+        bars_by_symbol={
+            "AAA": _barset(aaa_closes),
+            "SPY": _barset(spy_closes),
+        },
+    )
+
+    decision = strategy.evaluate(_barset([1.0]), context)
+    sell_intents = [i for i in decision.intents if i.side == OrderSide.SELL]
+    assert sell_intents == [], (
+        f"meanrev emitted exit intents for out-of-universe positions: {sell_intents}"
+    )
+
+
 def test_meanrev_exits_on_stop_loss_from_entry_state() -> None:
     strategy = MeanrevRsi2PullbackStrategy()
     universe = ("FFF",)
