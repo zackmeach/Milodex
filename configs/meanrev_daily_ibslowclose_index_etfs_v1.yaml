@@ -1,0 +1,64 @@
+# Mean-Reversion Daily IBS Low-Close — v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `meanrev` family and the `daily.ibs_lowclose`
+# template — semantic invariants, entry/exit/ranking rules, default disable
+# conditions — lives in docs/strategy-families.md. Do not restate those rules.
+#
+# See ADR 0015 for the identifier scheme, version-vs-variant rule, and the
+# frozen-manifest requirement that governs promotion.
+
+strategy:
+  id: "meanrev.daily.ibs_lowclose.index_etfs.v1"
+  family: "meanrev"
+  template: "daily.ibs_lowclose"
+  variant: "index_etfs"
+  version: 1
+  description: >
+    Long-only daily mean-reversion on broad U.S. index ETFs using Internal
+    Bar Strength. Entries when close sits near the daily low on a name
+    trading above its long-term MA; exit on prior-day high break, stop, or
+    max hold. Family/template spec: docs/strategy-families.md#template-dailyibs_lowclose.
+  enabled: true
+
+  # References the frozen index-ETF manifest. IBS is unreliable on single
+  # names — universe is ETFs only by design. See SRS R-DAT-016 and
+  # configs/universe_index_etfs_v1.yaml.
+  universe_ref: "universe.index_etfs.v1"
+
+  parameters:
+    ibs_entry_threshold: 0.2
+    prior_high_exit_enabled: true
+    ma_filter_length: 200
+    stop_loss_pct: 0.03
+    max_hold_days: 3
+    max_concurrent_positions: 2
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.20
+    ranking_enabled: true
+    ranking_metric: "ibs_ascending"
+    market_regime_symbol: ""
+    market_regime_ma_length: 200
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 3
+
+  risk:
+    max_position_pct: 0.20
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.03
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  # Family defaults from docs/strategy-families.md always apply; this list
+  # extends them (none for v1).
+  disable_conditions_additional: []

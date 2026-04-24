@@ -29,11 +29,13 @@ Each section below defines one family with a fixed structure:
 ### Identifier prefix
 `meanrev.*`
 
-### Market behavior exploited
+### Market behavior exploited (family-level)
 
 The `meanrev` family targets **short-term overshoot and snapback behavior in liquid markets**. The hypothesis is that some assets temporarily move too far, too fast relative to recent behavior, and then mean-revert over the next few trading sessions as panic, forced flows, or short-term imbalance fades. The edge is not that prices always revert — it is that under defined conditions the probability-adjusted bounce may be large enough to justify disciplined entry with tight risk controls.
 
-### Semantic invariants (hardcoded in code, not overrideable by config)
+Individual **templates** within the family differ in *how they detect the overshoot* (RSI oscillator, bar-location, band width, etc.) but share the family-level invariants below.
+
+### Semantic invariants (hardcoded, shared by every template)
 
 - `long_only: true`
 - `signal_evaluation: end_of_day` — signals are computed on completed daily bars; no intraday signal generation
@@ -42,9 +44,16 @@ The `meanrev` family targets **short-term overshoot and snapback behavior in liq
 - `timeframe: 1D` (daily bars only)
 - `promotion_requires_frozen_manifest: true` (per ADR 0015)
 
-Changing any of the above produces a **new version** of the strategy, not a variant.
+Changing any of the above produces a **new version** of the template, not a variant.
 
-### Parameter surface (allowed to vary in YAML)
+---
+
+### Template: `daily.pullback_rsi2`
+
+#### Hypothesis (template-specific)
+Short-lookback RSI on trending names identifies transient oversold conditions that revert within a few sessions. Reference: Connors & Alvarez 2008 *Short Term Trading Strategies That Work*.
+
+#### Parameter surface (allowed to vary in YAML)
 
 | Parameter | Meaning | Notes |
 |---|---|---|
@@ -61,7 +70,7 @@ Changing any of the above produces a **new version** of the strategy, not a vari
 | `ranking_enabled` | Whether to rank candidates | |
 | `ranking_metric` | One of: `rsi_ascending`, `drawdown_deepest` | extension requires a new version |
 
-### Entry rule (normative)
+#### Entry rule (normative)
 
 > Enter long at the **next market open** if, at the prior close:
 > 1. The symbol is in the approved universe; **and**
@@ -70,20 +79,70 @@ Changing any of the above produces a **new version** of the strategy, not a vari
 > 4. The symbol is not already in an open position; **and**
 > 5. The symbol is not blocked by any risk or execution constraint.
 
-### Exit rule (normative)
+#### Exit rule (normative)
 
 > Exit at the **next market open** if, at the prior close, **any** of the following holds:
 > - `RSI(rsi_lookback) > rsi_exit_threshold`; **or**
 > - `max_hold_days` reached (counted in trading days since entry); **or**
 > - Stop condition triggered: `close <= entry_price * (1 - stop_loss_pct)`.
 
-### Ranking rule (normative)
-
-When the number of qualifying entry candidates on a given evaluation exceeds the capital or position budget:
+#### Ranking rule (normative)
 
 > Rank qualifying candidates by `ranking_metric` (default: `rsi_ascending` — lowest RSI first). Take the top `(max_concurrent_positions - current_open_positions)` candidates. Reject the remainder silently; the rejection is recorded in the explanation record (R-XC-008) but generates no order.
 
-### Default disable conditions
+---
+
+### Template: `daily.ibs_lowclose`
+
+#### Hypothesis (template-specific)
+Close near the daily low (low Internal Bar Strength) signals that selling pressure dominated the session. On broad index ETFs this is a reliable 1-3 day oversold marker because single-name idiosyncratic risk is diluted away. Reference: Larsson & Lindahl 2013 *"Mining for Three Dollars a Day"* (Quantpedia); Connors 2008 *Short Term Trading Strategies That Work*.
+
+**Critical note:** IBS is *not* a reliable signal on single names, where a close-near-low often reflects genuine stock-specific bad news rather than transient imbalance. This template is intended for broad / sector ETFs only; instance YAML is expected to enforce this through universe choice.
+
+#### Parameter surface
+
+| Parameter | Meaning | Notes |
+|---|---|---|
+| `universe` | Approved symbols (ETFs only in practice) | Use `universe_ref` to reference a frozen manifest |
+| `ibs_entry_threshold` | Enter when IBS < this | typical: 0.15–0.25 |
+| `prior_high_exit_enabled` | If true, exit when close > prior day's high | typical: true |
+| `ma_filter_length` | Long-only regime filter | typical: 100–200 |
+| `stop_loss_pct` | Close-based stop distance | typical: 0.02–0.04 |
+| `max_hold_days` | Maximum trading days in position | typical: 2–4 |
+| `max_concurrent_positions` | Per-strategy position cap | subject to global caps |
+| `sizing_rule` | One of: `equal_notional`, `fixed_notional` | extension requires a new version |
+| `per_position_notional_pct` | Used when sizing rule requires it | |
+| `ranking_enabled` | Whether to rank candidates | |
+| `ranking_metric` | One of: `ibs_ascending` | extension requires a new version |
+
+IBS is defined as `IBS = (close - low) / (high - low)`, clamped to `[0, 1]`. When `high == low` (zero-range bar, typically a halted or all-day-flat session) IBS is undefined and the symbol is rejected for that evaluation with reason `"zero-range bar"`.
+
+#### Entry rule (normative)
+
+> Enter long at the **next market open** if, at the prior close:
+> 1. The symbol is in the approved universe; **and**
+> 2. `close > SMA(ma_filter_length)`; **and**
+> 3. `IBS < ibs_entry_threshold`; **and**
+> 4. The bar has non-zero range (`high > low`); **and**
+> 5. The symbol is not already in an open position; **and**
+> 6. The symbol is not blocked by any risk or execution constraint.
+
+#### Exit rule (normative)
+
+> Exit at the **next market open** if, at the prior close, **any** of the following holds:
+> - `prior_high_exit_enabled == true` AND `close > prior_day_high`; **or**
+> - `max_hold_days` reached (counted in trading days since entry); **or**
+> - Stop condition triggered: `close <= entry_price * (1 - stop_loss_pct)`.
+
+Unlike the `daily.pullback_rsi2` template, there is no RSI-style numeric exit threshold — the exit is event-based (close broke prior day's high) or time-based (max hold / stop). This reflects the shorter natural hold period of IBS signals; trades are expected to resolve within 1-3 bars.
+
+#### Ranking rule (normative)
+
+> Rank qualifying candidates by `ranking_metric` (default: `ibs_ascending` — lowest IBS first, i.e. closest to the low). Take the top `(max_concurrent_positions - current_open_positions)` candidates. Reject the remainder silently; the rejection is recorded in the explanation record (R-XC-008) but generates no order.
+
+---
+
+### Default disable conditions (family-level, shared by every template)
 
 The strategy is halted when any of the following hold even if the code is functioning correctly:
 
