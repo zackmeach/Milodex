@@ -1,6 +1,6 @@
 # Phase 1 Completion Roadmap
 
-**Status as of 2026-04-23:** Phase 1.0, 1.1, 1.2 complete. SC-3, SC-4, SC-5 evidenced live against Alpaca paper during the regime shakeout (see §2). Phase 1.3 and 1.4 not started. Estimated completion: **70–75%** of Phase 1 scope.
+**Live status:** see §2 (success criteria) and the checkboxes in §4–§6 for the authoritative completion state. This header is intentionally pointer-only so it cannot drift from the checklists below. As of the last major doc refresh (2026-04-24): Phase 1.0–1.3 complete end-to-end, Phase 1.4 slices 1–3 complete (frozen manifest, state machine + evidence, live-stage refusal); remaining work is the meanrev paper shakeout (§8 item 7), the SC-1/SC-2/SC-6 success-criteria walkthrough, and the cross-cutting items in §7.
 
 This roadmap is the explicit, ordered plan to finish Phase 1. It is written against the authoritative scope in [VISION.md](VISION.md#detailed-roadmap), [SRS.md](SRS.md#phase-1-success-criteria), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), and the ADRs. Requirement codes (`R-XX-NNN`) refer to entries in SRS.md.
 
@@ -114,8 +114,8 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 
 ### 4.2 Phase 1.2 Definition of Done
 
-- `milodex strategy run regime_spy_shy_200dma_v1` runs cleanly end-to-end in paper mode against Alpaca for at least one full trading session with no manual intervention.
-- `milodex strategy run meanrev_daily_rsi2pullback_v1` does the same.
+- `milodex strategy run regime.daily.sma200_rotation.spy_shy.v1` runs cleanly end-to-end in paper mode against Alpaca for at least one full trading session with no manual intervention.
+- `milodex strategy run meanrev.daily.pullback_rsi2.curated_largecap.v1` does the same.
 - Both generate explanation records in the event store on every decision (fire or no-fire).
 - `Ctrl-C` presents the dual-stop dialog. Both paths verified in dev.
 - SC-3 and SC-4 met (real trade attempted; at least one real risk rejection observed).
@@ -165,9 +165,9 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 
 ### 5.2 Phase 1.3 Definition of Done
 
-- `milodex backtest regime_spy_shy_200dma_v1 --start 2015-01-01 --end 2024-12-31` returns deterministic output with full explanation records.
-- `milodex backtest meanrev_daily_rsi2pullback_v1 --start 2015-01-01 --end 2024-12-31 --walk-forward` returns trust-report metrics with clearly-labeled confidence levels.
-- `milodex analytics compare meanrev_daily_rsi2pullback_v1` shows strategy-vs-SPY delta at a glance.
+- `milodex backtest regime.daily.sma200_rotation.spy_shy.v1 --start 2015-01-01 --end 2024-12-31` returns deterministic output with full explanation records.
+- `milodex backtest meanrev.daily.pullback_rsi2.curated_largecap.v1 --start 2015-01-01 --end 2024-12-31 --walk-forward` returns trust-report metrics with clearly-labeled confidence levels.
+- `milodex analytics compare meanrev.daily.pullback_rsi2.curated_largecap.v1` shows strategy-vs-SPY delta at a glance.
 - `milodex reconcile` runs cleanly in paper mode.
 - SC-2 and SC-6 met.
 
