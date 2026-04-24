@@ -128,9 +128,7 @@ def _build_service(
 
 
 def _buy(symbol: str = "SPY", qty: float = 5.0) -> TradeIntent:
-    return TradeIntent(
-        symbol=symbol, side=OrderSide.BUY, quantity=qty, order_type=OrderType.MARKET
-    )
+    return TradeIntent(symbol=symbol, side=OrderSide.BUY, quantity=qty, order_type=OrderType.MARKET)
 
 
 def _sell(symbol: str = "SPY", qty: float = 5.0) -> TradeIntent:

@@ -101,8 +101,7 @@ class AdvisoryLock:
             # Another process won the race between our stale-check and open.
             holder = self._read_holder()
             msg = (
-                f"Advisory lock '{self._name}' was acquired by another process "
-                "during acquisition."
+                f"Advisory lock '{self._name}' was acquired by another process during acquisition."
             )
             raise AdvisoryLockError(msg, holder=holder) from exc
 

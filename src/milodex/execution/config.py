@@ -41,9 +41,7 @@ def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
         max_position_pct=float(risk["max_position_pct"]),
         max_positions=int(risk["max_positions"]),
         daily_loss_cap_pct=float(risk["daily_loss_cap_pct"]),
-        stop_loss_pct=(
-            None if risk.get("stop_loss_pct") is None else float(risk["stop_loss_pct"])
-        ),
+        stop_loss_pct=(None if risk.get("stop_loss_pct") is None else float(risk["stop_loss_pct"])),
         path=path,
     )
 

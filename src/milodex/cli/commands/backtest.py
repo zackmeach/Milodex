@@ -17,7 +17,11 @@ import argparse
 from typing import Any
 
 from milodex.backtesting.engine import BacktestResult
-from milodex.backtesting.walk_forward_runner import WalkForwardResult, run_walk_forward
+from milodex.backtesting.walk_forward_runner import (
+    WalkForwardResult,
+    compute_window_spans,
+    run_walk_forward,
+)
 from milodex.cli._shared import (
     CommandContext,
     add_global_flags,
@@ -82,24 +86,14 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
 
 def _run_walk_forward(engine, start, end, args) -> CommandResult:
-    loaded = engine._loaded  # noqa: SLF001
-    wf_config = loaded.config.backtest
-    wf_windows_count = int(wf_config.get("walk_forward_windows", 4))
-
     from milodex.backtesting.engine import _trading_days_in_range
 
+    loaded = engine._loaded  # noqa: SLF001
+    wf_windows_count = int(loaded.config.backtest.get("walk_forward_windows", 4))
+
     all_bars = engine.prefetch_bars(start, end)
-    trading_days = _trading_days_in_range(all_bars, start, end)
-    total_days = len(trading_days)
-    if total_days < 2:
-        raise ValueError(f"Not enough trading days in [{start}, {end}] for walk-forward.")
-    test_days = max(1, total_days // (wf_windows_count + 1))
-    train_days = total_days - wf_windows_count * test_days
-    if train_days < 1:
-        raise ValueError(
-            f"Walk-forward window math yields train_days={train_days}. "
-            f"Widen the date range or reduce walk_forward_windows."
-        )
+    total_days = len(_trading_days_in_range(all_bars, start, end))
+    train_days, test_days, step_days = compute_window_spans(total_days, wf_windows_count)
 
     result = run_walk_forward(
         engine,
@@ -107,7 +101,7 @@ def _run_walk_forward(engine, start, end, args) -> CommandResult:
         end_date=end,
         train_days=train_days,
         test_days=test_days,
-        step_days=test_days,
+        step_days=step_days,
         initial_equity=args.initial_equity,
         run_id=args.run_id,
     )

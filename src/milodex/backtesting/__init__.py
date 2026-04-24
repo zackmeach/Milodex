@@ -7,6 +7,7 @@ enforces minimum trade counts before drawing statistical conclusions.
 
 from milodex.backtesting.engine import BacktestEngine, BacktestResult
 from milodex.backtesting.walk_forward import WalkForwardSplitter
+from milodex.backtesting.walk_forward_batch import BatchResult, BatchRow, run_batch
 from milodex.backtesting.walk_forward_runner import (
     WalkForwardResult,
     WalkForwardStability,
@@ -17,9 +18,12 @@ from milodex.backtesting.walk_forward_runner import (
 __all__ = [
     "BacktestEngine",
     "BacktestResult",
+    "BatchResult",
+    "BatchRow",
     "WalkForwardResult",
     "WalkForwardSplitter",
     "WalkForwardStability",
     "WalkForwardWindow",
+    "run_batch",
     "run_walk_forward",
 ]
