@@ -434,9 +434,7 @@ def test_json_formatter_decoupled_from_command_logic():
     and that the human and JSON outputs share a single source of truth.
     """
     human_result = cli_main_module._build_status_result(
-        AccountInfo(
-            equity=1.0, cash=1.0, buying_power=1.0, portfolio_value=1.0, daily_pnl=0.0
-        ),
+        AccountInfo(equity=1.0, cash=1.0, buying_power=1.0, portfolio_value=1.0, daily_pnl=0.0),
         "paper",
         True,
     )

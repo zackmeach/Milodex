@@ -100,6 +100,31 @@ class WalkForwardResult:
     db_id: int | None = None
 
 
+def compute_window_spans(
+    total_trading_days: int, walk_forward_windows: int
+) -> tuple[int, int, int]:
+    """(train_days, test_days, step_days) given a trading-day budget.
+
+    Splits the budget into ``walk_forward_windows`` equal-length OOS test
+    slices; whatever remains is the training prelude. ``step_days`` equals
+    ``test_days`` so the OOS windows tile without overlap. Shared by the
+    single-run CLI and the batch runner so they can't drift apart on how a
+    walk-forward is framed for the same config.
+    """
+    if total_trading_days < 2:
+        msg = f"Not enough trading days for walk-forward: {total_trading_days}."
+        raise ValueError(msg)
+    test_days = max(1, total_trading_days // (walk_forward_windows + 1))
+    train_days = total_trading_days - walk_forward_windows * test_days
+    if train_days < 1:
+        msg = (
+            f"Walk-forward window math yields train_days={train_days}. "
+            f"Widen the date range or reduce walk_forward_windows."
+        )
+        raise ValueError(msg)
+    return train_days, test_days, test_days
+
+
 def run_walk_forward(
     engine: BacktestEngine,
     *,
@@ -110,6 +135,7 @@ def run_walk_forward(
     step_days: int,
     initial_equity: float | None = None,
     run_id: str | None = None,
+    all_bars: dict | None = None,
 ) -> WalkForwardResult:
     """Run walk-forward validation and return per-window + OOS-aggregate metrics.
 
@@ -122,6 +148,10 @@ def run_walk_forward(
     Equity resets to ``initial_equity`` at the start of every OOS window.
     That isolation is the point — it prevents a windfall in one window from
     compounding through later windows and inflating apparent stability.
+
+    When ``all_bars`` is passed in, the prefetch step is skipped — used by the
+    batch runner so multiple strategies over the same universe can share one
+    fetch per invocation.
     """
     if end_date < start_date:
         msg = "end_date must be on or after start_date"
@@ -129,7 +159,8 @@ def run_walk_forward(
 
     eq_start = initial_equity if initial_equity is not None else engine._initial_equity  # noqa: SLF001
 
-    all_bars = engine.prefetch_bars(start_date, end_date)
+    if all_bars is None:
+        all_bars = engine.prefetch_bars(start_date, end_date)
     from milodex.backtesting.engine import _trading_days_in_range
 
     trading_days = _trading_days_in_range(all_bars, start_date, end_date)
@@ -393,5 +424,6 @@ __all__ = [
     "WalkForwardWindow",
     "WalkForwardStability",
     "WalkForwardResult",
+    "compute_window_spans",
     "run_walk_forward",
 ]

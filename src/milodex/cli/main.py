@@ -24,6 +24,7 @@ from milodex.cli.commands import (
     promotion,
     reconcile,
     report,
+    research,
     status,
     strategy,
     trade,
@@ -54,6 +55,7 @@ _COMMAND_MODULES = (
     promotion,
     report,
     reconcile,
+    research,
 )
 
 _DISPATCH = {
@@ -70,6 +72,7 @@ _DISPATCH = {
     "promotion": promotion,
     "report": report,
     "reconcile": reconcile,
+    "research": research,
 }
 
 

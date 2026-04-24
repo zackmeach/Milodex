@@ -539,9 +539,7 @@ def test_trade_kill_switch_status_renders_state():
 
 
 def test_trade_kill_switch_reset_requires_confirm():
-    service = StubExecutionService(
-        kill_switch_state=KillSwitchState(active=True, reason="test")
-    )
+    service = StubExecutionService(kill_switch_state=KillSwitchState(active=True, reason="test"))
     stderr = StringIO()
 
     exit_code = cli_entrypoint(
