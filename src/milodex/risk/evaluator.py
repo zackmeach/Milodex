@@ -151,14 +151,14 @@ class RiskEvaluator:
                 True,
                 f"Stage '{context.strategy_config.stage}' is exempt from manifest drift.",
             )
+        # Promoted stages MUST supply the runtime hash. A None here means the
+        # caller skipped manifest plumbing — that is a programmer error, not a
+        # trade-level rejection. Fail loud so it cannot silently regress.
         if context.runtime_config_hash is None:
-            # Service did not populate the runtime hash (e.g. legacy test harness
-            # that doesn't exercise the manifest plumbing). Pass — the service
-            # populates both hashes in the commit-4 wiring.
-            return RiskCheckResult(
-                "manifest_drift",
-                True,
-                "Runtime config hash not supplied; drift check skipped.",
+            raise RuntimeError(
+                f"Promoted stage '{context.strategy_config.stage}' for strategy "
+                f"'{context.strategy_config.name}' requires runtime_config_hash; "
+                "caller must populate EvaluationContext.runtime_config_hash."
             )
         if context.frozen_manifest_hash is None:
             return RiskCheckResult(

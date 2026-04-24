@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+import pytest
+
 from milodex.core.event_store import (
+    MIN_COMPATIBLE_SCHEMA_VERSION,
     BacktestRunEvent,
     EventStore,
     ExplanationEvent,
@@ -14,6 +17,28 @@ from milodex.core.event_store import (
     StrategyRunEvent,
     TradeEvent,
 )
+
+
+def test_event_store_rejects_below_minimum_schema_version(tmp_path, monkeypatch):
+    """The guard refuses to open a store whose schema is older than the build expects.
+
+    We can't easily fabricate a stale on-disk schema (migrations would
+    re-apply and bump it back to head). Instead we raise the minimum
+    above the current schema head and confirm the guard fires — same
+    code path as a real stale-store scenario.
+    """
+    monkeypatch.setattr(
+        "milodex.core.event_store.MIN_COMPATIBLE_SCHEMA_VERSION",
+        99,
+    )
+    with pytest.raises(ValueError, match="below minimum compatible version 99"):
+        EventStore(tmp_path / "stale.db")
+
+
+def test_event_store_min_compatible_matches_current_schema():
+    """If MIN_COMPATIBLE_SCHEMA_VERSION ever exceeds the head migration, the
+    guard would refuse a freshly-built store. Lock that contract."""
+    assert MIN_COMPATIBLE_SCHEMA_VERSION == 7
 
 
 def test_event_store_applies_initial_schema(tmp_path):
