@@ -64,6 +64,23 @@ class BacktestResult:
     db_id: int | None = None
 
 
+@dataclass
+class _SimulationOutput:
+    """Raw outputs from a single simulation sweep over a list of trading days.
+
+    Intentionally narrower than :class:`BacktestResult`: it carries only the
+    window-local bookkeeping so the walk-forward runner can stitch multiple
+    sweeps together without the engine pre-computing a full ``BacktestResult``
+    per window.
+    """
+
+    equity_curve: list[tuple[date, float]]
+    trade_count: int
+    buy_count: int
+    sell_count: int
+    final_equity: float
+
+
 class BacktestEngine:
     """Replay a loaded strategy over historical bar data.
 
@@ -176,6 +193,51 @@ class BacktestEngine:
     # Private execution core
     # ------------------------------------------------------------------
 
+    def prefetch_bars(self, start_date: date, end_date: date) -> dict[str, BarSet]:
+        """Fetch bars for the universe over ``[start_date - warmup, end_date]``.
+
+        Exposed so the walk-forward runner can fetch once and re-use across
+        windows, avoiding N×warmup fetches for N windows.
+        """
+        universe = list(self._loaded.context.universe)
+        if not universe:
+            msg = "Strategy must resolve a non-empty universe before backtesting."
+            raise ValueError(msg)
+        warmup_start = start_date - timedelta(days=self._warmup_calendar_days())
+        return self._data_provider.get_bars(
+            symbols=universe,
+            timeframe=Timeframe.DAY_1,
+            start=warmup_start,
+            end=end_date,
+        )
+
+    def simulate_window(
+        self,
+        *,
+        all_bars: dict[str, BarSet],
+        trading_days: list[date],
+        db_run_id: int,
+        session_id: str,
+        initial_equity: float | None = None,
+    ) -> _SimulationOutput:
+        """Run the simulation loop on ``trading_days`` using ``all_bars``.
+
+        Intended for the walk-forward runner, which owns bar prefetch and
+        window splitting. Each call resets equity, positions, and entry-state
+        to a fresh start; persistence (trades, explanations) flows through the
+        caller-provided ``db_run_id`` so all windows from one walk-forward
+        invocation land under the same parent ``BacktestRunEvent``.
+        ``session_id`` distinguishes windows within a single parent run.
+        """
+        equity = initial_equity if initial_equity is not None else self._initial_equity
+        return self._simulate(
+            all_bars=all_bars,
+            trading_days=trading_days,
+            db_run_id=db_run_id,
+            session_id=session_id,
+            initial_equity=equity,
+        )
+
     def _execute(
         self,
         *,
@@ -184,18 +246,7 @@ class BacktestEngine:
         run_id: str,
         db_run_id: int,
     ) -> BacktestResult:
-        universe = list(self._loaded.context.universe)
-        if not universe:
-            msg = "Strategy must resolve a non-empty universe before backtesting."
-            raise ValueError(msg)
-
-        warmup_start = start_date - timedelta(days=self._warmup_calendar_days())
-        all_bars = self._data_provider.get_bars(
-            symbols=universe,
-            timeframe=Timeframe.DAY_1,
-            start=warmup_start,
-            end=end_date,
-        )
+        all_bars = self.prefetch_bars(start_date, end_date)
 
         trading_days = _trading_days_in_range(all_bars, start_date, end_date)
         if not trading_days:
@@ -217,6 +268,54 @@ class BacktestEngine:
                 db_id=db_run_id,
             )
 
+        output = self._simulate(
+            all_bars=all_bars,
+            trading_days=trading_days,
+            db_run_id=db_run_id,
+            session_id=run_id,
+            initial_equity=self._initial_equity,
+        )
+        total_return = (output.final_equity - self._initial_equity) / self._initial_equity
+        return BacktestResult(
+            run_id=run_id,
+            strategy_id=self._loaded.config.strategy_id,
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=self._initial_equity,
+            final_equity=output.final_equity,
+            total_return_pct=total_return * 100.0,
+            trade_count=output.trade_count,
+            buy_count=output.buy_count,
+            sell_count=output.sell_count,
+            slippage_pct=self._slippage_pct,
+            commission_per_trade=self._commission,
+            trading_days=len(trading_days),
+            equity_curve=output.equity_curve,
+            db_id=db_run_id,
+        )
+
+    def _simulate(
+        self,
+        *,
+        all_bars: dict[str, BarSet],
+        trading_days: list[date],
+        db_run_id: int,
+        session_id: str,
+        initial_equity: float,
+    ) -> _SimulationOutput:
+        universe = list(self._loaded.context.universe)
+        if not universe:
+            msg = "Strategy must resolve a non-empty universe before backtesting."
+            raise ValueError(msg)
+        if not trading_days:
+            return _SimulationOutput(
+                equity_curve=[],
+                trade_count=0,
+                buy_count=0,
+                sell_count=0,
+                final_equity=initial_equity,
+            )
+
         sim_broker = SimulatedBroker(
             slippage_pct=self._slippage_pct,
             commission_per_trade=self._commission,
@@ -230,7 +329,7 @@ class BacktestEngine:
             event_store=self._event_store,
         )
 
-        cash = self._initial_equity
+        cash = initial_equity
         positions: dict[str, tuple[float, float]] = {}
         entry_state: dict[str, dict] = {}
 
@@ -282,7 +381,7 @@ class BacktestEngine:
                     symbol=universe[0],
                     latest_bar_timestamp=latest_bar.timestamp,
                     latest_bar_close=latest_bar.close,
-                    session_id=run_id,
+                    session_id=session_id,
                     reasoning=decision.reasoning,
                     submitted_by="backtest_engine",
                 )
@@ -301,7 +400,7 @@ class BacktestEngine:
                 decorated = self._decorate_intent(intent, quantity_override=qty)
                 result = execution_service.submit_backtest(
                     decorated,
-                    session_id=run_id,
+                    session_id=session_id,
                     backtest_run_id=db_run_id,
                     reasoning=decision.reasoning,
                 )
@@ -349,7 +448,7 @@ class BacktestEngine:
                 decorated = self._decorate_intent(intent)
                 result = execution_service.submit_backtest(
                     decorated,
-                    session_id=run_id,
+                    session_id=session_id,
                     backtest_run_id=db_run_id,
                     reasoning=decision.reasoning,
                 )
@@ -369,25 +468,13 @@ class BacktestEngine:
             equity = _compute_equity(cash, positions, latest_closes)
             equity_curve.append((day, equity))
 
-        final_equity = equity_curve[-1][1] if equity_curve else self._initial_equity
-        total_return = (final_equity - self._initial_equity) / self._initial_equity
-
-        return BacktestResult(
-            run_id=run_id,
-            strategy_id=self._loaded.config.strategy_id,
-            start_date=start_date,
-            end_date=end_date,
-            initial_equity=self._initial_equity,
-            final_equity=final_equity,
-            total_return_pct=total_return * 100.0,
+        final_equity = equity_curve[-1][1] if equity_curve else initial_equity
+        return _SimulationOutput(
+            equity_curve=equity_curve,
             trade_count=trade_count,
             buy_count=buy_count,
             sell_count=sell_count,
-            slippage_pct=self._slippage_pct,
-            commission_per_trade=self._commission,
-            trading_days=len(trading_days),
-            equity_curve=equity_curve,
-            db_id=db_run_id,
+            final_equity=final_equity,
         )
 
     def _decorate_intent(

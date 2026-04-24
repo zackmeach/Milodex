@@ -12,8 +12,8 @@ A strategy may advance from `backtest` to `paper` only when a complete promotion
 
 - **[machine]** the exact frozen strategy instance manifest and config fingerprint (`manifest_hash`, `manifest_id` FK; auto-frozen in the same transaction as the promotion)
 - **[machine / artifact]** a reproducible backtest run with stated assumptions — the `backtest_run_id` reference is machine-captured when `--run-id` is passed; the run itself is produced by `milodex backtest`
-- **[artifact]** in-sample and out-of-sample results produced by the approved walk-forward method
-- **[machine]** the required backtest report metrics (`metrics_snapshot`: Sharpe, max-drawdown, trade count) — benchmark comparisons per R-BKT-005 / R-ANA- remain artifact-side
+- **[artifact]** in-sample and out-of-sample results produced by the approved walk-forward method (when `--run-id` references a `--walk-forward` run, the per-window OOS breakdown lives in the run's metadata alongside the aggregate)
+- **[machine]** the required backtest report metrics (`metrics_snapshot`: Sharpe, max-drawdown, trade count) — sourced from the run's **OOS-aggregate** when the run is walk-forward, or from whole-period metrics otherwise. Per [ADR 0021](adr/0021-walk-forward-metrics-are-oos-aggregate.md), the gate reads OOS-aggregate values so it cannot be satisfied by in-sample lucky stretches. Benchmark comparisons per R-BKT-005 / R-ANA- remain artifact-side
 - **[machine]** gate outcome (`gate_check_outcome.promotion_type`: `statistical` or `lifecycle_exempt`; `failures` list) — confirms the strategy cleared the minimum evidence thresholds **for its strategy class** (research-target per R-PRM-004, or the operational gate for the lifecycle-proof strategy)
 - **[artifact]** sensitivity or robustness checks across a small approved parameter range
 - **[artifact]** confirmation that data-quality checks passed, or an explicit record of any exclusions

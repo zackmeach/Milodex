@@ -142,6 +142,33 @@ def compute_metrics(
 
 
 # ---------------------------------------------------------------------------
+# Public computation helpers
+#
+# The walk-forward runner re-uses these so OOS-aggregate metrics are computed
+# by the exact same formulas the single-run analytics pipeline uses. Keeping a
+# single definition prevents the two paths from drifting into subtly different
+# Sharpe / drawdown numbers.
+# ---------------------------------------------------------------------------
+
+
+def daily_returns_from_equity(equity_curve: list[tuple[date, float]]) -> list[float]:
+    """Return per-day pct-change returns from an equity curve."""
+    return _daily_returns(equity_curve)
+
+
+def sharpe_from_daily_returns(
+    daily_returns: list[float], risk_free_daily: float = 0.0
+) -> float | None:
+    """Annualised Sharpe ratio (×√252) from a list of daily returns."""
+    return _sharpe(daily_returns, risk_free_daily=risk_free_daily)
+
+
+def max_drawdown_from_equity(equity_curve: list[tuple[date, float]]) -> tuple[float, int]:
+    """Return ``(max_dd_fraction, duration_days)`` for the worst drawdown."""
+    return _max_drawdown_stats(equity_curve)
+
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
