@@ -72,6 +72,16 @@ The distinction: **risk decides whether; execution decides how-safely.** Any cod
 
 ---
 
+## Strategy Position Provenance
+
+Strategies read their own open positions from the trade ledger, filtered by originating `strategy_name` — **not** from `BrokerClient.get_positions()`. The paper account is shared across every Milodex strategy, so the broker's position list is account-wide and cannot answer "which strategy opened this." The `trades` table can, because every row carries the `strategy_name` that produced it.
+
+Concretely: `StrategyContext.positions` is populated by `compute_ledger_positions(event_store, strategy_id)` (see `src/milodex/strategies/positions.py`), which nets signed quantities over submitted paper trades for that strategy. The broker is consulted only for `avg_entry_price` on symbols the ledger already attributes to the strategy — authoritative for actual fill price, not for ownership.
+
+See ADR 0021 for the incident that forced the rule and the full rationale. The invariant: **a strategy's world is what its own ledger says it is.** Any code path that hands a strategy positions belonging to another strategy (or to the operator) is a bug, regardless of whether the risk layer happens to catch it downstream.
+
+---
+
 ## State: SQLite vs Files vs Never-Persisted
 
 ### SQLite holds durable operational state

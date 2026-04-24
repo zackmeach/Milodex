@@ -18,6 +18,7 @@ from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
+from milodex.strategies.positions import compute_ledger_positions
 
 
 class StrategyRunner:
@@ -103,12 +104,13 @@ class StrategyRunner:
             return []
 
         account = self._broker.get_account()
+        ledger_positions = self._current_positions()
         context = replace(
             self._loaded.context,
-            positions=self._current_positions(),
+            positions=ledger_positions,
             equity=account.equity,
             bars_by_symbol=bars_by_symbol,
-            entry_state=self._build_entry_state(),
+            entry_state=self._build_entry_state(ledger_positions),
         )
         decision = self._loaded.strategy.evaluate(primary_bars, context)
         intents = decision.intents
@@ -187,34 +189,61 @@ class StrategyRunner:
         msg = f"Strategy '{self._strategy_id}' has no resolvable universe for runtime execution."
         raise ValueError(msg)
 
-    def _build_entry_state(self) -> dict[str, dict[str, Any]]:
-        """Build entry_state for each open position from broker + trade history.
+    def _build_entry_state(
+        self, ledger_positions: dict[str, float] | None = None
+    ) -> dict[str, dict[str, Any]]:
+        """Build entry_state for each ledger-owned position.
 
-        ``entry_price`` comes from the broker's reported average fill price.
-        ``held_days`` is derived from the most recent paper BUY trade in the
-        event store for each symbol.  Falls back to 0 when no trade record
-        exists (e.g. position opened outside this system).
+        Only symbols in ``ledger_positions`` (derived from this strategy's
+        own trade history per ADR 0021) are considered — a position the
+        broker reports for some other strategy must not appear here.
+
+        ``entry_price`` prefers the broker's reported ``avg_entry_price``
+        for the symbol when available (authoritative actual-fill price);
+        falls back to the strategy's ledger VWAP over submitted paper
+        BUYs when the broker has no record (rare: position opened under a
+        previous strategy session but broker state since cleared).
+        ``held_days`` is derived from this strategy's most recent paper
+        BUY for the symbol.
         """
-        positions = self._broker.get_positions()
-        if not positions:
+        if ledger_positions is None:
+            ledger_positions = self._current_positions()
+        if not ledger_positions:
             return {}
+
+        broker_avg_by_symbol: dict[str, float] = {}
+        for position in self._broker.get_positions():
+            broker_avg_by_symbol[position.symbol.upper()] = float(position.avg_entry_price)
 
         today = date.today()
         last_buy_date: dict[str, date] = {}
-        for trade in self._event_store.list_trades():
-            if trade.side.lower() == "buy" and trade.source == "paper":
-                sym = trade.symbol.upper()
-                trade_date = trade.recorded_at.date()
-                if sym not in last_buy_date or trade_date > last_buy_date[sym]:
-                    last_buy_date[sym] = trade_date
+        ledger_vwap_num: dict[str, float] = {}
+        ledger_vwap_den: dict[str, float] = {}
+        for trade in self._event_store.list_trades_for_strategy(self._strategy_id):
+            sym = trade.symbol.upper()
+            if sym not in ledger_positions:
+                continue
+            if trade.side.lower() != "buy":
+                continue
+            trade_date = trade.recorded_at.date()
+            if sym not in last_buy_date or trade_date > last_buy_date[sym]:
+                last_buy_date[sym] = trade_date
+            price = float(trade.estimated_unit_price)
+            qty = float(trade.quantity)
+            ledger_vwap_num[sym] = ledger_vwap_num.get(sym, 0.0) + price * qty
+            ledger_vwap_den[sym] = ledger_vwap_den.get(sym, 0.0) + qty
 
         entry_state: dict[str, dict[str, Any]] = {}
-        for position in positions:
-            sym = position.symbol.upper()
+        for sym in ledger_positions:
+            entry_price = broker_avg_by_symbol.get(sym)
+            if entry_price is None and ledger_vwap_den.get(sym, 0.0) > 0:
+                entry_price = ledger_vwap_num[sym] / ledger_vwap_den[sym]
+            if entry_price is None:
+                continue
             buy_date = last_buy_date.get(sym)
             held_days = (today - buy_date).days if buy_date is not None else 0
             entry_state[sym] = {
-                "entry_price": float(position.avg_entry_price),
+                "entry_price": float(entry_price),
                 "held_days": held_days,
             }
         return entry_state
@@ -229,11 +258,16 @@ class StrategyRunner:
         return max(365, largest_parameter * 3)
 
     def _current_positions(self) -> dict[str, float]:
-        return {
-            position.symbol.upper(): float(position.quantity)
-            for position in self._broker.get_positions()
-            if float(position.quantity) > 0
-        }
+        """Return positions owned by *this strategy*, derived from its ledger.
+
+        Per ADR 0021, strategies must not read the account-wide broker
+        position list directly: that list reflects every strategy's trades
+        and would let one strategy act on another's open positions (as
+        observed 2026-04-24 with meanrev attempting to exit the regime
+        strategy's SPY position). The authoritative view is the trade
+        ledger filtered by ``strategy_name``.
+        """
+        return compute_ledger_positions(self._event_store, self._strategy_id)
 
     def _runner_intent(self, intent: TradeIntent) -> TradeIntent:
         return TradeIntent(
