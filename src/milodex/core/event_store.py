@@ -398,6 +398,35 @@ class EventStore:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
         return [_trade_from_row(row) for row in rows]
 
+    def list_trades_for_strategy(
+        self,
+        strategy_name: str,
+        *,
+        source: str = "paper",
+        statuses: tuple[str, ...] = ("submitted",),
+    ) -> list[TradeEvent]:
+        """Return trades originated by ``strategy_name`` filtered by source/status.
+
+        Defaults target the "effective, live-paper" slice used by the
+        runtime to reconstruct per-strategy positions: ``source='paper'``
+        excludes backtest rows, and ``statuses=('submitted',)`` excludes
+        ``preview``/``blocked``/``cancelled`` rows that never made it to
+        the broker. See ADR 0021.
+        """
+        if not statuses:
+            return []
+        placeholders = ",".join("?" for _ in statuses)
+        query = (
+            "SELECT * FROM trades "
+            "WHERE strategy_name = ? AND source = ? "
+            f"AND status IN ({placeholders}) "
+            "ORDER BY id ASC"
+        )
+        params = (strategy_name, source, *statuses)
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_trade_from_row(row) for row in rows]
+
     def list_kill_switch_events(self) -> list[KillSwitchEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM kill_switch_events ORDER BY id ASC").fetchall()

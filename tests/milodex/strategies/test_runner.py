@@ -199,6 +199,72 @@ def build_barset(closes: list[float]):
     )
 
 
+def _seed_paper_buy(
+    event_store: EventStore,
+    *,
+    strategy_name: str,
+    symbol: str,
+    quantity: float,
+    unit_price: float,
+) -> None:
+    """Seed a ``submitted``/``paper`` BUY trade row so the ledger-based
+    position helpers (ADR 0021) treat ``strategy_name`` as long ``symbol``.
+    """
+    now = datetime.now(tz=UTC)
+    explanation_id = event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=now,
+            decision_type="strategy_evaluate",
+            status="approved",
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path=f"configs/{strategy_name}.yaml",
+            config_hash="hash",
+            symbol=symbol,
+            side="buy",
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=now,
+            latest_bar_close=unit_price,
+            account_equity=10_000.0,
+            account_cash=9_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="OK",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id="seed-session",
+        )
+    )
+    event_store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=now,
+            status="submitted",
+            source="paper",
+            symbol=symbol,
+            side="buy",
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=unit_price,
+            estimated_order_value=unit_price * quantity,
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path=f"configs/{strategy_name}.yaml",
+            submitted_by="strategy_runner",
+            broker_order_id=None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
 def build_service(
     *,
     tmp_path: Path,
@@ -308,6 +374,18 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
         provider=provider,
         risk_defaults_file=risk_defaults_file,
     )
+
+    # Per ADR 0021, ``context.positions`` comes from this strategy's ledger,
+    # not the broker. Seed a prior SHY BUY by the regime strategy so the
+    # runtime sees itself as already holding its target.
+    _seed_paper_buy(
+        event_store,
+        strategy_name="regime.daily.sma200_rotation.spy_shy.v1",
+        symbol="SHY",
+        quantity=1.0,
+        unit_price=20.0,
+    )
+
     runner = StrategyRunner(
         strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
         config_dir=strategy_config_dir,
@@ -322,11 +400,13 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
 
     assert results == []
     explanations = event_store.list_explanations()
-    assert len(explanations) == 1
-    assert explanations[0].decision_type == "no_trade"
-    assert explanations[0].status in {"no_signal", "no_action"}
-    assert explanations[0].session_id == runner.session_id
-    assert event_store.list_trades() == []
+    # One explanation from the seeded BUY + one no_trade from the run_cycle.
+    no_trade_explanations = [e for e in explanations if e.decision_type == "no_trade"]
+    assert len(no_trade_explanations) == 1
+    assert no_trade_explanations[0].status in {"no_signal", "no_action"}
+    assert no_trade_explanations[0].session_id == runner.session_id
+    # The only trade row should be the seeded one; the runner added none.
+    assert [t.side for t in event_store.list_trades()] == ["buy"]
 
 
 def test_runner_kill_switch_shutdown_cancels_orders_and_activates_halt(
@@ -608,7 +688,10 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
         TradeEvent(
             explanation_id=explanation_id,
             recorded_at=buy_date,
-            status="filled",
+            # Production writes status=ExecutionStatus.value — "submitted"
+            # for orders that made it to the broker. Using the true string
+            # here exercises the same scoping path as the runtime.
+            status="submitted",
             source="paper",
             symbol="SPY",
             side="buy",
@@ -1042,14 +1125,21 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
         "In-progress bar must not advance _last_processed_bar_at; doing so "
         "would suppress the same-timestamp finalized-bar evaluation below."
     )
+    explanations_after_cycle_1 = len(event_store.list_explanations())
 
     # --- Cycle 2: market closed, same bar is now final ------------------------
+    # Post ADR 0021, once cycle 1's BUY is in the ledger, the runner's
+    # ledger-derived positions show SPY as held — so cycle 2 evaluates but
+    # emits zero intents (the strategy is already in target). The invariant
+    # this test guards is *that evaluation ran*, not that it emitted an
+    # intent: an explanation row gets written either way.
     broker._market_open = False
-    results_post_close = runner.run_cycle()
+    runner.run_cycle()
 
-    assert len(results_post_close) >= 1, (
+    explanations_after_cycle_2 = len(event_store.list_explanations())
+    assert explanations_after_cycle_2 > explanations_after_cycle_1, (
         "Once the market closes on the same-day bar, the runner must "
-        "re-evaluate it instead of skipping forever."
+        "re-evaluate it (writing a new explanation) instead of skipping forever."
     )
     assert runner._last_processed_bar_at is not None, (
         "Post-close evaluation must advance the watermark so subsequent "
@@ -1057,7 +1147,123 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     )
 
     # --- Cycle 3: still post-close, same bar, watermark now set --------------
-    results_next_poll = runner.run_cycle()
-    assert results_next_poll == [], (
-        "Once the watermark is set, further polls on the same bar must be treated as already-seen."
+    runner.run_cycle()
+    assert len(event_store.list_explanations()) == explanations_after_cycle_2, (
+        "Once the watermark is set, further polls on the same bar must be "
+        "treated as already-seen (no new explanation written)."
+    )
+
+
+def test_runner_ignores_broker_positions_owned_by_other_strategies(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """ADR 0021: the runner derives ``context.positions`` from *this
+    strategy's* trade ledger, not from ``BrokerClient.get_positions()``.
+    Codifies the 2026-04-24 meanrev incident: regime opened SPY, meanrev
+    ran next, meanrev's runtime must see zero SPY even though the shared
+    paper account reports 13 shares.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=9_000.0,
+            buying_power=9_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        positions=[
+            Position(
+                symbol="SPY",
+                quantity=13.0,
+                avg_entry_price=710.0,
+                current_price=710.0,
+                market_value=9_230.0,
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+            )
+        ],
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    other_strategy = "meanrev.daily.pullback_rsi2.curated_largecap.v1"
+    explanation_id = event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=datetime.now(tz=UTC),
+            decision_type="strategy_evaluate",
+            status="approved",
+            strategy_name=other_strategy,
+            strategy_stage="paper",
+            strategy_config_path=f"configs/{other_strategy}.yaml",
+            config_hash="hash",
+            symbol="SPY",
+            side="buy",
+            quantity=13.0,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=datetime.now(tz=UTC),
+            latest_bar_close=710.0,
+            account_equity=10_000.0,
+            account_cash=9_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="OK",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id="other-session",
+        )
+    )
+    event_store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=datetime.now(tz=UTC),
+            status="submitted",
+            source="paper",
+            symbol="SPY",
+            side="buy",
+            quantity=13.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=710.0,
+            estimated_order_value=9_230.0,
+            strategy_name=other_strategy,
+            strategy_stage="paper",
+            strategy_config_path=f"configs/{other_strategy}.yaml",
+            submitted_by="strategy_runner",
+            broker_order_id=None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    assert runner._current_positions() == {}, (
+        "Runner leaked another strategy's SPY position into context.positions"
+    )
+    assert runner._build_entry_state() == {}, (
+        "entry_state must only cover positions this strategy itself opened"
     )
