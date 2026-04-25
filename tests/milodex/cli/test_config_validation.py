@@ -17,6 +17,8 @@ def test_validate_sample_strategy_config():
 def test_validate_phase1_strategy_configs():
     spy_lines = validate_config_file(Path("configs/spy_shy_200dma_v1.yaml"))
     meanrev_lines = validate_config_file(Path("configs/meanrev_daily_rsi2pullback_v1.yaml"))
+    ibs_lines = validate_config_file(Path("configs/meanrev_daily_ibslowclose_index_etfs_v1.yaml"))
 
     assert "Detected kind: strategy" in spy_lines
     assert "Detected kind: strategy" in meanrev_lines
+    assert "Detected kind: strategy" in ibs_lines
