@@ -130,6 +130,18 @@ def make_context(
         portfolio_value=account_portfolio_value,
         daily_pnl=account_daily_pnl,
     )
+    # Promoted stages now require both manifest hashes (RuntimeError otherwise).
+    # Default to matching dummy hashes when the caller hasn't specified — this
+    # mirrors the production wiring in ExecutionService._evaluate. Tests that
+    # exercise drift behavior pass explicit hash values and override these.
+    if (
+        strategy_config is not None
+        and strategy_config.stage in {"paper", "micro_live", "live"}
+        and runtime_config_hash is None
+        and frozen_manifest_hash is None
+    ):
+        runtime_config_hash = "0" * 64
+        frozen_manifest_hash = "0" * 64
     return EvaluationContext(
         intent=intent,
         request=request,
@@ -564,6 +576,19 @@ def test_manifest_drift_passes_when_hashes_match():
     )
 
     assert check_result(decision, "manifest_drift").passed is True
+
+
+def test_manifest_drift_raises_when_promoted_stage_missing_runtime_hash():
+    """Promoted stages must supply runtime_config_hash; None is a programmer error."""
+    for stage in ("paper", "micro_live", "live"):
+        with pytest.raises(RuntimeError, match="requires runtime_config_hash"):
+            RiskEvaluator().evaluate(
+                make_context(
+                    strategy_config=_strategy_config(stage=stage),
+                    runtime_config_hash=None,
+                    frozen_manifest_hash="a" * 64,
+                )
+            )
 
 
 def test_manifest_drift_applies_at_micro_live_and_live_stages():

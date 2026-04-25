@@ -185,6 +185,17 @@ class PortfolioSnapshotEvent:
     id: int | None = None
 
 
+MIN_COMPATIBLE_SCHEMA_VERSION = 7
+"""Minimum event-store schema version this build can safely operate on.
+
+Bumped whenever a migration introduces a column or table that older code
+paths would silently mis-read. After ``_apply_migrations`` runs we assert
+the resulting version is at least this — older fixture databases or a
+binary older than its migration set fail loudly at construction rather
+than producing surprising read results downstream.
+"""
+
+
 class EventStore:
     """Append-only SQLite event store with forward-only migrations."""
 
@@ -192,6 +203,14 @@ class EventStore:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._apply_migrations()
+        sv = self.schema_version
+        if sv < MIN_COMPATIBLE_SCHEMA_VERSION:
+            raise ValueError(
+                f"Event store at {self._path} has schema version {sv}, "
+                f"below minimum compatible version {MIN_COMPATIBLE_SCHEMA_VERSION}. "
+                "The store may have been opened with an older build that did "
+                "not finish migrations."
+            )
 
     @property
     def schema_version(self) -> int:

@@ -597,3 +597,52 @@ def test_submit_paper_records_runner_session_id(
 
     assert explanations[0].session_id == "session-123"
     assert trades[0].session_id == "session-123"
+
+
+def test_submit_paper_records_pending_broker_status(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+):
+    """A broker that returns a PENDING order (real Alpaca paper behavior) must
+    have its status preserved verbatim in the trade event. Locks the
+    contract that ExecutionService never silently rewrites broker status
+    to 'filled' before the broker reports the actual fill."""
+    pending_order = Order(
+        id="order-pending-1",
+        symbol="SPY",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=5.0,
+        time_in_force=TimeInForce.DAY,
+        status=OrderStatus.PENDING,
+        submitted_at=datetime.now(tz=UTC),
+    )
+    broker = StubBroker(account=sample_account, submit_order=pending_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert result.order is not None
+    assert result.order.status == OrderStatus.PENDING
+
+    trades = event_store.list_trades()
+    assert len(trades) == 1
+    assert trades[0].broker_status == "pending"
+    assert trades[0].broker_order_id == "order-pending-1"

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
 
@@ -48,6 +50,27 @@ def test_strategy_decision_packs_intents_and_reasoning() -> None:
 
     assert decision.intents == []
     assert decision.reasoning is reasoning
+
+
+def test_decision_reasoning_asdict_is_json_serializable() -> None:
+    """The actual storage path runs ``asdict()`` through ``json.dumps`` before
+    persisting to the event store. Lock the JSON-roundtrip contract so a
+    future field added to ``DecisionReasoning`` cannot regress the
+    serialization invariant silently."""
+    reasoning = DecisionReasoning(
+        rule="meanrev.rsi_entry",
+        narrative="RSI(2)=4.5 below threshold 10.0 \u2192 enter long SPY",
+        triggering_values={"rsi_2": 4.5, "close": 100.0},
+        threshold={"rsi_2": 10.0},
+        ranking=[{"symbol": "SPY", "score": 1.0}],
+        rejected_alternatives=[{"symbol": "QQQ", "reason": "above MA filter"}],
+        extras={"bars_in_window": 14},
+    )
+
+    encoded = json.dumps(reasoning.asdict())
+    decoded = json.loads(encoded)
+
+    assert decoded == reasoning.asdict()
 
 
 def test_no_signal_is_a_legal_rule_name_on_decision_reasoning() -> None:

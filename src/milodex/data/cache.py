@@ -9,12 +9,15 @@ considered stale (re-fetched) since the market may still be open.
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 
 import pandas as pd
 
 from milodex.data.models import Timeframe
+
+_logger = logging.getLogger(__name__)
 
 
 class ParquetCache:
@@ -34,8 +37,22 @@ class ParquetCache:
         """Read cached bars for a symbol/timeframe. Returns None if no cache exists."""
         path = self._path(symbol, timeframe)
         if not path.exists():
+            _logger.info(
+                "cache_miss symbol=%s timeframe=%s path=%s",
+                symbol.upper(),
+                timeframe.value,
+                path,
+            )
             return None
-        return pd.read_parquet(path)
+        df = pd.read_parquet(path)
+        _logger.info(
+            "cache_hit symbol=%s timeframe=%s rows=%d path=%s",
+            symbol.upper(),
+            timeframe.value,
+            len(df),
+            path,
+        )
+        return df
 
     def write(self, symbol: str, timeframe: Timeframe, df: pd.DataFrame) -> None:
         """Write bars to cache, replacing any existing data."""

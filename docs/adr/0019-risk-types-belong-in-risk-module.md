@@ -1,8 +1,21 @@
 # ADR 0019 — Risk Types Belong in `risk/`, Not `execution/`
 
-**Status:** Accepted
+**Status:** Implemented
 **Date:** 2026-04-22
+**Implemented:** 2026-04-24
 **Relates to:** ADR 0008 (risk layer has veto over execution)
+
+## Implementation note (2026-04-24)
+
+Verified during the 2026-04-24 architecture review. The refactor is in effect:
+
+- `RiskDecision` — `src/milodex/risk/models.py:26`
+- `RiskCheckResult` — `src/milodex/risk/models.py:16`
+- `RiskDefaults` — `src/milodex/risk/config.py:18`
+- `EvaluationContext` — `src/milodex/risk/evaluator.py:33` (kept inline with the evaluator; not extracted to its own module)
+- `execution/risk.py` — does not exist; the 13-line back-compat shim referenced in §18 was either never created or already removed. No callers depend on the legacy path.
+
+The dependency arrow now points `execution/` → `risk/` only. `risk/` imports nothing from `execution/`. Verified by import audit across `src/` and `tests/`.
 
 ## Context
 

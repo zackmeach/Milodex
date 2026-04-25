@@ -147,3 +147,18 @@ class TestParquetCache:
         assert len(result) == 8  # 3 + 2 + 3
         timestamps = pd.to_datetime(result["timestamp"])
         assert timestamps.is_monotonic_increasing
+
+
+def test_read_logs_cache_miss_when_file_absent(cache, caplog):
+    with caplog.at_level("INFO", logger="milodex.data.cache"):
+        result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is None
+    assert any("cache_miss" in r.message and "AAPL" in r.message for r in caplog.records)
+
+
+def test_read_logs_cache_hit_when_file_present(cache, sample_df, caplog):
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+    with caplog.at_level("INFO", logger="milodex.data.cache"):
+        result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None
+    assert any("cache_hit" in r.message and "rows=3" in r.message for r in caplog.records)
