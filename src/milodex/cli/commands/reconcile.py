@@ -31,6 +31,7 @@ from milodex.cli._shared import (
     format_money,
 )
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import build_reconcile_view
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 
@@ -176,10 +177,24 @@ def _run_reconcile(
         as_of=as_of,
     )
 
+    renderable = build_reconcile_view(
+        broker=data["broker"],
+        positions_ok=data["positions"]["ok"],
+        positions_mismatched=data["positions"]["mismatches"],
+        orders_ok=data["orders"]["ok"],
+        orders_mismatched=data["orders"]["mismatches"],
+        deferred_checks=data["deferred_checks"],
+        reconciliation_clean=data["reconciliation_clean"],
+        incident_recorded=data["incident_recorded"],
+        incident_deduplicated=data["incident_deduplicated"],
+        incident_hash=data["incident_hash"],
+        as_of=data["as_of"],
+    )
     return CommandResult(
         command="reconcile",
         data=data,
         human_lines=human_lines,
+        renderable=renderable,
         warnings=warnings,
     )
 

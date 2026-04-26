@@ -29,6 +29,7 @@ from milodex.cli._shared import (
     parse_iso_date,
 )
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import build_backtest_view, build_walk_forward_view
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -144,7 +145,24 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
         data=data,
         lines=lines,
     )
-    return CommandResult(command="backtest", data=data, human_lines=lines)
+    renderable = build_backtest_view(
+        strategy_id=result.strategy_id,
+        run_id=result.run_id,
+        start_date=str(result.start_date),
+        end_date=str(result.end_date),
+        trading_days=result.trading_days,
+        initial_equity=result.initial_equity,
+        final_equity=result.final_equity,
+        total_return_pct=result.total_return_pct,
+        trade_count=result.trade_count,
+        buy_count=result.buy_count,
+        sell_count=result.sell_count,
+        slippage_pct=result.slippage_pct,
+        commission_per_trade=result.commission_per_trade,
+        confidence_label=data.get("confidence_label"),
+        confidence_reason=data.get("confidence_reason"),
+    )
+    return CommandResult(command="backtest", data=data, human_lines=lines, renderable=renderable)
 
 
 def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
@@ -234,12 +252,45 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
         data=data,
         lines=lines,
     )
+    extra_warnings: list[str] = []
     if stability.single_window_dependency:
-        lines.append(
-            "WARNING: aggregate return depends on a single window — "
-            "dropping the best-returning window flips the sign. Treat as fragile."
+        msg = (
+            "Aggregate return depends on a single window — dropping the "
+            "best-returning window flips the sign. Treat as fragile."
         )
-    return CommandResult(command="backtest", data=data, human_lines=lines)
+        lines.append(f"WARNING: {msg}")
+        extra_warnings.append(msg)
+    confidence = data.get("confidence_label")
+    confidence_reason = data.get("confidence_reason")
+    renderable = build_walk_forward_view(
+        strategy_id=result.strategy_id,
+        run_id=result.run_id,
+        start_date=str(result.start_date),
+        end_date=str(result.end_date),
+        initial_equity=result.initial_equity,
+        train_days=result.train_days,
+        test_days=result.test_days,
+        step_days=result.step_days,
+        oos_trading_days=result.oos_trading_days,
+        oos_trade_count=result.oos_trade_count,
+        oos_total_return_pct=result.oos_total_return_pct,
+        oos_sharpe=result.oos_sharpe,
+        oos_max_drawdown_pct=result.oos_max_drawdown_pct,
+        stability=data["stability"],
+        windows=data["windows"],
+        extra_warnings=extra_warnings,
+    )
+    if confidence:
+        # Confidence label was attached above but build_walk_forward_view
+        # doesn't carry it on the OOS panel; surface as an extra warning
+        # entry so it's visible without restructuring the panel layout.
+        extra_warnings.append(f"Confidence: {confidence} ({confidence_reason or ''})")
+    return CommandResult(
+        command="backtest",
+        data=data,
+        human_lines=lines,
+        renderable=renderable,
+    )
 
 
 def _fmt_optional(value: float | None, spec: str) -> str:

@@ -9,6 +9,10 @@ from typing import Any
 
 from milodex.cli._shared import CommandContext, add_global_flags
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import (
+    build_promotion_history_view,
+    build_promotion_manifest_view,
+)
 from milodex.promotion import (
     assemble_evidence_package,
     check_gate,
@@ -405,7 +409,13 @@ def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     if not events:
         lines = [f"No promotion history for {args.strategy_id}."]
-        return CommandResult(command="promotion.history", data=data, human_lines=lines)
+        renderable = build_promotion_history_view(strategy_id=args.strategy_id, events=[])
+        return CommandResult(
+            command="promotion.history",
+            data=data,
+            human_lines=lines,
+            renderable=renderable,
+        )
 
     lines = [
         f"Promotion History — {args.strategy_id}",
@@ -421,7 +431,13 @@ def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
             f"{id_cell:<12}{recorded:<28}{e.from_stage:<12}{e.to_stage:<12}"
             f"{e.promotion_type:<18}{manifest_cell}"
         )
-    return CommandResult(command="promotion.history", data=data, human_lines=lines)
+    renderable = build_promotion_history_view(strategy_id=args.strategy_id, events=data["events"])
+    return CommandResult(
+        command="promotion.history",
+        data=data,
+        human_lines=lines,
+        renderable=renderable,
+    )
 
 
 def _manifest_show(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
@@ -440,7 +456,17 @@ def _manifest_show(args: argparse.Namespace, ctx: CommandContext) -> CommandResu
         lines = [
             f"No active manifest for {args.strategy_id} at stage '{config.stage}'.",
         ]
-        return CommandResult(command="promotion.manifest", data=data, human_lines=lines)
+        renderable = build_promotion_manifest_view(
+            strategy_id=args.strategy_id,
+            stage=config.stage,
+            active_manifest=None,
+        )
+        return CommandResult(
+            command="promotion.manifest",
+            data=data,
+            human_lines=lines,
+            renderable=renderable,
+        )
     data = {
         "strategy_id": event.strategy_id,
         "stage": event.stage,
@@ -458,4 +484,14 @@ def _manifest_show(args: argparse.Namespace, ctx: CommandContext) -> CommandResu
         f"  frozen_by:   {event.frozen_by}",
         f"  source:      {event.config_path}",
     ]
-    return CommandResult(command="promotion.manifest", data=data, human_lines=lines)
+    renderable = build_promotion_manifest_view(
+        strategy_id=event.strategy_id,
+        stage=event.stage,
+        active_manifest=data["active_manifest"],
+    )
+    return CommandResult(
+        command="promotion.manifest",
+        data=data,
+        human_lines=lines,
+        renderable=renderable,
+    )

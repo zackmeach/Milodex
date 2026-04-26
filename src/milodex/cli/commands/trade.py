@@ -18,6 +18,7 @@ from milodex.cli._shared import (
     order_to_dict,
 )
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import build_trade_execution_view
 from milodex.config import get_locks_dir
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.execution import TradeIntent
@@ -212,10 +213,33 @@ def _build_execution_result(
         lines.append(f"Broker status: {result.order.status.value}")
     if result.message:
         lines.append(f"Message: {result.message}")
+    renderable = build_trade_execution_view(
+        status=result.status.value,
+        side=request.side.value,
+        symbol=request.symbol,
+        quantity=request.quantity,
+        order_type=request.order_type.value,
+        time_in_force=request.time_in_force.value,
+        estimated_unit_price=request.estimated_unit_price,
+        estimated_order_value=request.estimated_order_value,
+        trading_mode=trading_mode,
+        market_open=bool(result.market_open),
+        strategy_name=request.strategy_name,
+        strategy_stage=request.strategy_stage,
+        risk_checks=[
+            {"name": c.name, "passed": c.passed, "message": c.message}
+            for c in result.risk_decision.checks
+        ],
+        risk_allowed=bool(result.risk_decision.allowed),
+        broker_order_id=result.order.id if result.order is not None else None,
+        broker_status=result.order.status.value if result.order is not None else None,
+        message=result.message,
+    )
     return CommandResult(
         command=command,
         data=_execution_result_to_dict(result, trading_mode),
         human_lines=lines,
+        renderable=renderable,
     )
 
 

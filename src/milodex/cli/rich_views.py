@@ -602,3 +602,536 @@ def build_analytics_metrics_view(
     if benchmark is not None:
         body.append(_metrics_panel(benchmark, title="SPY Benchmark"))
     return Group(*body)
+
+
+# ---------------------------------------------------------------------------
+# promotion history / promotion manifest
+# ---------------------------------------------------------------------------
+
+
+def build_promotion_history_view(
+    *,
+    strategy_id: str,
+    events: list[dict],
+) -> Panel:
+    """Stage-transition timeline. Empty events → "no history" panel.
+
+    Each row colors the stage cells (red live/micro_live, yellow paper,
+    cyan backtest) and flags missing manifests as a yellow warning —
+    mirroring the runtime drift policy. Reversal chains (`↩event_id`)
+    appear inline against the original event id.
+    """
+    if not events:
+        return Panel(
+            Text(f"No promotion history for {strategy_id}.", style="dim"),
+            title=f"Promotion History — {strategy_id}",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+
+    table = Table(box=box.SIMPLE_HEAD, header_style="bold")
+    table.add_column("ID")
+    table.add_column("Recorded at")
+    table.add_column("From")
+    table.add_column("To")
+    table.add_column("Type")
+    table.add_column("Manifest")
+    table.add_column("Approved by")
+
+    for ev in events:
+        id_cell = str(ev.get("id", ""))
+        if ev.get("reverses_event_id") is not None:
+            id_cell = f"{id_cell} (↩{ev['reverses_event_id']})"
+        manifest_id = ev.get("manifest_id")
+        manifest_cell: Any = (
+            Text("none", style="yellow") if manifest_id is None else f"mid={manifest_id}"
+        )
+        table.add_row(
+            id_cell,
+            str(ev.get("recorded_at", "")),
+            Text(str(ev.get("from_stage", "")), style=_stage_color(str(ev.get("from_stage", "")))),
+            Text(str(ev.get("to_stage", "")), style=_stage_color(str(ev.get("to_stage", "")))),
+            str(ev.get("promotion_type", "")),
+            manifest_cell,
+            str(ev.get("approved_by", "")),
+        )
+    title = f"Promotion History — {strategy_id} ({len(events)} event(s))"
+    return Panel(table, title=title, border_style="cyan", box=box.ROUNDED)
+
+
+# ---------------------------------------------------------------------------
+# backtest result panels
+# ---------------------------------------------------------------------------
+
+
+def build_backtest_view(
+    *,
+    strategy_id: str,
+    run_id: str,
+    start_date: str,
+    end_date: str,
+    trading_days: int,
+    initial_equity: float,
+    final_equity: float,
+    total_return_pct: float,
+    trade_count: int,
+    buy_count: int,
+    sell_count: int,
+    slippage_pct: float,
+    commission_per_trade: float,
+    confidence_label: str | None = None,
+    confidence_reason: str | None = None,
+    extra_warnings: list[str] | None = None,
+) -> Group:
+    """`milodex backtest <strategy>` (whole-period) result panel."""
+    body: list[Any] = []
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(justify="left", style="bold")
+    summary.add_column(justify="right")
+    summary.add_row("Strategy", strategy_id)
+    summary.add_row("Run ID", run_id)
+    summary.add_row("Period", f"{start_date} to {end_date}")
+    summary.add_row("Trading days", str(trading_days))
+    summary.add_row("Initial equity", _money_text(float(initial_equity)))
+    summary.add_row("Final equity", _money_text(float(final_equity)))
+    summary.add_row(
+        "Total return",
+        Text(
+            f"{total_return_pct:+.2f}%",
+            style="green" if total_return_pct > 0 else "red" if total_return_pct < 0 else "",
+        ),
+    )
+    summary.add_row("Trades", f"{trade_count} ({buy_count}B / {sell_count}S)")
+    summary.add_row("Slippage", f"{slippage_pct * 100:.2f}%")
+    summary.add_row("Commission", f"{_money_text(float(commission_per_trade))} / trade")
+    if confidence_label:
+        summary.add_row(
+            "Confidence",
+            Text(
+                f"{confidence_label}" + (f" ({confidence_reason})" if confidence_reason else ""),
+                style=_confidence_color(confidence_label),
+            ),
+        )
+    body.append(Panel(summary, title="Backtest Result", border_style="cyan", box=box.ROUNDED))
+    if extra_warnings:
+        body.append(
+            Panel(
+                Text.from_markup("\n".join(f"[yellow]• {w}[/yellow]" for w in extra_warnings)),
+                title="Notes",
+                border_style="yellow",
+                box=box.ROUNDED,
+            )
+        )
+    return Group(*body)
+
+
+def build_walk_forward_view(
+    *,
+    strategy_id: str,
+    run_id: str,
+    start_date: str,
+    end_date: str,
+    initial_equity: float,
+    train_days: int,
+    test_days: int,
+    step_days: int,
+    oos_trading_days: int,
+    oos_trade_count: int,
+    oos_total_return_pct: float,
+    oos_sharpe: float | None,
+    oos_max_drawdown_pct: float,
+    stability: dict,
+    windows: list[dict],
+    extra_warnings: list[str] | None = None,
+) -> Group:
+    """`milodex backtest --walk-forward` result panel.
+
+    Three stacked views:
+    - OOS-aggregate panel (the metrics the promotion gate evaluates).
+    - Stability panel — color-codes single-window-dependency in red.
+    - Per-window table with return / Sharpe / maxDD per row.
+    """
+    body: list[Any] = []
+
+    summary = Table.grid(padding=(0, 2))
+    summary.add_column(justify="left", style="bold")
+    summary.add_column(justify="right")
+    summary.add_row("Strategy", strategy_id)
+    summary.add_row("Run ID", run_id)
+    summary.add_row("Period", f"{start_date} to {end_date}")
+    summary.add_row(
+        "Windows",
+        f"{len(windows)} (train={train_days}d, test={test_days}d, step={step_days}d)",
+    )
+    summary.add_row("Initial equity", _money_text(float(initial_equity)))
+    body.append(
+        Panel(
+            summary,
+            title="Backtest Run (walk-forward)",
+            border_style="cyan",
+            box=box.ROUNDED,
+        )
+    )
+
+    oos = Table.grid(padding=(0, 2))
+    oos.add_column(justify="left", style="bold")
+    oos.add_column(justify="right")
+    oos.add_row("Trading days", str(oos_trading_days))
+    oos.add_row("Trades", str(oos_trade_count))
+    oos.add_row(
+        "Total return",
+        Text(
+            f"{oos_total_return_pct:+.2f}%",
+            style="green"
+            if oos_total_return_pct > 0
+            else "red"
+            if oos_total_return_pct < 0
+            else "",
+        ),
+    )
+    if oos_sharpe is None:
+        oos.add_row("Sharpe", Text("n/a", style="dim"))
+    else:
+        sharpe_color = "red" if oos_sharpe < 0 else "yellow" if oos_sharpe < 0.5 else "green"
+        oos.add_row("Sharpe", Text(f"{oos_sharpe:.2f}", style=sharpe_color))
+    dd_color = (
+        "red"
+        if oos_max_drawdown_pct > 15.0
+        else "yellow"
+        if oos_max_drawdown_pct > 7.5
+        else "green"
+    )
+    oos.add_row(
+        "Max drawdown",
+        Text(f"{oos_max_drawdown_pct:.2f}%", style=dd_color),
+    )
+    body.append(Panel(oos, title="OOS Aggregate", border_style="cyan", box=box.ROUNDED))
+
+    stab = Table.grid(padding=(0, 2))
+    stab.add_column(justify="left", style="bold")
+    stab.add_column(justify="right")
+
+    def _opt(v: Any, fmt: str = ".2f") -> str:
+        if v is None:
+            return "n/a"
+        return f"{v:{fmt}}"
+
+    stab.add_row(
+        "Sharpe min/max/std",
+        f"{_opt(stability.get('sharpe_min'))} / "
+        f"{_opt(stability.get('sharpe_max'))} / "
+        f"{_opt(stability.get('sharpe_std'))}",
+    )
+    pos = stability.get("windows_positive", 0)
+    neg = stability.get("windows_negative", 0)
+    stab.add_row("Positive windows", f"{pos} / {len(windows)}")
+    stab.add_row("Negative windows", f"{neg} / {len(windows)}")
+    swd = bool(stability.get("single_window_dependency"))
+    stab.add_row(
+        "Single-window dependency",
+        Text("YES — fragile", style="red") if swd else Text("no", style="green"),
+    )
+    body.append(Panel(stab, title="Stability", border_style="cyan", box=box.ROUNDED))
+
+    if windows:
+        wt = Table(box=box.SIMPLE_HEAD, header_style="bold")
+        wt.add_column("#", justify="right")
+        wt.add_column("Test start")
+        wt.add_column("Test end")
+        wt.add_column("Trades", justify="right")
+        wt.add_column("Return", justify="right")
+        wt.add_column("Sharpe", justify="right")
+        wt.add_column("Max DD", justify="right")
+        for w in windows:
+            r = float(w.get("total_return_pct", 0.0))
+            r_color = "green" if r > 0 else "red" if r < 0 else ""
+            sharpe = w.get("sharpe")
+            sharpe_text: Any = (
+                Text("n/a", style="dim")
+                if sharpe is None
+                else Text(
+                    f"{float(sharpe):.2f}",
+                    style="red"
+                    if float(sharpe) < 0
+                    else "yellow"
+                    if float(sharpe) < 0.5
+                    else "green",
+                )
+            )
+            dd = float(w.get("max_drawdown_pct", 0.0))
+            dd_c = "red" if dd > 15.0 else "yellow" if dd > 7.5 else "green"
+            wt.add_row(
+                str(w.get("index", "")),
+                str(w.get("test_start", "")),
+                str(w.get("test_end", "")),
+                str(w.get("trade_count", 0)),
+                Text(f"{r:+.2f}%", style=r_color),
+                sharpe_text,
+                Text(f"{dd:.2f}%", style=dd_c),
+            )
+        body.append(Panel(wt, title="Per-window OOS Results", border_style="cyan", box=box.ROUNDED))
+
+    if extra_warnings:
+        body.append(
+            Panel(
+                Text.from_markup("\n".join(f"[yellow]• {w}[/yellow]" for w in extra_warnings)),
+                title="Notes",
+                border_style="yellow",
+                box=box.ROUNDED,
+            )
+        )
+    return Group(*body)
+
+
+# ---------------------------------------------------------------------------
+# trade preview / submit
+# ---------------------------------------------------------------------------
+
+
+def build_trade_execution_view(
+    *,
+    status: str,
+    side: str,
+    symbol: str,
+    quantity: float,
+    order_type: str,
+    time_in_force: str,
+    estimated_unit_price: float,
+    estimated_order_value: float,
+    trading_mode: str,
+    market_open: bool,
+    strategy_name: str | None,
+    strategy_stage: str | None,
+    risk_checks: list[dict],
+    risk_allowed: bool,
+    broker_order_id: str | None,
+    broker_status: str | None,
+    message: str | None,
+) -> Group:
+    """`milodex trade preview/submit` — order details + risk check breakdown.
+
+    Top-level disposition banner (green ALLOW, red BLOCK) so the operator
+    sees the decision before any details. Risk checks render as a table
+    with PASS/FAIL color codes, mirroring the underlying decision record.
+    """
+    body: list[Any] = []
+
+    disposition = (
+        ("ALLOW", "bold black on green") if risk_allowed else ("BLOCK", "bold white on red")
+    )
+    body.append(
+        Panel(
+            Text(disposition[0], style=disposition[1], justify="center"),
+            border_style="green" if risk_allowed else "red",
+            box=box.HEAVY,
+        )
+    )
+
+    order = Table.grid(padding=(0, 2))
+    order.add_column(justify="left", style="bold")
+    order.add_column(justify="right")
+    side_color = "green" if side.lower() == "buy" else "red"
+    order.add_row("Symbol", symbol)
+    order.add_row("Side", Text(side.upper(), style=side_color))
+    order.add_row("Type", order_type)
+    order.add_row("Quantity", f"{quantity:.2f}")
+    order.add_row("Time in force", time_in_force)
+    order.add_row("Est. unit price", _money_text(float(estimated_unit_price)))
+    order.add_row("Est. order value", _money_text(float(estimated_order_value)))
+    mode_color = "yellow" if trading_mode == "paper" else "red"
+    order.add_row("Trading mode", Text(trading_mode, style=mode_color))
+    order.add_row(
+        "Market",
+        Text("open", style="green") if market_open else Text("closed", style="dim"),
+    )
+    if strategy_name:
+        order.add_row("Strategy", f"{strategy_name} ({strategy_stage})")
+    if broker_order_id:
+        order.add_row("Broker order ID", broker_order_id)
+    if broker_status:
+        order.add_row("Broker status", broker_status)
+    if status:
+        order.add_row("Execution status", status)
+    if message:
+        order.add_row("Message", Text(message, style="yellow"))
+    body.append(Panel(order, title="Order", border_style="cyan", box=box.ROUNDED))
+
+    if risk_checks:
+        risk_table = Table(box=box.SIMPLE_HEAD, header_style="bold")
+        risk_table.add_column("")
+        risk_table.add_column("Check")
+        risk_table.add_column("Detail")
+        for check in risk_checks:
+            passed = bool(check.get("passed"))
+            risk_table.add_row(
+                Text("PASS", style="green") if passed else Text("FAIL", style="red"),
+                str(check.get("name", "")),
+                str(check.get("message", "")),
+            )
+        body.append(Panel(risk_table, title="Risk Checks", border_style="cyan", box=box.ROUNDED))
+    return Group(*body)
+
+
+# ---------------------------------------------------------------------------
+# reconcile
+# ---------------------------------------------------------------------------
+
+
+def build_reconcile_view(
+    *,
+    broker: dict,
+    positions_ok: list[dict],
+    positions_mismatched: list[dict],
+    orders_ok: list[dict],
+    orders_mismatched: list[dict],
+    deferred_checks: list[str],
+    reconciliation_clean: bool,
+    incident_recorded: bool,
+    incident_deduplicated: bool,
+    incident_hash: str | None,
+    as_of: str,
+) -> Group:
+    """`milodex reconcile` — broker-vs-event-store comparison panel."""
+    body: list[Any] = []
+
+    if not reconciliation_clean:
+        if incident_recorded:
+            severity_text = Text.from_markup(
+                f"[bold white on red]DRIFT DETECTED[/]\n"
+                f"[red]Incident recorded — hash {incident_hash or '?':.12s}[/]"
+            )
+        elif incident_deduplicated:
+            severity_text = Text.from_markup(
+                f"[bold white on yellow]DRIFT DETECTED (DEDUPLICATED)[/]\n"
+                f"[yellow]Hash {incident_hash or '?':.12s} matches a prior "
+                "incident — not re-logged (R-OPS-010).[/]"
+            )
+        else:
+            severity_text = Text.from_markup(
+                "[bold white on red]DRIFT DETECTED[/]\n"
+                "[red]Incident NOT recorded — broker unreachable.[/]"
+            )
+        body.append(Panel(severity_text, border_style="red", box=box.HEAVY))
+
+    env = Table.grid(padding=(0, 2))
+    env.add_column(justify="left", style="bold")
+    env.add_column(justify="left")
+    env.add_row("As-of", as_of)
+    env.add_row(
+        "Broker",
+        Text("connected", style="green")
+        if broker.get("connected")
+        else Text("UNREACHABLE", style="red"),
+    )
+    market = broker.get("market_open")
+    if market is True:
+        env.add_row("Market", Text("open", style="green"))
+    elif market is False:
+        env.add_row("Market", Text("closed", style="dim"))
+    account = broker.get("account") or {}
+    if account:
+        env.add_row("Equity", _money_text(float(account.get("equity", 0.0))))
+        env.add_row("Cash", _money_text(float(account.get("cash", 0.0))))
+        env.add_row("Buying power", _money_text(float(account.get("buying_power", 0.0))))
+    body.append(Panel(env, title="Environment", border_style="cyan", box=box.ROUNDED))
+
+    pos_table = Table(box=box.SIMPLE_HEAD, header_style="bold")
+    pos_table.add_column("Symbol")
+    pos_table.add_column("Local qty", justify="right")
+    pos_table.add_column("Broker qty", justify="right")
+    pos_table.add_column("Kind")
+    if not positions_ok and not positions_mismatched:
+        pos_table.add_row("(none)", "—", "—", "")
+    else:
+        for row in positions_mismatched + positions_ok:
+            kind = str(row.get("kind", ""))
+            kind_color = "red" if kind != "ok" else "green"
+            pos_table.add_row(
+                str(row.get("symbol", "")),
+                "—" if row.get("local_qty") is None else f"{float(row['local_qty']):g}",
+                "—" if row.get("broker_qty") is None else f"{float(row['broker_qty']):g}",
+                Text(kind, style=kind_color),
+            )
+    pos_title = (
+        f"Positions ({len(positions_mismatched)} mismatch(es) of "
+        f"{len(positions_ok) + len(positions_mismatched)} symbol(s))"
+    )
+    body.append(Panel(pos_table, title=pos_title, border_style="cyan", box=box.ROUNDED))
+
+    ord_table = Table(box=box.SIMPLE_HEAD, header_style="bold")
+    ord_table.add_column("Order ID")
+    ord_table.add_column("Symbol")
+    ord_table.add_column("Kind")
+    if not orders_ok and not orders_mismatched:
+        ord_table.add_row("(none)", "—", "")
+    else:
+        for row in orders_mismatched + orders_ok:
+            kind = str(row.get("kind", ""))
+            kind_color = "red" if kind != "ok" else "green"
+            ord_table.add_row(
+                str(row.get("broker_order_id", ""))[:16],
+                str(row.get("symbol") or "—"),
+                Text(kind, style=kind_color),
+            )
+    ord_title = (
+        f"Open orders ({len(orders_mismatched)} mismatch(es) of "
+        f"{len(orders_ok) + len(orders_mismatched)} order(s))"
+    )
+    body.append(Panel(ord_table, title=ord_title, border_style="cyan", box=box.ROUNDED))
+
+    if deferred_checks:
+        body.append(
+            Panel(
+                Text.from_markup(
+                    "[yellow]The following dimensions are scaffolded "
+                    "(R-OPS-004 v1.1) and surfaced as warnings only:[/]\n"
+                    + "\n".join(f"  • {c}" for c in deferred_checks)
+                ),
+                title="Deferred checks",
+                border_style="yellow",
+                box=box.ROUNDED,
+            )
+        )
+
+    if reconciliation_clean:
+        body.append(
+            Panel(
+                Text(
+                    "CLEAN — broker and event store agree on all checked dimensions.",
+                    style="bold green",
+                ),
+                border_style="green",
+                box=box.ROUNDED,
+            )
+        )
+    return Group(*body)
+
+
+def build_promotion_manifest_view(
+    *,
+    strategy_id: str,
+    stage: str,
+    active_manifest: dict | None,
+) -> Panel:
+    """Frozen-manifest panel. ``None`` active manifest → muted "no manifest" panel."""
+    if active_manifest is None:
+        return Panel(
+            Text.from_markup(
+                f"No active manifest for [bold]{strategy_id}[/bold] at stage "
+                f"[{_stage_color(stage)}]{stage}[/{_stage_color(stage)}].\n"
+                "[dim]Use `milodex promotion freeze` before promoting.[/dim]"
+            ),
+            title="Manifest",
+            border_style="yellow",
+            box=box.ROUNDED,
+        )
+    table = Table.grid(padding=(0, 2))
+    table.add_column(justify="left", style="bold")
+    table.add_column(justify="left")
+    table.add_row("Strategy", strategy_id)
+    table.add_row("Stage", Text(stage, style=_stage_color(stage)))
+    table.add_row("Config hash", active_manifest.get("config_hash", ""))
+    table.add_row("Source", active_manifest.get("config_path", ""))
+    table.add_row("Frozen at", active_manifest.get("frozen_at", ""))
+    table.add_row("Frozen by", active_manifest.get("frozen_by", ""))
+    return Panel(table, title="Active Manifest", border_style="cyan", box=box.ROUNDED)
