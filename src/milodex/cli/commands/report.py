@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from milodex.analytics.metrics import compute_metrics
+from milodex.analytics.metrics import metrics_for_run
 from milodex.broker import BrokerError
 from milodex.cli._shared import (
     CommandContext,
@@ -29,7 +29,6 @@ from milodex.cli._shared import (
     performance_metrics_to_dict,
     position_to_dict,
 )
-from milodex.cli.commands.analytics import equity_curve_from_trades
 from milodex.cli.formatter import CommandResult
 from milodex.core.event_store import (
     BacktestRunEvent,
@@ -465,32 +464,11 @@ def _build_strategy_result(event_store: EventStore, strategy_id: str) -> Command
     if latest_run.id is None:
         raise ValueError(f"Backtest run has no DB id: {latest_run.run_id}")
 
-    raw_trades = event_store.list_trades_for_backtest_run(latest_run.id)
-    equity_curve = equity_curve_from_trades(raw_trades, latest_run.metadata or {})
-    trades_dicts = [
-        {
-            "symbol": t.symbol,
-            "side": t.side,
-            "quantity": t.quantity,
-            "estimated_unit_price": t.estimated_unit_price,
-            "recorded_at": t.recorded_at.isoformat(),
-        }
-        for t in raw_trades
-    ]
-    metadata = latest_run.metadata or {}
-    initial_equity = float(metadata.get("initial_equity", 100_000.0))
-    metrics = compute_metrics(
-        run_id=latest_run.run_id,
-        strategy_id=latest_run.strategy_id,
-        start_date=latest_run.start_date.date(),
-        end_date=latest_run.end_date.date(),
-        initial_equity=initial_equity,
-        equity_curve=equity_curve,
-        trades=trades_dicts,
-    )
+    # Single source of truth — handles walk-forward OOS-aggregate override.
+    metrics = metrics_for_run(latest_run, event_store)
 
-    latest_promo = event_store.get_latest_promotion_for_strategy(strategy_id)
-    stage = latest_promo.to_stage if latest_promo is not None else "backtest"
+    stage, stage_source, latest_promotion_stage = _resolve_runtime_stage(event_store, strategy_id)
+    stage_disagreement = latest_promotion_stage is not None and latest_promotion_stage != stage
     confidence = {
         "label": metrics.confidence_label,
         "reason": f"trade_count={metrics.trade_count}",
@@ -499,6 +477,9 @@ def _build_strategy_result(event_store: EventStore, strategy_id: str) -> Command
     data: dict[str, Any] = {
         "strategy_id": strategy_id,
         "stage": stage,
+        "stage_source": stage_source,
+        "latest_promotion_stage": latest_promotion_stage,
+        "stage_disagreement": stage_disagreement,
         "config_fingerprint": latest_run.config_hash,
         "latest_backtest_run_id": latest_run.run_id,
         "metrics": performance_metrics_to_dict(metrics),
@@ -507,38 +488,89 @@ def _build_strategy_result(event_store: EventStore, strategy_id: str) -> Command
         "paper_vs_backtest": None,
     }
 
-    lines = [
+    stage_line = f"  Stage:               {stage}"
+    if stage_source == "manifest":
+        stage_line += " (frozen manifest)"
+    elif stage_source == "promotion_log":
+        stage_line += " (no frozen manifest yet)"
+    lines: list[str] = [
         f"Milodex Strategy Report — {strategy_id}",
-        f"  Stage:               {stage}",
-        f"  Latest backtest:     {latest_run.run_id}",
-        f"  Config fingerprint:  {latest_run.config_hash or 'n/a'}",
-        "",
-        "Performance",
-        f"  Period:          {metrics.start_date} to {metrics.end_date}",
-        f"  Total return:    {metrics.total_return_pct:+.2f}%",
-        f"  Max drawdown:    {metrics.max_drawdown_pct:.2f}%",
-        f"  Sharpe:          {metrics.sharpe_ratio:.2f}"
-        if metrics.sharpe_ratio is not None
-        else "  Sharpe:          n/a",
-        f"  Sortino:         {metrics.sortino_ratio:.2f}"
-        if metrics.sortino_ratio is not None
-        else "  Sortino:         n/a",
-        f"  Trades:          {metrics.trade_count} "
-        f"({metrics.buy_count}B/{metrics.sell_count}S, "
-        f"{metrics.winning_trades}W/{metrics.losing_trades}L)",
-        f"  Win rate:        {metrics.win_rate_pct:.1f}%"
-        if metrics.win_rate_pct is not None
-        else "  Win rate:        n/a",
-        f"  Avg hold:        {metrics.avg_hold_days:.1f}d"
-        if metrics.avg_hold_days is not None
-        else "  Avg hold:        n/a",
-        "",
-        f"Confidence: {confidence['label']} ({confidence['reason']})",
-        "Known weaknesses:   not recorded yet",
-        "Paper vs backtest:  not available — strategy has no paper trading history",
+        stage_line,
     ]
+    if stage_disagreement:
+        lines.append(
+            f"  WARNING: promotion log says '{latest_promotion_stage}' but no "
+            f"manifest is frozen at that stage — runtime treats this strategy "
+            f"as '{stage}' (the manifest's stage). The bookkeeping mismatch "
+            f"is recorded for forensics; consider demoting + repromoting to "
+            f"reconcile."
+        )
+    lines.extend(
+        [
+            f"  Latest backtest:     {latest_run.run_id}",
+            f"  Config fingerprint:  {latest_run.config_hash or 'n/a'}",
+            "",
+            "Performance",
+            f"  Period:          {metrics.start_date} to {metrics.end_date}",
+            f"  Total return:    {metrics.total_return_pct:+.2f}%",
+            f"  Max drawdown:    {metrics.max_drawdown_pct:.2f}%",
+            f"  Sharpe:          {metrics.sharpe_ratio:.2f}"
+            if metrics.sharpe_ratio is not None
+            else "  Sharpe:          n/a",
+            f"  Sortino:         {metrics.sortino_ratio:.2f}"
+            if metrics.sortino_ratio is not None
+            else "  Sortino:         n/a",
+            f"  Trades:          {metrics.trade_count} "
+            f"({metrics.buy_count}B/{metrics.sell_count}S, "
+            f"{metrics.winning_trades}W/{metrics.losing_trades}L)",
+            f"  Win rate:        {metrics.win_rate_pct:.1f}%"
+            if metrics.win_rate_pct is not None
+            else "  Win rate:        n/a",
+            f"  Avg hold:        {metrics.avg_hold_days:.1f}d"
+            if metrics.avg_hold_days is not None
+            else "  Avg hold:        n/a",
+            "",
+            f"Confidence: {confidence['label']} ({confidence['reason']})",
+            "Known weaknesses:   not recorded yet",
+            "Paper vs backtest:  not available — strategy has no paper trading history",
+        ]
+    )
 
     return CommandResult(command="report.strategy", data=data, human_lines=lines)
+
+
+def _resolve_runtime_stage(
+    event_store: EventStore, strategy_id: str
+) -> tuple[str, str, str | None]:
+    """Resolve the *runtime-effective* stage for a strategy.
+
+    The runtime drift check uses the active frozen manifest's stage, not the
+    promotion-log stage, when the two disagree. Pre-Phase-1.4 promotions
+    landed without a manifest_id (manifest_id=None on the promotion event),
+    so they are bookkeeping-only and don't actually authorize execution at
+    that stage. We therefore prefer the manifest's stage and fall back to
+    the promotion log only when no manifest has been frozen yet. See
+    ROADMAP_PHASE1.md §7.
+
+    Returns ``(stage, stage_source, latest_promotion_stage)`` where
+    ``stage_source`` is one of ``"manifest"``, ``"promotion_log"``, or
+    ``"default"``, and ``latest_promotion_stage`` is the most recent
+    promotion-log target (so callers can flag a disagreement) or ``None``
+    when no promotion exists.
+    """
+    latest_promo = event_store.get_latest_promotion_for_strategy(strategy_id)
+    latest_promotion_stage = latest_promo.to_stage if latest_promo is not None else None
+
+    manifests = [m for m in event_store.list_strategy_manifests() if m.strategy_id == strategy_id]
+    if manifests:
+        # list_strategy_manifests is ordered by id ASC, so the last entry is
+        # the most recently frozen manifest across any stage for this strategy.
+        return manifests[-1].stage, "manifest", latest_promotion_stage
+
+    if latest_promotion_stage is not None:
+        return latest_promotion_stage, "promotion_log", latest_promotion_stage
+
+    return "backtest", "default", None
 
 
 def _latest_backtest_for_strategy(

@@ -15,6 +15,10 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from milodex.core.event_store import EventStore
 
 
 @dataclass
@@ -174,6 +178,97 @@ def sharpe_from_daily_returns(
 def max_drawdown_from_equity(equity_curve: list[tuple[date, float]]) -> tuple[float, int]:
     """Return ``(max_dd_fraction, duration_days)`` for the worst drawdown."""
     return _max_drawdown_stats(equity_curve)
+
+
+# ---------------------------------------------------------------------------
+# Backtest-run wrappers
+#
+# These are higher-level helpers that combine a ``BacktestRunEvent`` with the
+# event store's trade ledger to produce a ``PerformanceMetrics``. They live
+# here (not in the CLI) so every CLI surface — ``analytics metrics``,
+# ``report strategy``, future GUI — pulls from one definition. Walk-forward
+# semantics (OOS-aggregate override) live here for the same reason.
+# ---------------------------------------------------------------------------
+
+
+def equity_curve_from_trades(
+    trades: list,
+    metadata: dict,
+) -> list[tuple[date, float]]:
+    """Decode the equity curve stored in ``backtest_runs.metadata["equity_curve"]``.
+
+    Trades themselves are unused — they're accepted for forward-compatibility
+    in case a future implementation wants to reconstruct the curve from the
+    trade ledger when metadata is missing.
+    """
+    raw = metadata.get("equity_curve", [])
+    if not raw:
+        return []
+    result: list[tuple[date, float]] = []
+    for item in raw:
+        try:
+            d = date.fromisoformat(str(item[0]))
+            v = float(item[1])
+            result.append((d, v))
+        except (ValueError, IndexError, TypeError):
+            continue
+    return result
+
+
+def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
+    """Build :class:`PerformanceMetrics` for a ``BacktestRunEvent``.
+
+    Walk-forward runs (``metadata["walk_forward"] is True``) intentionally
+    have no continuous equity curve — each OOS window resets equity. For
+    those, equity-derived fields (``total_return_pct``, ``sharpe_ratio``,
+    ``max_drawdown_pct``, ``trading_days``, ``cagr_pct``) are sourced from
+    ``metadata["oos_aggregate"]`` and the result is tagged
+    ``result_type="walk_forward"``. Trade-ledger metrics (``win_rate``,
+    ``profit_factor``, ``avg_hold_days``) are still computed from the trade
+    ledger in both cases.
+    """
+    if run_.id is None:
+        raise ValueError(f"Backtest run has no DB id: {run_.run_id}")
+    raw_trades = event_store.list_trades_for_backtest_run(run_.id)
+    metadata = run_.metadata or {}
+    equity_curve = equity_curve_from_trades(raw_trades, metadata)
+    trades_dicts = [
+        {
+            "symbol": t.symbol,
+            "side": t.side,
+            "quantity": t.quantity,
+            "estimated_unit_price": t.estimated_unit_price,
+            "recorded_at": t.recorded_at.isoformat(),
+        }
+        for t in raw_trades
+    ]
+    metrics = compute_metrics(
+        run_id=run_.run_id,
+        strategy_id=run_.strategy_id,
+        start_date=run_.start_date.date() if run_.start_date else date.today(),
+        end_date=run_.end_date.date() if run_.end_date else date.today(),
+        initial_equity=metadata.get("initial_equity", 100_000.0),
+        equity_curve=equity_curve,
+        trades=trades_dicts,
+    )
+
+    if metadata.get("walk_forward"):
+        oos = metadata.get("oos_aggregate") or {}
+        metrics.result_type = "walk_forward"
+        metrics.total_return_pct = float(oos.get("total_return_pct", metrics.total_return_pct))
+        metrics.max_drawdown_pct = float(oos.get("max_drawdown_pct", metrics.max_drawdown_pct))
+        if "sharpe" in oos:
+            metrics.sharpe_ratio = float(oos["sharpe"])
+        trading_days = int(oos.get("trading_days", metrics.trading_days))
+        metrics.trading_days = trading_days
+        if trading_days > 1:
+            total_return_fraction = metrics.total_return_pct / 100.0
+            cagr_fraction = (1.0 + total_return_fraction) ** (252.0 / trading_days) - 1.0
+            metrics.cagr_pct = cagr_fraction * 100.0
+        else:
+            metrics.cagr_pct = None
+
+    return metrics
 
 
 # ---------------------------------------------------------------------------

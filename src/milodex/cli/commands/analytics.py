@@ -10,7 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from milodex.analytics.benchmark import compute_benchmark
-from milodex.analytics.metrics import PerformanceMetrics, compute_metrics
+from milodex.analytics.metrics import (
+    PerformanceMetrics,
+    equity_curve_from_trades,
+    metrics_for_run,
+)
 from milodex.cli._shared import (
     CommandContext,
     add_global_flags,
@@ -262,85 +266,6 @@ def _latest_run_id_for_strategy(event_store: EventStore, strategy_id: str) -> st
         )
     # list_backtest_runs returns ascending by id → last is most recent.
     return runs[-1].run_id
-
-
-def equity_curve_from_trades(
-    trades: list,
-    metadata: dict[str, Any],
-) -> list[tuple[date, float]]:
-    raw = metadata.get("equity_curve", [])
-    if raw:
-        result = []
-        for item in raw:
-            try:
-                d = date.fromisoformat(str(item[0]))
-                v = float(item[1])
-                result.append((d, v))
-            except (ValueError, IndexError, TypeError):
-                continue
-        if result:
-            return result
-    return []
-
-
-def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
-    """Build PerformanceMetrics for a BacktestRunEvent from the event store.
-
-    Walk-forward runs (``metadata["walk_forward"] is True``) intentionally
-    have no continuous equity curve — each OOS window resets equity. For
-    those, equity-derived fields (total_return_pct, sharpe_ratio,
-    max_drawdown_pct, trading_days, cagr_pct) are sourced from
-    ``metadata["oos_aggregate"]`` and the result is tagged
-    ``result_type="walk_forward"``. Trade-ledger metrics (win_rate,
-    profit_factor, avg_hold_days) are still computed from the trade ledger
-    in both cases.
-    """
-    if run_.id is None:
-        raise ValueError(f"Backtest run has no DB id: {run_.run_id}")
-    raw_trades = event_store.list_trades_for_backtest_run(run_.id)
-    metadata = run_.metadata or {}
-    equity_curve = equity_curve_from_trades(raw_trades, metadata)
-    trades_dicts = [
-        {
-            "symbol": t.symbol,
-            "side": t.side,
-            "quantity": t.quantity,
-            "estimated_unit_price": t.estimated_unit_price,
-            "recorded_at": t.recorded_at.isoformat(),
-        }
-        for t in raw_trades
-    ]
-    metrics = compute_metrics(
-        run_id=run_.run_id,
-        strategy_id=run_.strategy_id,
-        start_date=run_.start_date.date() if run_.start_date else date.today(),
-        end_date=run_.end_date.date() if run_.end_date else date.today(),
-        initial_equity=metadata.get("initial_equity", 100_000.0),
-        equity_curve=equity_curve,
-        trades=trades_dicts,
-    )
-
-    if metadata.get("walk_forward"):
-        oos = metadata.get("oos_aggregate") or {}
-        metrics.result_type = "walk_forward"
-        metrics.total_return_pct = float(oos.get("total_return_pct", metrics.total_return_pct))
-        metrics.max_drawdown_pct = float(oos.get("max_drawdown_pct", metrics.max_drawdown_pct))
-        if "sharpe" in oos:
-            metrics.sharpe_ratio = float(oos["sharpe"])
-        trading_days = int(oos.get("trading_days", metrics.trading_days))
-        metrics.trading_days = trading_days
-        # CAGR derived from OOS-aggregate inputs so it stays consistent with
-        # the displayed total_return / trading_days. sortino and
-        # max_drawdown_duration_days have no OOS analogue stored — leave them
-        # at the trade-ledger-derived defaults (typically None / 0).
-        if trading_days > 1:
-            total_return_fraction = metrics.total_return_pct / 100.0
-            cagr_fraction = (1.0 + total_return_fraction) ** (252.0 / trading_days) - 1.0
-            metrics.cagr_pct = cagr_fraction * 100.0
-        else:
-            metrics.cagr_pct = None
-
-    return metrics
 
 
 def _build_metrics_lines(m: PerformanceMetrics, label: str = "Strategy") -> list[str]:

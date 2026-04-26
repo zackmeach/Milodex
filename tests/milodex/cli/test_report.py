@@ -22,6 +22,7 @@ from milodex.core.event_store import (
     ExplanationEvent,
     KillSwitchEvent,
     PromotionEvent,
+    StrategyManifestEvent,
     TradeEvent,
 )
 
@@ -471,3 +472,141 @@ def test_report_strategy_human_output_includes_analytics_headers(tmp_path: Path)
     assert "Max drawdown:" in output
     assert "Trades:" in output
     assert "Confidence:" in output
+
+
+# ---------------------------------------------------------------------------
+# Stage-source consistency (§7 finding closure)
+# ---------------------------------------------------------------------------
+
+
+def _seed_promotion(
+    event_store: EventStore,
+    *,
+    strategy_id: str,
+    from_stage: str,
+    to_stage: str,
+    when: datetime,
+    manifest_id: int | None = None,
+) -> int:
+    return event_store.append_promotion(
+        PromotionEvent(
+            strategy_id=strategy_id,
+            from_stage=from_stage,
+            to_stage=to_stage,
+            promotion_type="statistical",
+            approved_by="owner",
+            recorded_at=when,
+            manifest_id=manifest_id,
+        )
+    )
+
+
+def _seed_manifest(
+    event_store: EventStore,
+    *,
+    strategy_id: str,
+    stage: str,
+    when: datetime,
+    config_hash: str = "fp-test-manifest",
+) -> int:
+    return event_store.append_strategy_manifest(
+        StrategyManifestEvent(
+            strategy_id=strategy_id,
+            stage=stage,
+            config_hash=config_hash,
+            config_path="configs/test.yaml",
+            config_json={"strategy": {"id": strategy_id}},
+            frozen_at=when,
+            frozen_by="operator",
+        )
+    )
+
+
+def test_report_strategy_uses_manifest_stage_when_promotion_lacks_manifest(
+    tmp_path: Path,
+) -> None:
+    """Promotion-log says one stage, manifest says another → manifest wins.
+
+    Closes the §7 finding surfaced 2026-04-26: meanrev had a 2026-04-22
+    paper→micro_live promotion with `manifest_id: null` (predating the
+    2026-04-23 freeze + live-refusal hooks), then a 2026-04-24 manifest
+    freeze at "paper". `report strategy` previously displayed the
+    promotion-log stage (`micro_live`), creating a false impression of
+    runtime state. The runtime drift check uses the manifest's stage, so
+    the manifest is the source of truth for what the system actually does.
+    """
+    event_store = EventStore(tmp_path / "milodex.db")
+    _seed_backtest_run(event_store, run_id="bt-1", strategy_id="meanrev_v1", trade_pairs=5)
+
+    base_time = datetime(2026, 4, 22, 16, 0, tzinfo=UTC)
+    # Pre-Phase-1.4-style promotions with no associated manifest:
+    _seed_promotion(
+        event_store,
+        strategy_id="meanrev_v1",
+        from_stage="backtest",
+        to_stage="paper",
+        when=base_time,
+        manifest_id=None,
+    )
+    _seed_promotion(
+        event_store,
+        strategy_id="meanrev_v1",
+        from_stage="paper",
+        to_stage="micro_live",
+        when=base_time + timedelta(minutes=1),
+        manifest_id=None,
+    )
+    # Then a Phase-1.4 manifest freeze at "paper":
+    _seed_manifest(
+        event_store,
+        strategy_id="meanrev_v1",
+        stage="paper",
+        when=base_time + timedelta(days=2),
+    )
+
+    exit_code, out, _ = _run(["report", "strategy", "meanrev_v1", "--json"], tmp_path)
+    assert exit_code == 0
+    payload = json.loads(out.getvalue())
+    data = payload["data"]
+    assert data["stage"] == "paper", (
+        "manifest at 'paper' must override the bookkeeping-only "
+        "'micro_live' promotion that lacks a frozen manifest"
+    )
+    assert data["stage_source"] == "manifest"
+    # When the two disagree, the report surfaces both for forensics.
+    assert data["latest_promotion_stage"] == "micro_live"
+    assert data["stage_disagreement"] is True
+
+
+def test_report_strategy_falls_back_to_promotion_when_no_manifest(tmp_path: Path) -> None:
+    """No frozen manifest yet → use the promotion-log stage as a best-effort fallback."""
+    event_store = EventStore(tmp_path / "milodex.db")
+    _seed_backtest_run(event_store, run_id="bt-1", strategy_id="early_strat", trade_pairs=5)
+    _seed_promotion(
+        event_store,
+        strategy_id="early_strat",
+        from_stage="backtest",
+        to_stage="paper",
+        when=datetime(2026, 4, 1, tzinfo=UTC),
+        manifest_id=None,
+    )
+
+    exit_code, out, _ = _run(["report", "strategy", "early_strat", "--json"], tmp_path)
+    assert exit_code == 0
+    data = json.loads(out.getvalue())["data"]
+    assert data["stage"] == "paper"
+    assert data["stage_source"] == "promotion_log"
+    assert data["stage_disagreement"] is False
+
+
+def test_report_strategy_default_stage_when_neither_exists(tmp_path: Path) -> None:
+    """No promotion, no manifest → stage defaults to 'backtest'."""
+    event_store = EventStore(tmp_path / "milodex.db")
+    _seed_backtest_run(event_store, run_id="bt-1", strategy_id="fresh_strat", trade_pairs=5)
+
+    exit_code, out, _ = _run(["report", "strategy", "fresh_strat", "--json"], tmp_path)
+    assert exit_code == 0
+    data = json.loads(out.getvalue())["data"]
+    assert data["stage"] == "backtest"
+    assert data["stage_source"] == "default"
+    assert data["stage_disagreement"] is False
