@@ -108,7 +108,7 @@ def main(
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     as_json = bool(getattr(args, "json_output", False))
-    formatter = get_formatter(as_json=as_json)
+    formatter = get_formatter(as_json=as_json, stdout=stdout)
     command_name = command_name_from_args(args)
 
     def get_event_store() -> EventStore:

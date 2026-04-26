@@ -15,6 +15,11 @@ from milodex.cli._shared import (
     position_to_dict,
 )
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import (
+    build_orders_view,
+    build_positions_view,
+    build_status_view,
+)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -96,12 +101,18 @@ def _build_status_result(
         f"Portfolio value: {format_money(account.portfolio_value)}",
         f"Daily P&L: {format_money(account.daily_pnl)}",
     ]
+    account_dict = account_to_dict(account)
     data = {
         "trading_mode": trading_mode,
         "market_open": market_open,
-        "account": account_to_dict(account),
+        "account": account_dict,
     }
-    return CommandResult(command="status", data=data, human_lines=lines)
+    renderable = build_status_view(
+        trading_mode=trading_mode,
+        market_open=market_open,
+        account=account_dict,
+    )
+    return CommandResult(command="status", data=data, human_lines=lines, renderable=renderable)
 
 
 def _build_positions_result(
@@ -114,6 +125,7 @@ def _build_positions_result(
             command="positions",
             data={"positions": [], "sort": sort_key, "limit": limit},
             human_lines=["Open Positions", "No open positions."],
+            renderable=build_positions_view(positions=[], sort_key=sort_key, limit=limit),
         )
 
     sorted_positions = _sort_positions(list(positions), sort_key)[:limit]
@@ -136,7 +148,8 @@ def _build_positions_result(
         "sort": sort_key,
         "limit": limit,
     }
-    return CommandResult(command="positions", data=data, human_lines=lines)
+    renderable = build_positions_view(positions=sorted_positions, sort_key=sort_key, limit=limit)
+    return CommandResult(command="positions", data=data, human_lines=lines, renderable=renderable)
 
 
 def _sort_positions(positions: list[Position], sort_key: str) -> list[Position]:
@@ -160,6 +173,7 @@ def _build_orders_result(
             command="orders",
             data={"orders": [], "symbol_filter": symbol, "verbose": verbose},
             human_lines=["Recent Orders", "No matching orders."],
+            renderable=build_orders_view(orders=[], symbol_filter=symbol, verbose=verbose),
         )
 
     lines = [
@@ -193,4 +207,5 @@ def _build_orders_result(
         "symbol_filter": symbol,
         "verbose": verbose,
     }
-    return CommandResult(command="orders", data=data, human_lines=lines)
+    renderable = build_orders_view(orders=filtered_orders, symbol_filter=symbol, verbose=verbose)
+    return CommandResult(command="orders", data=data, human_lines=lines, renderable=renderable)

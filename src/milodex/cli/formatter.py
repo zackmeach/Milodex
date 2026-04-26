@@ -10,15 +10,28 @@ The JSON contract is the stable interface documented in
 ``docs/CLI_UX.md`` "JSON Output Contract" (R-CLI-009). Breaking changes
 require an ADR; bump :data:`JSON_SCHEMA_VERSION` for every incompatible
 payload change.
+
+The human formatter has two modes:
+
+- **Plain text** (default, also used in tests / pipes / non-TTY stdout):
+  ``human_lines`` are joined with ``\\n``.
+- **Rich** (when stdout is a TTY and a ``CommandResult.renderable`` is
+  set): the renderable (``rich.panel.Panel``, ``rich.table.Table``, etc.)
+  is printed via ``rich.console.Console``. ``human_lines`` remain as the
+  fallback and continue to populate the JSON ``summary`` field, so the
+  display layer is a strict superset and machine consumers see no change.
 """
 
 from __future__ import annotations
 
+import io
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TextIO
+
+from rich.console import Console
 
 JSON_SCHEMA_VERSION = 1
 
@@ -37,8 +50,14 @@ class CommandResult:
         Command-specific structured payload (dict of native Python types).
     human_lines:
         Pre-rendered human-readable output lines for this command. The
-        human formatter prints these as-is; JSON formatter emits them as
-        a ``summary`` array so operators can correlate the two.
+        human formatter prints these when no ``renderable`` is set, and
+        always uses them as the JSON ``summary`` field. Keep them
+        substring-searchable — tests assert against this content.
+    renderable:
+        Optional ``rich`` renderable (``Panel``, ``Table``, ``Group``, …)
+        used by the human formatter when stdout is a TTY. Defaults to
+        ``None`` for backwards compatibility — commands opt in surface by
+        surface. Never affects JSON output.
     warnings:
         Non-fatal concerns, as short human-readable strings.
     errors:
@@ -51,6 +70,7 @@ class CommandResult:
     status: str = "success"
     data: dict[str, Any] = field(default_factory=dict)
     human_lines: list[str] = field(default_factory=list)
+    renderable: Any = None
     warnings: list[str] = field(default_factory=list)
     errors: list[dict[str, Any]] = field(default_factory=list)
     timestamp: str = ""
@@ -59,7 +79,9 @@ class CommandResult:
         """Return the canonical JSON payload for this result.
 
         Fields are the subset of the R-CLI-009 contract that apply to every
-        command. Command-specific fields live under ``data``.
+        command. Command-specific fields live under ``data``. The
+        ``renderable`` field is intentionally **not** included — it's a
+        display-layer concern only.
         """
         timestamp = self.timestamp or datetime.now(tz=UTC).isoformat()
         return {
@@ -83,13 +105,45 @@ class Formatter(ABC):
 
 
 class HumanFormatter(Formatter):
-    """Render a :class:`CommandResult` as human-readable text."""
+    """Render a :class:`CommandResult` as human-readable text.
+
+    When ``stdout`` is a TTY and ``result.renderable`` is set, the rich
+    layer kicks in: the renderable is printed through a ``rich.Console``
+    that emits ANSI escapes for colors / box drawing. When ``stdout`` is
+    a non-TTY (tests, pipes, redirects) the formatter ignores the
+    renderable and falls back to ``human_lines`` joined with ``\\n``.
+
+    This keeps:
+    - tests and pipe consumers seeing plain text exactly as before,
+    - terminal users seeing the upgraded display,
+    - the JSON path completely untouched.
+    """
+
+    def __init__(self, *, stdout: TextIO | None = None) -> None:
+        self._stdout = stdout
 
     def render(self, result: CommandResult) -> str:
         if result.status == "error" and not result.human_lines:
             parts = [error.get("message", "Unknown error") for error in result.errors]
             return "\n".join(parts)
+
+        if result.renderable is not None and self._is_tty():
+            buffer = io.StringIO()
+            console = Console(file=buffer, force_terminal=True, soft_wrap=False)
+            console.print(result.renderable)
+            return buffer.getvalue().rstrip("\n")
         return "\n".join(result.human_lines)
+
+    def _is_tty(self) -> bool:
+        if self._stdout is None:
+            return False
+        is_tty = getattr(self._stdout, "isatty", None)
+        if is_tty is None:
+            return False
+        try:
+            return bool(is_tty())
+        except (ValueError, OSError):
+            return False
 
 
 class JsonFormatter(Formatter):
@@ -102,8 +156,13 @@ class JsonFormatter(Formatter):
         return json.dumps(result.to_json_payload(), indent=self._indent, default=str)
 
 
-def get_formatter(*, as_json: bool) -> Formatter:
-    """Return the formatter selected by the ``--json`` flag."""
+def get_formatter(*, as_json: bool, stdout: TextIO | None = None) -> Formatter:
+    """Return the formatter selected by the ``--json`` flag.
+
+    The optional ``stdout`` is forwarded to :class:`HumanFormatter` for
+    TTY detection (which gates rich rendering). Pass ``sys.stdout`` in
+    production; tests typically pass a ``StringIO`` and get plain text.
+    """
     if as_json:
         return JsonFormatter()
-    return HumanFormatter()
+    return HumanFormatter(stdout=stdout)
