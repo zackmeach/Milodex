@@ -25,19 +25,19 @@ This roadmap is the explicit, ordered plan to finish Phase 1. It is written agai
 | Risk defaults | `configs/risk_defaults.yaml` | ✅ Present |
 | Phase-1-relevant docs and ADRs (0001–0017) | `docs/` | ✅ Present |
 
-### 1.2 What's Missing (Phase 1.2 + 1.3 + 1.4)
+### 1.2 What Remains for Phase 1 Completion
 
-| Module | Current state | Needed for |
+Phase 1.2, 1.3, and 1.4 are landed end-to-end. The earlier "What's Missing" table tracked module-level scaffolding gaps that are now all closed and would have rotted into a misleading state otherwise — see `git log` on this file for the historical version.
+
+What actually remains:
+
+| Item | Where | Status |
 |---|---|---|
-| `src/milodex/strategies/` | Base contract + loader + regime + meanrev strategies landed (both with golden tests); runner still missing | Phase 1.2 |
-| `src/milodex/backtesting/` | Docstring only (`__init__.py`, 7 lines) | Phase 1.2 / 1.3 |
-| `src/milodex/analytics/` | Docstring only (`__init__.py`, 7 lines) | Phase 1.3 |
-| SQLite event store | Landed in `src/milodex/core/`; strategy/backtest/promotion consumers still missing | 1.2 → 1.4 |
-| Explanation records | Captured on manual `preview` / `submit_paper`; strategy runtime and backtest paths still missing | 1.2 onward |
-| Promotion state machine | Stages validated at risk layer, no transition machinery | Phase 1.4 |
-| CLI commands: `strategy run`, `backtest`, `analytics`/`report`, `promote`/`demote`, `reconcile` | Not in CLI | 1.2 → 1.4 |
-| CLI `--json` output | Not implemented (`R-CLI-009` unmet) | 1.3 (supports reporting contract) |
-| Config fingerprinting / frozen manifest (ADR 0015) | Slice 1 implemented (freeze + runtime drift check); state machine + evidence package pending | Phase 1.4 |
+| **SC-3 (meanrev half)** — live paper-session evidence for `meanrev.daily.pullback_rsi2.curated_largecap.v1` | §2 SC-3, §8 item 7 | Pre-flight checklist landed; needs market hours. |
+| **SC-1** — formal close once both strategies have a manifest frozen at the stage they actually run at | §2 SC-1 | Configs exist; meanrev paper manifest is frozen; regime manifest freeze pending the formality. |
+| **§7 cross-cutting items** — kill-switch dry-run on meanrev, walk-forward labeling, stage-source consistency, doc updates, coverage ratchet | §7 | Walk-forward labeling and stage-source consistency closed 2026-04-26. Remaining: kill-switch meanrev exercise, coverage ratchet, doc sweep. |
+
+Anything else moves to a Phase 2+ ticket — the line stays bright per §9.
 
 ---
 
