@@ -22,6 +22,7 @@ from milodex.cli._shared import (
     performance_metrics_to_dict,
 )
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import build_analytics_metrics_view
 from milodex.core.event_store import EventStore
 
 
@@ -320,11 +321,19 @@ def _build_analytics_metrics_result(
     if benchmark_metrics is not None:
         lines.append("")
         lines.extend(_build_metrics_lines(benchmark_metrics, label="SPY Benchmark"))
+    strategy_dict = performance_metrics_to_dict(strategy_metrics)
+    benchmark_dict = performance_metrics_to_dict(benchmark_metrics) if benchmark_metrics else None
     data: dict[str, Any] = {
-        "strategy": performance_metrics_to_dict(strategy_metrics),
-        "benchmark": performance_metrics_to_dict(benchmark_metrics) if benchmark_metrics else None,
+        "strategy": strategy_dict,
+        "benchmark": benchmark_dict,
     }
-    return CommandResult(command="analytics.metrics", data=data, human_lines=lines)
+    renderable = build_analytics_metrics_view(strategy=strategy_dict, benchmark=benchmark_dict)
+    return CommandResult(
+        command="analytics.metrics",
+        data=data,
+        human_lines=lines,
+        renderable=renderable,
+    )
 
 
 def _build_analytics_trades_result(

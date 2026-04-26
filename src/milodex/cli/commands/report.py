@@ -30,6 +30,7 @@ from milodex.cli._shared import (
     position_to_dict,
 )
 from milodex.cli.formatter import CommandResult
+from milodex.cli.rich_views import build_strategy_report_view, build_trust_report_view
 from milodex.core.event_store import (
     BacktestRunEvent,
     EventStore,
@@ -124,10 +125,18 @@ def _build_trust_result(event_store: EventStore, ctx: CommandContext) -> Command
     }
 
     lines = _trust_human_lines(strategies, kill_switch, broker_info, freshness, operator_action)
+    renderable = build_trust_report_view(
+        strategies=data["strategies"],
+        kill_switch=kill_switch,
+        broker=broker_info,
+        data_freshness=freshness,
+        operator_action_required=operator_action,
+    )
     return CommandResult(
         command="report",
         data=data,
         human_lines=lines,
+        renderable=renderable,
         warnings=warnings,
     )
 
@@ -536,7 +545,23 @@ def _build_strategy_result(event_store: EventStore, strategy_id: str) -> Command
         ]
     )
 
-    return CommandResult(command="report.strategy", data=data, human_lines=lines)
+    renderable = build_strategy_report_view(
+        strategy_id=strategy_id,
+        stage=stage,
+        stage_source=stage_source,
+        latest_promotion_stage=latest_promotion_stage,
+        stage_disagreement=stage_disagreement,
+        config_fingerprint=latest_run.config_hash,
+        latest_backtest_run_id=latest_run.run_id,
+        metrics=performance_metrics_to_dict(metrics),
+        confidence=confidence,
+    )
+    return CommandResult(
+        command="report.strategy",
+        data=data,
+        human_lines=lines,
+        renderable=renderable,
+    )
 
 
 def _resolve_runtime_stage(
