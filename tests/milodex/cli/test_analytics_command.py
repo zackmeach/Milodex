@@ -14,6 +14,8 @@ from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 
+import pytest
+
 from milodex.cli.main import main as cli_entrypoint
 from milodex.core.event_store import (
     BacktestRunEvent,
@@ -183,6 +185,126 @@ def test_analytics_metrics_happy_path(tmp_path: Path) -> None:
     assert payload["data"]["strategy"]["run_id"] == "bt-1"
     assert "profit_factor" in payload["data"]["strategy"]
     assert "max_drawdown_duration_days" in payload["data"]["strategy"]
+    # Whole-period runs (the default fixture) carry the "whole_period" label.
+    assert payload["data"]["strategy"]["result_type"] == "whole_period"
+
+
+def _seed_walk_forward_run(
+    store: EventStore,
+    *,
+    run_id: str,
+    strategy_id: str,
+    total_return_pct: float,
+    sharpe: float,
+    max_drawdown_pct: float,
+    trading_days: int,
+    trade_pairs: int = 3,
+) -> int:
+    """Seed a walk-forward backtest_runs row with no equity_curve (windows reset)."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = start + timedelta(days=60)
+    db_id = store.append_backtest_run(
+        BacktestRunEvent(
+            run_id=run_id,
+            strategy_id=strategy_id,
+            config_path="configs/test.yaml",
+            config_hash="fp-test-wf",
+            start_date=start,
+            end_date=end,
+            started_at=start,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={
+                "initial_equity": 100_000.0,
+                "walk_forward": True,
+                "oos_aggregate": {
+                    "total_return_pct": total_return_pct,
+                    "sharpe": sharpe,
+                    "max_drawdown_pct": max_drawdown_pct,
+                    "trading_days": trading_days,
+                },
+            },
+        )
+    )
+    store.update_backtest_run_status(run_id, status="completed", ended_at=end)
+    for i in range(trade_pairs):
+        buy_at = start + timedelta(days=i * 2)
+        sell_at = start + timedelta(days=i * 2 + 1)
+        buy_exp = _append_explanation(store, strategy=strategy_id, when=buy_at)
+        _append_trade(
+            store,
+            explanation_id=buy_exp,
+            when=buy_at,
+            side="buy",
+            price=100.0 + i,
+            backtest_run_id=db_id,
+            strategy=strategy_id,
+        )
+        sell_exp = _append_explanation(store, strategy=strategy_id, when=sell_at)
+        _append_trade(
+            store,
+            explanation_id=sell_exp,
+            when=sell_at,
+            side="sell",
+            price=101.0 + i,
+            backtest_run_id=db_id,
+            strategy=strategy_id,
+        )
+    return db_id
+
+
+def test_analytics_metrics_walk_forward_uses_oos_aggregate(tmp_path: Path) -> None:
+    """Walk-forward run reports OOS-aggregate return / sharpe / drawdown / trading_days.
+
+    Closes the §7 finding surfaced 2026-04-26: previously, walk-forward runs
+    reported total_return_pct=0, sharpe=null, trading_days=0 because each
+    OOS window resets equity. Now the metrics surface reads
+    metadata["oos_aggregate"] and tags result_type="walk_forward".
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_walk_forward_run(
+        store,
+        run_id="bt-wf-1",
+        strategy_id="meanrev.v1",
+        total_return_pct=4.34,
+        sharpe=0.327,
+        max_drawdown_pct=6.41,
+        trading_days=892,
+    )
+
+    exit_code, out, _ = _run(["analytics", "metrics", "bt-wf-1", "--json"], tmp_path)
+    assert exit_code == 0
+    payload = json.loads(out.getvalue())
+    strategy = payload["data"]["strategy"]
+    assert strategy["result_type"] == "walk_forward"
+    assert strategy["total_return_pct"] == pytest.approx(4.34)
+    assert strategy["sharpe_ratio"] == pytest.approx(0.327)
+    assert strategy["max_drawdown_pct"] == pytest.approx(6.41)
+    assert strategy["trading_days"] == 892
+    # CAGR is derived consistently from the OOS-aggregate inputs, not zero.
+    assert strategy["cagr_pct"] is not None
+    assert strategy["cagr_pct"] > 0
+    # Trade-ledger metrics (computed from the seeded buys/sells) are still meaningful.
+    assert strategy["trade_count"] > 0
+
+
+def test_analytics_metrics_walk_forward_human_lines_label_oos(tmp_path: Path) -> None:
+    """Human output flags walk-forward results so an operator can't misread them."""
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_walk_forward_run(
+        store,
+        run_id="bt-wf-2",
+        strategy_id="meanrev.v1",
+        total_return_pct=2.0,
+        sharpe=0.1,
+        max_drawdown_pct=1.0,
+        trading_days=200,
+    )
+    exit_code, out, _ = _run(["analytics", "metrics", "bt-wf-2"], tmp_path)
+    assert exit_code == 0
+    text = out.getvalue()
+    assert "walk-forward" in text.lower()
 
 
 def test_analytics_metrics_strategy_shortcut_resolves_latest(tmp_path: Path) -> None:

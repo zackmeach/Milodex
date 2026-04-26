@@ -54,6 +54,14 @@ class PerformanceMetrics:
     trading_days: int
     confidence_label: str
 
+    # Distinguishes a continuous whole-period equity curve from a walk-forward
+    # aggregate. ``"walk_forward"`` means total_return_pct / sharpe_ratio /
+    # max_drawdown_pct / trading_days came from `backtest_runs.metadata
+    # ["oos_aggregate"]` rather than the equity curve, since each OOS window
+    # resets equity. Trade-ledger metrics (win_rate, profit_factor, etc.) are
+    # computed the same way regardless of result_type.
+    result_type: str = "whole_period"
+
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
 
 

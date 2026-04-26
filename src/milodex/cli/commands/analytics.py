@@ -141,29 +141,13 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         run_ = event_store.get_backtest_run(run_id)
         if run_ is None:
             raise ValueError(f"Backtest run not found: {run_id}")
-        if run_.id is None:
-            raise ValueError(f"Backtest run has no DB id: {run_id}")
-        raw_trades = event_store.list_trades_for_backtest_run(run_.id)
-        equity_curve = equity_curve_from_trades(raw_trades, run_.metadata or {})
-        trades_dicts = [
-            {
-                "symbol": t.symbol,
-                "side": t.side,
-                "quantity": t.quantity,
-                "estimated_unit_price": t.estimated_unit_price,
-                "recorded_at": t.recorded_at.isoformat(),
-            }
-            for t in raw_trades
-        ]
-        strategy_metrics = compute_metrics(
-            run_id=run_.run_id,
-            strategy_id=run_.strategy_id,
-            start_date=run_.start_date.date() if run_.start_date else date.today(),
-            end_date=run_.end_date.date() if run_.end_date else date.today(),
-            initial_equity=run_.metadata.get("initial_equity", 100_000.0),
-            equity_curve=equity_curve,
-            trades=trades_dicts,
-        )
+        # Single source of truth for "compute metrics from a backtest run":
+        # `metrics_for_run` handles the walk-forward override (OOS-aggregate)
+        # so the displayed total return / sharpe / drawdown / trading_days
+        # come from `metadata["oos_aggregate"]` rather than the absent
+        # equity curve, with `result_type="walk_forward"` flagged for the
+        # operator. See SRS R-XC-016 / ROADMAP_PHASE1.md §7.
+        strategy_metrics = metrics_for_run(run_, event_store)
         benchmark_metrics = None
         if args.compare_spy:
             provider = ctx.data_provider_factory()
@@ -300,11 +284,22 @@ def equity_curve_from_trades(
 
 
 def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
-    """Build PerformanceMetrics for a BacktestRunEvent from the event store."""
+    """Build PerformanceMetrics for a BacktestRunEvent from the event store.
+
+    Walk-forward runs (``metadata["walk_forward"] is True``) intentionally
+    have no continuous equity curve — each OOS window resets equity. For
+    those, equity-derived fields (total_return_pct, sharpe_ratio,
+    max_drawdown_pct, trading_days, cagr_pct) are sourced from
+    ``metadata["oos_aggregate"]`` and the result is tagged
+    ``result_type="walk_forward"``. Trade-ledger metrics (win_rate,
+    profit_factor, avg_hold_days) are still computed from the trade ledger
+    in both cases.
+    """
     if run_.id is None:
         raise ValueError(f"Backtest run has no DB id: {run_.run_id}")
     raw_trades = event_store.list_trades_for_backtest_run(run_.id)
-    equity_curve = equity_curve_from_trades(raw_trades, run_.metadata or {})
+    metadata = run_.metadata or {}
+    equity_curve = equity_curve_from_trades(raw_trades, metadata)
     trades_dicts = [
         {
             "symbol": t.symbol,
@@ -315,25 +310,46 @@ def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
         }
         for t in raw_trades
     ]
-    return compute_metrics(
+    metrics = compute_metrics(
         run_id=run_.run_id,
         strategy_id=run_.strategy_id,
         start_date=run_.start_date.date() if run_.start_date else date.today(),
         end_date=run_.end_date.date() if run_.end_date else date.today(),
-        initial_equity=run_.metadata.get("initial_equity", 100_000.0)
-        if run_.metadata
-        else 100_000.0,
+        initial_equity=metadata.get("initial_equity", 100_000.0),
         equity_curve=equity_curve,
         trades=trades_dicts,
     )
 
+    if metadata.get("walk_forward"):
+        oos = metadata.get("oos_aggregate") or {}
+        metrics.result_type = "walk_forward"
+        metrics.total_return_pct = float(oos.get("total_return_pct", metrics.total_return_pct))
+        metrics.max_drawdown_pct = float(oos.get("max_drawdown_pct", metrics.max_drawdown_pct))
+        if "sharpe" in oos:
+            metrics.sharpe_ratio = float(oos["sharpe"])
+        trading_days = int(oos.get("trading_days", metrics.trading_days))
+        metrics.trading_days = trading_days
+        # CAGR derived from OOS-aggregate inputs so it stays consistent with
+        # the displayed total_return / trading_days. sortino and
+        # max_drawdown_duration_days have no OOS analogue stored — leave them
+        # at the trade-ledger-derived defaults (typically None / 0).
+        if trading_days > 1:
+            total_return_fraction = metrics.total_return_pct / 100.0
+            cagr_fraction = (1.0 + total_return_fraction) ** (252.0 / trading_days) - 1.0
+            metrics.cagr_pct = cagr_fraction * 100.0
+        else:
+            metrics.cagr_pct = None
+
+    return metrics
+
 
 def _build_metrics_lines(m: PerformanceMetrics, label: str = "Strategy") -> list[str]:
+    period_suffix = " (OOS-aggregate, walk-forward)" if m.result_type == "walk_forward" else ""
     lines = [
         f"  {label}:",
         f"    Strategy ID:    {m.strategy_id}",
         f"    Run ID:         {m.run_id}",
-        f"    Period:         {m.start_date} to {m.end_date}",
+        f"    Period:         {m.start_date} to {m.end_date}{period_suffix}",
         f"    Trading days:   {m.trading_days}",
         f"    Total return:   {m.total_return_pct:+.2f}%",
         f"    CAGR:           {m.cagr_pct:+.2f}%"

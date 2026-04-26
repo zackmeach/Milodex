@@ -201,6 +201,7 @@ def performance_metrics_to_dict(m: PerformanceMetrics) -> dict[str, Any]:
         "profit_factor": m.profit_factor,
         "trading_days": m.trading_days,
         "confidence_label": m.confidence_label,
+        "result_type": m.result_type,
     }
 
 

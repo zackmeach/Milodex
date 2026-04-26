@@ -438,6 +438,7 @@ def test_report_strategy_happy_path(tmp_path: Path) -> None:
         "profit_factor",
         "trading_days",
         "confidence_label",
+        "result_type",
     }
     assert set(metrics) == expected_metric_fields
     assert metrics["trade_count"] == 10
