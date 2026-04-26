@@ -1,0 +1,23 @@
+# Normalize text files to LF in repo and working tree.
+# Overrides core.autocrlf=true (Git for Windows default), which otherwise
+# reports every file as "modified" on Windows when the editor writes LF.
+* text=auto eol=lf
+
+# Explicit binary types so git never tries to LF-normalize them.
+*.parquet binary
+*.db       binary
+*.sqlite   binary
+*.sqlite3  binary
+*.png      binary
+*.jpg      binary
+*.jpeg     binary
+*.gif      binary
+*.ico      binary
+*.pdf      binary
+*.zip      binary
+*.gz       binary
+*.tar      binary
+
+# Windows scripts always need CRLF to execute correctly.
+*.bat text eol=crlf
+*.cmd text eol=crlf
