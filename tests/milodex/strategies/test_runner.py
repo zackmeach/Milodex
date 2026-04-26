@@ -1061,3 +1061,176 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     assert results_next_poll == [], (
         "Once the watermark is set, further polls on the same bar must be treated as already-seen."
     )
+
+
+# ---------------------------------------------------------------------------
+# Portfolio-snapshot wiring (closes analytics/snapshots.py scaffolded marker)
+# ---------------------------------------------------------------------------
+
+
+def test_runner_records_portfolio_snapshot_on_controlled_shutdown(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Controlled shutdown captures a portfolio_snapshots row keyed on session_id.
+
+    Closes the `# scaffolded:` marker on `analytics/snapshots.py` —
+    `record_daily_snapshot` was a working primitive without a production
+    caller; the runner is the live-side caller.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_500.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_500.0,
+            daily_pnl=42.5,
+        ),
+        positions=[
+            Position(
+                symbol="SPY",
+                quantity=1.0,
+                avg_entry_price=500.0,
+                current_price=520.0,
+                market_value=520.0,
+                unrealized_pnl=20.0,
+                unrealized_pnl_pct=0.04,
+            )
+        ],
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    runner.shutdown(mode="controlled")
+
+    snapshots = event_store.list_portfolio_snapshots_for_session(runner.session_id)
+    assert len(snapshots) == 1, (
+        "Controlled shutdown should record exactly one portfolio_snapshots row "
+        "(R-XC-016 closure for analytics/snapshots.py)."
+    )
+    snapshot = snapshots[0]
+    assert snapshot.session_id == runner.session_id
+    assert snapshot.strategy_id == "regime.daily.sma200_rotation.spy_shy.v1"
+    assert snapshot.equity == 10_500.0
+    assert snapshot.cash == 10_000.0
+    assert snapshot.daily_pnl == 42.5
+    assert any(p["symbol"] == "SPY" and p["quantity"] == 1.0 for p in snapshot.positions)
+
+
+def test_runner_records_portfolio_snapshot_on_kill_switch_shutdown(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Kill-switch shutdown still produces a snapshot — equity at halt time is forensic data."""
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=9_700.0,
+            cash=9_700.0,
+            buying_power=9_700.0,
+            portfolio_value=9_700.0,
+            daily_pnl=-300.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    runner.shutdown(mode="kill_switch")
+
+    snapshots = event_store.list_portfolio_snapshots_for_session(runner.session_id)
+    assert len(snapshots) == 1
+    assert snapshots[0].equity == 9_700.0
+    assert snapshots[0].daily_pnl == -300.0
+
+
+def test_runner_snapshot_failure_does_not_block_shutdown(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch,
+):
+    """A broker failure during snapshot must not prevent strategy_run row write.
+
+    The snapshot is forensic; the strategy-run row is the canonical session
+    record. Losing the snapshot is a degraded outcome but losing the run row
+    would be a worse one. The shutdown path must complete either way.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+
+    class BrokenBroker(StubBroker):
+        def get_account(self):  # type: ignore[override]
+            raise RuntimeError("simulated broker connectivity failure")
+
+    broker = BrokenBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    runner.shutdown(mode="controlled")
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1, "shutdown must still record the strategy_run row even if snapshot fails"
+    assert runs[0].exit_reason == "controlled_stop"
+    snapshots = event_store.list_portfolio_snapshots_for_session(runner.session_id)
+    assert snapshots == [], "snapshot failure should leave no half-written row"

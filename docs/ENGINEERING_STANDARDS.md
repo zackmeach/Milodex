@@ -266,7 +266,6 @@ Authoritative list of currently-scaffolded surfaces. Each entry mirrors a `# sca
 
 | Surface | Code marker | Status | Closes when |
 |---|---|---|---|
-| `analytics.snapshots.record_daily_snapshot` invocation by runner / engine | `src/milodex/analytics/snapshots.py` | Helper landed; no production caller wires it. Reports degrade gracefully on zero snapshots. | `StrategyRunner` and `BacktestEngine` call `record_daily_snapshot` at session-end (Phase 1.5 lifecycle). |
 | `reconcile` deferred dimensions: filled-since-last-sync, canceled-since-last-sync, strategy-linkage | `src/milodex/cli/commands/reconcile.py` (`_DEFERRED_CHECKS`) | Surfaced as warnings only; not enforced. | R-OPS-004 v1.2 follow-up implements all eight `OPERATIONS.md` dimensions. |
 | `reconcile` submit-gate refusal on detected drift | `src/milodex/cli/commands/reconcile.py` (incident-result block) | Operator must self-enforce; exposure-increasing submits are not auto-refused on drift. | R-OPS-004 follow-up wires the gate into `ExecutionService.submit_paper`. |
 

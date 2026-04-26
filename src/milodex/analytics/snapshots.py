@@ -9,19 +9,23 @@ Snapshot writes live behind this dedicated module (not inside
 ``ExecutionService``) because a snapshot is a *read* of broker state,
 not a *write* of trade state — keeping the event-store writer surface
 narrow per ADR 0011.
-"""
 
-# scaffolded: runner/engine wiring deferred — see docs/ROADMAP_PHASE1.md §5.1.2
-# (analytics/snapshots row) and docs/ENGINEERING_STANDARDS.md §"Scaffolded
-# Inventory". `record_daily_snapshot` is a working primitive but no production
-# caller invokes it yet; StrategyRunner / BacktestEngine integration lands in
-# Phase 1.5 lifecycle work. Until then, reports.py reads any snapshot rows
-# present (typically zero) and degrades gracefully.
+Production callers (R-XC-016 closed):
+
+- ``milodex.strategies.runner.StrategyRunner.shutdown`` writes one
+  snapshot per session end (controlled stop or kill-switch).
+- ``milodex.backtesting.engine.BacktestEngine._simulate`` writes one
+  snapshot per simulation; walk-forward runs therefore write one per
+  OOS window (session_id = ``{run_id}:w{index}``).
+
+Both call sites wrap the recorder in a defensive try/except so a broker
+failure during snapshot does not block the canonical session record.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from milodex.core.event_store import PortfolioSnapshotEvent
@@ -71,7 +75,7 @@ def record_daily_snapshot(
         }
         for p in positions
     ]
-    ts = recorded_at if recorded_at is not None else datetime.now()
+    ts = recorded_at if recorded_at is not None else datetime.now(tz=UTC)
 
     event = PortfolioSnapshotEvent(
         recorded_at=ts,

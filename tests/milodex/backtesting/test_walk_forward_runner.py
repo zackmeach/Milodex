@@ -350,3 +350,39 @@ def test_compute_stability_counts_positive_and_negative_windows():
     stability = _compute_stability(windows)
     assert stability.windows_positive == 2
     assert stability.windows_negative == 1
+
+
+# ---------------------------------------------------------------------------
+# Portfolio snapshot per window (R-XC-016 closure for analytics/snapshots.py)
+# ---------------------------------------------------------------------------
+
+
+def test_walk_forward_records_one_snapshot_per_window():
+    """Each OOS window produces its own portfolio_snapshots row.
+
+    The walk-forward orchestrator calls `engine.simulate_window` per window
+    with a window-scoped session_id (`{run_id}:w{index}`). The engine writes
+    one snapshot per simulation, so N windows ⇒ N snapshots, each queryable
+    independently by session_id. This is what makes per-window equity-curve
+    analytics tractable later.
+    """
+    engine, store, bars_start = _make_engine(bar_count=30)
+    result = run_walk_forward(
+        engine,
+        start_date=bars_start,
+        end_date=bars_start + timedelta(days=29),
+        train_days=10,
+        test_days=5,
+        step_days=5,
+    )
+
+    assert len(result.windows) > 0, "fixture must produce at least one OOS window"
+    for window in result.windows:
+        session_id = f"{result.run_id}:w{window.index}"
+        snapshots = store.list_portfolio_snapshots_for_session(session_id)
+        assert len(snapshots) == 1, (
+            f"window {window.index}: expected exactly one snapshot row at "
+            f"session_id={session_id!r}, found {len(snapshots)}"
+        )
+        # Snapshot equity matches the window's reported final_equity.
+        assert snapshots[0].equity == pytest.approx(window.final_equity)

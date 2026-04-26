@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
 from milodex.core.event_store import EventStore, StrategyRunEvent
 from milodex.data import DataProvider, Timeframe
@@ -146,6 +147,19 @@ class StrategyRunner:
             self._broker.cancel_all_orders()
             self._execution_service.trigger_kill_switch("Operator requested kill switch.")
             exit_reason = "kill_switch"
+
+        # Best-effort session-end snapshot. Forensic; a broker failure here must
+        # not block the strategy_run row, which is the canonical session record.
+        try:
+            record_daily_snapshot(
+                event_store=self._event_store,
+                broker=self._broker,
+                session_id=self._session_id,
+                strategy_id=self._strategy_id,
+                recorded_at=datetime.now(tz=UTC),
+            )
+        except Exception:  # noqa: BLE001 — snapshot is best-effort; see ENGINEERING_STANDARDS.md
+            pass
 
         self._event_store.append_strategy_run(
             StrategyRunEvent(

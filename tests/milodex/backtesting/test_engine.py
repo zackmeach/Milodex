@@ -397,3 +397,97 @@ def test_engine_equity_curve_length_matches_trading_days():
     result = engine.run(start, end)
 
     assert len(result.equity_curve) == result.trading_days
+
+
+# ---------------------------------------------------------------------------
+# Portfolio snapshot wiring (closes analytics/snapshots.py scaffolded marker)
+# ---------------------------------------------------------------------------
+
+
+def test_engine_records_portfolio_snapshot_at_run_end():
+    """Backtest run produces a portfolio_snapshots row keyed on the run_id.
+
+    Closes the BacktestEngine half of the `analytics/snapshots.py`
+    scaffolded marker (R-XC-016). Walk-forward runs are covered separately
+    in test_walk_forward_runner.py since they call simulate_window().
+    """
+    from milodex.broker.models import OrderSide, OrderType
+    from milodex.execution.models import TradeIntent
+
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 4)
+    universe = ("SPY",)
+    loaded = _make_loaded_strategy("test.strat.v1", universe)
+
+    def fake_evaluate(bars, context):
+        df = bars.to_dataframe()
+        timestamps = pd.to_datetime(df["timestamp"], utc=True)
+        current_day = timestamps.dt.date.max()
+        if current_day == start:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.BUY,
+                        quantity=10.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+
+    barset = _make_barset([100.0, 102.0, 104.0], start=start)
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": barset}
+
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+    result = engine.run(start, end)
+
+    snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
+    assert len(snapshots) == 1, (
+        "Backtest run should record exactly one portfolio_snapshots row keyed "
+        "on the run_id (R-XC-016 closure for analytics/snapshots.py)."
+    )
+    snapshot = snapshots[0]
+    assert snapshot.session_id == result.run_id
+    assert snapshot.strategy_id == "test.strat.v1"
+    assert snapshot.equity == pytest.approx(result.final_equity)
+    # The buy filled at $100, then last close is $104 — the simulated
+    # broker should report 10 shares of SPY in the snapshot.
+    assert any(p["symbol"] == "SPY" and p["quantity"] == 10.0 for p in snapshot.positions)
+
+
+def test_engine_empty_run_records_zero_snapshots():
+    """A backtest with no overlapping trading days writes no snapshot.
+
+    The empty-range early return in `_execute` short-circuits before
+    `_simulate`, so the snapshot path isn't exercised. Locking in this
+    behavior so a future refactor doesn't accidentally write a meaningless
+    initial-equity row when there's no actual run.
+    """
+    bars_start = date(2024, 3, 1)
+    barset = _make_barset([100.0] * 5, start=bars_start)
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": barset}
+
+    # Run window completely after the bar coverage.
+    start = date(2024, 6, 1)
+    end = date(2024, 6, 5)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+
+    store = _make_event_store()
+    engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
+    result = engine.run(start, end)
+
+    assert result.trading_days == 0
+    snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
+    assert snapshots == []

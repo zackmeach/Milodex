@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 import pandas as pd
 
+from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker.models import AccountInfo, OrderSide, Position
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import BacktestRunEvent, EventStore
@@ -469,6 +470,37 @@ class BacktestEngine:
             equity_curve.append((day, equity))
 
         final_equity = equity_curve[-1][1] if equity_curve else initial_equity
+
+        # Final broker re-sync so the simulated account reflects post-buy state,
+        # then record one portfolio_snapshots row per simulation. The snapshot
+        # is keyed on `session_id` (= run_id for whole-period, window-id for
+        # walk-forward), so analytics can read snapshots independently of the
+        # trade ledger. Closes the runner/engine half of the
+        # `analytics/snapshots.py` scaffolded surface (R-XC-016).
+        if trading_days:
+            last_day = trading_days[-1]
+            last_bars = _slice_bars_to_day(all_bars, last_day)
+            last_closes = _latest_closes(last_bars)
+            self._sync_broker_state(
+                sim_broker=sim_broker,
+                sim_data_provider=sim_data_provider,
+                day=last_day,
+                closes=last_closes,
+                cash=cash,
+                equity=final_equity,
+                positions=positions,
+            )
+            try:
+                record_daily_snapshot(
+                    event_store=self._event_store,
+                    broker=sim_broker,
+                    session_id=session_id,
+                    strategy_id=self._loaded.config.strategy_id,
+                    recorded_at=_day_to_dt(last_day),
+                )
+            except Exception:  # noqa: BLE001 — snapshot is best-effort, see ENGINEERING_STANDARDS.md
+                pass
+
         return _SimulationOutput(
             equity_curve=equity_curve,
             trade_count=trade_count,
