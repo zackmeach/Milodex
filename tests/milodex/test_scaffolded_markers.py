@@ -113,6 +113,4 @@ class TestScaffoldedMarkers:
 
     def test_sc_critical_paths_resolve_to_real_files(self):
         for rel in SC_CRITICAL_PATHS:
-            assert (_SRC_ROOT / rel).is_file(), (
-                f"SC_CRITICAL_PATHS references missing file: {rel}"
-            )
+            assert (_SRC_ROOT / rel).is_file(), f"SC_CRITICAL_PATHS references missing file: {rel}"

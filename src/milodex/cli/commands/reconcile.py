@@ -66,7 +66,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "and surfaced as warnings only; the submit-gate refusal on detected "
             "drift is also scaffolded — operator must self-enforce until the "
             "R-OPS-004 follow-up lands. See "
-            "docs/ENGINEERING_STANDARDS.md §\"Scaffolded Inventory\"."
+            'docs/ENGINEERING_STANDARDS.md §"Scaffolded Inventory".'
         ),
     )
     add_global_flags(parser)
