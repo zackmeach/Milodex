@@ -25,6 +25,7 @@ milodex = "milodex.cli.main:main"
 dev = [
     "ruff",
     "pytest",
+    "pytest-cov",
 ]
 
 [tool.ruff]
@@ -40,4 +41,31 @@ testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
     "integration: marks tests that hit real APIs (deselect with '-m \"not integration\"')",
+]
+
+# Coverage ratchet (R-XC-016 sister item / ROADMAP_PHASE1.md §7).
+#
+# Run `pytest --cov=src/milodex --cov-report=term-missing` to enforce.
+# `fail_under` is intentionally not in pytest addopts so subset runs
+# (e.g. `pytest tests/milodex/strategies/`) don't false-fail on a
+# partial test slice. Rule: when overall coverage rises sustainably to
+# `fail_under + 2` or above, raise `fail_under` by 1 in the same commit
+# that achieves the rise. This is a one-way ratchet — never lower.
+[tool.coverage.run]
+source = ["src/milodex"]
+branch = false
+omit = [
+    "src/milodex/core/migrations/*",
+    "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+fail_under = 89
+show_missing = true
+skip_empty = true
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
 ]

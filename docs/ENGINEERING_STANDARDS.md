@@ -280,6 +280,26 @@ A surface that has *all* of the "implemented" criteria above (real behavior, fai
 
 ---
 
+## Coverage Ratchet
+
+Test coverage is tracked via `pytest-cov` and gated by a one-way ratchet configured in `pyproject.toml` (`[tool.coverage.report] fail_under = ...`).
+
+**Rule:** when overall coverage rises sustainably to `fail_under + 2` or above, raise `fail_under` by 1 in the same commit that achieves the rise. The threshold never lowers — a regression below it is a CI failure that the offending commit is responsible for fixing.
+
+**Run locally:**
+
+```bash
+pytest --cov=src/milodex --cov-report=term-missing
+```
+
+`fail_under` is intentionally NOT in pytest's `addopts` so a subset run (e.g. `pytest tests/milodex/strategies/`) doesn't falsely fail on a partial test slice. The ratchet applies to full-suite runs, which is what CI / pre-merge invokes.
+
+**Migrations and `if TYPE_CHECKING:` blocks are excluded** from the measurement (`tool.coverage.run.omit` and `tool.coverage.report.exclude_lines` respectively) — they're code that doesn't execute at test time and would otherwise distort the signal.
+
+**Per-module thresholds** are a deliberate follow-up. The current global floor catches regressions; tightening per-module floors (so a previously-100% module can't slip to 80% while overall stays above the global) is on the §7 cross-cutting backlog. The ratchet is meaningful coverage — line-count theater (asserting that code ran without asserting what it did) doesn't count toward closing the floor.
+
+---
+
 ## GUI Readiness Gate (Phase 2+)
 
 The desktop GUI (Phase 2+ per the SRS appendix) must not be started until **all** of the following are true:

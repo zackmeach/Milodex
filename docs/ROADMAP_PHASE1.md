@@ -215,7 +215,7 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 ## 7. Cross-Cutting Work (Threads Throughout All Sub-Phases)
 
 - [ ] **Scaffolded-vs-implemented markers.** Per `R-XC-016`, anything partially done is tagged `# scaffolded:` in code and mirrored in CLI help. No tag may survive into the Phase 1 success-criteria test.
-- [ ] **Test coverage ratcheting.** Each sub-phase adds tests; CI fails on coverage regression within the module being extended. Meaningful coverage — not line-count theater.
+- [x] **Test coverage ratcheting (global floor).** Configured 2026-04-26 via `pytest-cov` + `[tool.coverage.report] fail_under = 89` in `pyproject.toml` — current measured coverage is 89.6% with a one-way ratchet (raise `fail_under` by 1 whenever sustained coverage reaches `fail_under + 2`, never lower). See `docs/ENGINEERING_STANDARDS.md` §"Coverage Ratchet". Per-module floors are a deliberate follow-up.
 - [ ] **Documentation updates.** Each merged sub-phase updates [README.md](../README.md) Quickstart and the relevant `docs/*.md`. New ADRs when an architectural decision emerges mid-work.
 - [ ] **No live-mode drift.** Every code path that could conceivably touch live is gated behind the paper-only check in `risk.py` (already present) plus the Phase 1.4 live-refusal. Never remove either.
 - [ ] **Kill switch exercise.** At least once during 1.2 paper running, manually trigger the kill switch against a live paper session, verify order cancellation, verify manual reset requirement. Records SC-5 evidence.
