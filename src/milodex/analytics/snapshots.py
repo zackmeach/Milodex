@@ -11,6 +11,13 @@ not a *write* of trade state — keeping the event-store writer surface
 narrow per ADR 0011.
 """
 
+# scaffolded: runner/engine wiring deferred — see docs/ROADMAP_PHASE1.md §5.1.2
+# (analytics/snapshots row) and docs/ENGINEERING_STANDARDS.md §"Scaffolded
+# Inventory". `record_daily_snapshot` is a working primitive but no production
+# caller invokes it yet; StrategyRunner / BacktestEngine integration lands in
+# Phase 1.5 lifecycle work. Until then, reports.py reads any snapshot rows
+# present (typically zero) and degrades gracefully.
+
 from __future__ import annotations
 
 from dataclasses import dataclass

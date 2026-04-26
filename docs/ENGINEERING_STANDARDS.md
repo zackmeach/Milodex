@@ -260,6 +260,25 @@ A feature is **implemented** only when **all** of the following are true:
 
 Scaffolded features must be labeled as such — in code (e.g., `# scaffolded — see docs/X.md`), in commit messages, in the relevant doc, and in any CLI help string. Claiming implemented-ness prematurely is itself a trust violation, not merely an estimation error.
 
+### Scaffolded Inventory
+
+Authoritative list of currently-scaffolded surfaces. Each entry mirrors a `# scaffolded:` comment in code; CI enforces parity via `tests/milodex/test_scaffolded_markers.py` (R-XC-016 verification clause). Phase 1 success-criteria walkthrough refuses any marker landing on a critical path (regime + meanrev evaluation, risk vetting, paper submit, kill switch, event store, backtesting, walk-forward).
+
+| Surface | Code marker | Status | Closes when |
+|---|---|---|---|
+| `analytics.snapshots.record_daily_snapshot` invocation by runner / engine | `src/milodex/analytics/snapshots.py` | Helper landed; no production caller wires it. Reports degrade gracefully on zero snapshots. | `StrategyRunner` and `BacktestEngine` call `record_daily_snapshot` at session-end (Phase 1.5 lifecycle). |
+| `reconcile` deferred dimensions: filled-since-last-sync, canceled-since-last-sync, strategy-linkage | `src/milodex/cli/commands/reconcile.py` (`_DEFERRED_CHECKS`) | Surfaced as warnings only; not enforced. | R-OPS-004 v1.2 follow-up implements all eight `OPERATIONS.md` dimensions. |
+| `reconcile` submit-gate refusal on detected drift | `src/milodex/cli/commands/reconcile.py` (incident-result block) | Operator must self-enforce; exposure-increasing submits are not auto-refused on drift. | R-OPS-004 follow-up wires the gate into `ExecutionService.submit_paper`. |
+
+**How to add or close a marker:**
+1. Add a `# scaffolded: <one-line purpose>` comment in code at the relevant location.
+2. Mirror in any CLI `--help` / `description=` text touching the surface.
+3. Add or remove a row above (description + closure criterion).
+4. Update `CANONICAL_SCAFFOLDED_MARKERS` in `tests/milodex/test_scaffolded_markers.py` so CI tally matches reality.
+5. Mention the marker in the commit message that introduces or removes it.
+
+A surface that has *all* of the "implemented" criteria above (real behavior, failure paths, persistence, tests, docs, honest reliability) **must not** carry a marker. Removing the marker without finishing the work is a trust violation.
+
 ---
 
 ## GUI Readiness Gate (Phase 2+)

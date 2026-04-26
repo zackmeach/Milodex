@@ -34,6 +34,10 @@ from milodex.cli.formatter import CommandResult
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 
+# scaffolded: deferred reconciliation checks (R-OPS-004 v1.1). Three of the
+# eight OPERATIONS.md "State Reconciliation" dimensions are surfaced as
+# warnings only and not yet enforced. See docs/OPERATIONS.md and
+# docs/ENGINEERING_STANDARDS.md §"Scaffolded Inventory".
 _DEFERRED_CHECKS: tuple[str, ...] = (
     "filled_since_last_sync",
     "canceled_since_last_sync",
@@ -55,6 +59,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser(
         "reconcile",
         help="Compare broker state against the event store and flag drift (read-only).",
+        description=(
+            "Compare broker state against the local event store and flag drift "
+            "(read-only). Note: 3 of 8 reconciliation dimensions are scaffolded "
+            "(filled-since-last-sync, canceled-since-last-sync, strategy-linkage) "
+            "and surfaced as warnings only; the submit-gate refusal on detected "
+            "drift is also scaffolded — operator must self-enforce until the "
+            "R-OPS-004 follow-up lands. See "
+            "docs/ENGINEERING_STANDARDS.md §\"Scaffolded Inventory\"."
+        ),
     )
     add_global_flags(parser)
     parser.add_argument(
@@ -685,6 +698,10 @@ def _human_lines(
         else:
             # Broker unreachable or other suppression.
             lines.append("Result: DRIFT DETECTED — incident NOT recorded (broker unreachable).")
+        # scaffolded: submit-gate wiring deferred (R-OPS-004 follow-up). Drift
+        # detection logs an incident, but exposure-increasing submits are NOT
+        # auto-refused — the operator must self-enforce. Tracked in
+        # docs/ENGINEERING_STANDARDS.md §"Scaffolded Inventory".
         lines.append("Per R-OPS-004, exposure-increasing submits should be refused until resolved.")
         lines.append("(Submit-gate wiring is not yet implemented — operator must self-enforce.)")
     else:
