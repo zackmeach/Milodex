@@ -100,6 +100,9 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 class _StrategySnapshot:
     strategy_id: str
     stage: str
+    stage_source: str
+    latest_promotion_stage: str | None
+    stage_disagreement: bool
     config_fingerprint: str | None
     last_action: ExplanationEvent | None
 
@@ -159,13 +162,22 @@ def _collect_strategy_snapshots(event_store: EventStore) -> list[_StrategySnapsh
             explanations_by_strategy[exp.strategy_name] = exp  # last one wins (ORDER BY id ASC)
 
     for strategy_id in sorted(strategy_ids):
-        latest_promo = event_store.get_latest_promotion_for_strategy(strategy_id)
-        stage = latest_promo.to_stage if latest_promo is not None else "backtest"
+        # Source-of-truth: prefer the active manifest's stage so the trust
+        # dashboard and `report strategy <id>` agree (§7 stage-source
+        # consistency). The runtime drift check uses the manifest's stage
+        # for execution gating; the dashboard now displays the same.
+        stage, stage_source, latest_promotion_stage = _resolve_runtime_stage(
+            event_store, strategy_id
+        )
+        stage_disagreement = latest_promotion_stage is not None and latest_promotion_stage != stage
         last_action = explanations_by_strategy.get(strategy_id)
         fingerprint = last_action.config_hash if last_action is not None else None
         seen[strategy_id] = _StrategySnapshot(
             strategy_id=strategy_id,
             stage=stage,
+            stage_source=stage_source,
+            latest_promotion_stage=latest_promotion_stage,
+            stage_disagreement=stage_disagreement,
             config_fingerprint=fingerprint,
             last_action=last_action,
         )
@@ -179,6 +191,9 @@ def _strategy_snapshot_to_dict(snap: _StrategySnapshot) -> dict[str, Any]:
     return {
         "strategy_id": snap.strategy_id,
         "stage": snap.stage,
+        "stage_source": snap.stage_source,
+        "latest_promotion_stage": snap.latest_promotion_stage,
+        "stage_disagreement": snap.stage_disagreement,
         "config_fingerprint": snap.config_fingerprint,
         "last_action": last_action,
         "next_expected_action": _next_expected_action(snap),

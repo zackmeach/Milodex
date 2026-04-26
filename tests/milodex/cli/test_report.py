@@ -280,6 +280,99 @@ def test_report_default_with_strategy_shows_stage_and_confidence(tmp_path: Path)
     assert err.getvalue() == ""
 
 
+def test_report_default_uses_manifest_stage_when_promotion_lacks_manifest(
+    tmp_path: Path,
+) -> None:
+    """Trust report agrees with `report strategy <id>`: manifest wins.
+
+    Mirrors the §7 stage-source consistency fix that landed for
+    `report strategy <id>`. When a strategy's latest promotion event has
+    no associated manifest (typical of pre-Phase-1.4 bookkeeping), the
+    default trust report should display the *manifest's* stage — that's
+    what the runtime actually treats the strategy as.
+    """
+    event_store = EventStore(tmp_path / "milodex.db")
+    base = datetime(2026, 4, 22, 16, 0, tzinfo=UTC)
+
+    # Pre-Phase-1.4 promotions, no manifest_id:
+    event_store.append_promotion(
+        PromotionEvent(
+            strategy_id="meanrev.v1",
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="statistical",
+            approved_by="owner",
+            recorded_at=base,
+            manifest_id=None,
+        )
+    )
+    event_store.append_promotion(
+        PromotionEvent(
+            strategy_id="meanrev.v1",
+            from_stage="paper",
+            to_stage="micro_live",
+            promotion_type="statistical",
+            approved_by="owner",
+            recorded_at=base + timedelta(minutes=1),
+            manifest_id=None,
+        )
+    )
+    # Phase-1.4 manifest freeze at "paper":
+    event_store.append_strategy_manifest(
+        StrategyManifestEvent(
+            strategy_id="meanrev.v1",
+            stage="paper",
+            config_hash="hash-paper",
+            config_path="configs/meanrev.yaml",
+            config_json={"strategy": {"id": "meanrev.v1"}},
+            frozen_at=base + timedelta(days=2),
+            frozen_by="operator",
+        )
+    )
+
+    exit_code, out, _ = _run(["report", "--json"], tmp_path)
+    assert exit_code == 0
+    payload = json.loads(out.getvalue())
+    strategies = payload["data"]["strategies"]
+    matching = [s for s in strategies if s["strategy_id"] == "meanrev.v1"]
+    assert matching, "test fixture must produce a meanrev row"
+    snap = matching[0]
+    assert snap["stage"] == "paper", (
+        "manifest at 'paper' must override the bookkeeping-only "
+        "'micro_live' promotion that lacks a frozen manifest"
+    )
+    assert snap["stage_source"] == "manifest"
+    assert snap["latest_promotion_stage"] == "micro_live"
+    assert snap["stage_disagreement"] is True
+
+
+def test_report_default_falls_back_to_promotion_when_no_manifest(tmp_path: Path) -> None:
+    """When no manifest exists at all, the default report uses the promotion-log stage."""
+    event_store = EventStore(tmp_path / "milodex.db")
+    event_store.append_promotion(
+        PromotionEvent(
+            strategy_id="early.v1",
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="statistical",
+            approved_by="owner",
+            recorded_at=datetime(2026, 4, 1, tzinfo=UTC),
+            manifest_id=None,
+        )
+    )
+
+    exit_code, out, _ = _run(["report", "--json"], tmp_path)
+    assert exit_code == 0
+    snap = next(
+        s
+        for s in json.loads(out.getvalue())["data"]["strategies"]
+        if s["strategy_id"] == "early.v1"
+    )
+    assert snap["stage"] == "paper"
+    assert snap["stage_source"] == "promotion_log"
+    assert snap["stage_disagreement"] is False
+
+
 def test_report_default_json_schema_contract(tmp_path: Path) -> None:
     exit_code, out, _ = _run(["report", "--json"], tmp_path)
     assert exit_code == 0

@@ -331,8 +331,13 @@ def build_trust_report_view(
     table.add_column("Confidence")
     table.add_column("Last action")
     table.add_column("Risk")
+    has_disagreement = False
     for snap in strategies:
         stage = snap.get("stage", "")
+        stage_text = Text(stage, style=_stage_color(stage))
+        if snap.get("stage_disagreement"):
+            has_disagreement = True
+            stage_text.append(" *", style="yellow")
         confidence = snap.get("confidence", {})
         last = snap.get("last_action") or {}
         risk_allowed = last.get("risk_allowed")
@@ -345,7 +350,7 @@ def build_trust_report_view(
         )
         table.add_row(
             snap.get("strategy_id", ""),
-            Text(stage, style=_stage_color(stage)),
+            stage_text,
             Text(
                 confidence.get("label", "—"),
                 style=_confidence_color(confidence.get("label", "")),
@@ -354,6 +359,21 @@ def build_trust_report_view(
             risk_text,
         )
     body.append(Panel(table, title="Strategies", border_style="cyan", box=box.ROUNDED))
+    if has_disagreement:
+        body.append(
+            Panel(
+                Text.from_markup(
+                    "[yellow]*[/yellow] one or more strategies have a "
+                    "promotion-log stage that disagrees with the active "
+                    "frozen manifest. Runtime treats them as the manifest's "
+                    "stage; run [bold]milodex report strategy <id>[/bold] for "
+                    "the full forensic detail."
+                ),
+                title="Bookkeeping notes",
+                border_style="yellow",
+                box=box.ROUNDED,
+            )
+        )
     return Group(*body)
 
 
