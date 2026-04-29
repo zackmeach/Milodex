@@ -105,6 +105,85 @@ def test_default_strategy_loader_resolves_regime_strategy():
     assert loaded.context.strategy_id == "regime.daily.sma200_rotation.spy_shy.v1"
 
 
+def test_regime_strategy_ignores_non_universe_positions_when_rotating():
+    # Bullish regime, no SPY/SHY held, but AVGO + GLD left over from another
+    # strategy in the same paper account. Regime must rotate to SPY without
+    # touching the foreign positions — they are not within its universe.
+    strategy = RegimeSpyShy200DmaStrategy()
+    context = build_strategy_context(
+        positions={"AVGO": 24.0, "GLD": 23.0},
+        ma_filter_length=3,
+        allocation_pct=1.0,
+        equity=10_000.0,
+    )
+
+    decision = strategy.evaluate(build_barset([10.0, 10.0, 10.0, 12.0]), context)
+
+    sells = [
+        (intent.symbol, intent.quantity)
+        for intent in decision.intents
+        if intent.side == OrderSide.SELL
+    ]
+    buys = [
+        (intent.symbol, intent.quantity)
+        for intent in decision.intents
+        if intent.side == OrderSide.BUY
+    ]
+
+    assert sells == [], (
+        f"regime must not propose sells for symbols outside its universe; got {sells}"
+    )
+    # floor(10_000 / 12) = 833
+    assert buys == [("SPY", 833.0)]
+
+
+def test_regime_strategy_sells_only_universe_positions_alongside_foreign_holdings():
+    # Bullish regime with SHY (in-universe risk-off) plus AVGO (foreign).
+    # Rotate to SPY: sell SHY, leave AVGO untouched, buy SPY.
+    strategy = RegimeSpyShy200DmaStrategy()
+    context = build_strategy_context(
+        positions={"SHY": 1000.0, "AVGO": 24.0},
+        ma_filter_length=3,
+        allocation_pct=1.0,
+        equity=10_000.0,
+    )
+
+    decision = strategy.evaluate(build_barset([10.0, 10.0, 10.0, 12.0]), context)
+
+    sells = [
+        (intent.symbol, intent.quantity)
+        for intent in decision.intents
+        if intent.side == OrderSide.SELL
+    ]
+    buys = [
+        (intent.symbol, intent.quantity)
+        for intent in decision.intents
+        if intent.side == OrderSide.BUY
+    ]
+
+    assert sells == [("SHY", 1000.0)], (
+        f"regime must sell only the in-universe non-target position; got {sells}"
+    )
+    assert buys == [("SPY", 833.0)]
+
+
+def test_regime_strategy_holds_target_alongside_foreign_position():
+    # Already in SPY (target) with AVGO leftover. The presence of a foreign
+    # position must not flip "regime.hold" into a spurious rebalance.
+    strategy = RegimeSpyShy200DmaStrategy()
+    context = build_strategy_context(
+        positions={"SPY": 833.0, "AVGO": 24.0},
+        ma_filter_length=3,
+        allocation_pct=1.0,
+        equity=10_000.0,
+    )
+
+    decision = strategy.evaluate(build_barset([10.0, 10.0, 10.0, 12.0]), context)
+
+    assert decision.intents == []
+    assert decision.reasoning.rule == "regime.hold"
+
+
 def build_strategy_context(
     *,
     positions: dict[str, float],

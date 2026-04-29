@@ -65,7 +65,17 @@ class RegimeSpyShy200DmaStrategy(Strategy):
             for symbol, quantity in context.positions.items()
             if float(quantity) > 0
         }
-        current_symbols = tuple(normalized_positions)
+        # Regime owns rotation strictly within its declared universe. Positions
+        # outside the universe (e.g., another strategy's holdings in the same
+        # paper account) are not regime's concern; ignore them entirely. See
+        # ADR 0022.
+        universe = {symbol.upper() for symbol in context.universe}
+        universe_positions = {
+            symbol: quantity
+            for symbol, quantity in normalized_positions.items()
+            if symbol in universe
+        }
+        universe_symbols = tuple(universe_positions)
 
         triggering_values = {
             "latest_close": latest_close,
@@ -74,7 +84,7 @@ class RegimeSpyShy200DmaStrategy(Strategy):
         }
         threshold = {f"ma_{ma_filter_length}": moving_average}
 
-        if len(current_symbols) == 1 and current_symbols[0] == target_symbol:
+        if len(universe_symbols) == 1 and universe_symbols[0] == target_symbol:
             return StrategyDecision(
                 intents=[],
                 reasoning=DecisionReasoning(
@@ -91,7 +101,7 @@ class RegimeSpyShy200DmaStrategy(Strategy):
             )
 
         intents: list[TradeIntent] = []
-        for symbol, quantity in normalized_positions.items():
+        for symbol, quantity in universe_positions.items():
             if symbol != target_symbol:
                 intents.append(
                     TradeIntent(
@@ -102,7 +112,7 @@ class RegimeSpyShy200DmaStrategy(Strategy):
                     )
                 )
 
-        if target_symbol not in normalized_positions:
+        if target_symbol not in universe_positions:
             # `allocation_pct` is a fraction of account equity, not a raw
             # share count. Size with the shared utility so `regime` and
             # (future) `meanrev` families agree on the arithmetic.
@@ -143,7 +153,7 @@ class RegimeSpyShy200DmaStrategy(Strategy):
         relation = "above" if latest_close > moving_average else "at-or-below"
         action = (
             f"rotate to {target_symbol}"
-            if target_symbol not in current_symbols
+            if target_symbol not in universe_symbols
             else f"trim non-target positions to {target_symbol}"
         )
         return StrategyDecision(
