@@ -47,3 +47,6 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0018](0018-durable-state-directory-consolidation.md) | Durable state lives under `data/`, not `state/` (supersedes SRS R-XC-006) | Accepted |
 | [0019](0019-risk-types-belong-in-risk-module.md) | Risk types belong in `risk/`, not `execution/` | Accepted |
 | [0020](0020-promotion-thresholds-are-code-invariants.md) | Promotion thresholds are code-level invariants, not YAML tuning | Accepted |
+| [0021](0021-walk-forward-metrics-are-oos-aggregate.md) | Walk-forward metrics are OOS-aggregate, not whole-period | Accepted |
+| [0022](0022-strategy-rotation-scope-is-the-declared-universe.md) | Strategy rotation scope is the declared universe | Accepted |
+| [0023](0023-phase-1-is-closed-and-phase-2-may-open.md) | Phase 1 is closed and Phase 2 may open | Accepted |
