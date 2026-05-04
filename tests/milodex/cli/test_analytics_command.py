@@ -307,6 +307,68 @@ def test_analytics_metrics_walk_forward_human_lines_label_oos(tmp_path: Path) ->
     assert "walk-forward" in text.lower()
 
 
+def test_analytics_metrics_walk_forward_labels_each_oos_derived_metric(tmp_path: Path) -> None:
+    """Per-metric labels distinguish OOS-aggregate values from equity-curve values.
+
+    Closes P-1 (PHASE2_PLANNING.md) option (a): each OOS-aggregate metric in
+    the walk-forward report gets a per-line label so an operator reading
+    "Total return: +2.00%" cannot mistake it for whole-period equity-curve
+    return when it is in fact the OOS-aggregate stitched across windows.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_walk_forward_run(
+        store,
+        run_id="bt-wf-pm",
+        strategy_id="meanrev.v1",
+        total_return_pct=4.34,
+        sharpe=0.327,
+        max_drawdown_pct=6.41,
+        trading_days=752,
+    )
+    exit_code, out, _ = _run(["analytics", "metrics", "bt-wf-pm"], tmp_path)
+    assert exit_code == 0
+    text = out.getvalue()
+
+    for line_prefix in ("Trading days:", "Total return:", "Max drawdown:", "Sharpe:"):
+        line = next((line for line in text.splitlines() if line_prefix in line), None)
+        assert line is not None, f"missing line for {line_prefix!r}"
+        assert "OOS" in line or "walk-forward" in line.lower(), (
+            f"line {line!r} (prefix {line_prefix!r}) must carry an OOS / walk-forward "
+            f"label so an operator cannot misread it as whole-period equity-curve output"
+        )
+
+
+def test_analytics_metrics_walk_forward_clears_sortino_from_broken_equity_curve(
+    tmp_path: Path,
+) -> None:
+    """Sortino is derived from the equity curve; for walk-forward it must be n/a.
+
+    Each OOS window resets equity, so the running equity curve is fragmented
+    and Sortino computed from it is meaningless. Surface it as `None`/`n/a`
+    rather than letting the broken-curve number leak into the report.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_walk_forward_run(
+        store,
+        run_id="bt-wf-sortino",
+        strategy_id="meanrev.v1",
+        total_return_pct=4.34,
+        sharpe=0.327,
+        max_drawdown_pct=6.41,
+        trading_days=752,
+    )
+    exit_code, out, _ = _run(["analytics", "metrics", "bt-wf-sortino", "--json"], tmp_path)
+    assert exit_code == 0
+    payload = json.loads(out.getvalue())
+    strategy = payload["data"]["strategy"]
+
+    assert strategy["result_type"] == "walk_forward"
+    assert strategy["sortino_ratio"] is None, (
+        "walk-forward must clear sortino_ratio (equity curve is fragmented "
+        "across OOS windows; the broken-curve value is meaningless)"
+    )
+
+
 def test_analytics_metrics_strategy_shortcut_resolves_latest(tmp_path: Path) -> None:
     store = EventStore(tmp_path / "milodex.db")
     _seed_run(store, run_id="bt-older", strategy_id="regime.v1")

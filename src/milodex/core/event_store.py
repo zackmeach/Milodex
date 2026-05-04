@@ -388,6 +388,36 @@ class EventStore:
             connection.commit()
             return int(cursor.lastrowid)
 
+    def update_strategy_run_end(
+        self,
+        *,
+        session_id: str,
+        ended_at: datetime,
+        exit_reason: str,
+    ) -> None:
+        """Close the open strategy_runs row for ``session_id``.
+
+        Updates the latest row matching ``session_id`` with ``ended_at IS NULL``.
+        UPDATE-by-session because the runner only knows its session id; the
+        ORDER BY id DESC + LIMIT 1 guards against the (impossible-by-design but
+        defensible) case of duplicate open rows by closing only the most recent.
+        """
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE strategy_runs
+                SET ended_at = ?, exit_reason = ?
+                WHERE id = (
+                    SELECT id FROM strategy_runs
+                    WHERE session_id = ? AND ended_at IS NULL
+                    ORDER BY id DESC
+                    LIMIT 1
+                )
+                """,
+                (_dt(ended_at), exit_reason, session_id),
+            )
+            connection.commit()
+
     def list_explanations(self) -> list[ExplanationEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM explanations ORDER BY id ASC").fetchall()

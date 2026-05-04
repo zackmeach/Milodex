@@ -267,6 +267,11 @@ def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
             metrics.cagr_pct = cagr_fraction * 100.0
         else:
             metrics.cagr_pct = None
+        # Sortino comes from the equity curve, which is fragmented across OOS
+        # windows. The broken-curve number is not meaningful for walk-forward;
+        # surface it as None so callers render "n/a" rather than leaking a
+        # misleading value into the trust report. P-1 (PHASE2_PLANNING.md).
+        metrics.sortino_ratio = None
 
     return metrics
 

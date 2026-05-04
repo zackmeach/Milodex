@@ -71,6 +71,20 @@ When in doubt, escalate to the account-level switch. Any hard stop listed below 
 
 ---
 
+## Position Cap Scope: Account-Authoritative
+
+Milodex's `max_concurrent_positions` check is **account-scoped**, not strategy-scoped. The risk evaluator counts every open broker position regardless of which strategy proposed it, and refuses any intent that would push the projected open count above `max_concurrent_positions` in `configs/risk_defaults.yaml`. See [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md) for full rationale.
+
+Practical consequences for operators:
+
+- **Single-strategy operation:** size `max_concurrent_positions` to that strategy's expected ceiling. The default `10` accommodates either Phase 1 strategy with headroom.
+- **Multi-strategy operation in one paper account:** size `max_concurrent_positions` ≥ the **sum** of strategies' expected concurrent positions. Underprovisioning produces `max_concurrent_positions_exceeded` rejections of legitimate intents (the 2026-05-04 incident — see [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md)).
+- **Strategy YAML `risk.max_positions`** is informational metadata about each strategy's internal invariant. It does not bind the risk evaluator. Reducing it does not relax the account-scoped check; raising it does not tighten it.
+
+Per-strategy position accounting (counting only positions whose strategy attribution matches the proposing strategy) is the right resolution if/when concurrent multi-strategy execution becomes a system-level goal — but until then, account-scoped enforcement is the only enforceable layer because broker positions don't carry strategy attribution.
+
+---
+
 ## What Happens When a Kill Switch Triggers
 
 A kill switch creates a **reviewable incident state**, not just a temporary pause flag. When triggered, the system must:

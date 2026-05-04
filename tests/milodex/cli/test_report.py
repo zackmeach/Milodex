@@ -172,6 +172,73 @@ def _append_trade(
     )
 
 
+def _seed_walk_forward_backtest_run(
+    event_store: EventStore,
+    *,
+    run_id: str,
+    strategy_id: str,
+    total_return_pct: float = 4.34,
+    sharpe: float = 0.327,
+    max_drawdown_pct: float = 6.41,
+    trading_days: int = 752,
+    trade_pairs: int = 5,
+) -> int:
+    """Seed a walk-forward run (no equity curve, OOS aggregate metadata)."""
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    end = datetime(2026, 3, 1, tzinfo=UTC)
+    db_id = event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id=run_id,
+            strategy_id=strategy_id,
+            config_path="configs/test.yaml",
+            config_hash="fp-walkforward",
+            start_date=start,
+            end_date=end,
+            started_at=start,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={
+                "initial_equity": 100_000.0,
+                "walk_forward": True,
+                "oos_aggregate": {
+                    "total_return_pct": total_return_pct,
+                    "sharpe": sharpe,
+                    "max_drawdown_pct": max_drawdown_pct,
+                    "trading_days": trading_days,
+                },
+            },
+        )
+    )
+    event_store.update_backtest_run_status(run_id, status="completed", ended_at=end)
+    for i in range(trade_pairs):
+        buy_at = start + timedelta(days=i * 2)
+        sell_at = start + timedelta(days=i * 2 + 1)
+        buy_exp_id = _append_explanation(event_store, strategy_name=strategy_id, when=buy_at)
+        _append_trade(
+            event_store,
+            explanation_id=buy_exp_id,
+            when=buy_at,
+            side="buy",
+            source="backtest",
+            price=100.0 + i,
+            backtest_run_id=db_id,
+            strategy_name=strategy_id,
+        )
+        sell_exp_id = _append_explanation(event_store, strategy_name=strategy_id, when=sell_at)
+        _append_trade(
+            event_store,
+            explanation_id=sell_exp_id,
+            when=sell_at,
+            side="sell",
+            source="backtest",
+            price=101.0 + i,
+            backtest_run_id=db_id,
+            strategy_name=strategy_id,
+        )
+    return db_id
+
+
 def _seed_backtest_run(
     event_store: EventStore,
     *,
@@ -565,6 +632,39 @@ def test_report_strategy_human_output_includes_analytics_headers(tmp_path: Path)
     assert "Max drawdown:" in output
     assert "Trades:" in output
     assert "Confidence:" in output
+
+
+def test_report_strategy_labels_walk_forward_metrics_per_metric(tmp_path: Path) -> None:
+    """`report strategy` against a walk-forward backtest run labels each OOS metric.
+
+    Closes P-1 (PHASE2_PLANNING.md) option (a). Without per-metric labels,
+    an operator reading "Total return: +4.34%" cannot distinguish whole-period
+    equity-curve return from OOS-aggregate stitched across walk-forward
+    windows. The trust-report surface that closes SC-6 must surface the
+    distinction at the metric line, not just elsewhere.
+    """
+    event_store = EventStore(tmp_path / "milodex.db")
+    _seed_walk_forward_backtest_run(
+        event_store,
+        run_id="bt-wf-report",
+        strategy_id="meanrev.v1",
+        total_return_pct=4.34,
+        sharpe=0.327,
+        max_drawdown_pct=6.41,
+        trading_days=752,
+    )
+
+    exit_code, out, _ = _run(["report", "strategy", "meanrev.v1"], tmp_path)
+    assert exit_code == 0
+    output = out.getvalue()
+
+    for line_prefix in ("Total return:", "Max drawdown:", "Sharpe:"):
+        line = next((line for line in output.splitlines() if line_prefix in line), None)
+        assert line is not None, f"missing line for {line_prefix!r}"
+        assert "OOS" in line or "walk-forward" in line.lower(), (
+            f"line {line!r} (prefix {line_prefix!r}) must carry an OOS / walk-forward "
+            f"label so the trust-report cannot mislead an operator about scope"
+        )
 
 
 # ---------------------------------------------------------------------------

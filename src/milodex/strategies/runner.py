@@ -36,6 +36,8 @@ class StrategyRunner:
         poll_interval_seconds: float = 5.0,
         prompt_fn: Callable[[], str] | None = None,
         on_cycle_result: Callable[[list[ExecutionResult]], None] | None = None,
+        close_lockin_min_interval_seconds: float = 30.0,
+        close_lockin_max_wait_seconds: float = 300.0,
     ) -> None:
         self._strategy_id = strategy_id
         self._config_dir = config_dir
@@ -46,13 +48,31 @@ class StrategyRunner:
         self._poll_interval_seconds = poll_interval_seconds
         self._prompt_fn = prompt_fn or self._prompt_shutdown_choice
         self._on_cycle_result = on_cycle_result
+        self._close_lockin_min_interval_seconds = close_lockin_min_interval_seconds
+        self._close_lockin_max_wait_seconds = close_lockin_max_wait_seconds
         self._loaded = StrategyLoader().load(self._resolve_config_path())
         self._session_id = str(uuid4())
         self._started_at = datetime.now(tz=UTC)
         self._last_processed_bar_at: datetime | None = None
+        self._pending_lockin_signature: tuple[float, float, float, float, int] | None = None
+        self._pending_lockin_seen_at: datetime | None = None
+        self._lockin_started_at: datetime | None = None
         self._requested_shutdown: str | None = None
         self._closed = False
         self._dialog_open = False
+        self._event_store.append_strategy_run(
+            StrategyRunEvent(
+                session_id=self._session_id,
+                strategy_id=self._strategy_id,
+                started_at=self._started_at,
+                ended_at=None,
+                exit_reason=None,
+                metadata={
+                    "config_path": str(self._loaded.config.path),
+                    "stage": self._loaded.config.stage,
+                },
+            )
+        )
 
     @property
     def session_id(self) -> str:
@@ -114,7 +134,7 @@ class StrategyRunner:
         decision = self._loaded.strategy.evaluate(primary_bars, context)
         intents = decision.intents
         if not self._broker.is_market_open():
-            self._last_processed_bar_at = latest_bar.timestamp
+            self._maybe_advance_lockin_watermark(latest_bar)
 
         if not intents:
             self._record_no_action(
@@ -161,20 +181,60 @@ class StrategyRunner:
         except Exception:  # noqa: BLE001 — snapshot is best-effort; see ENGINEERING_STANDARDS.md
             pass
 
-        self._event_store.append_strategy_run(
-            StrategyRunEvent(
-                session_id=self._session_id,
-                strategy_id=self._strategy_id,
-                started_at=self._started_at,
-                ended_at=datetime.now(tz=UTC),
-                exit_reason=exit_reason,
-                metadata={
-                    "config_path": str(self._loaded.config.path),
-                    "stage": self._loaded.config.stage,
-                },
-            )
+        self._event_store.update_strategy_run_end(
+            session_id=self._session_id,
+            ended_at=datetime.now(tz=UTC),
+            exit_reason=exit_reason,
         )
         self._closed = True
+
+    def _now(self) -> datetime:
+        return datetime.now(tz=UTC)
+
+    def _maybe_advance_lockin_watermark(self, latest_bar) -> None:
+        """Gate post-close watermark advance on bar finalization stability.
+
+        Two consecutive identical OHLCV fetches separated by at least
+        ``_close_lockin_min_interval_seconds`` confirm the bar has settled.
+        After ``_close_lockin_max_wait_seconds`` without confirmation the
+        watermark advances anyway (CI-1 fail-mode (a)) — the per-cycle
+        explanations preserve forensic visibility into the unstable window.
+        """
+        now = self._now()
+        signature = (
+            latest_bar.open,
+            latest_bar.high,
+            latest_bar.low,
+            latest_bar.close,
+            latest_bar.volume,
+        )
+
+        if self._pending_lockin_signature is None:
+            self._pending_lockin_signature = signature
+            self._pending_lockin_seen_at = now
+            self._lockin_started_at = now
+            return
+
+        if (now - self._lockin_started_at).total_seconds() > self._close_lockin_max_wait_seconds:
+            self._last_processed_bar_at = latest_bar.timestamp
+            self._reset_lockin()
+            return
+
+        if signature != self._pending_lockin_signature:
+            self._pending_lockin_signature = signature
+            self._pending_lockin_seen_at = now
+            return
+
+        if (
+            now - self._pending_lockin_seen_at
+        ).total_seconds() >= self._close_lockin_min_interval_seconds:
+            self._last_processed_bar_at = latest_bar.timestamp
+            self._reset_lockin()
+
+    def _reset_lockin(self) -> None:
+        self._pending_lockin_signature = None
+        self._pending_lockin_seen_at = None
+        self._lockin_started_at = None
 
     def _resolve_config_path(self) -> Path:
         for path in sorted(self._config_dir.glob("*.yaml")):

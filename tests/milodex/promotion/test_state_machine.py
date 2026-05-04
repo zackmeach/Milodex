@@ -181,6 +181,48 @@ def test_gate_passes_minimum_qualifying_metrics() -> None:
 
 
 # ---------------------------------------------------------------------------
+# C-2 (PHASE2_PLANNING.md): honest-signal regression — the canonical Phase 1
+# truthful-failure scenario. Meanrev's walk-forward run `54e71b30…` produced
+# OOS-aggregate Sharpe 0.327 / max DD 6.41% / 752 trades over 2015→2024. The
+# platform refused promotion because Sharpe < 0.50, despite the other two
+# thresholds being met handily. ADR 0023's thesis depends on this property.
+# Locking it here means a silent change to MIN_SHARPE (or to how the gate
+# combines failures) cannot pass CI without tripping this test.
+# ---------------------------------------------------------------------------
+
+
+def test_gate_refuses_meanrev_shape_evidence_on_sharpe_alone() -> None:
+    """The honest-signal regression: meanrev's actual Phase 1 numbers must refuse.
+
+    Sharpe 0.327 fails (<0.50), max drawdown 6.41% passes, trade count 752
+    passes. Refusal must therefore name Sharpe specifically — not collapse
+    into a generic "gate failed" or quietly relax the threshold. Without
+    this test, a future change that relaxed MIN_SHARPE could land silently.
+    """
+    result = check_gate(
+        lifecycle_exempt=False,
+        sharpe_ratio=0.327,
+        max_drawdown_pct=6.41,
+        trade_count=752,
+    )
+
+    assert result.allowed is False, (
+        "honest-signal regression: meanrev's actual Phase 1 evidence must refuse — "
+        "Sharpe 0.327 < MIN_SHARPE 0.50 is the load-bearing fact ADR 0023 stands on"
+    )
+    assert len(result.failures) == 1, (
+        f"only Sharpe should fail (drawdown 6.41 < 15.0, trades 752 >= 30); "
+        f"got {len(result.failures)} failures: {result.failures}"
+    )
+    assert any("Sharpe" in f for f in result.failures), (
+        f"refusal must name Sharpe specifically; got {result.failures!r}"
+    )
+    assert result.sharpe_ratio == 0.327
+    assert result.max_drawdown_pct == 6.41
+    assert result.trade_count == 752
+
+
+# ---------------------------------------------------------------------------
 # check_gate — lifecycle-exempt path
 # ---------------------------------------------------------------------------
 

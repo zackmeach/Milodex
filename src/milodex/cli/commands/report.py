@@ -529,16 +529,19 @@ def _build_strategy_result(event_store: EventStore, strategy_id: str) -> Command
             f"is recorded for forensics; consider demoting + repromoting to "
             f"reconcile."
         )
+    is_wf = metrics.result_type == "walk_forward"
+    period_suffix = " (OOS-aggregate, walk-forward)" if is_wf else ""
+    oos = " (OOS)" if is_wf else ""
     lines.extend(
         [
             f"  Latest backtest:     {latest_run.run_id}",
             f"  Config fingerprint:  {latest_run.config_hash or 'n/a'}",
             "",
             "Performance",
-            f"  Period:          {metrics.start_date} to {metrics.end_date}",
-            f"  Total return:    {metrics.total_return_pct:+.2f}%",
-            f"  Max drawdown:    {metrics.max_drawdown_pct:.2f}%",
-            f"  Sharpe:          {metrics.sharpe_ratio:.2f}"
+            f"  Period:          {metrics.start_date} to {metrics.end_date}{period_suffix}",
+            f"  Total return:    {metrics.total_return_pct:+.2f}%{oos}",
+            f"  Max drawdown:    {metrics.max_drawdown_pct:.2f}%{oos}",
+            f"  Sharpe:          {metrics.sharpe_ratio:.2f}{oos}"
             if metrics.sharpe_ratio is not None
             else "  Sharpe:          n/a",
             f"  Sortino:         {metrics.sortino_ratio:.2f}"

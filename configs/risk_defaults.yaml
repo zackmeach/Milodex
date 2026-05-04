@@ -34,6 +34,11 @@ portfolio:
   # Maximum concurrent positions expressing effectively the same trade idea.
   max_correlated_positions_per_idea: 2
   # Maximum number of concurrent open positions across all strategies.
+  # Account-scoped: counts every broker position regardless of which strategy
+  # opened it (per ADR 0024). When running multiple strategies in one paper
+  # account, size this to the SUM of expected concurrent positions across all
+  # running strategies — strategy YAML `risk.max_positions` is informational
+  # only and does not bind the risk layer.
   max_concurrent_positions: 10
 
 daily_limits:

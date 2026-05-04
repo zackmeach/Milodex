@@ -975,6 +975,205 @@ def test_runner_second_sigint_during_prompt_forces_kill_switch(
 
 
 # ---------------------------------------------------------------------------
+# CI-1 (PHASE2_PLANNING.md): post-close watermark advance is gated on bar
+# finalization stability — two consecutive identical OHLCV fetches separated
+# by at least the lockin min-interval, with a max-wait fallback for the
+# (rare) bar that never stabilizes.
+# ---------------------------------------------------------------------------
+
+
+def _build_lockin_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    initial_bars: dict | None = None,
+    market_open: bool = False,
+    close_lockin_min_interval_seconds: float = 30.0,
+    close_lockin_max_wait_seconds: float = 300.0,
+):
+    """Wire a runner whose clock is monkey-patchable for stability-window tests."""
+    if initial_bars is None:
+        initial_bars = {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    provider = StubProvider(initial_bars)
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=market_open,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, strategy_config_dir / "regime_runner.yaml")
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        close_lockin_min_interval_seconds=close_lockin_min_interval_seconds,
+        close_lockin_max_wait_seconds=close_lockin_max_wait_seconds,
+    )
+    return runner, broker, provider, event_store
+
+
+def test_runner_post_close_first_cycle_does_not_advance_watermark_pending_stability(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """First post-close cycle observes the bar but does not advance the watermark.
+
+    Lockin requires two consecutive identical OHLCV fetches; the first
+    observation initializes the pending state and waits for confirmation.
+    """
+    runner, _, _, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+
+    runner.run_cycle()
+
+    assert runner._last_processed_bar_at is None, (
+        "first post-close cycle must not advance the watermark; CI-1 requires "
+        "two consecutive identical OHLCV fetches before lockin."
+    )
+
+
+def test_runner_post_close_advances_watermark_after_stable_consecutive_fetches(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Two identical fetches separated by at least min-interval advance the watermark."""
+    runner, _, _, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+        close_lockin_min_interval_seconds=30.0,
+    )
+    fake_now = [datetime(2026, 5, 4, 16, 0, 0, tzinfo=UTC)]
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()
+    assert runner._last_processed_bar_at is None
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()
+
+    assert runner._last_processed_bar_at is not None
+
+
+def test_runner_post_close_does_not_advance_watermark_when_interval_too_short(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Two identical fetches less than min-interval apart still wait."""
+    runner, _, _, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+        close_lockin_min_interval_seconds=30.0,
+    )
+    fake_now = [datetime(2026, 5, 4, 16, 0, 0, tzinfo=UTC)]
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()
+    fake_now[0] = fake_now[0] + timedelta(seconds=15)
+    runner.run_cycle()
+
+    assert runner._last_processed_bar_at is None
+
+
+def test_runner_post_close_resets_stability_when_bar_changes_between_fetches(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A bar OHLCV change between fetches resets the stability clock to the new bar."""
+    runner, _, provider, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+        close_lockin_min_interval_seconds=30.0,
+        close_lockin_max_wait_seconds=999_999.0,
+    )
+    fake_now = [datetime(2026, 5, 4, 16, 0, 0, tzinfo=UTC)]
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()
+    assert runner._last_processed_bar_at is None
+
+    provider._bars_by_symbol = {
+        "SPY": build_barset([10.0, 10.0, 10.5]),
+        "SHY": build_barset([10.0, 10.0, 10.0]),
+    }
+    fake_now[0] = fake_now[0] + timedelta(seconds=60)
+    runner.run_cycle()
+
+    assert runner._last_processed_bar_at is None, (
+        "bar change between fetches must reset the stability clock; the "
+        "second fetch becomes the first observation of the new bar shape."
+    )
+
+
+def test_runner_post_close_timeout_advances_watermark_even_without_stability(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """If max-wait elapses without stability, advance the watermark anyway.
+
+    Fail-mode (a): a never-stable bar (broken provider) must not loop
+    forever. The audit trail of repeated explanations preserves forensic
+    visibility; advancing here unblocks subsequent cycles.
+    """
+    runner, _, provider, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+        close_lockin_min_interval_seconds=30.0,
+        close_lockin_max_wait_seconds=300.0,
+    )
+    fake_now = [datetime(2026, 5, 4, 16, 0, 0, tzinfo=UTC)]
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()
+    for i in range(1, 7):
+        provider._bars_by_symbol = {
+            "SPY": build_barset([10.0, 10.0, 10.0 + i * 0.1]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+        fake_now[0] = fake_now[0] + timedelta(seconds=60)
+        runner.run_cycle()
+
+    assert runner._last_processed_bar_at is not None, (
+        "after max-wait timeout, watermark must advance even without stability; "
+        "CI-1 fail-mode (a) prevents indefinite loops on a broken provider."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Regression: in-progress bar must not poison _last_processed_bar_at
 # ---------------------------------------------------------------------------
 
@@ -990,11 +1189,12 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     in-progress bar as seen, which caused the same-timestamp finalized bar
     to be skipped forever by the ``already_seen`` check.
 
-    The fix still allows run_cycle to evaluate (and possibly submit) during
-    market hours — that's the runner's intended design — but withholds the
-    ``_last_processed_bar_at`` watermark update until the market is closed.
-    That way the post-close cycle finds ``_last_processed_bar_at = None``
-    (or ``< today``) and re-evaluates the now-finalized bar.
+    With CI-1 lockin (PHASE2_PLANNING.md), post-close re-evaluation continues
+    until two consecutive identical OHLCV fetches confirm the bar has settled,
+    at which point the watermark advances and subsequent cycles short-circuit.
+    The "in-progress doesn't poison" property is preserved — intraday cycles
+    still leave the watermark at None; the post-close path now requires
+    stability before advancing.
     """
     provider = StubProvider(
         {
@@ -1030,7 +1230,10 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
         data_provider=provider,
         execution_service=service,
         event_store=event_store,
+        close_lockin_min_interval_seconds=30.0,
     )
+    fake_now = [datetime(2026, 5, 4, 16, 0, 0, tzinfo=UTC)]
+    runner._now = lambda: fake_now[0]
 
     # --- Cycle 1: market is open, bar is in-progress -------------------------
     results_during_market = runner.run_cycle()
@@ -1043,23 +1246,30 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
         "would suppress the same-timestamp finalized-bar evaluation below."
     )
 
-    # --- Cycle 2: market closed, same bar is now final ------------------------
+    # --- Cycle 2: market closed, first post-close observation ----------------
     broker._market_open = False
     results_post_close = runner.run_cycle()
 
     assert len(results_post_close) >= 1, (
-        "Once the market closes on the same-day bar, the runner must "
-        "re-evaluate it instead of skipping forever."
+        "Once the market closes on the same-day bar, the runner must re-evaluate it."
     )
-    assert runner._last_processed_bar_at is not None, (
-        "Post-close evaluation must advance the watermark so subsequent "
-        "cycles on the same bar are correctly treated as already-seen."
+    assert runner._last_processed_bar_at is None, (
+        "First post-close observation initializes lockin pending; CI-1 "
+        "requires a confirming second fetch before advancing the watermark."
     )
 
-    # --- Cycle 3: still post-close, same bar, watermark now set --------------
-    results_next_poll = runner.run_cycle()
-    assert results_next_poll == [], (
-        "Once the watermark is set, further polls on the same bar must be treated as already-seen."
+    # --- Cycle 3: still post-close, same bar, 30s elapsed → stability lockin --
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()
+
+    assert runner._last_processed_bar_at is not None, (
+        "Once the post-close bar passes the stability check, the watermark advances."
+    )
+
+    # --- Cycle 4: still post-close, watermark set, short-circuit -------------
+    results_after_lockin = runner.run_cycle()
+    assert results_after_lockin == [], (
+        "Once the watermark is set, further polls on the same bar are already-seen."
     )
 
 
@@ -1178,6 +1388,171 @@ def test_runner_records_portfolio_snapshot_on_kill_switch_shutdown(
     assert len(snapshots) == 1
     assert snapshots[0].equity == 9_700.0
     assert snapshots[0].daily_pnl == -300.0
+
+
+# ---------------------------------------------------------------------------
+# CI-2 (PHASE2_PLANNING.md): strategy_runs row is written at startup, not
+# only at shutdown, so `WHERE ended_at IS NULL` enumerates active runners.
+# ---------------------------------------------------------------------------
+
+
+def test_runner_startup_creates_strategy_runs_row_with_null_ended_at(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Constructing a StrategyRunner records an open strategy_runs row.
+
+    Before this test, the row was only written at shutdown — the canonical
+    "is a runner active?" query (`WHERE ended_at IS NULL`) returned zero
+    rows even when a runner was actively recording cycle explanations.
+    Closes CI-2 from docs/PHASE2_PLANNING.md.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].session_id == runner.session_id
+    assert runs[0].strategy_id == "regime.daily.sma200_rotation.spy_shy.v1"
+    assert runs[0].ended_at is None
+    assert runs[0].exit_reason is None
+
+
+def test_runner_shutdown_updates_open_strategy_runs_row_without_duplicating(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Shutdown UPDATEs the row written at startup; never produces a duplicate.
+
+    The audit shape is one row per session. Two-row history would break the
+    canonical "one strategy_run row per session" invariant relied on by the
+    existing reporting surfaces (see CLI report.py / SC-6 evidence assembly).
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+    assert len(event_store.list_strategy_runs()) == 1
+
+    runner.shutdown(mode="controlled")
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1, "shutdown must UPDATE the existing row, not INSERT a duplicate"
+    assert runs[0].session_id == runner.session_id
+    assert runs[0].ended_at is not None
+    assert runs[0].exit_reason == "controlled_stop"
+
+
+def test_runner_active_session_findable_via_ended_at_is_null_query(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """`WHERE ended_at IS NULL` enumerates exactly the currently-active runners.
+
+    The operational point of CI-2: an operator or audit tool can ask the
+    event store "what's running?" and get a useful answer mid-session.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    active_runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+    completed_runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+    completed_runner.shutdown(mode="controlled")
+
+    active_sessions = [
+        run.session_id
+        for run in event_store.list_strategy_runs()
+        if run.ended_at is None
+    ]
+    assert active_sessions == [active_runner.session_id]
 
 
 def test_runner_snapshot_failure_does_not_block_shutdown(

@@ -270,20 +270,22 @@ def _latest_run_id_for_strategy(event_store: EventStore, strategy_id: str) -> st
 
 
 def _build_metrics_lines(m: PerformanceMetrics, label: str = "Strategy") -> list[str]:
-    period_suffix = " (OOS-aggregate, walk-forward)" if m.result_type == "walk_forward" else ""
+    is_wf = m.result_type == "walk_forward"
+    period_suffix = " (OOS-aggregate, walk-forward)" if is_wf else ""
+    oos = " (OOS)" if is_wf else ""
     lines = [
         f"  {label}:",
         f"    Strategy ID:    {m.strategy_id}",
         f"    Run ID:         {m.run_id}",
         f"    Period:         {m.start_date} to {m.end_date}{period_suffix}",
-        f"    Trading days:   {m.trading_days}",
-        f"    Total return:   {m.total_return_pct:+.2f}%",
-        f"    CAGR:           {m.cagr_pct:+.2f}%"
+        f"    Trading days:   {m.trading_days}{oos}",
+        f"    Total return:   {m.total_return_pct:+.2f}%{oos}",
+        f"    CAGR:           {m.cagr_pct:+.2f}%{oos}"
         if m.cagr_pct is not None
         else "    CAGR:           n/a",  # noqa: E501
-        f"    Max drawdown:   {m.max_drawdown_pct:.2f}%",
+        f"    Max drawdown:   {m.max_drawdown_pct:.2f}%{oos}",
         (
-            f"    Sharpe:         {m.sharpe_ratio:.2f}"
+            f"    Sharpe:         {m.sharpe_ratio:.2f}{oos}"
             if m.sharpe_ratio is not None
             else "    Sharpe:         n/a"
         ),
