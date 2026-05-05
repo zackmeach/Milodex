@@ -22,6 +22,7 @@ from milodex.strategies.breakout_donchian import BreakoutDonchianStrategy
 from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
 from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
 from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
+from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
 from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
 from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
 
@@ -31,6 +32,7 @@ __all__ = [
     "MeanrevIbsLowcloseStrategy",
     "MeanrevRsi2PullbackStrategy",
     "MomentumDailyTsmomStrategy",
+    "MomentumDualAbsoluteGemStrategy",
     "MomentumXsecRotationStrategy",
     "RegimeSpyShy200DmaStrategy",
     "Strategy",

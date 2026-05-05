@@ -277,6 +277,7 @@ def build_default_registry() -> StrategyRegistry:
     from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
     from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
     from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
+    from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
     from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
     from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
 
@@ -287,6 +288,7 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(MomentumDailyTsmomStrategy)
     registry.register(BreakoutDonchianStrategy)
     registry.register(MomentumXsecRotationStrategy)
+    registry.register(MomentumDualAbsoluteGemStrategy)
     return registry
 
 

@@ -1,0 +1,107 @@
+# Dual Momentum (GEM) — Weekly Rebalance — v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `momentum` family — invariants and disable
+# conditions — and the `daily.dual_absolute` template's entry/exit rules
+# (single-asset rotation, weekly cadence, no intra-period stops) live in
+# docs/strategy-families.md. Do not restate those rules here.
+#
+# See ADR 0015 for the identifier scheme, version-vs-variant rule, and the
+# frozen-manifest requirement that governs promotion.
+#
+# Research source: Antonacci 2014 *Dual Momentum Investing*; Antonacci 2017
+# "Risk Premia Harvesting Through Dual Momentum" (JPM).
+#
+# Daily-swing fit caveat (per the family doc): published GEM uses monthly
+# rebalances. Weekly is the tightest faithful daily-swing adaptation.
+# Edge degradation expected to be modest.
+
+strategy:
+  id: "momentum.daily.dual_absolute.gem_weekly.v1"
+  family: "momentum"
+  template: "daily.dual_absolute"
+  variant: "gem_weekly"
+  version: 1
+  description: >
+    Antonacci-style dual-momentum (relative + absolute) single-asset
+    rotation across SPY, EFA, AGG, SHY with a weekly Friday rebalance.
+    Tier 1 strategy bank candidate; positioned as a benchmark for the
+    existing regime.daily.sma200_rotation lifecycle-proof template.
+    Family/template spec:
+    docs/strategy-families.md#template-momentumdailydual_absolute.
+  enabled: true
+
+  universe_ref: "universe.gem_quartet.v1"
+
+  parameters:
+    risk_off_symbol: "SHY"
+    # 126 trading days ≈ 6 calendar months — the canonical Antonacci horizon.
+    momentum_lookback: 126
+    rebalance_weekday: 4   # Friday close → next Monday open
+    allocation_pct: 0.95   # leave a small cash sleeve for slippage/commissions
+    sizing_rule: "single_asset_full_allocation"
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 1.00
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.50  # nominal — the template has no intra-period stop, so this is a
+                        # belt-and-braces guard the risk layer can read; the strategy
+                        # itself will not exit mid-week.
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  # Additional disable conditions beyond the family defaults (see
+  # docs/strategy-families.md#family-momentum). Family defaults always apply;
+  # this list extends them.
+  disable_conditions_additional: []
+
+# Backtest results — walk-forward, non-normative reference block per
+# research-strategy-bank-roadmap §2.2 step 11. Recorded to make the
+# bank's comparison artifact reproducible. Not consumed by the loader.
+backtest_results_v1_2026-05-05:
+  command: "milodex backtest momentum.daily.dual_absolute.gem_weekly.v1 --start 2020-01-01 --end 2024-12-31 --initial-equity 1000 --walk-forward"
+  windows: 4
+  oos_aggregate:
+    trading_days: 892
+    trades: 20
+    total_return_pct: 23.45
+    sharpe: 0.66
+    max_drawdown_pct: 18.27
+  stability:
+    sharpe_min: -0.21
+    sharpe_max: 1.84
+    sharpe_std: 0.89
+    positive_windows: 2
+    negative_windows: 2
+    single_window_dependency: false
+  promotion_gate_status: "refused"  # refuses on two axes: trade count + drawdown
+  notes: >
+    Refuses the gate on TWO axes simultaneously: (1) trade count 20 < 30
+    statistical minimum, (2) max drawdown 18.27% > 15% threshold. Sharpe
+    0.66 actually clears the 0.5 threshold — the only Tier 1 strategy
+    that does — but cannot promote without addressing the other two.
+    The +23.45% absolute return is the highest of the four Tier 1
+    candidates by a wide margin. Single-asset weekly rotation is
+    naturally low-cadence (the same shape as turn-of-month) and would
+    benefit from the Tier 2 lifecycle-proof exemption pattern if the
+    drawdown were tighter. The 18.27% drawdown comes from the 2022
+    bond/equity dual-decline window that GEM has historically struggled
+    in (both AGG and SPY drew down simultaneously); a re-spec with TLT
+    or SHV as the risk-off floor is parameter-search territory rather
+    than a new idea. The natural follow-up question per roadmap §3.4 is
+    correlation to regime.daily.sma200_rotation.spy_shy.v1 — if the two
+    are highly correlated, drop one; if dual-momentum systematically
+    avoids drawdowns the SMA200 rule misses, it becomes the candidate
+    lifecycle-proof replacement.
