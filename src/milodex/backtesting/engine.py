@@ -50,6 +50,15 @@ if TYPE_CHECKING:
     from milodex.data.provider import DataProvider
 
 
+class UniverseCoverageError(RuntimeError):
+    """Raised by :meth:`BacktestEngine.prefetch_bars` when fewer than the configured
+    fraction of declared-universe symbols have bars in the requested window.
+
+    Prevents silent results computed over a tiny subset of the intended universe
+    (e.g. NR7/52w-high running on 20 of 97 declared SP100 symbols).
+    """
+
+
 @dataclass
 class BacktestResult:
     """Summary returned by :meth:`BacktestEngine.run`."""
@@ -214,18 +223,40 @@ class BacktestEngine:
 
         Exposed so the walk-forward runner can fetch once and re-use across
         windows, avoiding N×warmup fetches for N windows.
+
+        Raises :class:`UniverseCoverageError` when fewer than the configured
+        fraction of declared-universe symbols have bars.  An empty barset (the
+        provider returned the symbol but with zero rows) counts as missing.
+
+        Threshold resolution order:
+        1. ``loaded.config.risk["min_universe_coverage_pct"]`` (per-strategy override)
+        2. Hardcoded fallback ``0.80``
         """
         universe = list(self._loaded.context.universe)
         if not universe:
             msg = "Strategy must resolve a non-empty universe before backtesting."
             raise ValueError(msg)
         warmup_start = start_date - timedelta(days=self._warmup_calendar_days())
-        return self._data_provider.get_bars(
+        bars = self._data_provider.get_bars(
             symbols=universe,
             timeframe=Timeframe.DAY_1,
             start=warmup_start,
             end=end_date,
         )
+
+        covered = [s for s in universe if s in bars and len(bars[s]) > 0]
+        coverage = len(covered) / len(universe)
+        threshold = float(self._loaded.config.risk.get("min_universe_coverage_pct", 0.80))
+        if coverage < threshold:
+            missing = sorted(set(universe) - set(covered))
+            msg = (
+                f"Universe coverage {coverage:.1%} < {threshold:.1%} "
+                f"({len(covered)}/{len(universe)} symbols available). "
+                f"Missing: {missing[:10]}..."
+            )
+            raise UniverseCoverageError(msg)
+
+        return bars
 
     def simulate_window(
         self,
