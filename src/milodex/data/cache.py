@@ -28,12 +28,12 @@ class ParquetCache:
 
     def __init__(self, cache_dir: Path, version: str = "v1") -> None:
         self._cache_dir = Path(cache_dir)
-        self.version = version
+        self._version = version
         self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, symbol: str, timeframe: Timeframe) -> Path:
         """Return the Parquet file path for a symbol/timeframe pair."""
-        dir_path = self._cache_dir / self.version / timeframe.value
+        dir_path = self._cache_dir / self._version / timeframe.value
         dir_path.mkdir(parents=True, exist_ok=True)
         return dir_path / f"{symbol.upper()}.parquet"
 
