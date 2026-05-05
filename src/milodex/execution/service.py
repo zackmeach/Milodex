@@ -25,7 +25,6 @@ from milodex.execution.models import (
     TradeIntent,
 )
 from milodex.execution.state import KillSwitchStateStore
-from milodex.promotion import get_active_manifest_hash
 from milodex.risk import (
     EvaluationContext,
     NullRiskEvaluator,
@@ -279,6 +278,15 @@ class ExecutionService:
                 if normalized_intent.strategy_config_path is not None
                 else None
             )
+            # Lazy import: importing at module scope would create a cycle —
+            # `milodex.execution.__init__` eagerly loads this module, and any
+            # caller that touches `milodex.execution.models` (e.g. a strategy
+            # importing `TradeIntent`) reaches us mid-init of
+            # `milodex.promotion.__init__` if the test file is loading that
+            # package directly. Deferring to call time breaks the cycle while
+            # keeping the surface unchanged.
+            from milodex.promotion.manifest import get_active_manifest_hash
+
             frozen_manifest_hash = (
                 get_active_manifest_hash(
                     strategy_config.name,
