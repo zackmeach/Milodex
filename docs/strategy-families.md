@@ -311,6 +311,82 @@ The strategy is halted when any of the following hold even if the code is functi
 
 Same eight conditions as `meanrev` — both families operate in the same liquid-market context and depend on the same data-quality and broker-stability assumptions. Instance YAML may add conditions but **shall not remove** any of the above.
 
+### Template: `daily.xsec_rotation` — Cross-Sectional Rank Rotation
+
+A second template within the `momentum` family. Inherits every family-level
+semantic invariant above (long-only, end-of-day signal, next-open execution,
+close-based stops, daily timeframe, frozen-manifest promotion). What differs
+is the entry concept — `daily.tsmom` evaluates each symbol on its own
+absolute return over a fixed lookback; `daily.xsec_rotation` ranks symbols
+**against each other** each rebalance and holds the top-N. The two templates
+exercise structurally different momentum mechanics — time-series vs.
+cross-sectional — on different universe shapes (curated large-caps vs.
+sector-ETF basket where cross-sectional dispersion is the unit of analysis).
+
+This template introduces a **weekly rebalance cadence**: ranking and
+turnover decisions only happen on Fridays at the close. On non-Friday
+evaluations the strategy returns `no_signal`. The runner is unchanged —
+the cadence is enforced inside `evaluate()` based on the latest bar's
+timestamp, not by external scheduling.
+
+#### Parameter surface (allowed to vary in YAML)
+
+| Parameter | Meaning | Notes |
+|---|---|---|
+| `universe` | Curated list of approved symbols | Phase 1 default: `universe.sector_etfs_spdr.v1` (11 SPDR sector ETFs) |
+| `ranking_lookback` | Trading days over which trailing total return is computed for ranking | typical: 60–63 (≈ 3 months) |
+| `target_positions` | How many top-ranked symbols to hold | typical: 2–3 |
+| `exit_outside_top_n` | Exit a held symbol when it falls outside this rank (hysteresis) | typical: `target_positions + 1` |
+| `rebalance_weekday` | Trading-week day on which ranking + turnover fires (0=Monday, 4=Friday) | typical: 4 (Friday) — close of week → next Monday open |
+| `ma_filter_length` | Per-symbol trend filter (close > SMA) — gates whether a top-ranked symbol is enterable | typical: 100–200; set to 0 to disable |
+| `stop_loss_pct` | Close-based stop distance (mid-week protection) | typical: 0.05–0.10 |
+| `max_hold_days` | Hard time stop in trading days since entry | typical: 5 — effectively enforced by weekly rebalance, but kept as a belt-and-braces guard |
+| `max_concurrent_positions` | Per-strategy position cap (must be ≥ `target_positions`) | subject to global account-scoped caps per ADR 0024 |
+| `sizing_rule` | One of: `equal_notional`, `fixed_notional` | extension requires a new version |
+| `per_position_notional_pct` | Used when sizing rule requires it | |
+| `ranking_enabled` | Always `true` for this template — kept for parameter-shape parity with other templates | |
+| `ranking_metric` | One of: `xsec_return_descending` | extension requires a new version |
+| `market_regime_symbol` | Optional broad-market regime filter symbol (e.g. `SPY`) | empty string disables |
+| `market_regime_ma_length` | MA length for regime filter | typical: 200 |
+
+#### Entry rule (normative)
+
+> On the **rebalance bar** (latest bar's weekday equals `rebalance_weekday`), at the prior close:
+> 1. Compute trailing return over `ranking_lookback` bars for every universe member with sufficient history;
+> 2. Rank descending; **and**
+> 3. If a market-regime filter is configured and the regime symbol is below its MA, suppress entries (still allow exits — see below);
+> 4. For each top-`target_positions` symbol not currently held: if `close > SMA(ma_filter_length)` (when `ma_filter_length > 0`), enter at the next market open; otherwise reject with the reason recorded in the explanation.
+>
+> On any **non-rebalance bar**, the strategy emits `no_signal` and no entries are evaluated. Stops, however, are checked daily — see exit rule.
+
+#### Exit rule (normative)
+
+> On the **rebalance bar**, at the prior close, any held symbol whose rank is greater than `exit_outside_top_n` exits at the next market open.
+>
+> On **every bar (including non-rebalance)**, the following exit rules are evaluated for held positions (most-specific first):
+> - `close <= entry_price * (1 - stop_loss_pct)` — close-based stop_loss; **or**
+> - `held_days >= max_hold_days` — time stop.
+>
+> Stops fire daily; rank-based exits fire weekly. This is the published behavior — the strategy commits to a one-week hold but escapes early on a hard loss.
+
+#### Ranking rule (normative)
+
+When the number of qualifying entry candidates exceeds capacity:
+
+> Rank qualifying candidates by `ranking_metric` (default: `xsec_return_descending` — highest trailing return over `ranking_lookback` bars first). Take the top `target_positions` candidates that are not already held; reject the remainder silently. Rejected candidates are recorded in the explanation record (R-XC-008).
+
+#### Daily-swing fit caveat
+
+The published cross-sectional momentum literature (Jegadeesh & Titman 1993; Asness/Moskowitz/Pedersen 2013; Antonacci 2014) operates on **monthly** rebalances with 1–12 month holds. A weekly rebalance is the tightest faithful daily-swing adaptation. Expect ~30–50% of the published edge to survive the hold compression. This is a known tradeoff; measure it explicitly.
+
+#### Default disable conditions
+
+Same eight conditions as the `daily.tsmom` template. Instance YAML may add conditions but **shall not remove** any of the family-level disable conditions defined above.
+
+#### Decision rule identifiers
+
+The xsec_rotation template emits the following `DecisionReasoning.rule` identifiers: `momentum.xsec_entry`, `momentum.xsec_exit` (rank-based weekly exit), `momentum.stop_loss`, `momentum.max_hold`, `no_signal`. The percent-stop and max-hold identifiers are shared with `daily.tsmom` because their semantics are identical at the family level.
+
 ---
 
 ## Family: `breakout` — Daily Channel Breakout

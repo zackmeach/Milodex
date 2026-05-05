@@ -1,0 +1,117 @@
+# Cross-Sectional Sector Rotation — v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `momentum` family — invariants and
+# disable conditions — and the `daily.xsec_rotation` template's entry/
+# exit/ranking/cadence rules live in docs/strategy-families.md. Do not
+# restate those rules here.
+#
+# See ADR 0015 for the identifier scheme, version-vs-variant rule, and the
+# frozen-manifest requirement that governs promotion.
+#
+# Research source: Jegadeesh & Titman 1993 *JoF*; Asness/Moskowitz/Pedersen
+# 2013 *JoF*; Faber 2010 SSRN "Relative Strength Strategies for Investing";
+# Antonacci 2014 *Dual Momentum Investing*.
+#
+# Daily-swing fit caveat (per the family doc): published research uses
+# monthly rebalances with 1–12 month holds. Weekly rebalance is the
+# tightest faithful daily-swing adaptation; expect ~30–50% of the
+# published edge to survive the hold compression.
+
+strategy:
+  id: "momentum.daily.xsec_rotation.sector_etfs.v1"
+  family: "momentum"
+  template: "daily.xsec_rotation"
+  variant: "sector_etfs"
+  version: 1
+  description: >
+    Cross-sectional rank rotation across the eleven SPDR sector ETFs with a
+    weekly Friday rebalance and SPY-200DMA regime filter. Tier 1 strategy
+    bank candidate. Family/template spec:
+    docs/strategy-families.md#template-momentumdailyxsec_rotation.
+  enabled: true
+
+  universe_ref: "universe.sector_etfs_spdr.v1"
+
+  parameters:
+    # 63 trading days ≈ 3 calendar months — the Jegadeesh-Titman intermediate-
+    # horizon momentum lookback adapted to the sector-rotation literature.
+    ranking_lookback: 63
+    target_positions: 2
+    # 1-position hysteresis buffer reduces churn vs. a tight "outside top 2 → out" rule.
+    exit_outside_top_n: 3
+    # 4 = Friday close; emit weekly rebalance signal → next Monday open.
+    rebalance_weekday: 4
+    # Per-symbol trend filter on top of the regime filter — disabled by default
+    # for this template since the regime filter handles macro and the ranking
+    # itself ensures we hold strong-momentum names.
+    ma_filter_length: 0
+    stop_loss_pct: 0.07
+    max_hold_days: 5
+    # target_positions=2 + 1 hysteresis = 3 max held during transitions
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.45
+    ranking_enabled: true
+    ranking_metric: "xsec_return_descending"
+    market_regime_symbol: "SPY"
+    market_regime_ma_length: 200
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.45
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.07
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  # Additional disable conditions beyond the family defaults (see
+  # docs/strategy-families.md#family-momentum). Family defaults always apply;
+  # this list extends them.
+  disable_conditions_additional: []
+
+# Backtest results — walk-forward, non-normative reference block per
+# research-strategy-bank-roadmap §2.2 step 11. Recorded to make the
+# bank's comparison artifact reproducible. Not consumed by the loader.
+backtest_results_v1_2026-05-05:
+  command: "milodex backtest momentum.daily.xsec_rotation.sector_etfs.v1 --start 2020-01-01 --end 2024-12-31 --initial-equity 1000 --walk-forward"
+  windows: 4
+  oos_aggregate:
+    trading_days: 892
+    trades: 366
+    total_return_pct: 10.76
+    sharpe: 0.34
+    max_drawdown_pct: 10.61
+  stability:
+    sharpe_min: -0.33
+    sharpe_max: 1.51
+    sharpe_std: 0.67
+    positive_windows: 3
+    negative_windows: 1
+    single_window_dependency: false
+  promotion_gate_status: "refused"  # Sharpe 0.34 < 0.5 threshold (ADR 0020)
+  notes: >
+    Strongest Tier 1 candidate so far on shape — 3/4 windows positive, no
+    single-window dependency, +10.76% total return on $1k. Sharpe 0.34
+    refuses the 0.5 promotion gate but the shape is healthy; the
+    daily-swing fit caveat the family doc warned about (weekly rebalance
+    truncating the monthly-hold edge to ~30-50%) is exactly what landed:
+    published xsec momentum Sharpes are typically 0.7-1.0 on monthly
+    rebalances; we measured 0.34 on weekly, roughly half — within the
+    predicted range. Re-tuning the same template (wider exit buffer,
+    different ranking_lookback) is parameter search per VISION's "idea vs.
+    tuning" rule. The honest path forward is the dual-momentum GEM template
+    (Tier 1.D) — it adds an absolute-return floor to the same xsec idea,
+    which the published literature reports as the larger edge contributor
+    than rank-relativity alone.
