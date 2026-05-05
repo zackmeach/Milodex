@@ -151,6 +151,7 @@ def _build_data(result: BatchResult, *, report_path: Path | None) -> dict[str, A
         "end_date": result.end_date.isoformat(),
         "row_count": len(result.rows),
         "rows": [row.as_dict() for row in result.rows],
+        "correlation_matrix": result.correlation_matrix,
         "report_path": str(report_path) if report_path else None,
     }
 
@@ -231,6 +232,7 @@ def _write_report(target: str, result: BatchResult) -> Path:
                 "end_date": result.end_date.isoformat(),
                 "generated_at": datetime.now().astimezone().isoformat(),
                 "rows": [row.as_dict() for row in result.rows],
+                "correlation_matrix": result.correlation_matrix,
             },
             indent=2,
         ),
@@ -269,6 +271,10 @@ def _render_markdown(result: BatchResult) -> str:
         "| " + " | ".join(separator) + " |",
         *rows_md,
         "",
+        "## OOS Return Correlation Matrix",
+        "",
+        *_render_correlation_matrix(result),
+        "",
         "## Per-strategy detail",
         "",
     ]
@@ -293,3 +299,19 @@ def _render_markdown(result: BatchResult) -> str:
         body.append(f"- Run ID: {row.run_id}")
         body.append("")
     return "\n".join(body)
+
+
+def _render_correlation_matrix(result: BatchResult) -> list[str]:
+    strategy_ids = [row.strategy_id for row in result.rows]
+    if not strategy_ids:
+        return ["No strategies screened."]
+    header = ["strategy", *strategy_ids]
+    separator = ["---"] * len(header)
+    rows = ["| " + " | ".join(header) + " |", "| " + " | ".join(separator) + " |"]
+    for left in strategy_ids:
+        cells = [f"`{left}`"]
+        for right in strategy_ids:
+            value = result.correlation_matrix.get(left, {}).get(right)
+            cells.append("n/a" if value is None else f"{value:.2f}")
+        rows.append("| " + " | ".join(cells) + " |")
+    return rows

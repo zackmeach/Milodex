@@ -602,7 +602,9 @@ def _barset(closes: list[float]) -> BarSet:
     return BarSet(dataframe)
 
 
-def _strong_uptrend(*, base: float = 100.0, end_gain_pct: float = 0.10, length: int = 260) -> list[float]:
+def _strong_uptrend(
+    *, base: float = 100.0, end_gain_pct: float = 0.10, length: int = 260
+) -> list[float]:
     """Flat at ``base`` for first ``length-21`` bars, then linear ramp to
     ``base * (1 + end_gain_pct)`` over last 21 bars.
 

@@ -1,0 +1,63 @@
+# Mean-Reversion Daily Lower Bollinger Touch — v1
+
+strategy:
+  id: "meanrev.daily.bbands_lowerband.curated_largecap.v1"
+  family: "meanrev"
+  template: "daily.bbands_lowerband"
+  variant: "curated_largecap"
+  version: 1
+  description: >
+    Long-only lower Bollinger Band touch mean-reversion strategy on the Phase
+    1 curated large-cap universe. Tier 2 A/B benchmark against RSI(2).
+  enabled: true
+
+  universe_ref: "universe.phase1.curated.v1"
+
+  parameters:
+    bbands_lookback: 20
+    bbands_stddev: 2.0
+    ma_filter_length: 200
+    stop_loss_pct: 0.06
+    max_hold_days: 5
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.10
+    ranking_enabled: true
+    ranking_metric: "bbands_zscore_ascending"
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.06
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []
+
+backtest_results_v1_2026-05-05:
+  command: "milodex research screen --strategy-id meanrev.daily.bbands_lowerband.curated_largecap.v1 --start 2020-01-01 --end 2024-12-31 --initial-equity 1000 --walk-forward-equivalent"
+  windows: 4
+  oos_aggregate:
+    trades: 165
+    total_return_pct: -0.63
+    sharpe: -0.1022
+    max_drawdown_pct: 3.19
+  stability:
+    single_window_dependency: false
+  promotion_gate_status: "refused"
+  notes: >
+    Blocked because Sharpe is negative. Correlation to other Tier 2 candidates
+    is low, but the standalone return stream does not justify carrying this
+    RSI(2) A/B benchmark forward.

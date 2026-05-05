@@ -158,7 +158,9 @@ class MomentumDailyTsmomStrategy(Strategy):
             rejected_alternatives.append(
                 {
                     "symbol": sym,
-                    "reason": f"capacity {capacity} full; ranked below selection (momentum={mom:.4f})",
+                    "reason": (
+                        f"capacity {capacity} full; ranked below selection (momentum={mom:.4f})"
+                    ),
                 }
             )
 

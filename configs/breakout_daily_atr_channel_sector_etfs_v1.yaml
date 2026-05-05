@@ -1,0 +1,65 @@
+# ATR/Keltner Channel Breakout — v1
+
+strategy:
+  id: "breakout.daily.atr_channel.sector_etfs.v1"
+  family: "breakout"
+  template: "daily.atr_channel"
+  variant: "sector_etfs"
+  version: 1
+  description: >
+    Long-only ATR-width channel breakout on the eleven SPDR sector ETFs. Tier
+    2 strategy-bank candidate.
+  enabled: true
+
+  universe_ref: "universe.sector_etfs_spdr.v1"
+
+  parameters:
+    ema_length: 20
+    atr_lookback: 20
+    atr_entry_multiplier: 2.0
+    atr_stop_multiplier: 1.5
+    max_hold_days: 5
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.20
+    ranking_enabled: true
+    ranking_metric: "atr_channel_strength_descending"
+    market_regime_symbol: "SPY"
+    market_regime_ma_length: 100
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.20
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.10
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []
+
+backtest_results_v1_2026-05-05:
+  command: "milodex research screen --strategy-id breakout.daily.atr_channel.sector_etfs.v1 --start 2020-01-01 --end 2024-12-31 --initial-equity 1000 --walk-forward-equivalent"
+  windows: 4
+  oos_aggregate:
+    trades: 457
+    total_return_pct: 2.13
+    sharpe: 0.1802
+    max_drawdown_pct: 3.94
+  stability:
+    single_window_dependency: true
+  promotion_gate_status: "refused"
+  notes: >
+    Blocked because Sharpe 0.18 is below the 0.5 threshold and the result has
+    single-window dependency. This is the best Tier 2 return profile, but it is
+    still not promotable evidence.
