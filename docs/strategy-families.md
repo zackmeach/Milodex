@@ -387,6 +387,74 @@ Same eight conditions as the `daily.tsmom` template. Instance YAML may add condi
 
 The xsec_rotation template emits the following `DecisionReasoning.rule` identifiers: `momentum.xsec_entry`, `momentum.xsec_exit` (rank-based weekly exit), `momentum.stop_loss`, `momentum.max_hold`, `no_signal`. The percent-stop and max-hold identifiers are shared with `daily.tsmom` because their semantics are identical at the family level.
 
+### Template: `daily.dual_absolute` — Dual Momentum (GEM)
+
+A third template within the `momentum` family. Inherits every family-level
+semantic invariant above but **operates as a single-asset rotation** (at
+most one position at a time, like the `regime` family). What differs is
+the entry concept — combining **relative momentum** (rank a small risk-on
+basket by trailing return) with **absolute momentum** (only hold the
+relative winner if its return also beats a risk-off floor; otherwise hold
+the risk-off asset).
+
+This is Antonacci's Global Equities Momentum (GEM) algorithm, structurally
+adjacent to the `regime.daily.sma200_rotation` template but with a
+materially different signal — a multi-asset cross-sectional rank with an
+absolute floor, rather than a single-asset trend-filter. The natural use
+case in the bank is as a **benchmark for the existing regime template**:
+if dual-momentum materially outperforms the SMA200 rotation, it becomes
+the candidate lifecycle-proof replacement; if correlated, drop one.
+
+#### Single-asset semantic invariant
+
+In addition to the `momentum` family-level invariants, the
+`daily.dual_absolute` template declares **`single_asset_allocation: true`**
+— at most one position at a time, exactly like the `regime` family. This
+is hardcoded in the strategy, not a configurable knob.
+
+#### Parameter surface (allowed to vary in YAML)
+
+| Parameter | Meaning | Notes |
+|---|---|---|
+| `universe` | Curated list of approved symbols (must contain `risk_off_symbol`) | Phase 1 default: `universe.gem_quartet.v1` (SPY, EFA, AGG, SHY) |
+| `risk_off_symbol` | The absolute-momentum floor; held when no risk-on candidate beats it | typical: `SHY` (short Treasuries) |
+| `momentum_lookback` | Trading days over which trailing return is computed for both relative + absolute checks | typical: 126 (≈ 6 calendar months) |
+| `rebalance_weekday` | Trading-week day on which ranking + turnover fires (0=Monday, 4=Friday) | typical: 4 |
+| `allocation_pct` | Fraction of capital deployed (the rest stays in cash) | typical: 1.00 |
+| `sizing_rule` | One of: `single_asset_full_allocation` | extension requires a new version |
+
+The template intentionally omits per-symbol MA filters, stop_loss, and
+max_hold_days — Antonacci's published behavior commits to the rebalance
+cadence and uses no intra-period stops. Phase 1 daily-swing fit naturally
+caps holds at one week (Monday-to-Friday), well under the 5-day Phase 1
+ceiling.
+
+#### Entry/Exit rule (normative)
+
+> On the **rebalance bar** (latest bar's weekday equals `rebalance_weekday`), at the prior close:
+> 1. Compute trailing return over `momentum_lookback` bars for every universe member with sufficient history;
+> 2. Identify `top_risk_on` = the universe member with the highest trailing return *among symbols other than `risk_off_symbol`*;
+> 3. If `return(top_risk_on) > return(risk_off_symbol)`, the target position is `top_risk_on`; otherwise the target position is `risk_off_symbol`;
+> 4. If the current position differs from the target: exit the current position and enter the target at the **next market open**. Allocation is `allocation_pct` of equity into the single target symbol.
+>
+> On any **non-rebalance bar**, the strategy emits `no_signal` and no turnover happens. There are no intra-period stops in this template.
+
+#### Ranking rule
+
+N/A in the cross-sectional sense — the template is single-asset by invariant. The "ranking" is the simple max over `momentum_lookback`-day returns.
+
+#### Daily-swing fit caveat
+
+The published GEM uses **monthly** rebalances. Weekly is the tightest faithful daily-swing adaptation. The edge degradation is expected to be **modest** — less than the breakout truncation, more than the ts-momentum cross-sectional adaptation, since GEM's edge is largely about not being in equities during sustained drawdowns, and a monthly-vs-weekly rebalance changes that signal less than it changes a momentum-continuation signal.
+
+#### Default disable conditions
+
+Inherits the eight-condition list from the family-level `momentum` block. Instance YAML may add conditions but **shall not remove** any of the family-level disable conditions defined above.
+
+#### Decision rule identifiers
+
+The `daily.dual_absolute` template emits the following `DecisionReasoning.rule` identifiers: `momentum.dual_absolute_rotation` (target switched on this rebalance), `momentum.dual_absolute_hold` (target unchanged on this rebalance, no order emitted), `no_signal` (non-rebalance bar). The template emits no stop-related identifiers because it has no intra-period stops by design.
+
 ---
 
 ## Family: `breakout` — Daily Channel Breakout
