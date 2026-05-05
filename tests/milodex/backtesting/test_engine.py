@@ -224,7 +224,7 @@ def test_engine_empty_range_returns_zero_trades():
 
 
 def test_engine_buy_sell_round_trip():
-    """Strategy emits BUY on day 1, SELL on day 3 — engine should record 2 trades."""
+    """BUY enqueued on day 1 fills day 2; SELL enqueued day 2 fills day 3 — 2 trades."""
     from milodex.broker.models import OrderSide, OrderType
     from milodex.execution.models import TradeIntent
 
@@ -234,6 +234,7 @@ def test_engine_buy_sell_round_trip():
     loaded = _make_loaded_strategy("test.strat.v1", universe)
 
     day_calls: list[date] = []
+    sell_decision_day = date(2024, 1, 3)  # day 2: SELL enqueued, fills day 3
 
     def fake_evaluate(bars, context):
         import pandas as pd
@@ -250,7 +251,7 @@ def test_engine_buy_sell_round_trip():
                     )
                 ]
             )
-        if current_day == date(2024, 1, 4):
+        if current_day == sell_decision_day:
             return _decision(
                 [
                     TradeIntent(
@@ -351,19 +352,37 @@ def test_engine_invalid_date_range_raises():
 
 
 def test_engine_slippage_increases_buy_cost():
-    """Slippage should increase the fill price for buys."""
+    """Slippage increases fill price; under T+1 model fill price is the *next* bar's open."""
     from milodex.broker.models import OrderSide, OrderType
     from milodex.execution.models import TradeIntent
 
     start = date(2024, 1, 2)
-    end = date(2024, 1, 2)
+    end = date(2024, 1, 3)
     universe = ("SPY",)
     loaded = _make_loaded_strategy("test.strat.v1", universe)
-    loaded.strategy.evaluate.return_value = _decision(
-        [TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET)]
-    )
 
-    barset = _make_barset([100.0], start=start)
+    def fake_evaluate(bars, context):
+        df = bars.to_dataframe()
+        timestamps = pd.to_datetime(df["timestamp"], utc=True)
+        current_day = timestamps.dt.date.max()
+        if current_day == start:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.BUY,
+                        quantity=1.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+
+    # Two-day fixture; both bars at $100 (open=close per _make_barset). The
+    # strategy decides BUY on day 1; fill happens on day 2's open at $100.
+    barset = _make_barset([100.0, 100.0], start=start)
     provider = MagicMock()
     provider.get_bars.return_value = {"SPY": barset}
 
