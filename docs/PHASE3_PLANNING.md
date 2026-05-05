@@ -1,6 +1,8 @@
 # Phase 3 Planning
 
-**Status:** Opened 2026-05-04 as the prerequisite-mandated planning artifact per [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md). Filename `PHASE3_PLANNING.md` is chosen deliberately over `ROADMAP_PHASE3.md` because Phase 3 has no committed scope at opening — same convention Phase 2 used. **§4 is open.** No scope decided. The §4.1 menu is the carry-forward of Phase 2 §4's deferred candidates plus two items (GUI, installer) promoted from Phase 2's §4.3 floor where they were "open questions" but not numbered alternatives.
+> **Phase 3 was formally closed on 2026-05-05 via [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md).** This document is now a historical record. C-1, C-2, C-6 all closed. New planning belongs in [PHASE4_PLANNING.md](PHASE4_PLANNING.md). Section §4.1 deferred candidates ((ii) micro_live, (iv) desktop GUI, (v) distributable installer, (vi) cleanup-only) carry forward as Phase 4 menu items, not commitments.
+
+**Status:** Closed 2026-05-05. Originally opened 2026-05-04 as the prerequisite-mandated planning artifact per [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md). Filename `PHASE3_PLANNING.md` is chosen deliberately over `ROADMAP_PHASE3.md` because Phase 3 had no committed scope at opening — same convention Phase 2 used. **§4 was decided 2026-05-05 as (i)+(iii) engineering-led** with the live boundary remaining locked (§4.2 = (a)). The operative exit-criteria subset narrowed to **C-1 + C-2 + C-6**, all now closed.
 
 **Predecessors:** [PHASE2_PLANNING.md](PHASE2_PLANNING.md) (closed historical record), [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md) (authorizes this doc), [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md) (Phase 2's named architectural artifact, foundation for any Phase 3 concurrency work), [VISION.md](VISION.md), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), [SRS.md](SRS.md).
 

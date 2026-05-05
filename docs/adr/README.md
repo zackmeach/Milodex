@@ -53,3 +53,4 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0024](0024-account-scoped-position-caps-are-authoritative.md) | Account-scoped position caps are authoritative; strategy `risk.max_positions` is informational | Accepted |
 | [0025](0025-phase-2-is-closed-and-phase-3-may-open.md) | Phase 2 is closed and Phase 3 may open | Accepted |
 | [0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) | Concurrent multi-strategy uses per-process supervisor | Accepted |
+| [0027](0027-phase-3-is-closed-and-phase-4-may-open.md) | Phase 3 is closed and Phase 4 may open | Accepted |
