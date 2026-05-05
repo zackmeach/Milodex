@@ -150,6 +150,88 @@ The regime family's disable-condition catalog is intentionally short because the
 
 ---
 
+## Family: `momentum` — Daily Time-Series Momentum Swing
+
+### Identifier prefix
+`momentum.*`
+
+### Market behavior exploited
+
+The `momentum` family targets **trend continuation in liquid markets at daily swing tempo**. The hypothesis is that some assets exhibit short-term momentum — recent strength persists into the next handful of trading sessions before mean-reversion or new information dominates. The edge is not that prices always trend — it is that under defined conditions, the probability-adjusted continuation may be large enough to justify disciplined entry on confirmed momentum with tight risk controls.
+
+This family is the structural counterpart to `meanrev`: where meanrev buys oversold pullbacks, `momentum` buys confirmed strength. The two are deliberately statistically opposite (reversion vs. continuation) so they exercise the harness on materially different signal shapes rather than two parameterizations of the same idea (per VISION's "idea vs. tuning" rule).
+
+### Semantic invariants (hardcoded in code, not overrideable by config)
+
+- `long_only: true`
+- `signal_evaluation: end_of_day` — signals are computed on completed daily bars; no intraday signal generation
+- `execution_timing: next_market_open` — orders are submitted at the open following the signal
+- `stop_semantics: close_based` — stops are evaluated once per day on close, executed at the next open
+- `timeframe: 1D` (daily bars only)
+- `promotion_requires_frozen_manifest: true` (per ADR 0015)
+
+Changing any of the above produces a **new version** of the strategy, not a variant.
+
+### Parameter surface (allowed to vary in YAML)
+
+| Parameter | Meaning | Notes |
+|---|---|---|
+| `universe` | Curated list of approved symbols | Phase 1 uses a fixed curated universe; automatic discovery is Phase 2+ |
+| `momentum_lookback` | Trading days over which to compute the return signal | typical: 20–60 |
+| `momentum_entry_threshold` | Minimum return over `momentum_lookback` to qualify (decimal; `0.05` = 5%) | typical: 0.03–0.10 |
+| `momentum_exit_threshold` | Exit when return over `momentum_lookback` < this value | typical: 0.0 (exit when momentum turns negative) |
+| `ma_filter_length` | Long-only regime filter (price > SMA) | typical: 100–200 |
+| `stop_loss_pct` | Close-based stop distance | typical: 0.05–0.10 |
+| `max_hold_days` | Maximum trading days in position | typical: 5–20 (longer than meanrev — trends need room) |
+| `max_concurrent_positions` | Per-strategy position cap | subject to global account-scoped caps per ADR 0024 |
+| `sizing_rule` | One of: `equal_notional`, `fixed_notional` | extension requires a new version |
+| `per_position_notional_pct` | Used when sizing rule requires it | |
+| `ranking_enabled` | Whether to rank candidates | |
+| `ranking_metric` | One of: `momentum_descending` | extension requires a new version |
+| `market_regime_symbol` | Optional broad-market regime filter symbol (e.g. `SPY`) | empty string disables |
+| `market_regime_ma_length` | MA length for regime filter | typical: 200 |
+
+### Entry rule (normative)
+
+> Enter long at the **next market open** if, at the prior close:
+> 1. The symbol is in the approved universe; **and**
+> 2. `close > SMA(ma_filter_length)`; **and**
+> 3. `(close / close[-momentum_lookback]) - 1 >= momentum_entry_threshold`; **and**
+> 4. The symbol is not already in an open position; **and**
+> 5. The symbol is not blocked by any risk or execution constraint.
+
+### Exit rule (normative)
+
+> Exit at the **next market open** if, at the prior close, **any** of the following holds:
+> - `(close / close[-momentum_lookback]) - 1 < momentum_exit_threshold`; **or**
+> - `max_hold_days` reached (counted in trading days since entry); **or**
+> - Stop condition triggered: `close <= entry_price * (1 - stop_loss_pct)`.
+
+The momentum and stop-loss conditions are independently sufficient; either alone closes the position. Their evaluation order in code is: stop_loss > max_hold > momentum_exit (most specific first), so when multiple conditions fire on the same bar, the more specific rule names the explanation.
+
+### Ranking rule (normative)
+
+When the number of qualifying entry candidates on a given evaluation exceeds the capital or position budget:
+
+> Rank qualifying candidates by `ranking_metric` (default: `momentum_descending` — highest `momentum_lookback` return first). Take the top `(max_concurrent_positions - current_open_positions)` candidates. Reject the remainder silently; the rejection is recorded in the explanation record (R-XC-008) but generates no order.
+
+### Default disable conditions
+
+The strategy is halted when any of the following hold even if the code is functioning correctly:
+
+1. Abnormal market regime or volatility far outside tested bounds
+2. Significant spread expansion or liquidity deterioration
+3. Major unresolved data-quality issues
+4. Corporate-action handling uncertainty
+5. Broker / execution instability
+6. Repeated unexplained divergence between expected and actual fills
+7. Breach of drawdown or risk-budget limits
+8. Operator-declared pause after unusual market events
+
+Same eight conditions as `meanrev` — both families operate in the same liquid-market context and depend on the same data-quality and broker-stability assumptions. Instance YAML may add conditions but **shall not remove** any of the above.
+
+---
+
 ## Adding a New Family
 
 A new family warrants a new section in this document when at least one of the following holds (per the version-vs-new-idea rule in VISION's Research Loop):

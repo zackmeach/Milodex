@@ -70,39 +70,19 @@ If anything surfaces during Phase 3 planning or execution, it gets added here wi
 
 These are the questions the operator owns. Each is framed with alternatives; **none has a recommended answer here**.
 
-### 4.1 What does Phase 3 actually scope?
+### 4.1 ~~What does Phase 3 actually scope?~~ — **Decided 2026-05-05: (i) second research-target + (iii) concurrent multi-strategy (engineering-led bundle)**
 
-Six candidates. Phase 2 §4.1 had four; this list adds GUI and installer (promoted from Phase 2 §4.3 "Open question" floor entries) and adds cleanup-only as the conservative default. Numbering is intra-Phase-3; cross-phase references are inline.
+Six candidates were considered: (i) second research-target strategy, (ii) micro_live promotion, (iii) concurrent multi-strategy execution, (iv) desktop GUI, (v) distributable installer, (vi) cleanup-only. The full menu with priority-fit and dependency analysis is preserved in this file's git history at commit `6dace51`.
 
-**(i) Second research-target strategy** *(Phase 2 §4.1.i deferred → here)*. Add a non-mean-reversion research-target. Tests whether the harness carries a second concurrent research thread and exercises its full lifecycle. FOUNDER_INTENT #2 (engineering capability) primarily, with #5 (profitability) as conditional payoff if the new target earns the promotion gate. Tied to §4.4. Code surface: a new strategy module, a new YAML config, a frozen manifest, a walk-forward run. No new architectural seam unless §4.4 lands on pairs/cointegration (multi-leg positions are new).
+**Decision:** Phase 3 takes up **(i) + (iii) — engineering-led bundle**. A second research-target strategy moves through the full lifecycle alongside meanrev; both run concurrently in paper. The live boundary stays locked through Phase 3 (see §4.2). Rationale: FOUNDER_INTENT priority #1 (trustworthy) is closed via Phase 2's invariants; priority #2 (engineering capability) is the natural next pull; live-boundary work is structurally premature without a strategy that has earned the gate; GUI/installer is larger than a single phase should swallow without first proving the harness scales to two research threads. The (i)+(iii) bundle is the smallest scope that simultaneously exercises *"harness handles a second research thread"* and *"[ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md) account-scope discipline holds in practice."* See §4.4 for the family choice for (i); §4.2 for the live-boundary decision; §4.5 / §4.6 / §4.7 are not in scope (their conditional triggers do not fire under (i)+(iii)).
 
-**(ii) Micro_live promotion of one strategy** *(Phase 2 §4.1.ii deferred → here)*. Open the live boundary at micro_live only. Phase 3's first move into real capital. FOUNDER_INTENT #5 (profitability validation). Currently structurally constrained: regime is lifecycle-exempt and not designed for trade-count evidence, so its micro_live evidence has to be operational; meanrev failed the gate at backtest → paper, so it can't reach micro_live without first earning paper. New research-targets from §4.1.i would need to earn paper first too. Tied to §4.2 and §4.5.
+Alternatives **(ii)** micro_live, **(iv)** desktop GUI, **(v)** distributable installer, **(vi)** cleanup-only were considered and deferred. They remain Phase 4 candidates.
 
-**(iii) Concurrent multi-strategy execution** *(Phase 2 §4.1.iii deferred → here)*. Run regime and meanrev (or whatever research-target) side-by-side in paper. CS-1's [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md) prepared the ground (account-scoped enforcement, sum-of-strategy sizing); Phase 3 would exercise it for the first time. FOUNDER_INTENT #2 (engineering capability). Sub-decision: whether concurrency is one-process-per-strategy (current runner model, supervised externally — operator runs two terminals or a script that spawns both) or a single supervisor process that hosts multiple strategies. Per-process is the smaller change; supervisor is the bigger seam (and would conflict with [ADR 0012](adr/0012-runtime-and-dual-stop.md)'s "manually-invoked, long-running foreground process" model unless that ADR is superseded).
+### 4.2 ~~What's the live-trading boundary for Phase 3?~~ — **Decided 2026-05-05: (a) live remains locked**
 
-**(iv) Desktop GUI** *(Phase 2 §4.3 floor → here)*. First non-CLI interface. FOUNDER_INTENT #3 (accessibility) + VISION's "polished, smooth, surprisingly easy to start." Largest code-surface candidate by far. Tied to §4.6 (PySide6 vs Tauri runtime model). Required: a new ADR for the GUI runtime model; potentially a new ADR for the daemon/supervisor model if the GUI hosts the strategy runtime in-process.
+[ADR 0004](adr/0004-paper-only-phase-one.md) stays in force through Phase 3. Implied by §4.1 = (i)+(iii): neither a second research-target's lifecycle trip nor concurrent paper execution requires the live boundary to move. The (i)+(iii) bundle's evidence is paper-only; live promotion belongs to Phase 4 once a research-target has earned the gate.
 
-**(v) Distributable installer / clone-and-run path** *(Phase 2 §4.3 floor → here)*. The friend-installable distribution per VISION. FOUNDER_INTENT #4 (shareability). Tied to §4.7 (distribution model). Compatible with §4.1.iv but not dependent on it — a CLI-only installer is also defensible. Required: a new ADR for the chosen distribution model.
-
-**(vi) Cleanup-only.** Like Phase 2's resolved (iv): no new system goals, just whatever surfaces during Phase 3 running. ADR 0025 confirms the §3 carry list is empty, so this option is currently nearly-empty — Phase 3 would need new gaps to surface (likely from regime running longer in paper than Phase 1's evidence window, or from any §4.5 micro_live exercise revealing operational gaps). Defensible only if no other option is ready or if the operator wants Phase 3 to mirror Phase 2's discipline of "smallest possible follow-on."
-
-**Bundle shapes worth naming explicitly:**
-
-- **(i)+(iii) bundle.** Add a second research-target *and* run both concurrently. Tests engineering capability twice over. The second strategy exercises the harness; concurrency exercises CS-1's account-scope discipline in practice. Highest engineering scope expansion within paper-only.
-- **(iv)+(v) bundle.** Ship a GUI inside an installer. Highest combined FOUNDER_INTENT alignment (#3 + #4). Code-surface delta dominated by frontend work, not strategy work. Good fit if the priority signal is "make Milodex usable by someone who isn't the developer."
-- **(ii) alone.** Most conservative live-boundary movement. Requires §4.5 to resolve which strategy crosses, which currently has no zero-effort answer.
-
-Each option (or bundle) gets a Phase 3 ADR if it crosses an architectural seam. None is pre-recommended here.
-
-### 4.2 What's the live-trading boundary for Phase 3?
-
-[ADR 0004](adr/0004-paper-only-phase-one.md) is still in force per [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md). Phase 3 may revisit, but only via a new ADR that supersedes 0004.
-
-**(a) Live remains locked.** Phase 3 stays paper-only. Mirrors Phase 2's resolution. Compatible with §4.1 (i), (iii), (iv), (v), (vi). Most conservative.
-
-**(b) Unlock micro_live only.** Open the first live stage but not full-scale live. Compatible with §4.1.ii. Requires the new ADR plus §4.5 (which strategy promotes). Auto-restart and unattended live trading remain out — kill-switch reset stays manual per [ADR 0005](adr/0005-kill-switch-manual-reset.md), and the autonomy-boundary actions in [VISION.md §Autonomy Boundary](VISION.md#autonomy-boundary) all stay human-gated.
-
-**(c) Unlock all stages.** Full live trading authorized. **Structurally premature** — no strategy has produced micro_live evidence, so live promotion has nothing to evaluate against. Reserved for a later phase after micro_live evidence accumulates.
+Alternatives **(b)** unlock micro_live only and **(c)** unlock all stages were considered and deferred.
 
 ### 4.3 What's the equivalent of Phase 2's §7 floor?
 
@@ -131,16 +111,13 @@ Same Phase 2 floor table, with each "Open question" now tracked through Phase 2'
 
 Items marked **Open question** are the ones the operator should explicitly decide; **Conditional** items become open if a related §4.1 alternative is chosen; the rest stay floor unless a specific case is made.
 
-### 4.4 If §4.1.i, which research-target family is next?
+### 4.4 ~~If §4.1.i, which research-target family is next?~~ — **Decided 2026-05-05: momentum (`momentum.daily.tsmom.curated_largecap.v1`)**
 
-(Carries forward from Phase 2 §4.4. Reproduced here so Phase 3 doesn't have to cross-reference a closed doc.)
+**Decision:** Time-series momentum (TSMOM) on the same Phase 1 curated large-cap universe meanrev uses. Family identifier `momentum`; full normative spec lives in [strategy-families.md §Family: momentum](strategy-families.md#family-momentum--daily-time-series-momentum-swing). Strategy ID `momentum.daily.tsmom.curated_largecap.v1`. Daily swing tempo, cross-sectional ranked entry, regime-filtered, equal-notional sized — mirrors meanrev's structural shape so the test is *"does the harness carry a second research thread?"* rather than *"does new architecture land?"*
 
-- **Momentum.** Cleanest contrast to mean-reversion. Same daily swing tempo. Different statistical character (trending vs. reverting). The lifecycle-proof regime strategy is technically a trend-following family member, but its purpose is platform proof, not research — momentum-as-research-target is distinct.
-- **Breakout.** Closer to momentum but with an explicit volatility-filter dependency. Adds a parameter surface (breakout window, volatility regime) without inventing a new family.
-- **Pairs / cointegration.** A different family entirely (cross-asset). Larger code-surface for the strategy-engine (multi-leg positions, cointegration tests) but more research-distinct. Crosses an architectural seam — multi-leg positions are not currently modeled.
-- **A second mean-reversion variant.** Different parameterization (different RSI period, different exit rule, different universe slice). Smallest research-distinctness; tests parameter-space sensitivity rather than family-space. Risk: per VISION's "idea versus tuning" rule, a second mean-reversion variant must be a meaningfully distinct *idea* (different entry concept, different timing model), not just RSI 8 vs. RSI 10. A re-tuned meanrev is tuning, not a second strategy.
+Rationale: Momentum is the cleanest statistical contrast to meanrev's reversion (different market behavior exploited per VISION's "idea vs. tuning" rule). Daily swing tempo keeps it within the existing tempo lane. No new architectural seam — single-leg positions, daily timeframe, long-only, curated universe, same Strategy ABC contract. Pairs/cointegration would have introduced multi-leg position support (a new architectural decision per [strategy-families.md "Adding a New Family"](strategy-families.md#adding-a-new-family)'s ADR-required clause), exceeding Phase 3 scope discipline. Per [strategy-families.md](strategy-families.md)'s convention, a new family that does not introduce a new architectural decision does not require its own ADR — the family section is the canonical spec.
 
-[strategy-families.md](strategy-families.md) is the canonical source for what each family's normative shape looks like.
+Alternatives **breakout** (close to momentum but adds a separate volatility-filter parameter surface), **pairs/cointegration** (multi-leg, new architectural seam — too big for Phase 3), and **a second mean-reversion variant** (would risk being tuning rather than a new idea per VISION's research discipline) were considered and deferred.
 
 ### 4.5 If §4.1.ii or §4.2.b, which strategy promotes to micro_live?
 
@@ -180,17 +157,17 @@ New ADR for the chosen model.
 
 ## 5. Exit Criteria
 
-Phase 1 had six SCs simultaneous-when-true. Phase 2 narrowed to two. Phase 3's count depends on §4.1; each candidate criterion below is keyed to a §4.1 option. The operative subset narrows once §4.1 resolves.
+Phase 1 had six SCs simultaneous-when-true. Phase 2 narrowed to two. With §4.1 = (i)+(iii) decided, the operative set is **three criteria**: **C-1, C-2, C-6**. C-3, C-4, C-5 are not in scope (their §4.1 trigger alternatives were not chosen) and remain Phase 4 candidates.
 
-- **C-1.** *(if §4.1.i)* A second research-target strategy moves through the full lifecycle — define → frozen manifest → backtest → walk-forward → trust report — with the same evidence shape as meanrev's Phase 1 trip. Walk-forward report uses the per-metric `(OOS)` labeling discipline P-1 added. The strategy either earns the gate (Sharpe > 0.5, max drawdown < 15%, ≥30 trades) or is refused honestly per the same C-2 mechanism Phase 2 locked.
+- **C-1.** *(operative — §4.1.i chosen)* A second research-target strategy moves through the full lifecycle — define → frozen manifest → backtest → walk-forward → trust report — with the same evidence shape as meanrev's Phase 1 trip. Walk-forward report uses the per-metric `(OOS)` labeling discipline P-1 added. The strategy either earns the gate (Sharpe > 0.5, max drawdown < 15%, ≥30 trades) or is refused honestly per the same C-2 mechanism Phase 2 locked. Family choice: momentum per §4.4; strategy ID `momentum.daily.tsmom.curated_largecap.v1`.
 
-- **C-2.** *(if §4.1.iii)* Concurrent multi-strategy paper execution: regime + ≥1 research-target running simultaneously for ≥30 paper trading days (rolling, not necessarily consecutive). Account-scoped position cap exercised in practice — at least one cycle where `concurrent_positions` approached the configured `max_concurrent_positions` and the risk evaluator behaved correctly per ADR 0024. The supervisor / per-process model decision (§4.1.iii sub-decision) is documented in its own ADR.
+- **C-2.** *(operative — §4.1.iii chosen)* Concurrent multi-strategy paper execution: regime + ≥1 research-target running simultaneously for ≥30 paper trading days (rolling, not necessarily consecutive). Account-scoped position cap exercised in practice — at least one cycle where `concurrent_positions` approached the configured `max_concurrent_positions` and the risk evaluator behaved correctly per ADR 0024. The supervisor / per-process model decision (§4.1.iii sub-decision) is documented in its own ADR (planned ADR 0026).
 
-- **C-3.** *(if §4.1.ii / §4.2.b)* One strategy promoted to micro_live with a new ADR superseding ADR 0004 in scope (micro_live only, not all stages). Operational evidence trail: ≥30 trading days of micro_live operation with explanations recorded for every decision, kill-switch exercised at least once with manual reset, all autonomy-boundary actions observed as human-gated. Real money on the broker side.
+- **C-3.** *(deferred — §4.1.ii not chosen)* Micro_live promotion. Phase 4 candidate.
 
-- **C-4.** *(if §4.1.iv)* Desktop GUI ships with at least the daily-operator workflow ([VISION.md "Daily Operator Workflow"](VISION.md#daily-operator-workflow) eight steps: anchor → inspect → configure → validate → rehearse → execute → evaluate → promote/kill). All eight steps work from the GUI without falling back to the CLI. GUI runtime ADR landed (§4.6 decision codified).
+- **C-4.** *(deferred — §4.1.iv not chosen)* Desktop GUI. Phase 4 candidate.
 
-- **C-5.** *(if §4.1.v)* Distributable installer produces a working Milodex install on a clean machine — no Python pre-installed, no developer setup, no `.env` editing in a text editor (initial credentials configurable via the install flow or first-launch dialog). Friend-tested at least once on a non-developer machine. Distribution-model ADR landed (§4.7 decision codified).
+- **C-5.** *(deferred — §4.1.v not chosen)* Distributable installer. Phase 4 candidate.
 
 - **C-6.** *(always — preserves Phase 2 invariants)* All Phase 2 invariants preserved end-to-end:
   - C-2 (honest-signal) regression tests still green: `test_gate_refuses_meanrev_shape_evidence_on_sharpe_alone` and `test_promotion_promote_refuses_meanrev_shape_evidence_through_cli` both pass on Phase 3's last commit.
@@ -198,7 +175,7 @@ Phase 1 had six SCs simultaneous-when-true. Phase 2 narrowed to two. Phase 3's c
   - P-1 walk-forward labeling still rendering on every walk-forward run — `(OOS)` per-metric tags present, `sortino_ratio=None` for walk-forward.
   - No silent removal or relaxation of any Phase 1 or Phase 2 ADR via configuration. Removals require a new ADR explicitly superseding the prior one.
 
-Phase 3 ends when the chosen subset is simultaneously true, an ADR closes Phase 3 analogous to [ADR 0023](adr/0023-phase-1-is-closed-and-phase-2-may-open.md) / [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md), and Phase 4 planning is authorized.
+Phase 3 ends when **C-1 + C-2 + C-6 are simultaneously true**, an ADR closes Phase 3 analogous to [ADR 0023](adr/0023-phase-1-is-closed-and-phase-2-may-open.md) / [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md) (planned ADR 0027), and Phase 4 planning is authorized.
 
 ### Deferred candidates (stay deferred unless §4 opens them)
 
@@ -256,19 +233,14 @@ These remain out of scope for Phase 3 unless a separate ADR opens them, even if 
 
 ## 9. Immediate Next Steps
 
-§4 is open. The first decision to close is **§4.1 (what Phase 3 actually scopes)** because it shapes every other §4 question:
-- §4.1 = (ii) shapes §4.2 (live boundary moves) and §4.5 (which strategy).
-- §4.1 = (i) shapes §4.4 (which research family) and may shape §4.5 (γ).
-- §4.1 = (iv) shapes §4.6 (GUI runtime).
-- §4.1 = (v) shapes §4.7 (distribution model).
-- §4.1 = (iii) may shape §7 floor (daemon/supervisor) depending on supervisor sub-decision.
+§4 is decided. Phase 3 is now in execution mode. The operative set is C-1 + C-2 + C-6. Concrete sequence:
 
-Three natural first-pass shapes for Phase 3 (presented as candidates only — operator picks):
+1. **Add momentum family spec** to [strategy-families.md](strategy-families.md). *(Done 2026-05-05 — see §Family: momentum.)*
+2. **TDD the momentum strategy.** Golden-output test mirroring meanrev's pattern → `MomentumDailyTsmomStrategy` class implementing the family spec → strategy parameter validation tests → cross-sectional ranking tests → exit-rule tests (momentum_exit, max_hold, stop_loss).
+3. **Add config + universe + freeze manifest.** New `configs/momentum_daily_tsmom_v1.yaml`; existing `universe.phase1.curated.v1` is the universe; `milodex promotion freeze momentum.daily.tsmom.curated_largecap.v1` lifecycle-tracks the new strategy at the `backtest` stage.
+4. **Run walk-forward backtest.** `milodex backtest run momentum.daily.tsmom.curated_largecap.v1 --start 2015-01-01 --end 2024-12-31 --walk-forward 4`. Capture OOS-aggregate Sharpe / drawdown / trade count. Verify P-1 per-metric `(OOS)` labeling holds in the trust report. Whether the gate accepts or refuses is honest signal either way — C-2's regression tests apply equally.
+5. **Land [ADR 0026]** for the concurrency model. Decision space: per-process supervisor (smaller change, preserves [ADR 0012](adr/0012-runtime-and-dual-stop.md)) vs single-process supervisor (bigger seam, would supersede ADR 0012). Per-process is the engineering-judgment default unless a specific case for single-process emerges from execution.
+6. **Exercise concurrent multi-strategy paper execution.** Regime + meanrev (or regime + momentum, depending on what survives the walk-forward gate) running simultaneously for ≥30 paper trading days. Verify account-scoped `concurrent_positions` cap behaves correctly under concurrent demand.
+7. **Close Phase 3.** [ADR 0027] analogous to ADR 0023 / 0025. Open `PHASE4_PLANNING.md`.
 
-- **Engineering-led.** §4.1 = (i) + (iii). Add a second research-target *and* run both concurrently. Live boundary stays locked (§4.2 = (a)). FOUNDER_INTENT #2 heavy. Smallest scope expansion that demonstrates the platform handles more strategies and more concurrency. Conditional priority #5 payoff if the new research-target earns the gate.
-- **Accessibility-led.** §4.1 = (iv) + (v). Ship a GUI inside an installer. Live boundary stays locked. FOUNDER_INTENT #3 + #4 heavy. Largest code-surface delta. Good fit if the priority signal is "make Milodex usable by someone who isn't the developer." No new strategies, no new research, no live boundary movement — pure surface-and-distribution work.
-- **Live-boundary test.** §4.1 = (ii), §4.2 = (b), §4.5 = (α). Promote regime to micro_live as the lifecycle-proof's first real-capital trip. FOUNDER_INTENT #5 (validation). Smallest scope, biggest stakes. Practical risk: regime may run for months in micro_live without firing, in which case the evidence is "nothing happened correctly" — operationally true, but a thin Phase 3 outcome unless paired with another goal.
-
-A fourth shape — **everything-shape** combining (i) + (iii) + (iv) + (v) + (ii) — is structurally too large for a single phase and would replicate the Phase 1 scope-discipline failure mode that Phase 2 was created to avoid. Phase 3 should pick one shape (or a defensibly-small bundle), close it, then close out and let Phase 4 planning open.
-
-After §4.1 is decided, the rest of §4 narrows to whichever conditional questions apply.
+The C-6 always-on invariant gates every step: C-2 honest-signal regression tests, ADR 0024 account-scope, and P-1 walk-forward labeling must remain green at every commit. Any slip is a stop-and-fix, not a continue-with-known-broken.
