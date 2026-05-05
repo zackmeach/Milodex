@@ -14,7 +14,7 @@ from datetime import UTC, date, datetime, timedelta
 import pandas as pd
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestBarRequest
+from alpaca.data.requests import Adjustment, StockBarsRequest, StockLatestBarRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 
@@ -22,6 +22,12 @@ from milodex.config import get_alpaca_credentials, get_cache_dir, get_trading_mo
 from milodex.data.cache import ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.data.provider import DataProvider
+
+# Cache schema version — increment when the on-disk bar format changes in a way
+# that makes existing parquet files incompatible or incorrect.
+# v1 → v2 (2026-05-05): switched StockBarsRequest to Adjustment.SPLIT so all
+#   cached bars are now split-adjusted. Old raw-bar parquets must be discarded.
+CACHE_VERSION = "v2"
 
 # Map our Timeframe enum to Alpaca's TimeFrame objects
 _TIMEFRAME_MAP: dict[Timeframe, TimeFrame] = {
@@ -132,6 +138,7 @@ class AlpacaDataProvider(DataProvider):
                     symbol_or_symbols=symbol,
                     timeframe=alpaca_tf,
                     feed=DataFeed.IEX,
+                    adjustment=Adjustment.SPLIT,
                     start=datetime(
                         fetch_start.year,
                         fetch_start.month,

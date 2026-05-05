@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from alpaca.data.enums import DataFeed
+from alpaca.data.requests import Adjustment
 
 from milodex.data.alpaca_provider import AlpacaDataProvider
 from milodex.data.models import Bar, BarSet, Timeframe
@@ -77,6 +78,64 @@ class TestGetBars:
 
         request = provider._client.get_stock_bars.call_args.args[0]
         assert request.feed == DataFeed.IEX
+
+    def test_stock_bars_request_uses_split_adjustment(self, provider, mock_alpaca_bar):
+        """StockBarsRequest must carry Adjustment.SPLIT.
+
+        Without this, raw bars contain ~75% one-day drops on split dates
+        (AAPL 2020-08-31, NVDA 2021-07-20, TSLA 2020/2022, AMZN 2022-06-06,
+        GOOGL 2022-07-18) which are interpreted as real crashes by strategies.
+        """
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert request.adjustment == Adjustment.SPLIT
+
+    def test_split_adjustment_returns_adjusted_close_values(self, provider):
+        """Regression: provider returns bars as-received from Alpaca (no transform).
+
+        With Adjustment.SPLIT set on the request, Alpaca returns pre-adjusted
+        prices. This test verifies the provider passes those values through
+        unchanged — a split-adjusted AAPL close near $125 (Aug 2020) should
+        appear as ~125, not ~500 (the raw pre-split price).
+        """
+        adjusted_bar = MagicMock()
+        # AAPL 2020-08-28: split-adjusted close ~$124, raw pre-split ~$496
+        adjusted_bar.timestamp = datetime(2020, 8, 28, 20, 0, tzinfo=UTC)
+        adjusted_bar.open = 124.0
+        adjusted_bar.high = 125.18
+        adjusted_bar.low = 123.83
+        adjusted_bar.close = 124.37
+        adjusted_bar.volume = 338054800
+        adjusted_bar.vwap = 124.5
+
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [adjusted_bar]}
+        )
+
+        result = provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2020, 8, 28),
+            end=date(2020, 8, 28),
+        )
+
+        bars = result["AAPL"]
+        assert len(bars) == 1
+        row = bars.to_dataframe().iloc[0]
+        # Split-adjusted price is ~$124; raw pre-split price would be ~$496.
+        # Assert we got the adjusted value back (i.e., provider did not transform it).
+        assert row["close"] == pytest.approx(124.37)
+        assert row["close"] < 200, (
+            "Close should be split-adjusted (~$124), not raw pre-split (~$496)"
+        )
 
 
 class TestGetLatestBar:
