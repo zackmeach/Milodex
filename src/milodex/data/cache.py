@@ -1,7 +1,10 @@
 """Local Parquet cache for market data.
 
-Stores OHLCV bars as Parquet files organized by timeframe and symbol.
-Layout: {cache_dir}/{timeframe_value}/{SYMBOL}.parquet
+Stores OHLCV bars as Parquet files organized by version, timeframe and symbol.
+Layout: {cache_dir}/{version}/{timeframe_value}/{SYMBOL}.parquet
+
+Incrementing the version segment forces cache invalidation — existing parquets
+under the old version directory are ignored and fresh data is fetched.
 
 The cache is append-only for historical data. Today's bar is always
 considered stale (re-fetched) since the market may still be open.
@@ -23,13 +26,14 @@ _logger = logging.getLogger(__name__)
 class ParquetCache:
     """File-based Parquet cache for market data bars."""
 
-    def __init__(self, cache_dir: Path) -> None:
-        self._cache_dir = cache_dir
-        cache_dir.mkdir(parents=True, exist_ok=True)
+    def __init__(self, cache_dir: Path, version: str = "v1") -> None:
+        self._cache_dir = Path(cache_dir)
+        self._version = version
+        self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def _path(self, symbol: str, timeframe: Timeframe) -> Path:
         """Return the Parquet file path for a symbol/timeframe pair."""
-        dir_path = self._cache_dir / timeframe.value
+        dir_path = self._cache_dir / self._version / timeframe.value
         dir_path.mkdir(parents=True, exist_ok=True)
         return dir_path / f"{symbol.upper()}.parquet"
 

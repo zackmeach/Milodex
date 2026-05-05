@@ -106,6 +106,21 @@ class TestParquetCache:
         cache.write("AAPL", Timeframe.DAY_1, sample_df)
         assert cache.read("SPY", Timeframe.DAY_1) is None
 
+    def test_version_segment_in_path(self, tmp_path, sample_df):
+        """Cache file must land at {cache_dir}/{version}/{timeframe}/{symbol}.parquet."""
+        versioned_cache = ParquetCache(tmp_path / "market_cache", version="v2")
+        versioned_cache.write("AAPL", Timeframe.DAY_1, sample_df)
+        expected = tmp_path / "market_cache" / "v2" / "1Day" / "AAPL.parquet"
+        assert expected.exists(), f"Expected parquet at {expected}"
+
+    def test_different_versions_are_isolated(self, tmp_path, sample_df):
+        """v1 and v2 caches must not share files."""
+        cache_v1 = ParquetCache(tmp_path / "market_cache", version="v1")
+        cache_v2 = ParquetCache(tmp_path / "market_cache", version="v2")
+        cache_v1.write("AAPL", Timeframe.DAY_1, sample_df)
+        # v2 sees a cache miss even though v1 has data
+        assert cache_v2.read("AAPL", Timeframe.DAY_1) is None
+
     def test_merge_fills_gap_in_middle(self, cache):
         """Cache has Jan 13-15 and Jan 20-22. Fill Jan 16-19."""
         early = pd.DataFrame(

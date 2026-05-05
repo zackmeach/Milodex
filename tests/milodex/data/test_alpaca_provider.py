@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from alpaca.data.enums import DataFeed
+from alpaca.data.requests import Adjustment
 
 from milodex.data.alpaca_provider import AlpacaDataProvider
 from milodex.data.models import Bar, BarSet, Timeframe
@@ -77,6 +78,26 @@ class TestGetBars:
 
         request = provider._client.get_stock_bars.call_args.args[0]
         assert request.feed == DataFeed.IEX
+
+    def test_stock_bars_request_uses_split_adjustment(self, provider, mock_alpaca_bar):
+        """StockBarsRequest must carry Adjustment.SPLIT.
+
+        Without this, raw bars contain ~75% one-day drops on split dates
+        (AAPL 2020-08-31, NVDA 2021-07-20, TSLA 2020/2022, AMZN 2022-06-06,
+        GOOGL 2022-07-18) which are interpreted as real crashes by strategies.
+        """
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert request.adjustment == Adjustment.SPLIT
+
 
 
 class TestGetLatestBar:
