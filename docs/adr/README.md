@@ -50,3 +50,5 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0021](0021-walk-forward-metrics-are-oos-aggregate.md) | Walk-forward metrics are OOS-aggregate, not whole-period | Accepted |
 | [0022](0022-strategy-rotation-scope-is-the-declared-universe.md) | Strategy rotation scope is the declared universe | Accepted |
 | [0023](0023-phase-1-is-closed-and-phase-2-may-open.md) | Phase 1 is closed and Phase 2 may open | Accepted |
+| [0024](0024-account-scoped-position-caps-are-authoritative.md) | Account-scoped position caps are authoritative; strategy `risk.max_positions` is informational | Accepted |
+| [0025](0025-phase-2-is-closed-and-phase-3-may-open.md) | Phase 2 is closed and Phase 3 may open | Accepted |
