@@ -29,6 +29,7 @@ from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
 from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
 from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
 from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
+from milodex.strategies.seasonality_turn_of_month import SeasonalityTurnOfMonthStrategy
 
 __all__ = [
     "BreakoutAtrChannelStrategy",
@@ -43,6 +44,7 @@ __all__ = [
     "MomentumDualAbsoluteGemStrategy",
     "MomentumXsecRotationStrategy",
     "RegimeSpyShy200DmaStrategy",
+    "SeasonalityTurnOfMonthStrategy",
     "Strategy",
     "StrategyConfig",
     "StrategyContext",
