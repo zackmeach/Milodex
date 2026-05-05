@@ -360,15 +360,15 @@ class BacktestEngine:
                 entry_state[sym]["held_days"] = int(entry_state[sym]["held_days"]) + 1
 
             bars_by_symbol = _slice_bars_to_day(all_bars, day)
-            primary_bars = bars_by_symbol.get(universe[0])
-            if primary_bars is None or len(primary_bars) == 0:
-                continue
-
             latest_opens = _latest_opens(bars_by_symbol)
             latest_closes = _latest_closes(bars_by_symbol)
 
             # Drain any orders enqueued on the previous decision day. Fills
-            # happen at TODAY's open — see module docstring.
+            # happen at TODAY's open — see module docstring. The drain runs
+            # BEFORE the primary-symbol bar check so pending orders for any
+            # symbol with bars on `day` fill on schedule, even when the
+            # primary universe symbol has no bars (multi-symbol universes
+            # with mismatched calendars).
             if pending:
                 cash, drained_buys, drained_sells = self._drain_pending(
                     pending=pending,
@@ -387,6 +387,10 @@ class BacktestEngine:
                 sell_count += drained_sells
                 trade_count += drained_buys + drained_sells
                 pending = []
+
+            primary_bars = bars_by_symbol.get(universe[0])
+            if primary_bars is None or len(primary_bars) == 0:
+                continue
 
             equity = _compute_equity(cash, positions, latest_closes)
             self._sync_broker_state(
