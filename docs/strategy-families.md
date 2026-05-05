@@ -552,6 +552,80 @@ The breakout family emits the following `DecisionReasoning.rule` identifiers: `b
 
 ---
 
+## Family: `seasonality` — Daily Calendar-Effect Swing
+
+### Identifier prefix
+`seasonality.*`
+
+### Market behavior exploited
+
+The `seasonality` family targets repeatable calendar-window return clustering
+that is not derived from price momentum, mean reversion, or breakout shape.
+For Phase 1, the first template is turn-of-month equity seasonality: broad
+index returns historically concentrate around month-end and the first few
+trading days of the next month.
+
+### Semantic invariants (hardcoded in code, not overrideable by config)
+
+- `long_only: true`
+- `signal_evaluation: end_of_day`
+- `execution_timing: next_market_open`
+- `timeframe: 1D`
+- `calendar_rule_driven: true`
+- `promotion_requires_frozen_manifest: true` (per ADR 0015)
+- **Low-cadence exemption eligible:** calendar strategies with structurally
+  limited annual trade counts may be reviewed under lifecycle-proof-style
+  operational gates rather than the 30-trade statistical gate. This exemption
+  must be explicit in the strategy config and review artifact.
+
+Changing any of the above produces a new version of the strategy, not a
+variant.
+
+### Template: `daily.turn_of_month`
+
+#### Parameter surface (allowed to vary in YAML)
+
+| Parameter | Meaning | Notes |
+|---|---|---|
+| `target_symbol` | Single ETF to hold during the calendar window | typical: `SPY` |
+| `entry_trading_day_offset` | Trading-day offset from calendar month-end for entry | `0` means the last trading day of the month |
+| `exit_trading_day_of_month` | Trading-day number in the new month that triggers exit | typical: `3` |
+| `allocation_pct` | Fraction of equity deployed | typical: 1.00 |
+| `sizing_rule` | One of: `single_asset_full_allocation` | extension requires a new version |
+
+#### Entry rule (normative)
+
+> Enter long at the next market open when the latest completed bar is the
+> configured entry trading day relative to month-end and no position is open.
+> For the Phase 1 `spy` variant, this is the last trading day of each month.
+
+#### Exit rule (normative)
+
+> Exit at the next market open when the latest completed bar is the configured
+> trading day of the new month. For the Phase 1 `spy` variant, this is the
+> third trading day of the new month. No price-based stop or rank-based exit
+> is part of this template.
+
+#### Ranking rule
+
+N/A — this family template is single-asset by invariant.
+
+#### Default disable conditions
+
+1. Major unresolved data-quality issues
+2. Broker / execution instability
+3. Exchange-calendar uncertainty around holidays or unscheduled closures
+4. Operator-declared pause after unusual market events
+
+Instance YAML may add conditions but shall not remove any of the above.
+
+#### Decision rule identifiers
+
+The `daily.turn_of_month` template emits `seasonality.turn_of_month_entry`,
+`seasonality.turn_of_month_exit`, and `no_signal`.
+
+---
+
 ## Adding a New Family
 
 A new family warrants a new section in this document when at least one of the following holds (per the version-vs-new-idea rule in VISION's Research Loop):

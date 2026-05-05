@@ -284,9 +284,11 @@ def build_default_registry() -> StrategyRegistry:
     from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
     from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
     from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
+    from milodex.strategies.seasonality_turn_of_month import SeasonalityTurnOfMonthStrategy
 
     registry = StrategyRegistry()
     registry.register(RegimeSpyShy200DmaStrategy)
+    registry.register(SeasonalityTurnOfMonthStrategy)
     registry.register(MeanrevBbandsLowerbandStrategy)
     registry.register(MeanrevRsi2PullbackStrategy)
     registry.register(MeanrevIbsLowcloseStrategy)

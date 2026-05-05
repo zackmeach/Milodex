@@ -1,0 +1,16 @@
+# SPY-Only Universe — v1
+#
+# Frozen universe manifest for single-asset SPY research candidates.
+# Strategies reference this by id; they do not inline symbol lists.
+
+universe:
+  id: "universe.spy_only.v1"
+  version: 1
+  description: >
+    Single-ETF SPY universe for broad-market calendar and lifecycle-proof-style
+    research candidates. Subject to the instrument whitelist in ADR 0016.
+
+  etfs:
+    - "SPY"
+
+  stocks: []

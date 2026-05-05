@@ -1,0 +1,62 @@
+# Turn-of-Month Seasonality — v1
+
+strategy:
+  id: "seasonality.daily.turn_of_month.spy.v1"
+  family: "seasonality"
+  template: "daily.turn_of_month"
+  variant: "spy"
+  version: 1
+  description: >
+    Long-only SPY turn-of-month calendar-effect strategy. Buys at the next
+    open after the last trading day of the month and exits after the third
+    trading day of the new month. Tier 2 low-cadence candidate.
+  enabled: true
+
+  universe_ref: "universe.spy_only.v1"
+
+  parameters:
+    target_symbol: "SPY"
+    entry_trading_day_offset: 0
+    exit_trading_day_of_month: 3
+    allocation_pct: 1.0
+    sizing_rule: "single_asset_full_allocation"
+    low_cadence_exemption: true
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 1.0
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.0
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 0
+    walk_forward_windows: 4
+    low_cadence_exemption: true
+
+  disable_conditions_additional:
+    - "Exchange-calendar uncertainty around month-end or unscheduled closures."
+
+backtest_results_v1_2026-05-05:
+  command: "milodex research screen --strategy-id seasonality.daily.turn_of_month.spy.v1 --start 2020-01-01 --end 2024-12-31 --initial-equity 1000 --walk-forward-equivalent"
+  windows: 4
+  oos_aggregate:
+    trades: 82
+    total_return_pct: -5.97
+    sharpe: -0.3438
+    max_drawdown_pct: 9.95
+  stability:
+    single_window_dependency: false
+  promotion_gate_status: "refused"
+  notes: >
+    Blocked because Sharpe is negative. The low-cadence exemption remains
+    documented, but this run produced enough trades over the five-year
+    walk-forward window and still failed the statistical evidence gate.
