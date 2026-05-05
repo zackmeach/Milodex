@@ -172,6 +172,15 @@ def _screen_one(
         all_bars=all_bars,
     )
 
+    # Stamp the run record so research-screen runs are distinguishable from
+    # single-strategy ``milodex backtest`` runs in the event store.
+    persisted = engine._event_store.get_backtest_run(result.run_id)  # noqa: SLF001
+    if persisted is not None:
+        merged_metadata = {**persisted.metadata, "source": "research_screen"}
+        engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
+            result.run_id, metadata=merged_metadata
+        )
+
     gate = check_gate(
         lifecycle_exempt=(family == "regime"),
         sharpe_ratio=result.oos_sharpe,
