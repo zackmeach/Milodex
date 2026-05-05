@@ -13,7 +13,8 @@ that looks promising.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import TYPE_CHECKING
 
@@ -46,6 +47,7 @@ class BatchRow:
     gate_promotion_type: str
     gate_failures: tuple[str, ...]
     run_id: str | None
+    oos_equity_curve: tuple[tuple[date, float], ...] = ()
     error: str | None = None
 
     def as_dict(self) -> dict:
@@ -61,6 +63,10 @@ class BatchRow:
             "gate_promotion_type": self.gate_promotion_type,
             "gate_failures": list(self.gate_failures),
             "run_id": self.run_id,
+            "oos_equity_curve": [
+                {"date": point_date.isoformat(), "equity": equity}
+                for point_date, equity in self.oos_equity_curve
+            ],
             "error": self.error,
         }
 
@@ -72,6 +78,7 @@ class BatchResult:
     start_date: date
     end_date: date
     rows: tuple[BatchRow, ...]
+    correlation_matrix: dict[str, dict[str, float | None]] = field(default_factory=dict)
 
 
 def run_batch(
@@ -119,7 +126,12 @@ def run_batch(
         rows.append(row)
 
     rows_sorted = _rank_rows(rows)
-    return BatchResult(start_date=start_date, end_date=end_date, rows=tuple(rows_sorted))
+    return BatchResult(
+        start_date=start_date,
+        end_date=end_date,
+        rows=tuple(rows_sorted),
+        correlation_matrix=_compute_correlation_matrix(rows_sorted),
+    )
 
 
 def _screen_one(
@@ -179,6 +191,7 @@ def _screen_one(
         gate_promotion_type=gate.promotion_type,
         gate_failures=tuple(gate.failures),
         run_id=result.run_id,
+        oos_equity_curve=tuple(result.oos_equity_curve),
     )
 
 
@@ -195,6 +208,7 @@ def _error_row(strategy_id: str, exc: BaseException) -> BatchRow:
         gate_promotion_type="error",
         gate_failures=(str(exc),),
         run_id=None,
+        oos_equity_curve=(),
         error=str(exc),
     )
 
@@ -213,6 +227,55 @@ def _rank_rows(rows: list[BatchRow]) -> list[BatchRow]:
         return (gate_rank, sharpe_missing, sharpe_sort, -row.oos_total_return_pct)
 
     return sorted(rows, key=key)
+
+
+def _compute_correlation_matrix(rows: list[BatchRow]) -> dict[str, dict[str, float | None]]:
+    """Return pairwise Pearson correlations over aligned OOS daily returns."""
+    returns_by_strategy = {
+        row.strategy_id: _daily_return_series(row.oos_equity_curve) for row in rows
+    }
+    matrix: dict[str, dict[str, float | None]] = {}
+    for left in rows:
+        matrix[left.strategy_id] = {}
+        for right in rows:
+            if left.strategy_id == right.strategy_id:
+                matrix[left.strategy_id][right.strategy_id] = 1.0
+                continue
+            left_returns = returns_by_strategy[left.strategy_id]
+            right_returns = returns_by_strategy[right.strategy_id]
+            dates = sorted(set(left_returns) & set(right_returns))
+            if len(dates) < 2:
+                matrix[left.strategy_id][right.strategy_id] = None
+                continue
+            matrix[left.strategy_id][right.strategy_id] = _pearson(
+                [left_returns[point_date] for point_date in dates],
+                [right_returns[point_date] for point_date in dates],
+            )
+    return matrix
+
+
+def _daily_return_series(equity_curve: tuple[tuple[date, float], ...]) -> dict[date, float]:
+    returns: dict[date, float] = {}
+    for (prev_date, prev_equity), (current_date, current_equity) in zip(
+        equity_curve, equity_curve[1:], strict=False
+    ):
+        _ = prev_date
+        if prev_equity == 0:
+            continue
+        returns[current_date] = (current_equity / prev_equity) - 1.0
+    return returns
+
+
+def _pearson(left: list[float], right: list[float]) -> float | None:
+    left_mean = sum(left) / len(left)
+    right_mean = sum(right) / len(right)
+    numerator = sum((x - left_mean) * (y - right_mean) for x, y in zip(left, right, strict=True))
+    left_var = sum((x - left_mean) ** 2 for x in left)
+    right_var = sum((y - right_mean) ** 2 for y in right)
+    denominator = math.sqrt(left_var * right_var)
+    if denominator == 0:
+        return None
+    return numerator / denominator
 
 
 __all__ = ["BatchResult", "BatchRow", "run_batch"]

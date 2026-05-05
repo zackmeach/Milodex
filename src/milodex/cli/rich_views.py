@@ -675,8 +675,13 @@ def build_promotion_history_view(
             manifest_cell,
             str(ev.get("approved_by", "")),
         )
+    stages = ", ".join(str(ev.get("to_stage", "")) for ev in events)
+    manifests = ", ".join(
+        "none" if ev.get("manifest_id") is None else str(ev["manifest_id"]) for ev in events
+    )
+    summary = Text(f"Stages: {stages} | Manifests: {manifests}", style="dim")
     title = f"Promotion History — {strategy_id} ({len(events)} event(s))"
-    return Panel(table, title=title, border_style="cyan", box=box.ROUNDED)
+    return Panel(Group(table, summary), title=title, border_style="cyan", box=box.ROUNDED)
 
 
 # ---------------------------------------------------------------------------

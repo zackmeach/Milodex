@@ -18,7 +18,12 @@ import pandas as pd
 import pytest
 
 from milodex.backtesting.engine import BacktestEngine
-from milodex.backtesting.walk_forward_batch import BatchRow, _rank_rows, run_batch
+from milodex.backtesting.walk_forward_batch import (
+    BatchRow,
+    _compute_correlation_matrix,
+    _rank_rows,
+    run_batch,
+)
 from milodex.core.event_store import EventStore
 from milodex.data.models import BarSet
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
@@ -307,3 +312,69 @@ def test_rank_puts_none_sharpe_rows_at_bottom_of_tier():
     ]
     ranked = _rank_rows(rows)
     assert [r.strategy_id for r in ranked] == ["with_sharpe", "no_sharpe"]
+
+
+def test_batch_result_includes_pairwise_return_correlation_matrix():
+    first = _row("first", sharpe=1.0, allowed=True)
+    second = _row("second", sharpe=0.8, allowed=True)
+    first = BatchRow(
+        **{
+            **first.as_dict(),
+            "gate_failures": tuple(first.gate_failures),
+            "oos_equity_curve": (
+                (date(2024, 1, 2), 100.0),
+                (date(2024, 1, 3), 110.0),
+                (date(2024, 1, 4), 99.0),
+                (date(2024, 1, 5), 108.9),
+            ),
+        }
+    )
+    second = BatchRow(
+        **{
+            **second.as_dict(),
+            "gate_failures": tuple(second.gate_failures),
+            "oos_equity_curve": (
+                (date(2024, 1, 2), 200.0),
+                (date(2024, 1, 3), 220.0),
+                (date(2024, 1, 4), 198.0),
+                (date(2024, 1, 5), 217.8),
+            ),
+        }
+    )
+
+    matrix = _compute_correlation_matrix([first, second])
+
+    assert matrix["first"]["first"] == pytest.approx(1.0)
+    assert matrix["first"]["second"] == pytest.approx(1.0)
+    assert matrix["second"]["first"] == pytest.approx(1.0)
+
+
+def test_correlation_matrix_uses_only_overlapping_return_dates():
+    first = _row("first", sharpe=1.0, allowed=True)
+    second = _row("second", sharpe=0.8, allowed=True)
+    first = BatchRow(
+        **{
+            **first.as_dict(),
+            "gate_failures": tuple(first.gate_failures),
+            "oos_equity_curve": (
+                (date(2024, 1, 2), 100.0),
+                (date(2024, 1, 3), 110.0),
+                (date(2024, 1, 4), 121.0),
+            ),
+        }
+    )
+    second = BatchRow(
+        **{
+            **second.as_dict(),
+            "gate_failures": tuple(second.gate_failures),
+            "oos_equity_curve": (
+                (date(2024, 1, 3), 200.0),
+                (date(2024, 1, 4), 180.0),
+                (date(2024, 1, 5), 162.0),
+            ),
+        }
+    )
+
+    matrix = _compute_correlation_matrix([first, second])
+
+    assert matrix["first"]["second"] is None

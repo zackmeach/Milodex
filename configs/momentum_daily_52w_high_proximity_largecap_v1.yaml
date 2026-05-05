@@ -1,0 +1,52 @@
+# 52-Week High Proximity Momentum — v1
+#
+# Tier 3 strategy-bank candidate. This adapts 52-week-high momentum literature
+# into a Phase 1 daily swing-trading form with a five-day hold cap.
+
+strategy:
+  id: "momentum.daily.52w_high_proximity.largecap.v1"
+  family: "momentum"
+  template: "daily.52w_high_proximity"
+  variant: "largecap"
+  version: 1
+  description: >
+    Long-only daily momentum candidate that enters liquid large-cap stocks
+    closing near their trailing 52-week high with positive latest-day
+    continuation. Tier 3 strategy-bank candidate.
+  enabled: true
+
+  universe_ref: "universe.sp100_liquid.v1"
+
+  parameters:
+    lookback_days: 252
+    proximity_threshold: 0.97
+    sma_exit_length: 20
+    max_hold_days: 5
+    stop_loss_pct: 0.05
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.20
+    ranking_enabled: true
+    ranking_metric: "proximity_then_return"
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.20
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional:
+    - "Do not interpret as a replication of monthly 52-week-high literature; this is a five-day hold adaptation."

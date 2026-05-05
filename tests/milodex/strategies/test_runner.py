@@ -1548,9 +1548,7 @@ def test_runner_active_session_findable_via_ended_at_is_null_query(
     completed_runner.shutdown(mode="controlled")
 
     active_sessions = [
-        run.session_id
-        for run in event_store.list_strategy_runs()
-        if run.ended_at is None
+        run.session_id for run in event_store.list_strategy_runs() if run.ended_at is None
     ]
     assert active_sessions == [active_runner.session_id]
 
