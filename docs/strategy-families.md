@@ -98,6 +98,87 @@ The strategy is halted when any of the following hold even if the code is functi
 
 Instance YAML may add conditions but **shall not remove** any of the above.
 
+### Template: `daily.ibs_lowclose` — Internal Bar Strength
+
+A second template within the `meanrev` family. Inherits every family-level
+semantic invariant above (long-only, end-of-day signal, next-open execution,
+close-based stops, daily timeframe, frozen-manifest promotion). What differs
+is the entry signal — IBS is a single-bar indicator about *where in today's
+range the close sat*, not a multi-day oscillator over closes.
+
+The two templates therefore exercise structurally different oversold
+mechanics rather than two parameterizations of the same idea (per VISION's
+"idea vs. tuning" rule). They are deliberately deployed on different
+universe shapes — the RSI(2) template runs on curated single-name large-caps;
+the IBS template runs on broad index ETFs where intraday bar location is
+historically a more reliable oversold signal than on idiosyncratic names.
+
+#### Parameter surface (allowed to vary in YAML)
+
+| Parameter | Meaning | Notes |
+|---|---|---|
+| `universe` | Curated list of approved symbols | Phase 1 default: `universe.index_etfs.v1` (SPY, QQQ, IWM, DIA) |
+| `ibs_entry_threshold` | Enter when `IBS < this` | typical: 0.15–0.25 |
+| `ma_filter_length` | Long-only regime filter (close > SMA) | typical: 100–200 |
+| `stop_loss_pct` | Close-based stop distance | typical: 0.02–0.05 (tighter than RSI(2) — IBS holds are shorter) |
+| `max_hold_days` | Maximum trading days in position | typical: 2–4 |
+| `max_concurrent_positions` | Per-strategy position cap | subject to global account-scoped caps per ADR 0024 |
+| `sizing_rule` | One of: `equal_notional`, `fixed_notional` | extension requires a new version |
+| `per_position_notional_pct` | Used when sizing rule requires it | |
+| `ranking_enabled` | Whether to rank candidates | |
+| `ranking_metric` | One of: `ibs_ascending` | extension requires a new version |
+
+The IBS template intentionally has no separate exit threshold — exit is
+signal-driven (close above prior day's high), not threshold-driven.
+
+#### Entry rule (normative)
+
+> Enter long at the **next market open** if, at the prior close:
+> 1. The symbol is in the approved universe; **and**
+> 2. `close > SMA(ma_filter_length)`; **and**
+> 3. `IBS = (Close - Low) / (High - Low) < ibs_entry_threshold`; **and**
+> 4. The bar's range is non-zero (`High > Low`); a degenerate bar is
+>    rejected as undefined rather than treated as oversold; **and**
+> 5. The symbol is not already in an open position; **and**
+> 6. The symbol is not blocked by any risk or execution constraint.
+
+#### Exit rule (normative)
+
+> Exit at the **next market open** if, at the prior close, **any** of the
+> following holds (most-specific rule wins when several fire):
+> - Stop condition: `close <= entry_price * (1 - stop_loss_pct)`; **or**
+> - `max_hold_days` reached (counted in trading days since entry); **or**
+> - Signal exit: `close > prior_day_high`.
+
+The signal exit captures the canonical IBS thesis — a snapback close that
+clears yesterday's high signals the oversold pressure has unwound.
+
+#### Ranking rule (normative)
+
+When the number of qualifying entry candidates exceeds capacity:
+
+> Rank qualifying candidates by `ranking_metric` (default: `ibs_ascending`
+> — lowest IBS first, i.e. the most decisively close-near-low). Take the
+> top `(max_concurrent_positions - current_open_positions)` candidates.
+> Reject the remainder silently; the rejection is recorded in the
+> explanation record (R-XC-008) but generates no order.
+
+#### Default disable conditions
+
+Same eight conditions as the `daily.pullback_rsi2` template — both
+templates operate in the same liquid-market context and depend on the same
+data-quality and broker-stability assumptions. Instance YAML may add
+conditions but **shall not remove** any of the family-level disable
+conditions defined above.
+
+#### Decision rule identifiers
+
+The IBS template emits the following `DecisionReasoning.rule` identifiers:
+`meanrev.ibs_entry`, `meanrev.ibs_exit`, `meanrev.stop_loss`,
+`meanrev.max_hold`, `no_signal`. The stop-loss and max-hold identifiers are
+shared with `daily.pullback_rsi2` because their semantics (close-based stop
+from entry price; held-days time stop) are identical at the family level.
+
 ---
 
 ## Family: `regime` — Daily Regime Rotation
