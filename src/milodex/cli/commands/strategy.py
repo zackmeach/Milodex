@@ -39,8 +39,16 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         raise ValueError(f"Unsupported strategy command: {args.strategy_command}")
     if ctx.get_trading_mode() != "paper":
         raise ValueError("strategy run is paper-only in Phase 1.")
+    # Per ADR 0026 (concurrent multi-strategy uses per-process supervisor)
+    # the runner lock is scoped per strategy_id, not global. Two strategies can
+    # run concurrently in separate processes; the same strategy still refuses a
+    # second invocation. Reconcile and trade submit retain the global
+    # "milodex.runtime" lock (separate namespace), so they serialize against
+    # each other but do not block runners. Account-state arbitration falls to
+    # the broker via the risk evaluator's per-call position query (ADR 0024),
+    # not to inter-process file locks.
     with AdvisoryLock(
-        "milodex.runtime",
+        f"milodex.runtime.strategy.{args.strategy_id}",
         locks_dir=ctx.locks_dir or get_locks_dir(),
         holder_name=f"milodex strategy run {args.strategy_id}",
     ):

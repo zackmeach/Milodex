@@ -614,6 +614,88 @@ def test_strategy_run_dispatches_runner(monkeypatch):
     assert "Session test-session ended." in output
 
 
+def test_strategy_run_refuses_second_invocation_of_same_strategy(monkeypatch, tmp_path):
+    """Per ADR 0026, the runner lock is scoped per-strategy_id. Starting the
+    same strategy twice must still refuse — preventing accidental double-starts
+    of one strategy in two terminals — even though *different* strategies are
+    now allowed to run concurrently.
+    """
+    from milodex.core.advisory_lock import AdvisoryLock
+
+    monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+
+    # Simulate another runner already holding the per-strategy lock for this
+    # strategy_id. The lock name must match what strategy.run acquires.
+    holder = AdvisoryLock(
+        f"milodex.runtime.strategy.{strategy_id}",
+        locks_dir=tmp_path,
+        holder_name=f"milodex strategy run {strategy_id}",
+    )
+    holder.acquire()
+    try:
+        runner = StubStrategyRunner()
+        stderr = StringIO()
+
+        exit_code = cli_entrypoint(
+            ["strategy", "run", strategy_id],
+            strategy_runner_factory=lambda sid: runner,
+            locks_dir=tmp_path,
+            stdout=StringIO(),
+            stderr=stderr,
+        )
+
+        assert exit_code == 1
+        # Runner factory may be called, but runner.run() must not execute
+        # because the lock acquisition fails before reaching it.
+        assert runner.run_calls == 0
+        err_text = stderr.getvalue()
+        assert "advisory_lock" in err_text.lower() or "Advisory lock" in err_text
+        assert strategy_id in err_text
+    finally:
+        holder.release()
+
+
+def test_strategy_run_allows_concurrent_different_strategies(monkeypatch, tmp_path):
+    """Per ADR 0026, two strategies must be able to run concurrently as
+    independent foreground processes. The runner lock is scoped per-strategy_id
+    so a runner holding the lock for strategy A does not block a runner for
+    strategy B.
+    """
+    from milodex.core.advisory_lock import AdvisoryLock
+
+    monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
+    strategy_a = "regime.daily.sma200_rotation.spy_shy.v1"
+    strategy_b = "meanrev.daily.pullback_rsi2.curated_largecap.v1"
+
+    # Simulate strategy A's runner already holding its per-strategy lock.
+    holder_a = AdvisoryLock(
+        f"milodex.runtime.strategy.{strategy_a}",
+        locks_dir=tmp_path,
+        holder_name=f"milodex strategy run {strategy_a}",
+    )
+    holder_a.acquire()
+    try:
+        runner_b = StubStrategyRunner()
+        stdout = StringIO()
+        stderr = StringIO()
+
+        # Strategy B should start cleanly even though strategy A is "running".
+        exit_code = cli_entrypoint(
+            ["strategy", "run", strategy_b],
+            strategy_runner_factory=lambda sid: runner_b,
+            locks_dir=tmp_path,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        assert exit_code == 0, f"strategy B refused: stderr={stderr.getvalue()!r}"
+        assert runner_b.run_calls == 1
+        assert f"strategy: {strategy_b}" in stdout.getvalue()
+    finally:
+        holder_a.release()
+
+
 def test_main_reports_broker_errors_to_stderr():
     broker = StubBroker(error=BrokerAuthError("bad credentials"))
     stdout = StringIO()

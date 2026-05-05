@@ -108,12 +108,15 @@ In all three cases: the degraded mode itself is an incident and must be surfaced
 
 ## Concurrency Model
 
-Phase 1 uses a **single-operator, serialized-critical-action** concurrency model:
+Milodex uses a **single-operator, serialized-critical-action** concurrency model with two disjoint lock namespaces:
 
 - **Concurrent OK:** data fetches, reporting, non-critical background checks, read-only inspections.
-- **Serialized (lock-guarded):** submit, reconcile, promote, demote, kill-switch handling, config-changing operations, and any state-changing governance event.
+- **Serialized within the global namespace (`milodex.runtime`):** reconcile, manual `trade submit`, promote, demote, kill-switch handling, config-changing operations, and any state-changing governance event. These commands hold a single shared lock and serialize against each other.
+- **Serialized within the per-strategy namespace (`milodex.runtime.strategy.<strategy_id>`):** the `milodex strategy run <strategy_id>` runner. Each runner holds a lock scoped to its own `strategy_id`, so two different strategies can run concurrently in separate foreground processes (per [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md)) but a second invocation of the same `strategy_id` is refused with `advisory_lock_held` identifying the running PID.
 
-Concurrency guards are implemented via file locks under `state/locks/` (per R-XC-006). The goal is to avoid race conditions and keep runtime behavior easy to audit. This also dovetails with R-EXE-013 (single strategy runs at a time in Phase 1).
+Concurrency guards are implemented via file locks under `state/locks/` (per R-XC-006). The two namespaces are deliberately disjoint: a runner does not block a reconcile, and a reconcile does not block a runner. Cross-namespace safety for execution-critical state falls to the broker via the risk evaluator's per-call position query ([ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md)), not to inter-process locks.
+
+R-EXE-013 carries the current testable contract for the per-strategy lock invariant (it formerly required "at most one strategy runs at a time" in Phase 1; that restriction was lifted in Phase 3 per ADR 0026).
 
 ### Runner and intraday 1D bars
 

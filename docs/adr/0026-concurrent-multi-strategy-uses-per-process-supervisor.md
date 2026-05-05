@@ -75,3 +75,21 @@ Specifically:
 - This ADR does **not** alter [ADR 0012](0012-runtime-and-dual-stop.md)'s runtime model or [ADR 0005](0005-kill-switch-manual-reset.md)'s account-scoped kill-switch.
 - This ADR does **not** add a launcher CLI command. If one is added later, it is a wrapper around `subprocess.Popen`, not an architectural change.
 - This ADR does **not** address what happens when one process crashes mid-cycle — recovery is operator-driven (restart that process) and forensic via the per-`session_id` event-store records.
+
+## Addendum (2026-05-05) — Runner lock scoping correction
+
+The §Consequences claim "**No code changes to the runner.** The existing `StrategyRunner` and `milodex strategy run <name>` CLI work as-is for one or two concurrent processes" was **incorrect at acceptance time**. The runner CLI in `src/milodex/cli/commands/strategy.py` was acquiring a single global advisory lock named `"milodex.runtime"`, which is also held by `reconcile` and `trade submit`. A second `milodex strategy run <strategy_id>` invocation against any `strategy_id` therefore failed with `advisory_lock_held` identifying the first runner — defeating the per-process supervisor model this ADR is intended to authorize.
+
+The operator surfaced the bug shortly after this ADR was accepted by attempting the documented two-terminal pattern with regime + meanrev and receiving the lock error. Investigation confirmed:
+
+- R-EXE-013 ([SRS:135](../SRS.md)) — the Phase 1 "at most one strategy runs at a time" invariant — was still enforced in code via the global lock name.
+- The Phase 2+ appendix entry ([SRS:376](../SRS.md)) had marked this restriction as "lifted" since Phase 2, but the lift never actually shipped.
+- Today's [PHASE3_PLANNING.md §C-2](../PHASE3_PLANNING.md) declared concurrent multi-strategy "architecturally satisfied" pointing at this ADR, without verifying the enforcement layer.
+
+The fix:
+
+1. **Code.** [`src/milodex/cli/commands/strategy.py`](../../src/milodex/cli/commands/strategy.py) now acquires `f"milodex.runtime.strategy.{args.strategy_id}"` instead of the global `"milodex.runtime"`. `reconcile` and `trade submit` keep the global lock; the two namespaces are disjoint by design (cross-namespace safety is the broker's responsibility per ADR 0024, not file locks').
+2. **Tests.** Two new tests in `tests/milodex/cli/test_main.py` pin the invariant from both sides — `test_strategy_run_refuses_second_invocation_of_same_strategy` (same `strategy_id` still refuses) and `test_strategy_run_allows_concurrent_different_strategies` (different `strategy_id`s coexist).
+3. **Docs.** [SRS R-EXE-013](../SRS.md) was rewritten to codify the per-strategy lock invariant and preserve the Phase 1 history. [OPERATIONS.md §Concurrency Model](../OPERATIONS.md) was updated to describe the two disjoint namespaces.
+
+This addendum is appended rather than the §Consequences claim being silently corrected, so the original mistake (an architectural decision that didn't verify its enforcement-layer assumption) stays visible in the ADR record. The intent of the original decision — per-process supervisor, runner unchanged in shape, dual-stop dialog preserved, broker-as-arbiter — is unchanged. What was missed was a single-line lock-name change and the doc cleanup that accompanies it.
