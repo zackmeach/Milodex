@@ -273,6 +273,7 @@ def compute_config_hash(path: Path) -> str:
 
 def build_default_registry() -> StrategyRegistry:
     """Return a registry preloaded with built-in strategy classes."""
+    from milodex.strategies.breakout_donchian import BreakoutDonchianStrategy
     from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
     from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
     from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
@@ -283,6 +284,7 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(MeanrevRsi2PullbackStrategy)
     registry.register(MeanrevIbsLowcloseStrategy)
     registry.register(MomentumDailyTsmomStrategy)
+    registry.register(BreakoutDonchianStrategy)
     return registry
 
 
