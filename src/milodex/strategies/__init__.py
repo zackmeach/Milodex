@@ -19,11 +19,13 @@ from milodex.strategies.loader import (
     validate_strategy_parameters,
 )
 from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
+from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
 from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
 
 __all__ = [
     "LoadedStrategy",
     "MeanrevRsi2PullbackStrategy",
+    "MomentumDailyTsmomStrategy",
     "RegimeSpyShy200DmaStrategy",
     "Strategy",
     "StrategyConfig",

@@ -1,0 +1,67 @@
+# Momentum Daily Time-Series Momentum (TSMOM) — v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `momentum` family — market behavior exploited,
+# semantic invariants, entry/exit/ranking rules, default disable conditions —
+# lives in docs/strategy-families.md. Do not restate those rules here.
+#
+# See ADR 0015 for the identifier scheme, version-vs-variant rule, and the
+# frozen-manifest requirement that governs promotion. Phase 3 §4.4 chose
+# momentum as the second research-target family per docs/PHASE3_PLANNING.md.
+
+strategy:
+  id: "momentum.daily.tsmom.curated_largecap.v1"
+  family: "momentum"
+  template: "daily.tsmom"
+  variant: "curated_largecap"
+  version: 1
+  description: >
+    Long-only daily time-series momentum swing on a curated large-cap
+    universe. Second research-target strategy for Phase 3. Family spec:
+    docs/strategy-families.md#family-momentum--daily-time-series-momentum-swing.
+  enabled: true
+
+  # Same Phase 1 universe as meanrev. Per VISION's research discipline:
+  # the harness is being tested for its ability to carry a second research
+  # thread, not for its ability to expand the universe — universe expansion
+  # is a separate Phase 2+ goal.
+  universe_ref: "universe.phase1.curated.v1"
+
+  parameters:
+    momentum_lookback: 20
+    momentum_entry_threshold: 0.05
+    momentum_exit_threshold: 0.0
+    ma_filter_length: 200
+    stop_loss_pct: 0.07
+    max_hold_days: 10
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.10
+    ranking_enabled: true
+    ranking_metric: "momentum_descending"
+    market_regime_symbol: ""
+    market_regime_ma_length: 200
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 10
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.07
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  # Additional disable conditions beyond the family defaults (see
+  # docs/strategy-families.md#family-momentum--daily-time-series-momentum-swing).
+  # Family defaults always apply; this list extends them.
+  disable_conditions_additional: []
