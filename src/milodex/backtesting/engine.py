@@ -5,11 +5,17 @@ every ``TradeIntent`` emitted by ``Strategy.evaluate()`` is submitted
 through :class:`milodex.execution.service.ExecutionService`. Two
 dependencies are swapped for the backtest:
 
-- :class:`milodex.broker.simulated.SimulatedBroker` fills at the
-  simulation day's close (with slippage and commission applied).
+- :class:`milodex.broker.simulated.SimulatedBroker` fills at the next
+  bar's open (with slippage and commission applied).
 - :class:`milodex.risk.NullRiskEvaluator` makes risk evaluation a no-op.
   Backtesting is intentionally below the risk layer per ``CLAUDE.md``;
   the bypass is **declared** (injected), not implicit.
+
+Order timing: decisions made on bar ``T``'s close are queued and fill at
+bar ``T+1``'s open, removing the look-ahead bias of same-bar fills.
+Orders pending at the end of the trading window are dropped — there is
+no T+1 to execute against — and silently discarded. See PR 2.1 in
+docs/reviews/backtest-rejection-analysis.md §6 for the rationale.
 
 The engine still owns cash / position / equity bookkeeping — it
 snapshot-injects the broker's reported account and positions at the
@@ -80,6 +86,15 @@ class _SimulationOutput:
     buy_count: int
     sell_count: int
     final_equity: float
+
+
+@dataclass
+class _PendingOrder:
+    """An intent emitted on bar T close, awaiting fill at bar T+1's open."""
+
+    intent: TradeIntent
+    decision_day: date
+    reasoning: object
 
 
 class BacktestEngine:
@@ -338,19 +353,46 @@ class BacktestEngine:
         buy_count = 0
         sell_count = 0
         trade_count = 0
+        pending: list[_PendingOrder] = []
 
         for day in trading_days:
             for sym in entry_state:
                 entry_state[sym]["held_days"] = int(entry_state[sym]["held_days"]) + 1
 
             bars_by_symbol = _slice_bars_to_day(all_bars, day)
+            latest_opens = _latest_opens(bars_by_symbol)
+            latest_closes = _latest_closes(bars_by_symbol)
+
+            # Drain any orders enqueued on the previous decision day. Fills
+            # happen at TODAY's open — see module docstring. The drain runs
+            # BEFORE the primary-symbol bar check so pending orders for any
+            # symbol with bars on `day` fill on schedule, even when the
+            # primary universe symbol has no bars (multi-symbol universes
+            # with mismatched calendars).
+            if pending:
+                cash, drained_buys, drained_sells = self._drain_pending(
+                    pending=pending,
+                    opens=latest_opens,
+                    cash=cash,
+                    positions=positions,
+                    entry_state=entry_state,
+                    sim_broker=sim_broker,
+                    sim_data_provider=sim_data_provider,
+                    execution_service=execution_service,
+                    day=day,
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                )
+                buy_count += drained_buys
+                sell_count += drained_sells
+                trade_count += drained_buys + drained_sells
+                pending = []
+
             primary_bars = bars_by_symbol.get(universe[0])
             if primary_bars is None or len(primary_bars) == 0:
                 continue
 
-            latest_closes = _latest_closes(bars_by_symbol)
             equity = _compute_equity(cash, positions, latest_closes)
-
             self._sync_broker_state(
                 sim_broker=sim_broker,
                 sim_data_provider=sim_data_provider,
@@ -386,87 +428,19 @@ class BacktestEngine:
                     reasoning=decision.reasoning,
                     submitted_by="backtest_engine",
                 )
+            else:
+                for intent in intents:
+                    pending.append(
+                        _PendingOrder(
+                            intent=intent,
+                            decision_day=day,
+                            reasoning=decision.reasoning,
+                        )
+                    )
 
-            # Process SELLs first to free up cash for BUYs on the same day.
-            for intent in intents:
-                if intent.side is not OrderSide.SELL:
-                    continue
-                sym = intent.symbol.upper()
-                if sym not in positions:
-                    continue
-                if latest_closes.get(sym, 0.0) <= 0:
-                    continue
-
-                qty, _ = positions[sym]
-                decorated = self._decorate_intent(intent, quantity_override=qty)
-                result = execution_service.submit_backtest(
-                    decorated,
-                    session_id=session_id,
-                    backtest_run_id=db_run_id,
-                    reasoning=decision.reasoning,
-                )
-                if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
-                    continue
-
-                fill_price = float(result.order.filled_avg_price or 0.0)
-                proceeds = fill_price * qty - self._commission
-                cash += proceeds
-                del positions[sym]
-                entry_state.pop(sym, None)
-                sell_count += 1
-                trade_count += 1
-
-            # Re-sync after sells so BUY affordability checks reflect freed cash.
-            latest_closes = _latest_closes(bars_by_symbol)
-            equity = _compute_equity(cash, positions, latest_closes)
-            self._sync_broker_state(
-                sim_broker=sim_broker,
-                sim_data_provider=sim_data_provider,
-                day=day,
-                closes=latest_closes,
-                cash=cash,
-                equity=equity,
-                positions=positions,
-            )
-
-            for intent in intents:
-                if intent.side is not OrderSide.BUY:
-                    continue
-                sym = intent.symbol.upper()
-                if sym in positions:
-                    continue
-                qty = float(intent.quantity)
-                if qty <= 0:
-                    continue
-                latest_close = latest_closes.get(sym)
-                if latest_close is None or latest_close <= 0:
-                    continue
-                projected_fill = latest_close * (1.0 + self._slippage_pct)
-                cost = projected_fill * qty + self._commission
-                if cash < cost:
-                    continue
-
-                decorated = self._decorate_intent(intent)
-                result = execution_service.submit_backtest(
-                    decorated,
-                    session_id=session_id,
-                    backtest_run_id=db_run_id,
-                    reasoning=decision.reasoning,
-                )
-                if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
-                    continue
-
-                fill_price = float(result.order.filled_avg_price or 0.0)
-                realized_cost = fill_price * qty + self._commission
-                cash -= realized_cost
-                positions[sym] = (qty, fill_price)
-                entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
-                buy_count += 1
-                trade_count += 1
-
-            # Mark-to-market at end of day.
-            latest_closes = _latest_closes(bars_by_symbol)
-            equity = _compute_equity(cash, positions, latest_closes)
+            # Mark-to-market at end of day. Equity reflects the post-decision
+            # state, but since fills are deferred to the next bar, no cash or
+            # position movement happens between decision and end of day.
             equity_curve.append((day, equity))
 
         final_equity = equity_curve[-1][1] if equity_curve else initial_equity
@@ -508,6 +482,120 @@ class BacktestEngine:
             sell_count=sell_count,
             final_equity=final_equity,
         )
+
+    def _drain_pending(
+        self,
+        *,
+        pending: list[_PendingOrder],
+        opens: dict[str, float],
+        cash: float,
+        positions: dict[str, tuple[float, float]],
+        entry_state: dict[str, dict],
+        sim_broker: SimulatedBroker,
+        sim_data_provider: SimulatedDataProvider,
+        execution_service: ExecutionService,
+        day: date,
+        session_id: str,
+        db_run_id: int,
+    ) -> tuple[float, int, int]:
+        """Fill ``pending`` orders at today's opens. SELLs first to free cash.
+
+        Mutates ``positions`` and ``entry_state`` in place; returns the new
+        cash balance and per-side fill counts. Orders that no longer make
+        sense (selling a position that's gone, missing open, or insufficient
+        cash for a buy) are silently skipped.
+
+        The simulated broker's ``set_simulation_day`` carries the prices used
+        for fills, so we pass ``opens`` as the broker's "current closes" for
+        the duration of the drain. The strategy phase later overwrites the
+        broker's state with actual closes for mark-to-market.
+        """
+        sells = [p for p in pending if p.intent.side is OrderSide.SELL]
+        buys = [p for p in pending if p.intent.side is OrderSide.BUY]
+
+        equity_pre_drain = _compute_equity(cash, positions, opens)
+        self._sync_broker_state(
+            sim_broker=sim_broker,
+            sim_data_provider=sim_data_provider,
+            day=day,
+            closes=opens,
+            cash=cash,
+            equity=equity_pre_drain,
+            positions=positions,
+        )
+
+        sell_count = 0
+        for p in sells:
+            sym = p.intent.symbol.upper()
+            if sym not in positions:
+                continue
+            if opens.get(sym, 0.0) <= 0:
+                continue
+
+            qty, _ = positions[sym]
+            decorated = self._decorate_intent(p.intent, quantity_override=qty)
+            result = execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=p.reasoning,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            proceeds = fill_price * qty - self._commission
+            cash += proceeds
+            del positions[sym]
+            entry_state.pop(sym, None)
+            sell_count += 1
+
+        # Re-sync after sells so BUY affordability checks reflect freed cash.
+        intermediate_equity = _compute_equity(cash, positions, opens)
+        self._sync_broker_state(
+            sim_broker=sim_broker,
+            sim_data_provider=sim_data_provider,
+            day=day,
+            closes=opens,
+            cash=cash,
+            equity=intermediate_equity,
+            positions=positions,
+        )
+
+        buy_count = 0
+        for p in buys:
+            sym = p.intent.symbol.upper()
+            if sym in positions:
+                continue
+            qty = float(p.intent.quantity)
+            if qty <= 0:
+                continue
+            latest_open = opens.get(sym)
+            if latest_open is None or latest_open <= 0:
+                continue
+            projected_fill = latest_open * (1.0 + self._slippage_pct)
+            cost = projected_fill * qty + self._commission
+            if cash < cost:
+                continue
+
+            decorated = self._decorate_intent(p.intent)
+            result = execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=p.reasoning,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            realized_cost = fill_price * qty + self._commission
+            cash -= realized_cost
+            positions[sym] = (qty, fill_price)
+            entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
+            buy_count += 1
+
+        return cash, buy_count, sell_count
 
     def _decorate_intent(
         self, intent: TradeIntent, *, quantity_override: float | None = None
@@ -624,6 +712,22 @@ def _latest_closes(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
         if not df.empty:
             closes[sym] = float(df["close"].iloc[-1])
     return closes
+
+
+def _latest_opens(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
+    """Return the latest bar's *open* price per symbol.
+
+    Mirror of :func:`_latest_closes` for the T+1 fill model: pending orders
+    enqueued on bar T's close need the open of the next bar (already the
+    last bar in ``bars_by_symbol`` once it has been sliced to the current
+    simulation day).
+    """
+    opens: dict[str, float] = {}
+    for sym, barset in bars_by_symbol.items():
+        df = barset.to_dataframe()
+        if not df.empty:
+            opens[sym] = float(df["open"].iloc[-1])
+    return opens
 
 
 def _compute_equity(

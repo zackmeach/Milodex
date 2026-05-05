@@ -104,26 +104,59 @@ def _barset(closes: list[float], start: str = "2025-01-01") -> BarSet:
 
 
 def test_regime_engine_golden_trade_sequence(tmp_path: Path):
-    # Scenario: 7 daily bars with identical SPY and SHY closes so the
-    # reader can verify the rotation logic purely from the SPY series:
+    # Scenario: 7 daily bars with identical SPY and SHY closes (open=close
+    # because the helper sets every OHLC to the same value). The fixture is
+    # designed to keep the rotation reasoning verifiable from the SPY
+    # series alone:
     #
     #   closes = [10, 10, 10, 12, 13, 8, 7]  (idx 0..6)
     #
+    # Under the T+1 open fill model (PR 2.1): a decision on bar T's close
+    # fills at bar T+1's open. With open=close in this fixture, the fill
+    # price equals the *next* bar's close. Quantities stay computed against
+    # the decision-day equity. Pending orders that would cost more than
+    # current cash are silently skipped — no partial fills.
+    #
     # ma_filter_length=3, allocation_pct=1.0, starting equity $10,000:
-    #   idx 2 (2025-01-03) close=10, MA(10,10,10)=10   → target SHY, no pos
-    #                                                     → BUY 1000 SHY @ 10
-    #   idx 3 (2025-01-04) close=12, MA(10,10,12)=10.67 → target SPY, pos=SHY
-    #                                                     → SELL 1000 SHY @ 12
-    #                                                       (cash then $12k)
-    #                                                     → BUY 1000 SPY @ 12
-    #   idx 4 (2025-01-05) close=13, MA(10,12,13)=11.67 → target SPY, already
-    #                                                     holding; no trade
-    #   idx 5 (2025-01-06) close=8,  MA(12,13,8)=11     → target SHY, pos=SPY
-    #                                                     → SELL 1000 SPY @ 8
-    #                                                       (cash then $8k)
-    #                                                     → BUY 1000 SHY @ 8
-    #   idx 6 (2025-01-07) close=7,  MA(13,8,7)=9.33    → target SHY, already
-    #                                                     holding; no trade
+    #   idx 2 (2025-01-03) close=10, MA(10,10,10)=10   → target SHY (default
+    #                                                     when not above MA);
+    #                                                     no positions; sized
+    #                                                     to floor(10000/10)=
+    #                                                     1000 SHY → ENQUEUE.
+    #   idx 3 (2025-01-04) drain pending: BUY 1000 SHY
+    #                                                   @ open 12 = $12k.
+    #                                                   Cash $10k INSUFFICIENT
+    #                                                   → SKIP. close=12,
+    #                                                   MA(10,10,12)=10.67 →
+    #                                                   target SPY; size 833
+    #                                                   SPY → ENQUEUE.
+    #   idx 4 (2025-01-05) drain: BUY 833 SPY @ 13 =
+    #                                                   $10829, cash $10k →
+    #                                                   SKIP. close=13,
+    #                                                   MA=11.67, target SPY,
+    #                                                   no pos; size 769 SPY →
+    #                                                   ENQUEUE.
+    #   idx 5 (2025-01-06) drain: BUY 769 SPY @ 8 =
+    #                                                   $6,152, cash $10k →
+    #                                                   AFFORDABLE. cash $3,848,
+    #                                                   pos=769 SPY. close=8,
+    #                                                   MA(12,13,8)=11, target
+    #                                                   SHY, holding SPY →
+    #                                                   ENQUEUE: SELL 769 SPY,
+    #                                                   BUY floor(10000/8)=1250
+    #                                                   SHY.
+    #   idx 6 (2025-01-07) drain: SELL 769 SPY @ 7 =
+    #                                                   $5,383 → cash $9,231.
+    #                                                   BUY 1250 SHY @ 7 =
+    #                                                   $8,750 → cash $481,
+    #                                                   pos=1250 SHY. close=7,
+    #                                                   MA=9.33, target SHY,
+    #                                                   already holding → no
+    #                                                   intent.
+    #
+    # The takeaway: a strategy that nominally allocates 100% of cash *cannot*
+    # always execute its own targets under realistic order timing. This is
+    # the truthful behavior PR 2.1 unlocks; the test locks it.
     closes = [10.0, 10.0, 10.0, 12.0, 13.0, 8.0, 7.0]
     bars = {"SPY": _barset(closes), "SHY": _barset(closes)}
 
@@ -151,23 +184,21 @@ def test_regime_engine_golden_trade_sequence(tmp_path: Path):
     trades = store.list_trades_for_backtest_run(result.db_id)
     actual = [(t.side, t.symbol, t.quantity, t.estimated_unit_price) for t in trades]
     expected = [
-        ("buy", "SHY", 1000.0, 10.0),
-        ("sell", "SHY", 1000.0, 12.0),
-        ("buy", "SPY", 1000.0, 12.0),
-        ("sell", "SPY", 1000.0, 8.0),
-        ("buy", "SHY", 1000.0, 8.0),
+        ("buy", "SPY", 769.0, 8.0),
+        ("sell", "SPY", 769.0, 7.0),
+        ("buy", "SHY", 1250.0, 7.0),
     ]
     assert actual == expected
 
     # Sanity: engine summary agrees with the trade ledger.
-    assert result.trade_count == 5
-    assert result.buy_count == 3
-    assert result.sell_count == 2
+    assert result.trade_count == 3
+    assert result.buy_count == 2
+    assert result.sell_count == 1
     assert result.trading_days == 5
 
-    # Final equity at close of the last day: cash=0, position=1000 SHY
-    # at day-7 close of $7.00 → $7,000.
-    assert result.final_equity == pytest.approx(7_000.0)
+    # Final equity at close of the last day: cash $481, 1250 SHY @ $7 = $8,750
+    # → $9,231.
+    assert result.final_equity == pytest.approx(9_231.0)
 
     # Every recorded trade should be tagged as source='backtest' and
     # linked to this run's backtest_runs row — the unified-path
