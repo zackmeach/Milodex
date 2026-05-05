@@ -51,7 +51,7 @@ class AlpacaDataProvider(DataProvider):
         self._client = StockHistoricalDataClient(api_key, secret_key)
         paper = get_trading_mode() == "paper"
         self._trading_client = TradingClient(api_key, secret_key, paper=paper)
-        self._cache = ParquetCache(get_cache_dir())
+        self._cache = ParquetCache(get_cache_dir(), version=CACHE_VERSION)
 
     def get_bars(
         self,
