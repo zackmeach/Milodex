@@ -1,0 +1,112 @@
+# Donchian Channel Breakout — v1
+#
+# This file holds ONLY the frozen instance values for this strategy.
+# The normative meaning of the `breakout` family — market behavior exploited,
+# semantic invariants (including the look-ahead-safe channel-max rule),
+# entry/exit/ranking rules, default disable conditions, and the Phase 1
+# live-ATR compromise — lives in docs/strategy-families.md. Do not restate
+# those rules here.
+#
+# See ADR 0015 for the identifier scheme, version-vs-variant rule, and the
+# frozen-manifest requirement that governs promotion.
+#
+# Research source: Faith 2007 *Way of the Turtle* (System 1 default — 20-day
+# entry / 10-day exit channels); Clenow 2019 *Trading Evolved*; Szakmary et
+# al. 2010 *Journal of Banking & Finance*.
+#
+# Daily-swing fit caveat (per the family doc): the 5-day max_hold cap
+# truncates the right-tail trend continuation that makes classical breakout
+# systems profitable. Expect material PF degradation vs. the published
+# results — the backtest_results block below records the actual delta.
+
+strategy:
+  id: "breakout.daily.donchian_20_10.sector_etfs.v1"
+  family: "breakout"
+  template: "daily.donchian_20_10"
+  variant: "sector_etfs"
+  version: 1
+  description: >
+    Long-only Donchian channel breakout (Turtle System 1 defaults — 20-day
+    entry / 10-day exit) on the eleven SPDR sector ETFs. Tier 1 strategy
+    bank candidate. Family/template spec:
+    docs/strategy-families.md#family-breakout.
+  enabled: true
+
+  universe_ref: "universe.sector_etfs_spdr.v1"
+
+  parameters:
+    entry_channel_length: 20
+    exit_channel_length: 10
+    ma_filter_length: 100
+    atr_lookback: 20
+    atr_stop_multiplier: 2.0
+    stop_loss_pct: 0.10
+    max_hold_days: 5
+    # 11 sector ETFs in the universe; cap at 3 concurrent to limit
+    # cross-sector concentration when multiple sectors break out together.
+    max_concurrent_positions: 3
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.20
+    ranking_enabled: true
+    ranking_metric: "breakout_strength_descending"
+    market_regime_symbol: "SPY"
+    market_regime_ma_length: 200
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.20
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.10
+
+  stage: "backtest"
+
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.00
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  # Additional disable conditions beyond the family defaults (see
+  # docs/strategy-families.md#family-breakout). Family defaults always apply;
+  # this list extends them.
+  disable_conditions_additional: []
+
+# Backtest results — walk-forward, non-normative reference block per
+# research-strategy-bank-roadmap §2.2 step 11. Recorded to make the
+# bank's comparison artifact reproducible. Not consumed by the loader.
+backtest_results_v1_2026-05-05:
+  command: "milodex backtest breakout.daily.donchian_20_10.sector_etfs.v1 --start 2020-01-01 --end 2024-12-31 --initial-equity 1000 --walk-forward"
+  windows: 4
+  oos_aggregate:
+    trading_days: 892
+    trades: 458
+    total_return_pct: 2.34
+    sharpe: 0.20
+    max_drawdown_pct: 6.87
+  stability:
+    sharpe_min: -1.21
+    sharpe_max: 2.14
+    sharpe_std: 1.23
+    positive_windows: 2
+    negative_windows: 2
+    single_window_dependency: true
+  promotion_gate_status: "refused"  # Sharpe 0.20 < 0.5 + single_window_dependency
+  notes: >
+    Honest gate refusal — and the refusal is informative. 458 trades clears
+    the cadence gate easily, but the breakout-truncation penalty the family
+    doc predicted has bitten: single-window dependency YES means the entire
+    +2.34% aggregate return rests on window #3 (+6.58%); dropping it flips
+    the sign. Sharpe 0.20 is well below the 0.5 threshold and stability is
+    poor (sharpe std 1.23, range -1.21..2.14). The 5-day max_hold cap
+    truncates the right-tail trend continuation that classical breakout
+    systems depend on. Re-tuning within the same family (changing
+    entry_channel_length / exit_channel_length / atr_stop_multiplier) is
+    parameter-search per VISION's "idea vs. tuning" rule, not idea
+    generation. The right next breakout candidate is a structurally
+    different family entry (NR7 contraction, ATR-Keltner) — see Tier 2 §4.1
+    and §4.4 in the strategy-bank roadmap.
