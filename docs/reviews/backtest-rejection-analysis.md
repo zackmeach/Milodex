@@ -136,22 +136,24 @@ The dual_absolute (GEM weekly) case is the cleanest example of mis-calibration: 
 
 ## 5. Per-strategy disposition
 
-Combining streams A, B, C into one decision matrix:
+> **Update — 2026-05-05 (post-fix re-baseline).** The "Recommended action" column below was the pre-fix prediction. The full re-run on the fixed engine has now landed; canonical post-fix dispositions live in [`strategy-bank-post-fixes.md`](strategy-bank-post-fixes.md). Summary: 4 of 11 prior rejections flipped to PASS purely from engine fixes (tsmom, donchian, rsi2, atr_channel), under the unchanged strict gate. Pass rate went from 8.3% → 41.7%. Of the 7 remaining rejects: 3 are real nulls the gate is correct about (nr7, ibs, xsec_rotation), 3 are plausible weak edges below Sharpe 0.5 (bbands, ToM, 52w), and 1 is the cadence victim (gem_weekly: Sharpe 0.80 blocked on 20 fills + 18.72% DD). The H2 (engine) hypothesis is confirmed dominant; H3 (gate) survives but is now the minority problem. The original disposition table is preserved below for predictive-vs-actual comparison.
 
-| Strategy | H1 class | H2 flags | Paper-readiness gate | Recommended action |
-|---|---|---|---|---|
-| `regime.sma200_rotation` | n/a | none | PASS (exempt) | Keep as Phase 1 lifecycle-proof. |
-| `dual_absolute.gem_weekly` | inconclusive | none | fail (trade count only) | Build a weekly-cadence gate variant; re-evaluate. Strong candidate. |
-| `xsec_rotation.sector_etfs` | near-miss | look-ahead bias | PASS | Re-baseline after engine fixes; if Sharpe > 0.2 holds, promote to paper. |
-| `pullback_rsi2.curated_largecap` | DB: near-miss; artifact: strong null | split-adjustment exposure | PASS (DB) | Re-baseline after split-adjustment fix; DB is canonical. |
-| `ibs_lowclose.index_etfs` | near-miss | none | PASS (under loose count) | Power-limited at 32 fills; re-run on wider universe. |
-| `donchian_20_10.sector_etfs` | weak null | look-ahead bias | PASS | Re-baseline. Stability flag = single-window dependency. Likely true weak null. |
-| `atr_channel.sector_etfs` | weak null | cache caveat | PASS | Re-run with full data; otherwise behave like Donchian. |
-| `tsmom.curated_largecap` | weak null | split-adjustment exposure | PASS | Re-baseline after split fix. Likely confirmed weak null. |
-| `bbands_lowerband.curated_largecap` | inconclusive | slippage fully explains | fail (Sharpe < 0) | Re-run with realistic 3 bps slippage; could flip to small-positive. |
-| `turn_of_month.spy` | strong null | cache caveat | fail (Sharpe < 0) | Keep rejected. SPY calendar anomalies are picked-over. |
-| `nr7_inside.liquid_largecap` | inconclusive | severe cache caveat (20/97) | fail (Sharpe < 0) | **Verdict cannot be reached.** Re-run on full universe before disposition. |
-| `52w_high_proximity.largecap` | inconclusive | severe cache caveat + split exposure | fail (Sharpe < 0) | **Verdict cannot be reached.** Re-run on full universe with adjusted bars. |
+Combining streams A, B, C into one decision matrix (pre-fix prediction):
+
+| Strategy | H1 class | H2 flags | Paper-readiness gate | Recommended action | **Post-fix actual** |
+|---|---|---|---|---|---|
+| `regime.sma200_rotation` | n/a | none | PASS (exempt) | Keep as Phase 1 lifecycle-proof. | **PASS** (Sharpe 1.10) ✓ |
+| `dual_absolute.gem_weekly` | inconclusive | none | fail (trade count only) | Build a weekly-cadence gate variant; re-evaluate. Strong candidate. | **block** (Sharpe 0.80 — strong edge, blocked on cadence + DD) |
+| `xsec_rotation.sector_etfs` | near-miss | look-ahead bias | PASS | Re-baseline after engine fixes; if Sharpe > 0.2 holds, promote to paper. | **block** (Sharpe 0.18 — fell with lookahead fix; weak null) |
+| `pullback_rsi2.curated_largecap` | DB: near-miss; artifact: strong null | split-adjustment exposure | PASS (DB) | Re-baseline after split-adjustment fix; DB is canonical. | **PASS** (Sharpe 0.73) ✓ |
+| `ibs_lowclose.index_etfs` | near-miss | none | PASS (under loose count) | Power-limited at 32 fills; re-run on wider universe. | **block** (Sharpe −0.23 — lookahead-fix flip; real null) |
+| `donchian_20_10.sector_etfs` | weak null | look-ahead bias | PASS | Re-baseline. Stability flag = single-window dependency. Likely true weak null. | **PASS** (Sharpe 0.87 — stronger than predicted) ✓ |
+| `atr_channel.sector_etfs` | weak null | cache caveat | PASS | Re-run with full data; otherwise behave like Donchian. | **PASS** (Sharpe 0.69 — stronger than predicted) ✓ |
+| `tsmom.curated_largecap` | weak null | split-adjustment exposure | PASS | Re-baseline after split fix. Likely confirmed weak null. | **PASS** (Sharpe 1.19 — split-fix delta dominated) ✓ |
+| `bbands_lowerband.curated_largecap` | inconclusive | slippage fully explains | fail (Sharpe < 0) | Re-run with realistic 3 bps slippage; could flip to small-positive. | **block** (Sharpe 0.43 — flipped to positive but below 0.5) |
+| `turn_of_month.spy` | strong null | cache caveat | fail (Sharpe < 0) | Keep rejected. SPY calendar anomalies are picked-over. | **block** (Sharpe 0.37 — flipped positive; weak edge after T+1 fix) |
+| `nr7_inside.liquid_largecap` | inconclusive | severe cache caveat (20/97) | fail (Sharpe < 0) | **Verdict cannot be reached.** Re-run on full universe before disposition. | **block** (Sharpe −0.11 — real null on full universe) |
+| `52w_high_proximity.largecap` | inconclusive | severe cache caveat + split exposure | fail (Sharpe < 0) | **Verdict cannot be reached.** Re-run on full universe with adjusted bars. | **block** (Sharpe 0.33 — flipped from −0.65; weak edge below 0.5) |
 
 ---
 
