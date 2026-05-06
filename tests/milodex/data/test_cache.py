@@ -121,6 +121,21 @@ class TestParquetCache:
         # v2 sees a cache miss even though v1 has data
         assert cache_v2.read("AAPL", Timeframe.DAY_1) is None
 
+    def test_v2_v3_versions_isolated(self, tmp_path, sample_df):
+        """v2 (split-only) and v3 (split + dividend) caches must not share files.
+
+        Bumping the cache version is the only mechanism that prevents an
+        Adjustment.SPLIT parquet from being silently consumed by a code path
+        that assumes Adjustment.ALL data. Any change to the on-disk bar format
+        (or the upstream request that produced it) requires a fresh version
+        segment.
+        """
+        cache_v2 = ParquetCache(tmp_path / "market_cache", version="v2")
+        cache_v3 = ParquetCache(tmp_path / "market_cache", version="v3")
+        cache_v2.write("AAPL", Timeframe.DAY_1, sample_df)
+        # v3 sees a cache miss even though v2 has data
+        assert cache_v3.read("AAPL", Timeframe.DAY_1) is None
+
     def test_merge_fills_gap_in_middle(self, cache):
         """Cache has Jan 13-15 and Jan 20-22. Fill Jan 16-19."""
         early = pd.DataFrame(

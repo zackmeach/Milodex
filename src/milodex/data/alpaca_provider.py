@@ -27,7 +27,12 @@ from milodex.data.provider import DataProvider
 # that makes existing parquet files incompatible or incorrect.
 # v1 → v2 (2026-05-05): switched StockBarsRequest to Adjustment.SPLIT so all
 #   cached bars are now split-adjusted. Old raw-bar parquets must be discarded.
-CACHE_VERSION = "v2"
+# v2 → v3 (2026-05-06): switched to Adjustment.ALL so cached bars are now split-
+#   AND dividend-adjusted. Without this, long-only equity backtests are
+#   systematically pessimistic by ~1.5-3% per year (missing dividend
+#   reinvestment). Old split-only parquets are silently incompatible with code
+#   paths that assume Adjustment.ALL data, so v2 files must not be reused.
+CACHE_VERSION = "v3"
 
 # Map our Timeframe enum to Alpaca's TimeFrame objects
 _TIMEFRAME_MAP: dict[Timeframe, TimeFrame] = {
@@ -138,7 +143,7 @@ class AlpacaDataProvider(DataProvider):
                     symbol_or_symbols=symbol,
                     timeframe=alpaca_tf,
                     feed=DataFeed.IEX,
-                    adjustment=Adjustment.SPLIT,
+                    adjustment=Adjustment.ALL,
                     start=datetime(
                         fetch_start.year,
                         fetch_start.month,
