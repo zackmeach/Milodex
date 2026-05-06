@@ -80,6 +80,7 @@ class BacktestResult:
     trading_days: int
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
     db_id: int | None = None
+    round_trip_count: int = 0
 
 
 @dataclass
@@ -97,6 +98,7 @@ class _SimulationOutput:
     buy_count: int
     sell_count: int
     final_equity: float
+    round_trip_count: int = 0
 
 
 @dataclass
@@ -451,6 +453,7 @@ class BacktestEngine:
             trading_days=len(trading_days),
             equity_curve=output.equity_curve,
             db_id=db_run_id,
+            round_trip_count=output.round_trip_count,
         )
 
     def _simulate(
@@ -473,6 +476,7 @@ class BacktestEngine:
                 buy_count=0,
                 sell_count=0,
                 final_equity=initial_equity,
+                round_trip_count=0,
             )
 
         sim_broker = SimulatedBroker(
@@ -496,6 +500,9 @@ class BacktestEngine:
         buy_count = 0
         sell_count = 0
         trade_count = 0
+        # Per-symbol fill counters used to compute round_trip_count at end.
+        # round_trip_count = sum(min(s["buys"], s["sells"]) for s in _sym_fills.values())
+        _sym_fills: dict[str, dict[str, int]] = {}
         pending: list[_PendingOrder] = []
 
         for day in trading_days:
@@ -525,6 +532,7 @@ class BacktestEngine:
                     day=day,
                     session_id=session_id,
                     db_run_id=db_run_id,
+                    sym_fills=_sym_fills,
                 )
                 buy_count += drained_buys
                 sell_count += drained_sells
@@ -618,12 +626,14 @@ class BacktestEngine:
             except Exception:  # noqa: BLE001 — snapshot is best-effort, see ENGINEERING_STANDARDS.md
                 pass
 
+        round_trip_count = sum(min(s["buys"], s["sells"]) for s in _sym_fills.values())
         return _SimulationOutput(
             equity_curve=equity_curve,
             trade_count=trade_count,
             buy_count=buy_count,
             sell_count=sell_count,
             final_equity=final_equity,
+            round_trip_count=round_trip_count,
         )
 
     def _drain_pending(
@@ -640,6 +650,7 @@ class BacktestEngine:
         day: date,
         session_id: str,
         db_run_id: int,
+        sym_fills: dict[str, dict[str, int]],
     ) -> tuple[float, int, int]:
         """Fill ``pending`` orders at today's opens. SELLs first to free cash.
 
@@ -692,6 +703,7 @@ class BacktestEngine:
             del positions[sym]
             entry_state.pop(sym, None)
             sell_count += 1
+            sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
 
         # Re-sync after sells so BUY affordability checks reflect freed cash.
         intermediate_equity = _compute_equity(cash, positions, opens)
@@ -737,6 +749,7 @@ class BacktestEngine:
             positions[sym] = (qty, fill_price)
             entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
             buy_count += 1
+            sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["buys"] += 1
 
         return cash, buy_count, sell_count
 
