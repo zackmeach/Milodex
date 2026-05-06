@@ -11,7 +11,7 @@ strategy:
     1 curated large-cap universe. Tier 2 A/B benchmark against RSI(2).
   enabled: true
 
-  universe_ref: "universe.phase1.curated.v1"
+  universe_ref: "universe.curated_largecap.v2"
 
   parameters:
     bbands_lookback: 20

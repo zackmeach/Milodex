@@ -1,4 +1,22 @@
-# Phase 1 Curated Universe — v1
+# Phase 1 Curated Universe — v1 (DEPRECATED)
+#
+# DEPRECATED 2026-05-06. Replaced by universe.curated_largecap.v2 (file
+# `universe_curated_largecap_v2.yaml`). The v1 stock list was hand-picked in
+# 2026 with full knowledge of 2020-2024 performance and is therefore
+# survivorship-biased upward. The v2 manifest applies an ex-ante selection
+# rule (S&P 100 constituents at 2019-12-31, market cap >= $100B, ticker
+# unchanged across the window) and is `survivorship_corrected: true`.
+#
+# This file is retained, not deleted, because frozen v1 strategy manifests
+# (e.g., the now-demoted meanrev.daily.pullback_rsi2.curated_largecap.v1
+# paper-stage record in the event store) reference `universe.phase1.curated.v1`
+# by name. Removing this file would break historical-backtest reproducibility
+# of those frozen records.
+#
+# Do NOT add new strategies pointing at this universe — they will inherit
+# the survivorship bias. Use `universe.curated_largecap.v2` instead.
+#
+# Original header below for context:
 #
 # Frozen universe manifest. Strategies reference this by id; they do not
 # inline their own lists. The rules that govern universe construction,

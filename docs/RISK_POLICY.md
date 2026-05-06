@@ -184,18 +184,29 @@ Each universe manifest carries a `survivorship_corrected: bool` field declaring 
 | `universe.index_etfs.v1` | corrected | 4 broad-market ETFs, all stable since pre-2020 |
 | `universe.gem_quartet.v1` | corrected | 4 GEM ETFs, all stable since pre-2020 |
 | `universe.sector_etfs_spdr.v1` | corrected | 11 SPDR sector ETFs, family stable since 1998 (XLRE 2015, XLC 2018) |
-| `universe.phase1.curated.v1` | **not corrected** | 20 ETFs (immune) + 20 large-cap single-names (hindsight-selected) |
+| `universe.curated_largecap.v2` | **corrected** | 20 ETFs (immune) + 22 large-cap single-names selected ex-ante from S&P 100 at 2019-12-31, market cap ≥ $100B |
+| `universe.phase1.curated.v1` | not corrected (deprecated) | Replaced by `universe.curated_largecap.v2`. Retained for historical-backtest reproducibility of frozen v1 strategy manifests; do not use for new strategies. |
 | `universe.sp100_liquid.v1` | **not corrected** | 99 single-name stocks; ~20–30 constituent changes 2020–2024 |
 
-**Affected research-target strategies:** `tsmom`, `rsi2`, `bbands` (all `curated_largecap`); `nr7`, `52w_high_proximity` (both `sp100_liquid`).
+**Affected research-target strategies after migration:**
+
+| Strategy | Universe | Survivorship status |
+| --- | --- | --- |
+| `momentum.daily.tsmom.curated_largecap.v1` | `curated_largecap.v2` | **corrected** |
+| `meanrev.daily.pullback_rsi2.curated_largecap.v1` | `curated_largecap.v2` | **corrected** (demoted to backtest pending re-promotion on v2 evidence) |
+| `meanrev.daily.bbands_lowerband.curated_largecap.v1` | `curated_largecap.v2` | **corrected** |
+| `breakout.daily.nr7_inside.liquid_largecap.v1` | `sp100_liquid.v1` | not corrected |
+| `momentum.daily.52w_high_proximity.largecap.v1` | `sp100_liquid.v1` | not corrected |
 
 **Lifecycle-proof strategy is not materially affected.** `regime.daily.sma200_rotation.spy_shy.v1` rotates between SPY (1993–) and SHY (2002–), both of which have traded continuously throughout every Phase 1 evaluation window. The screen output reports `surv_corr=no` for regime because the strategy declares its universe inline rather than via a manifest — the disclosure mechanism only reads from manifest YAMLs, and an inline universe has no place to declare its status. This is a known cosmetic gap; the underlying universe is survivorship-immune.
 
 **Strategies with inline universes default to `surv_corr=no`.** The `survivorship_corrected` flag lives on universe manifests, not strategies. A strategy that inlines its universe (rather than declaring `universe_ref:` and pointing at a manifest) cannot declare survivorship-correction status. The default false is the correct conservative answer in absence of an authoritative declaration. Migrating an inline universe to a manifest is the path to opt in.
 
-**Planned fix:** point-in-time membership reconstruction — restructure stock universes from a flat list to a list of `(symbol, valid_from, valid_to)` tuples sourced from historical-as-of date snapshots. The engine then filters to the symbols valid on each backtest day. Out of scope for the current PR; tracked as Phase 1.5 hardening.
+**Methodology for the curated_largecap.v2 fix:** ex-ante selection rather than point-in-time membership tracking. The 2019-12-31 S&P 100 constituent list is treated as the membership truth: any name in the index on that date with market cap ≥ $100B is eligible; nothing else is. The cutoff date pre-dates every Phase 1 evaluation window, so 2020-2024 information cannot have influenced the selection. Names whose ticker changed mid-window (META = FB until 2022-06-09) are excluded to avoid requiring ticker-aliasing infrastructure. This is the right shape of fix for hand-curated universes; **point-in-time membership tracking** (with `(symbol, valid_from, valid_to)` tuples) is the right shape for index-derived universes like `sp100_liquid` where constituents legitimately change over time.
 
-**Operational mitigation in the meantime:** the strict promotion gate (Sharpe > 0.5, max DD < 15%, ≥ 30 trades) is doing implicit survivorship-haircut work — strategies that barely clear the gate on biased data are likely below 0.0 in real expectation. Combined with the paper-stage validation requirement, real-money risk from this bias is bounded; the bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
+**Remaining planned fix:** point-in-time membership reconstruction for `sp100_liquid` (99 stocks, ~20-30 constituent changes 2020-2024). This requires both the per-date membership data and ticker-aliasing infrastructure for mid-window ticker changes. Out of scope for the current PR; tracked as future Phase 1.5 hardening.
+
+**Operational mitigation:** the strict promotion gate (Sharpe > 0.5, max DD < 15%, ≥ 30 trades) is doing implicit survivorship-haircut work — strategies that barely clear the gate on biased data are likely below 0.0 in real expectation. Combined with the paper-stage validation requirement, real-money risk from this bias is bounded; the bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
 
 ### Date-range truncation (provider history limit)
 

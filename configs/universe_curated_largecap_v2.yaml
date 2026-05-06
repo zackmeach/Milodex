@@ -1,0 +1,112 @@
+# Curated Largecap Universe — v2 (Ex-Ante Survivorship-Corrected)
+#
+# Frozen universe manifest. Strategies reference this by id; they do not
+# inline their own lists. The rules that govern universe construction,
+# versioning, and eligibility live in docs/strategy-families.md and
+# docs/SRS.md (Data domain); this file carries only the frozen membership.
+#
+# Any membership change creates a new version (universe_curated_largecap_v3,
+# etc.). The current version is never silently edited in place — see ADR 0015
+# for the frozen-manifest principle, applied here to the universe.
+#
+# Replaces: universe.phase1.curated.v1 (deprecated; see header comment in
+# configs/universe_phase1_v1.yaml). The v1 stock list was hand-picked in
+# 2026 with full knowledge of 2020-2024 performance, biasing backtests
+# upward. This v2 manifest applies an ex-ante selection rule defined below.
+
+universe:
+  id: "universe.curated_largecap.v2"
+  version: 2
+  slippage_pct: 0.0005  # 5 bps — mixed ETF + large-cap single-name universe
+
+  # Ex-ante selection methodology (auditable, see docs/RISK_POLICY.md
+  # "Known Backtest Limitations and Biases"):
+  #
+  # Stock-membership rule: every stock below was a member of the S&P 100
+  # ("OEX") as of 2019-12-31, with market cap >= $100B at that date. The
+  # 2019-12-31 cutoff pre-dates every Phase 1 evaluation window, so 2020-2024
+  # information cannot have influenced membership. Names whose ticker changed
+  # mid-window (META = FB until 2022-06-09) are excluded to avoid requiring
+  # ticker-aliasing infrastructure.
+  #
+  # ETF-membership rule: ETFs are inherited unchanged from
+  # universe.phase1.curated.v1 — all 20 had traded continuously since well
+  # before 2020 and are survivorship-immune.
+  #
+  # Sector spread (stocks): Technology 6 / Communication 3 / Consumer
+  # Discretionary 3 / Consumer Staples 3 / Financials 3 / Energy 2 /
+  # Healthcare 2. Roughly matches GICS weighting at year-end 2019.
+  survivorship_corrected: true
+
+  description: >
+    Survivorship-corrected curated universe of highly liquid U.S. common
+    stocks and plain ETFs for Phase 1 research-target strategies. Stock
+    membership selected ex-ante from S&P 100 constituents at 2019-12-31
+    with market cap >= $100B; ETFs inherited from universe.phase1.curated.v1.
+    Subject to the instrument whitelist in ADR 0016.
+
+  # ETFs — broad index, sector, and commodity/bond exposures (unchanged
+  # from v1; all survivorship-immune)
+  etfs:
+    - "SPY"
+    - "QQQ"
+    - "IWM"
+    - "DIA"
+    - "XLK"
+    - "XLF"
+    - "XLE"
+    - "XLV"
+    - "XLI"
+    - "XLP"
+    - "XLU"
+    - "XLY"
+    - "XLB"
+    - "XLRE"
+    - "SMH"
+    - "SOXX"
+    - "GLD"
+    - "SLV"
+    - "TLT"
+    - "SHY"
+
+  # Common stocks — large-cap S&P 100 members at 2019-12-31, sorted by
+  # ticker. Market cap at 2019-12-31 noted in parentheses for audit.
+  stocks:
+    # Technology (6)
+    - "AAPL"   # ~$1.3T
+    - "AVGO"   # ~$123B
+    - "GOOGL"  # ~$920B
+    - "INTC"   # ~$260B  (added vs v1; struggled 2020-2024 — good ex-ante test)
+    - "MSFT"   # ~$1.2T
+    - "NVDA"   # ~$144B  (in S&P 100 since 2018; pre-AI-boom large-cap)
+    # Communication Services (3)
+    - "DIS"    # ~$260B  (added vs v1)
+    - "NFLX"   # ~$146B
+    - "VZ"     # ~$254B  (added vs v1)
+    # Consumer Discretionary (3)
+    - "AMZN"   # ~$920B
+    - "COST"   # ~$130B
+    - "HD"     # ~$240B
+    # Consumer Staples (3)
+    - "KO"     # ~$237B  (added vs v1)
+    - "PG"     # ~$310B
+    - "WMT"    # ~$337B
+    # Financials (3)
+    - "BAC"    # ~$310B
+    - "JPM"    # ~$430B
+    - "V"      # ~$415B  (added vs v1)
+    # Energy (2)
+    - "CVX"    # ~$228B
+    - "XOM"    # ~$295B
+    # Healthcare (2)
+    - "JNJ"    # ~$385B
+    - "UNH"    # ~$278B
+
+# Names dropped from v1 with reason:
+#   - META  (was "FB" until 2022-06-09 ticker change; including it requires
+#            ticker-aliasing infrastructure — out of scope for this PR.
+#            Re-add when point-in-time sp100_liquid migration introduces
+#            the aliasing path.)
+#   - TSLA  (~$76B at 2019-12-31; not in S&P 100, entered S&P 500 only in
+#            Dec 2020. Including it would admit 2020+ information.)
+#   - AMD   (~$56B at 2019-12-31; not in S&P 100. Same reason as TSLA.)

@@ -386,7 +386,7 @@ def test_default_strategy_loader_resolves_momentum_strategy() -> None:
 
     assert isinstance(loaded.strategy, MomentumDailyTsmomStrategy)
     assert loaded.context.strategy_id == "momentum.daily.tsmom.curated_largecap.v1"
-    assert loaded.context.universe_ref == "universe.phase1.curated.v1"
+    assert loaded.context.universe_ref == "universe.curated_largecap.v2"
     assert "SPY" in loaded.context.universe
     assert "AAPL" in loaded.context.universe
 
@@ -506,7 +506,7 @@ def _golden_context(
             "ranking_metric": "momentum_descending",
         },
         universe=("AAA",),
-        universe_ref="universe.phase1.curated.v1",
+        universe_ref="universe.curated_largecap.v2",
         disable_conditions=(),
         config_path="configs/momentum_daily_tsmom_v1.yaml",
         manifest={},
@@ -575,7 +575,7 @@ def _context(
         config_hash="hash",
         parameters=parameters,
         universe=universe,
-        universe_ref="universe.phase1.curated.v1",
+        universe_ref="universe.curated_largecap.v2",
         disable_conditions=(),
         config_path="configs/momentum_daily_tsmom_v1.yaml",
         manifest={},

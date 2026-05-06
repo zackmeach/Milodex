@@ -358,7 +358,7 @@ def test_default_strategy_loader_resolves_meanrev_strategy() -> None:
 
     assert isinstance(loaded.strategy, MeanrevRsi2PullbackStrategy)
     assert loaded.context.strategy_id == "meanrev.daily.pullback_rsi2.curated_largecap.v1"
-    assert loaded.context.universe_ref == "universe.phase1.curated.v1"
+    assert loaded.context.universe_ref == "universe.curated_largecap.v2"
     assert "SPY" in loaded.context.universe
     assert "AAPL" in loaded.context.universe
 
@@ -538,7 +538,7 @@ def _golden_context(
             "ranking_metric": "rsi_ascending",
         },
         universe=("AAA", "BBB"),
-        universe_ref="universe.phase1.curated.v1",
+        universe_ref="universe.curated_largecap.v2",
         disable_conditions=(),
         config_path="configs/meanrev_daily_rsi2pullback_v1.yaml",
         manifest={},
@@ -617,7 +617,7 @@ def _context(
         config_hash="hash",
         parameters=parameters,
         universe=universe,
-        universe_ref="universe.phase1.curated.v1",
+        universe_ref="universe.curated_largecap.v2",
         disable_conditions=(),
         config_path="configs/meanrev_daily_rsi2pullback_v1.yaml",
         manifest={},

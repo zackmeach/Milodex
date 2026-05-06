@@ -19,9 +19,10 @@ strategy:
     First research-target strategy for Phase 1. Family spec: docs/strategy-families.md#family-meanrev.
   enabled: true
 
-  # References the frozen Phase 1 universe manifest. Strategies do not
-  # inline symbol lists — see configs/universe_phase1_v1.yaml and SRS R-DAT-016.
-  universe_ref: "universe.phase1.curated.v1"
+  # References the survivorship-corrected curated_largecap v2 universe (ex-ante
+  # selection). Strategies do not inline symbol lists — see
+  # configs/universe_curated_largecap_v2.yaml and SRS R-DAT-016.
+  universe_ref: "universe.curated_largecap.v2"
 
   parameters:
     rsi_lookback: 2
@@ -49,7 +50,13 @@ strategy:
     daily_loss_cap_pct: 0.02
     stop_loss_pct: 0.05
 
-  stage: "paper"
+  # Demoted from paper -> backtest for the universe migration to
+  # universe.curated_largecap.v2 (ex-ante survivorship correction). The
+  # frozen v1 manifest in the event store still references
+  # universe.phase1.curated.v1 — re-promotion to paper requires a fresh
+  # backtest run on the v2 universe and a new evidence package per
+  # docs/PROMOTION_GOVERNANCE.md.
+  stage: "backtest"
 
   backtest:
     commission_per_trade: 0.00
