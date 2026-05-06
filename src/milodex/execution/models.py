@@ -46,6 +46,14 @@ class TradeIntent:
     # (see docs/reviews/2026-05-06-manifest-drift-toctou-race.md). None for
     # operator manual trades.
     expected_stage: str | None = None
+    # Per-strategy risk envelope snapshot, bound at runner startup and
+    # immutable for the life of the runner. Same TOCTOU class as
+    # ``expected_stage`` extended to the cap fields. None for operator manual
+    # trades. See docs/reviews/2026-05-06-manifest-drift-toctou-race.md
+    # (Action Item #4 follow-up).
+    expected_max_positions: int | None = None
+    expected_max_position_pct: float | None = None
+    expected_daily_loss_cap_pct: float | None = None
 
     def normalized_symbol(self) -> str:
         """Return an uppercase symbol for downstream systems."""

@@ -101,6 +101,9 @@ def make_context(
     runtime_config_hash: str | None = None,
     frozen_manifest_hash: str | None = None,
     expected_stage: str | None = None,
+    expected_max_positions: int | None = None,
+    expected_max_position_pct: float | None = None,
+    expected_daily_loss_cap_pct: float | None = None,
 ) -> EvaluationContext:
     """Build an ``EvaluationContext`` pre-configured to pass every rule
     except the one under test."""
@@ -159,6 +162,9 @@ def make_context(
         runtime_config_hash=runtime_config_hash,
         frozen_manifest_hash=frozen_manifest_hash,
         expected_stage=expected_stage,
+        expected_max_positions=expected_max_positions,
+        expected_max_position_pct=expected_max_position_pct,
+        expected_daily_loss_cap_pct=expected_daily_loss_cap_pct,
     )
 
 
@@ -505,16 +511,22 @@ def _with_overrides(**overrides) -> RiskDefaults:
 # --- _check_manifest_drift -------------------------------------------------
 
 
-def _strategy_config(stage: str = "paper", enabled: bool = True) -> StrategyExecutionConfig:
+def _strategy_config(
+    stage: str = "paper",
+    enabled: bool = True,
+    max_position_pct: float = 0.10,
+    max_positions: int = 1,
+    daily_loss_cap_pct: float = 0.05,
+) -> StrategyExecutionConfig:
     from pathlib import Path as _Path
 
     return StrategyExecutionConfig(
         name="demo_strategy",
         enabled=enabled,
         stage=stage,
-        max_position_pct=0.10,
-        max_positions=1,
-        daily_loss_cap_pct=0.05,
+        max_position_pct=max_position_pct,
+        max_positions=max_positions,
+        daily_loss_cap_pct=daily_loss_cap_pct,
         stop_loss_pct=None,
         path=_Path("configs/demo.yaml"),
     )
@@ -689,6 +701,175 @@ def test_manifest_drift_applies_at_micro_live_and_live_stages():
         result = check_result(decision, "manifest_drift")
         assert result.passed is False, f"stage={stage} should be blocked on drift"
         assert result.reason_code == "manifest_drift"
+
+
+# --- TOCTOU follow-ups: runner-bound risk envelope wins over per-cycle YAML --
+#
+# These tests close the audit findings from PR #31 / Action Item #4 in
+# docs/reviews/2026-05-06-manifest-drift-toctou-race.md. Same shape as the
+# manifest_drift fix: a parallel writer raising a per-strategy cap mid-session
+# must not let a cycle in flight take a position the runner's bound envelope
+# would refuse. The ``min(global_default, per_strategy)`` defense partially
+# mitigates the bypass but does not guarantee cycle-to-cycle consistency
+# across a long-running runner; the bound values do.
+
+
+def test_strategy_stage_uses_runner_bound_stage_when_yaml_flips_to_ineligible_stage():
+    """A runner started against an ineligible stage (e.g. ``micro_live`` or
+    ``live``) must not be permitted to submit just because the YAML
+    transiently reads ``paper`` mid-cycle. The runner's bound stage wins."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            # YAML transiently reads paper (parallel writer mid-edit). Runner
+            # is bound to micro_live (which is NOT eligible for paper-mode
+            # submission per ADR 0004).
+            strategy_config=_strategy_config(stage="paper"),
+            expected_stage="micro_live",
+            # Provide hashes so manifest_drift doesn't fire first and short-
+            # circuit the test.
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="a" * 64,
+        )
+    )
+
+    result = check_result(decision, "strategy_stage")
+    assert result.passed is False, (
+        "runner bound to micro_live must be refused even when YAML reads paper"
+    )
+    assert result.reason_code == "strategy_stage_ineligible"
+
+
+def test_concurrent_positions_uses_runner_bound_max_positions():
+    """A parallel writer raising ``max_positions`` from 1 to 10 mid-session
+    must not let the runner take a second position. The runner's bound cap
+    wins over the per-cycle YAML value."""
+    from milodex.broker.models import Position
+
+    existing_position = Position(
+        symbol="AAPL",
+        quantity=10,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        market_value=1000.0,
+        unrealized_pnl=0.0,
+        unrealized_pnl_pct=0.0,
+    )
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="MSFT",
+            side=OrderSide.BUY,
+            quantity=10,
+            estimated_unit_price=100.0,
+            positions=[existing_position],
+            # YAML on disk currently reads max_positions=10 (parallel writer
+            # raised it mid-session). Runner is bound to max_positions=1.
+            strategy_config=_strategy_config(stage="paper", max_positions=10),
+            expected_max_positions=1,
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="a" * 64,
+        )
+    )
+
+    result = check_result(decision, "concurrent_positions")
+    assert result.passed is False, (
+        "runner bound to max_positions=1 must refuse even when YAML reads 10"
+    )
+    assert result.reason_code == "max_concurrent_positions_exceeded"
+
+
+def test_single_position_uses_runner_bound_max_position_pct():
+    """A parallel writer raising ``max_position_pct`` from 5% to 50%
+    mid-session must not let the runner take a position larger than the
+    bound 5% envelope."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            # 10 shares × $100 = $1,000 = 10% of $10,000 portfolio.
+            quantity=10,
+            estimated_unit_price=100.0,
+            account_portfolio_value=10_000.0,
+            # YAML on disk currently reads 50% (parallel writer raised it).
+            # Runner is bound to 5%.
+            strategy_config=_strategy_config(
+                stage="paper",
+                max_position_pct=0.50,
+            ),
+            expected_max_position_pct=0.05,
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="a" * 64,
+        )
+    )
+
+    result = check_result(decision, "single_position")
+    assert result.passed is False, (
+        "runner bound to max_position_pct=0.05 must refuse a 10% order even when YAML reads 0.50"
+    )
+    assert result.reason_code == "max_single_position_exceeded"
+
+
+def test_daily_loss_uses_runner_bound_daily_loss_cap_pct():
+    """A parallel writer raising ``daily_loss_cap_pct`` from 0.5% to 5%
+    mid-session must not let the runner act when daily loss is past the
+    bound 0.5% envelope."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            # Loss of $100 ≈ 1% of $10,000 portfolio.
+            account_daily_pnl=-100.0,
+            account_portfolio_value=10_000.0,
+            # YAML on disk currently reads 5% cap (parallel writer raised it).
+            # Runner is bound to 0.5%.
+            strategy_config=_strategy_config(
+                stage="paper",
+                daily_loss_cap_pct=0.05,
+            ),
+            expected_daily_loss_cap_pct=0.005,
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="a" * 64,
+        )
+    )
+
+    result = check_result(decision, "daily_loss")
+    assert result.passed is False, (
+        "runner bound to daily_loss_cap_pct=0.005 must refuse at 1% loss even when YAML reads 0.05"
+    )
+    assert result.reason_code == "daily_loss_cap_exceeded"
+
+
+def test_toctou_followups_fall_back_to_yaml_when_no_binding():
+    """Backward-compat: callers without runner-bound bindings (operator manual
+    trades, legacy entry points) get unchanged behavior — the existing YAML
+    read with ``min(global, per_strategy)`` applies."""
+    from milodex.broker.models import Position
+
+    # Without expected_max_positions, max_positions=10 from YAML applies
+    # (capped by global default of 3). One existing position, one new.
+    existing_position = Position(
+        symbol="AAPL",
+        quantity=10,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        market_value=1000.0,
+        unrealized_pnl=0.0,
+        unrealized_pnl_pct=0.0,
+    )
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="MSFT",
+            side=OrderSide.BUY,
+            quantity=10,
+            estimated_unit_price=100.0,
+            positions=[existing_position],
+            strategy_config=_strategy_config(stage="paper", max_positions=10),
+            expected_max_positions=None,  # explicit None — no binding
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="a" * 64,
+        )
+    )
+
+    # Should pass — global default=3, YAML=10, min=3, current=1, projected=2,
+    # 2 < 3 OK. (Confirms fallback path uses YAML, not the bound value.)
+    assert check_result(decision, "concurrent_positions").passed is True
 
 
 # --- sanity: reference the pytest and Order/OrderStatus imports so ruff

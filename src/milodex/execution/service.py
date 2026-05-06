@@ -311,10 +311,14 @@ class ExecutionService:
                 strategy_config=strategy_config,
                 runtime_config_hash=runtime_config_hash,
                 frozen_manifest_hash=frozen_manifest_hash,
-                # Plumb the runner-bound stage from the intent through to the
-                # risk evaluator. None for operator manual trades — the
-                # evaluator falls back to ``strategy_config.stage`` for those.
+                # Plumb the runner-bound stage and risk envelope from the
+                # intent through to the risk evaluator. None for operator
+                # manual trades — the evaluator falls back to
+                # ``strategy_config.<field>`` for those.
                 expected_stage=normalized_intent.expected_stage,
+                expected_max_positions=normalized_intent.expected_max_positions,
+                expected_max_position_pct=normalized_intent.expected_max_position_pct,
+                expected_daily_loss_cap_pct=normalized_intent.expected_daily_loss_cap_pct,
             )
             decision = self._risk_evaluator.evaluate(context)
         status = (
@@ -371,6 +375,9 @@ class ExecutionService:
             strategy_config_path=intent.strategy_config_path,
             submitted_by=intent.submitted_by,
             expected_stage=intent.expected_stage,
+            expected_max_positions=intent.expected_max_positions,
+            expected_max_position_pct=intent.expected_max_position_pct,
+            expected_daily_loss_cap_pct=intent.expected_daily_loss_cap_pct,
         )
 
     def _build_execution_request(
