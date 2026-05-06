@@ -10,6 +10,7 @@ Does NOT assert specific orphan counts; those change as the codebase evolves.
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 
@@ -49,8 +50,6 @@ class TestParseSrs:
 
     def test_code_format_valid(self) -> None:
         """All extracted codes match the R-XX-NNN / R-XXX-NNN pattern."""
-        import re
-
         pattern = re.compile(r"^R-[A-Z]{2,3}-\d{3}$")
         requirements = parse_srs(SRS_PATH)
         for code in requirements:
@@ -123,11 +122,10 @@ class TestGenerateReport:
     def minimal_inputs(
         self, tmp_path: Path
     ) -> tuple[dict[str, dict[str, str]], dict[str, list[str]], Path]:
-        _row = {"_is_table_row": True}
         requirements = {
-            "R-TST-001": {"section": "Domain 1 — Broker", "text": "Shall do X.", **_row},
-            "R-TST-002": {"section": "Domain 1 — Broker", "text": "Shall do Y.", **_row},
-            "R-TST-003": {"section": "Domain 2 — Data", "text": "Shall do Z.", **_row},
+            "R-TST-001": {"section": "Domain 1 — Broker", "text": "Shall do X."},
+            "R-TST-002": {"section": "Domain 1 — Broker", "text": "Shall do Y."},
+            "R-TST-003": {"section": "Domain 2 — Data", "text": "Shall do Z."},
         }
         coverage: dict[str, list[str]] = {
             "R-TST-001": ["tests/test_foo.py::test_x"],

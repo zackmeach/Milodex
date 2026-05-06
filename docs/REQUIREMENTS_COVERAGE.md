@@ -104,7 +104,7 @@
 | `R-CLI-005` | Domain 7 | 0 | — |
 | `R-CLI-006` | Domain 7 | 0 | — |
 | `R-CLI-008` | Domain 7 | 0 | — |
-| `R-CLI-009` | Domain 7 | 3 | `milodex\cli\test_formatter.py::test_json_formatter_ignores_renderable_completely`<br>`milodex\cli\test_formatter.py::test_command_result_to_json_payload_omits_renderable_field`<br>`milodex\cli\test_json_output.py::module` |
+| `R-CLI-009` | Domain 7 | 3 | `milodex\cli\test_formatter.py::test_command_result_to_json_payload_omits_renderable_field`<br>`milodex\cli\test_formatter.py::test_json_formatter_ignores_renderable_completely`<br>`milodex\cli\test_json_output.py::module` |
 | `R-CLI-010` | Domain 7 | 0 | — |
 | `R-CLI-011` | Domain 7 | 0 | — |
 | `R-CLI-012` | Domain 7 | 0 | — |
@@ -136,9 +136,9 @@
 | `R-OPS-005` | Domain 9 | 0 | — |
 | `R-OPS-006` | Domain 9 | 0 | — |
 | `R-OPS-007` | Domain 9 | 0 | — |
-| `R-OPS-008` | Domain 9 | 2 | `milodex\cli\test_reconcile.py::test_reconcile_broker_unreachable_degrades_gracefully`<br>`milodex\cli\test_reconcile.py::module` |
+| `R-OPS-008` | Domain 9 | 2 | `milodex\cli\test_reconcile.py::module`<br>`milodex\cli\test_reconcile.py::test_reconcile_broker_unreachable_degrades_gracefully` |
 | `R-OPS-009` | Domain 9 | 0 | — |
-| `R-OPS-010` | Domain 9 | 3 | `milodex\cli\test_reconcile.py::test_reconcile_matched_order_is_ok`<br>`milodex\cli\test_reconcile.py::test_reconcile_is_idempotent_on_repeat`<br>`milodex\cli\test_reconcile.py::module` |
+| `R-OPS-010` | Domain 9 | 3 | `milodex\cli\test_reconcile.py::module`<br>`milodex\cli\test_reconcile.py::test_reconcile_is_idempotent_on_repeat`<br>`milodex\cli\test_reconcile.py::test_reconcile_matched_order_is_ok` |
 | `R-XC-001` | Cross-Cutting Requirements | 0 | — |
 | `R-XC-002` | Cross-Cutting Requirements | 0 | — |
 | `R-XC-003` | Cross-Cutting Requirements | 0 | — |
@@ -290,9 +290,9 @@
 
 | Test reference | Unknown code(s) cited |
 |---------------|-----------------------|
-| `milodex\scripts\test_audit_requirements_coverage.py::test_summary_counts_consistent` | `R-TST-002`, `R-TST-003`, `R-TST-099` |
-| `milodex\scripts\test_audit_requirements_coverage.py::test_synthetic_tests_dir` | `R-TST-002`, `R-TST-003`, `R-TST-099` |
 | `milodex\scripts\test_audit_requirements_coverage.py::test_orphan_appears_in_section_c` | `R-TST-002` |
+| `milodex\scripts\test_audit_requirements_coverage.py::test_summary_counts_consistent` | `R-TST-002`, `R-TST-003`, `R-TST-099` |
+| `milodex\scripts\test_audit_requirements_coverage.py::test_synthetic_tests_dir` | `R-TST-002`, `R-TST-099` |
 | `milodex\scripts\test_audit_requirements_coverage.py::test_floater_appears_in_section_d` | `R-TST-099` |
 
 ## E — Methodology

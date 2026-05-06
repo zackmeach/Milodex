@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import re
 import sys
+import tokenize
 from collections import defaultdict
 from pathlib import Path
 
@@ -51,7 +53,13 @@ def _req_text_from_table_row(line: str) -> str:
 
 def parse_srs(srs_path: Path) -> dict[str, dict[str, str]]:
     """Return {code: {"section": ..., "text": ...}} for every R-XX-NNN in SRS.md."""
+    if not srs_path.exists():
+        raise FileNotFoundError(f"SRS file not found: {srs_path}")
+
     requirements: dict[str, dict[str, str]] = {}
+    # Internal scratch state: tracks whether the canonical entry came from a table row.
+    _is_table_row: dict[str, bool] = {}
+
     # Track the ## (top-level domain) heading separately from the ### sub-heading
     # so that "### System Requirements" doesn't obscure "## Domain 1 — Broker …".
     current_domain = "Preamble"
@@ -88,21 +96,15 @@ def parse_srs(srs_path: Path) -> dict[str, dict[str, str]]:
                 snippet = re.sub(r"\*{1,2}(.*?)\*{1,2}", r"\1", snippet)
                 req_text = snippet[:120].strip()
 
-            is_table_row = "|" in line
+            row = "|" in line
             for code in codes:
                 if code not in requirements:
-                    requirements[code] = {
-                        "section": current_section,
-                        "text": req_text,
-                        "_is_table_row": is_table_row,
-                    }
-                elif is_table_row and not requirements[code].get("_is_table_row"):
+                    requirements[code] = {"section": current_section, "text": req_text}
+                    _is_table_row[code] = row
+                elif row and not _is_table_row.get(code):
                     # Upgrade from an inline/back-reference to the canonical table row.
-                    requirements[code] = {
-                        "section": current_section,
-                        "text": req_text,
-                        "_is_table_row": True,
-                    }
+                    requirements[code] = {"section": current_section, "text": req_text}
+                    _is_table_row[code] = True
 
     return requirements
 
@@ -164,10 +166,11 @@ def _scan_file_ast(path: Path, base_dir: Path | None = None) -> list[tuple[str, 
                         if codes:
                             docstring_codes[node.name] = codes
 
-    # ---- Pass 2: line scan — inline comments and function-name encoding. ----
+    # ---- Pass 2: line scan — function-name encoding + tokenize for true comments. ----
     current_func: str | None = None
     comment_codes: dict[str, list[str]] = defaultdict(list)
 
+    # Sub-pass A: function-name encoding (line scan only, not comment detection).
     for line in lines:
         func_name = _extract_function_name(line)
         if func_name:
@@ -175,19 +178,30 @@ def _scan_file_ast(path: Path, base_dir: Path | None = None) -> list[tuple[str, 
             # Function-name encoding: test_R_EXE_001_... → R-EXE-001
             name_codes = _extract_codes_from_string(func_name.replace("_", "-"))
             if name_codes:
-                context = current_func
-                comment_codes[context].extend(name_codes)
+                comment_codes[current_func].extend(name_codes)
 
-        # Inline comments.
-        if "#" in line:
-            comment_part = line[line.index("#") :]
-            codes = _extract_codes_from_string(comment_part)
-            if codes:
-                context = current_func if current_func else "module"
-                comment_codes[context].extend(codes)
+    # Sub-pass B: tokenize to identify true comment tokens (avoids string-literal FPs).
+    current_func = None
+    try:
+        token_gen = tokenize.generate_tokens(io.StringIO(source).readline)
+        for tok_type, tok_string, tok_start, _tok_end, _line_text in token_gen:
+            # Track which function we're inside by re-scanning function defs.
+            line_no = tok_start[0]
+            raw_line = lines[line_no - 1] if 0 < line_no <= len(lines) else ""
+            fn = _extract_function_name(raw_line)
+            if fn:
+                current_func = fn
+            if tok_type == tokenize.COMMENT:
+                codes = _extract_codes_from_string(tok_string)
+                if codes:
+                    context = current_func if current_func else "module"
+                    comment_codes[context].extend(codes)
+    except tokenize.TokenError:
+        pass  # Incomplete source — best effort.
 
     # ---- Merge: docstrings take priority; comments supplement. ----
-    all_contexts: set[str] = set(docstring_codes) | set(comment_codes)
+    # Use dict.fromkeys to preserve insertion order while deduplicating contexts.
+    all_contexts = dict.fromkeys(list(docstring_codes) + list(comment_codes))
     for context in all_contexts:
         merged = list(
             dict.fromkeys(docstring_codes.get(context, []) + comment_codes.get(context, []))
@@ -211,7 +225,7 @@ def scan_tests(tests_dir: Path) -> dict[str, list[str]]:
                 if test_ref not in coverage[code]:
                     coverage[code].append(test_ref)
 
-    return dict(coverage)
+    return {code: sorted(refs) for code, refs in coverage.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -408,6 +422,7 @@ def generate_report(
         "",
     ]
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text("\n".join(lines), encoding="utf-8")
 
     return {
