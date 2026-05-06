@@ -572,8 +572,10 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
     """_build_entry_state() maps avg_entry_price and held_days for open positions."""
     event_store = EventStore(tmp_path / "data" / "milodex.db")
 
-    # Seed a paper BUY trade for SPY 5 days ago
-    buy_date = datetime.now(tz=UTC) - timedelta(days=5)
+    # Seed a paper BUY trade for SPY 7 days ago.  Anchor to date.today() so that
+    # _build_entry_state's (date.today() - trade.recorded_at.date()).days is
+    # exactly 7 regardless of timezone offset between UTC and local time.
+    buy_date = datetime.combine(date.today() - timedelta(days=7), datetime.min.time(), tzinfo=UTC)
     explanation_id = event_store.append_explanation(
         ExplanationEvent(
             recorded_at=buy_date,
@@ -678,7 +680,7 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
 
     assert "SPY" in entry_state
     assert entry_state["SPY"]["entry_price"] == 100.0
-    assert entry_state["SPY"]["held_days"] >= 5
+    assert entry_state["SPY"]["held_days"] == 7
 
 
 def test_runner_builds_empty_entry_state_when_no_positions(
