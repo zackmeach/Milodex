@@ -64,7 +64,7 @@ Attribution is approximate — multiple PRs landed simultaneously and their effe
 | Strategy | Δ | Dominant driver | Mechanism |
 |---|---:|---|---|
 | `tsmom.curated_largecap` | **+1.13** | PR 1.1 split adjustment | Held AAPL/NVDA/TSLA/AMZN/GOOGL through their 2020–22 splits. Each split previously recorded as a 50–95% one-day MTM drop. With `Adjustment.SPLIT`, those artificial drawdowns vanish. |
-| `52w_high_proximity` | **+0.98** | PR 1.2 universe coverage + PR 1.1 split | Was running on 20 of 97 declared sp100 symbols; now runs on the full universe. Plus exposure to the same large-cap splits as tsmom. |
+| `52w_high_proximity` | **+0.98** | PR 1.2 universe coverage + PR 1.1 split | Was running on 20 of 97 declared sp100 symbols; now runs on the full universe (753 trades post-fix). Plus exposure to the same large-cap splits as tsmom. |
 | `turn_of_month.spy` | **+0.71** | PR 2.1 T+1 fill timing | Calendar anomaly that buys near month-end; previously decided AND filled on the same close ate the entire intra-day signal. Filling at T+1 open captures the open-to-close drift the strategy actually targets. |
 | `donchian_20_10.sector_etfs` | **+0.67** | PR 2.2 ETF-tier slippage | Pure sector ETFs, no splits, no coverage gap. The 7-bps difference (10 → 3) on 419 trades is ~3% of round-trip cost. The lookahead fix (PR 2.1) compounds the same way. |
 | `bbands_lowerband.curated_largecap` | **+0.53** | PR 2.2 slippage + PR 1.1 splits | Section 3.2 of the original analysis predicted slippage drag fully accounted for the −0.63% net return. Confirmed: at 5 bps (sp100 tier) the strategy clears zero. Splits exposure adds the rest. |
@@ -74,8 +74,8 @@ Attribution is approximate — multiple PRs landed simultaneously and their effe
 
 | Strategy | Δ | Driver |
 |---|---:|---|
-| `pullback_rsi2.curated_largecap` | **+0.40** | The canonical regression case from `test_state_machine.py:194-222`. DB had 0.327 (artifact-derided as wrong); post-fix it's 0.73. The DB number was directionally right; the engine was understating the magnitude through largecap-splits exposure. |
-| `nr7_inside.liquid_largecap` | **+0.47** | Universe coverage fix (was 20/97 sp100). Still negative, but no longer the −0.58 artifact. The strategy is genuinely null but the original number was indefensible. |
+| `pullback_rsi2.curated_largecap` | **+0.40** | The canonical regression case from `test_state_machine.py:194-222`. DB had 0.327 (the strategy-bank-final-comparison artifact derided this number as wrong; post-fix it's 0.73). The DB number was directionally right; the engine was understating the magnitude through largecap-splits exposure. |
+| `nr7_inside.liquid_largecap` | **+0.47** | Universe coverage fix: trade count jumped 20-symbol to 97-symbol (929 trades post-fix). Sharpe still negative (−0.11), but no longer the −0.58 artifact. The strategy is genuinely null; the original number was indefensible. |
 
 ### Strategies that got worse
 
@@ -90,7 +90,7 @@ These two are the cleanest cases for the lookahead correction. A strategy whose 
 
 Sharpe **+0.80**, max DD 18.72%, **20 fills** over five years. Both block reasons — DD > 15% and trades < 30 — are predicted by structural cadence:
 
-- Weekly rotation = ~52 decisions/year × 5y = 260 decisions, of which most are no-change. Twenty fills (= ten round-trips) is the natural rate for dual-momentum.
+- Weekly rotation = ~52 decisions/year × 5y = 260 decisions, of which most are no-change. Twenty fills (each fill is one buy-or-sell leg, so this is ~10 round-trips) is the natural rate for dual-momentum.
 - Lower fill count means each individual round-trip has higher per-trade weight, so the empirical max DD across just 4 walk-forward windows is naturally noisier.
 
 A cadence-aware gate (PR 3.2 in the original plan) would set the trade floor based on cadence; a stage-aware gate (PR 3.1) would let the strategy pass backtest→paper on its Sharpe alone. Either fix unblocks this strategy. Without them, gem_weekly's strong Sharpe goes nowhere.
@@ -140,6 +140,7 @@ If you'd rather hold off on PR 3.1+3.2: the current 5 passes are still a usable 
 - **Walk-forward window count.** Post-fix Sharpes are aggregated across 4 OOS folds. Sample sizes for non-fragile strategies (most of the bank) cleanly satisfy the 30-trade floor at the *aggregate* level; per-fold counts are smaller and less stable.
 - **Database authority.** All 13 rows above are now event-store rows (run IDs included). PR 4.1's research-screen persistence fix is doing its job — there's no DB↔artifact divergence in this re-baseline.
 - **Correlation matrix appended below.** The diversification picture is mixed: the four passes have pairwise correlations in the 0.18–0.73 range, which is acceptable but not orthogonal. donchian and atr_channel at 0.73 are essentially the same strategy in different clothes.
+- **Fragility flags.** Three of the seven blocked rows are flagged single-window-fragile (ToM, 52w, xsec_rotation) — those Sharpes are concentrated in one of four walk-forward folds and shouldn't be treated as stable estimates. One pass row is also flagged fragile: **rsi2** (Sharpe 0.73, fragile=True). Before allocating to rsi2 in paper trading, a per-window Sharpe inspection is warranted; if its edge collapses outside one fold, treat the aggregate Sharpe as optimistic.
 
 ---
 
