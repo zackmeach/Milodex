@@ -140,7 +140,7 @@ Every command supports `--json` for machine-readable output. The `--json` contra
 ### Run the test suite
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                                 # 701 tests, ~50s
+.\.venv\Scripts\python.exe -m pytest                                 # 701 tests, ~70s
 .\.venv\Scripts\python.exe -m pytest --cov=src/milodex --cov-report=term-missing
 .\.venv\Scripts\python.exe -m ruff check src tests
 .\.venv\Scripts\python.exe -m ruff format --check src tests

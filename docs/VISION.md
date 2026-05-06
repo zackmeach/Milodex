@@ -318,7 +318,7 @@ Trade log with decision reasoning, daily portfolio snapshots, running SPY benchm
 Formal state machine for `backtest → paper → micro_live → live`. Stage transitions require evidence (Sharpe > 0.5, max drawdown < 15%, min 30 trades) and — for `micro_live` and above — explicit operator approval. Stage is enforced at the risk layer: a strategy whose config declares `stage: paper` cannot submit live orders even if the operator edits code by accident.
 
 ### Phase 2+ *(Phases 2 and 3 closed; Phase 4 in planning)*
-Phase 2 closed the Phase 1 carry list and locked the honest-signal property (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Phase 4 planning is underway. Longer-horizon items still deferred: Crypto universe, ML-driven signals, sentiment / alternative data, additional brokers, desktop GUI. See `docs/SRS.md` Phase 2+ appendix and the active planning doc for details.
+Phase 2 closed the Phase 1 carry list and locked the honest-signal property (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Phase 4 planning is underway. Longer-horizon items still deferred: Crypto universe, ML-driven signals, sentiment / alternative data, additional brokers, desktop GUI. See `docs/SRS.md` Phase 2+ appendix and [`docs/PHASE4_PLANNING.md`](PHASE4_PLANNING.md) for details.
 
 ---
 
