@@ -13,6 +13,15 @@ universe:
   id: "universe.phase1.curated.v1"
   version: 1
   slippage_pct: 0.0005  # 5 bps — mixed ETF + large-cap single-name universe
+  # NOT survivorship-corrected: the 20 single-name large-caps were chosen
+  # using a present-day liquidity filter and applied retroactively to the
+  # 2020-2024 evaluation windows. Stocks that were not large-cap in 2020
+  # are silently included; stocks that left the large-cap tier (or were
+  # delisted) are silently excluded. Affected research-target strategies:
+  # tsmom, rsi2, bbands. ETFs in this universe are immune (all stable since
+  # before 2020). Planned fix: point-in-time membership reconstruction —
+  # see docs/RISK_POLICY.md "Known Backtest Limitations and Biases".
+  survivorship_corrected: false
   description: >
     Small curated universe of highly liquid U.S. common stocks and plain
     ETFs for Phase 1 research-target strategies. Chosen for stable

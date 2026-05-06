@@ -15,6 +15,7 @@ from milodex.strategies.loader import (
     StrategyLoader,
     StrategyRegistry,
     compute_config_hash,
+    resolve_universe_survivorship_corrected,
 )
 
 
@@ -224,3 +225,69 @@ def test_loader_builds_strategy_context(valid_strategy_config: Path, registry: S
     assert loaded.context.config_hash == compute_config_hash(valid_strategy_config)
     assert loaded.context.disable_conditions == ("manual_test_pause",)
     assert loaded.context.universe == ("SPY",)
+
+
+# --- Survivorship-bias disclosure ---------------------------------------
+
+
+def _write_universe_manifest(
+    tmp_path: Path,
+    *,
+    universe_id: str,
+    survivorship_corrected: bool | None,
+) -> Path:
+    """Write a minimal universe manifest YAML with optional survivorship flag.
+
+    ``survivorship_corrected=None`` writes a manifest *without* the field, to
+    exercise the default-False path.
+    """
+    lines = [
+        "universe:",
+        f'  id: "{universe_id}"',
+        "  version: 1",
+        "  description: 'Test manifest.'",
+        "  etfs:",
+        '    - "SPY"',
+        "  stocks: []",
+    ]
+    if survivorship_corrected is not None:
+        lines.append(f"  survivorship_corrected: {str(survivorship_corrected).lower()}")
+    manifest_path = tmp_path / f"universe_{universe_id.replace('.', '_')}.yaml"
+    manifest_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # The lookup APIs take a *config path* whose parent is scanned for
+    # universe_*.yaml siblings — so produce a placeholder strategy-side path
+    # that lives next to the manifest.
+    sibling = tmp_path / "_dummy_strategy.yaml"
+    sibling.write_text("placeholder", encoding="utf-8")
+    return sibling
+
+
+def test_resolve_universe_survivorship_corrected_returns_true_when_flag_true(tmp_path: Path):
+    sibling = _write_universe_manifest(
+        tmp_path, universe_id="universe.etf_only.v1", survivorship_corrected=True
+    )
+    assert resolve_universe_survivorship_corrected("universe.etf_only.v1", sibling) is True
+
+
+def test_resolve_universe_survivorship_corrected_returns_false_when_flag_false(tmp_path: Path):
+    sibling = _write_universe_manifest(
+        tmp_path, universe_id="universe.has_stocks.v1", survivorship_corrected=False
+    )
+    assert resolve_universe_survivorship_corrected("universe.has_stocks.v1", sibling) is False
+
+
+def test_resolve_universe_survivorship_corrected_defaults_false_when_field_missing(tmp_path: Path):
+    """A manifest predating this field defaults to ``False`` — the conservative
+    answer when survivorship status is undeclared."""
+    sibling = _write_universe_manifest(
+        tmp_path, universe_id="universe.legacy.v1", survivorship_corrected=None
+    )
+    assert resolve_universe_survivorship_corrected("universe.legacy.v1", sibling) is False
+
+
+def test_resolve_universe_survivorship_corrected_raises_on_unknown_ref(tmp_path: Path):
+    sibling = _write_universe_manifest(
+        tmp_path, universe_id="universe.exists.v1", survivorship_corrected=True
+    )
+    with pytest.raises(ValueError, match="universe_ref 'universe.missing.v1' not found"):
+        resolve_universe_survivorship_corrected("universe.missing.v1", sibling)

@@ -7,6 +7,10 @@ universe:
   id: "universe.spy_only.v1"
   version: 1
   slippage_pct: 0.0003  # 3 bps — single ETF, highest liquidity
+  # Survivorship-bias-immune: SPY has traded continuously since 1993; there is
+  # no constituent-membership question. See docs/RISK_POLICY.md "Known Backtest
+  # Limitations and Biases".
+  survivorship_corrected: true
   description: >
     Single-ETF SPY universe for broad-market calendar and lifecycle-proof-style
     research candidates. Subject to the instrument whitelist in ADR 0016.

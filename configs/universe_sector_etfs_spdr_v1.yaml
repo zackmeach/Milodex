@@ -13,6 +13,11 @@ universe:
   id: "universe.sector_etfs_spdr.v1"
   version: 1
   slippage_pct: 0.0003  # 3 bps — highly-liquid SPDR sector ETFs
+  # Survivorship-bias-immune: the original nine Select Sector SPDRs launched
+  # in 1998; XLRE was added in 2015 and XLC in 2018, both well before Phase 1
+  # evaluation windows. No SPDR sector ETF has been delisted. See
+  # docs/RISK_POLICY.md "Known Backtest Limitations and Biases".
+  survivorship_corrected: true
   description: >
     The eleven GICS-sector SPDR ETFs (Select Sector SPDR family). Used by
     cross-sectional momentum, channel-breakout, and sector-rotation
