@@ -59,6 +59,7 @@ class WalkForwardWindow:
     sharpe: float | None
     max_drawdown_pct: float
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
+    round_trip_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -98,6 +99,7 @@ class WalkForwardResult:
     oos_equity_curve: list[tuple[date, float]]
     stability: WalkForwardStability
     db_id: int | None = None
+    oos_round_trip_count: int = 0
 
 
 def compute_window_spans(
@@ -236,6 +238,7 @@ def run_walk_forward(
                     sharpe=window_sharpe,
                     max_drawdown_pct=window_dd * 100.0,
                     equity_curve=list(output.equity_curve),
+                    round_trip_count=output.round_trip_count,
                 )
             )
     except Exception:
@@ -261,6 +264,7 @@ def run_walk_forward(
             "windows": [_window_to_dict(w) for w in windows],
             "oos_aggregate": {
                 "trade_count": aggregate.trade_count,
+                "round_trip_count": aggregate.round_trip_count,
                 "trading_days": aggregate.trading_days,
                 "total_return_pct": aggregate.total_return_pct,
                 "sharpe": aggregate.sharpe,
@@ -296,12 +300,14 @@ def run_walk_forward(
         oos_equity_curve=aggregate.equity_curve,
         stability=stability,
         db_id=db_run_id,
+        oos_round_trip_count=aggregate.round_trip_count,
     )
 
 
 @dataclass(frozen=True)
 class _OosAggregate:
     trade_count: int
+    round_trip_count: int
     trading_days: int
     total_return_pct: float
     sharpe: float | None
@@ -321,6 +327,7 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
     if not windows:
         return _OosAggregate(
             trade_count=0,
+            round_trip_count=0,
             trading_days=0,
             total_return_pct=0.0,
             sharpe=None,
@@ -341,12 +348,14 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
             stitched.append((day, running_equity))
             all_returns.append(r)
     trade_count = sum(w.trade_count for w in windows)
+    round_trip_count = sum(w.round_trip_count for w in windows)
     trading_days = sum(w.trading_days for w in windows)
     total_return_pct = (running_equity - initial_equity) / initial_equity * 100.0
     sharpe = sharpe_from_daily_returns(all_returns)
     max_dd, _ = max_drawdown_from_equity(stitched)
     return _OosAggregate(
         trade_count=trade_count,
+        round_trip_count=round_trip_count,
         trading_days=trading_days,
         total_return_pct=total_return_pct,
         sharpe=sharpe,
