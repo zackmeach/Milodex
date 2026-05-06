@@ -66,3 +66,10 @@ exposure_policy:
   # Sells that close or shrink positions remain allowed even during an active kill switch.
   reducing_orders_permissive: true
   reducing_allowed_during_kill_switch: true
+
+backtesting:
+  # Minimum fraction of declared-universe symbols that must have bars in the
+  # requested window before a backtest is allowed to run.  A symbol with zero
+  # rows counts as missing even if the provider returned an empty barset.
+  # Override per-strategy via `risk.min_universe_coverage_pct` in the strategy YAML.
+  min_universe_coverage_pct: 0.80

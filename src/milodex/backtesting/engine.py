@@ -30,6 +30,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
@@ -43,11 +44,20 @@ from milodex.data.simulated import SimulatedDataProvider
 from milodex.execution.models import ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.execution.state import KillSwitchStateStore
-from milodex.risk import NullRiskEvaluator
+from milodex.risk import NullRiskEvaluator, load_backtesting_defaults
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
     from milodex.data.provider import DataProvider
+
+
+class UniverseCoverageError(RuntimeError):
+    """Raised by :meth:`BacktestEngine.prefetch_bars` when fewer than the configured
+    fraction of declared-universe symbols have bars in the requested window.
+
+    Prevents silent results computed over a tiny subset of the intended universe
+    (e.g. NR7/52w-high running on 20 of 97 declared SP100 symbols).
+    """
 
 
 @dataclass
@@ -109,6 +119,12 @@ class BacktestEngine:
             Defaults to the value in the strategy config's ``backtest.slippage_pct``.
         commission_per_trade: Fixed commission deducted per executed trade in USD.
             Defaults to the value in the strategy config's ``backtest.commission_per_trade``.
+        risk_defaults_path: Path to the global ``risk_defaults.yaml``.  Used as
+            tier-2 fallback for ``min_universe_coverage_pct`` when the
+            per-strategy config does not specify an override.  Defaults to
+            ``configs/risk_defaults.yaml`` relative to the current working
+            directory.  The file is read once and the result cached on first
+            call to :meth:`prefetch_bars`.
     """
 
     def __init__(
@@ -120,6 +136,7 @@ class BacktestEngine:
         initial_equity: float = 100_000.0,
         slippage_pct: float | None = None,
         commission_per_trade: float | None = None,
+        risk_defaults_path: Path | None = None,
     ) -> None:
         self._loaded = loaded
         self._data_provider = data_provider
@@ -135,6 +152,10 @@ class BacktestEngine:
             if commission_per_trade is not None
             else float(loaded.config.backtest.get("commission_per_trade", 0.0))
         )
+        self._risk_defaults_path: Path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+        # Populated lazily on first call to prefetch_bars; avoids re-reading on
+        # every walk-forward window.
+        self._backtesting_defaults: dict | None = None
 
     def run(
         self,
@@ -214,18 +235,69 @@ class BacktestEngine:
 
         Exposed so the walk-forward runner can fetch once and re-use across
         windows, avoiding N×warmup fetches for N windows.
+
+        Raises :class:`UniverseCoverageError` when fewer than the configured
+        fraction of declared-universe symbols have bars.  An empty barset (the
+        provider returned the symbol but with zero rows) counts as missing.
+
+        Threshold resolution order (first match wins):
+        1. ``loaded.config.risk["min_universe_coverage_pct"]`` — per-strategy
+           override in the strategy YAML's ``risk:`` section.
+        2. ``configs/risk_defaults.yaml`` ``backtesting.min_universe_coverage_pct``
+           — global default read once and cached.
+        3. Hardcoded fallback ``0.80``.
         """
         universe = list(self._loaded.context.universe)
         if not universe:
             msg = "Strategy must resolve a non-empty universe before backtesting."
             raise ValueError(msg)
         warmup_start = start_date - timedelta(days=self._warmup_calendar_days())
-        return self._data_provider.get_bars(
+        bars = self._data_provider.get_bars(
             symbols=universe,
             timeframe=Timeframe.DAY_1,
             start=warmup_start,
             end=end_date,
         )
+
+        covered = [s for s in universe if s in bars and len(bars[s]) > 0]
+        coverage = len(covered) / len(universe)
+        threshold = self._resolve_coverage_threshold()
+        if coverage < threshold:
+            missing = sorted(set(universe) - set(covered))
+            shown = missing[:10]
+            suffix = "..." if len(missing) > 10 else ""
+            msg = (
+                f"Universe coverage {coverage:.1%} < {threshold:.1%} "
+                f"({len(covered)}/{len(universe)} symbols available). "
+                f"Missing: {shown}{suffix}"
+            )
+            raise UniverseCoverageError(msg)
+
+        return bars
+
+    def _resolve_coverage_threshold(self) -> float:
+        """Return the effective ``min_universe_coverage_pct`` threshold.
+
+        Checks tiers in order: per-strategy risk config → global risk_defaults.yaml
+        backtesting section → hardcoded 0.80 fallback.
+        """
+        # Tier 1: per-strategy override.
+        strategy_value = self._loaded.config.risk.get("min_universe_coverage_pct")
+        if strategy_value is not None:
+            return float(strategy_value)
+
+        # Tier 2: global risk_defaults.yaml (read once, cached).
+        if self._backtesting_defaults is None:
+            if self._risk_defaults_path.exists():
+                self._backtesting_defaults = load_backtesting_defaults(self._risk_defaults_path)
+            else:
+                self._backtesting_defaults = {}
+        global_value = self._backtesting_defaults.get("min_universe_coverage_pct")
+        if global_value is not None:
+            return float(global_value)
+
+        # Tier 3: hardcoded fallback.
+        return 0.80
 
     def simulate_window(
         self,

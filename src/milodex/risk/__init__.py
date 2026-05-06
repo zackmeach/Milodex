@@ -10,7 +10,7 @@ Per ADR 0019 the risk module owns its own inputs and outputs
 depends on ``risk/``, never the reverse.
 """
 
-from milodex.risk.config import RiskDefaults, load_risk_defaults
+from milodex.risk.config import RiskDefaults, load_backtesting_defaults, load_risk_defaults
 from milodex.risk.evaluator import EvaluationContext, RiskEvaluator
 from milodex.risk.models import RiskCheckResult, RiskDecision
 from milodex.risk.policy import (
@@ -29,6 +29,7 @@ __all__ = [
     "RiskDefaults",
     "RiskEvaluator",
     "RiskPolicy",
+    "load_backtesting_defaults",
     "load_risk_defaults",
     "synthetic_bypass_decision",
 ]
