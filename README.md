@@ -6,7 +6,7 @@ Milodex runs locally, connects to a brokerage via official APIs, and takes strat
 
 The name is a nod to Milo — a golden retriever — and the word "Index." Loyal, tireless, and always fetching returns.
 
-> **Status:** Phase 1, paper-only. Five of the six Phase 1 success criteria are closed (SC-1 / SC-2 / SC-4 / SC-5 / SC-6); the remaining gating item is SC-3's meanrev half — a single live paper-session shakeout during US market hours. Live capital is gated behind a future ADR, not a feature flag. See [docs/VISION.md](docs/VISION.md) and [docs/ROADMAP_PHASE1.md](docs/ROADMAP_PHASE1.md).
+> **Status:** Phases 1–3 closed; Phase 4 in planning. All six Phase 1 success criteria closed 2026-05-04 (ADR 0023). Phase 2 closed carry-list items CI-1/CI-2/CS-1/P-1 (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Live capital remains gated behind an ADR, not a feature flag. See [docs/VISION.md](docs/VISION.md) and [docs/ROADMAP_PHASE1.md](docs/ROADMAP_PHASE1.md).
 
 ---
 
@@ -22,7 +22,7 @@ Most personal trading projects are a strategy script plus a broker SDK call. Mil
 - **Kill switch with manual reset.** When tripped, trading halts. There is no auto-resume path. ([ADR 0005](docs/adr/0005-kill-switch-manual-reset.md))
 - **An event-sourced SQLite store as the source of truth** for trades, explanations, promotion-log entries, strategy runs, kill-switch events, and frozen manifests. Append-only, content-hash-keyed where idempotency matters. ([ADR 0011](docs/adr/0011-sqlite-event-store.md))
 - **A rich-terminal CLI that's the daily operator surface.** Color-coded by exposure (live red, paper yellow, backtest cyan), threshold-coded by promotion gate (Sharpe ≥ 0.5 green / 0–0.5 yellow / negative red, drawdown thresholded at 7.5% and 15%), with kill-switch banners that override everything else on screen. The `--json` machine contract sits next to it untouched, so the same command output drives operators or scripts. The CLI is what the GUI gate ([ENGINEERING_STANDARDS.md §"GUI Readiness Gate"](docs/ENGINEERING_STANDARDS.md)) requires before any GUI work begins.
-- **ADR-driven design.** 21 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
+- **ADR-driven design.** 28 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
 
 ---
 
@@ -56,9 +56,8 @@ Ten modules in `src/milodex/`: `broker`, `strategies`, `risk`, `execution`, `bac
 
 ## By the Numbers
 
-- **512 tests** covering strategies, risk, execution, promotion, event store, CLI, backtesting, and end-to-end flows
-- **21 ADRs** documenting the reasoning behind consequential architectural decisions
-- **67 source modules / 67 test modules** in a `src/`-layout Python 3.11 package
+- **28 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0028)
+- **77 source modules / 70 test modules** in a `src/`-layout Python 3.11 package
 - **90%+ test coverage** with a one-way ratchet (CI fails on regression below the floor)
 - Ruff-linted, formatted, and clean
 
@@ -80,7 +79,7 @@ The `docs/` tree is deliberate, not decorative — the documentation *is* part o
 | [ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md) | Code style, testing, scaffolded-vs-implemented discipline, coverage ratchet |
 | [CLI_UX.md](docs/CLI_UX.md) | CLI design principles and command surface |
 | [REPORTING.md](docs/REPORTING.md) | Trust report contract, confidence labels, uncertainty surfacing |
-| [adr/](docs/adr/) | 21 Architecture Decision Records |
+| [adr/](docs/adr/) | 28 Architecture Decision Records (0001–0028) |
 
 ---
 
@@ -141,7 +140,7 @@ Every command supports `--json` for machine-readable output. The `--json` contra
 ### Run the test suite
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                                 # 512 tests, ~50s
+.\.venv\Scripts\python.exe -m pytest                                 # 701 tests, ~70s
 .\.venv\Scripts\python.exe -m pytest --cov=src/milodex --cov-report=term-missing
 .\.venv\Scripts\python.exe -m ruff check src tests
 .\.venv\Scripts\python.exe -m ruff format --check src tests
@@ -165,7 +164,7 @@ src/milodex/
     cli/           Command-line interface (Phase 1 primary surface) + rich-terminal views
 configs/           Strategy + risk YAML (parameters live here, not in code)
 docs/              Vision, SRS, ADRs, operations, governance, reporting contract
-tests/             Mirrors src/ structure — 67 test modules, 512 tests
+tests/             Mirrors src/ structure — 70 test modules, 701 tests
 ```
 
 ---
@@ -189,14 +188,14 @@ Python 3.11 · SQLite (event store) · Alpaca (broker + market data) · Yahoo Fi
 
 ## What's Been Validated
 
-The Phase 1 success criteria are tracked with inline forensic evidence in [ROADMAP_PHASE1.md §2](docs/ROADMAP_PHASE1.md). As of 2026-04-26:
+All six Phase 1 success criteria are closed with inline forensic evidence in [ROADMAP_PHASE1.md §2](docs/ROADMAP_PHASE1.md). Phase 1 was formally closed 2026-05-04 via ADR 0023.
 
-- **SC-1 closed.** Both strategies are defined entirely in YAML *and* have frozen manifests at the `paper` stage. Runtime drift checks will refuse execution if either YAML is edited without a fresh `promotion freeze`.
-- **SC-2 closed.** Multi-year walk-forward backtests run from the CLI for both strategies. Inline run IDs in the roadmap.
-- **SC-3 ⅓ closed.** Regime strategy fired a real paper order against Alpaca on 2026-04-23 (broker order `cfa3e348-35a` filled at $710.21). Meanrev half pending its own market-hours shakeout.
-- **SC-4 closed.** `RiskEvaluator` rejected a real attempted trade (a $100k notional order tripped four simultaneous risk checks) — non-synthetic evidence the layer works.
-- **SC-5 closed.** Kill switch was tripped, halted trading, refused submission with `kill_switch_active`, and required manual reset to recover.
-- **SC-6 closed.** Operator can answer "is this strategy making/losing money, and how does it compare to SPY?" from the CLI alone via the trust report and `analytics metrics --compare-spy`.
+- **SC-1 closed** 2026-04-26. Both strategies defined entirely in YAML with frozen manifests at `paper` stage. Runtime drift checks refuse execution on hash mismatch.
+- **SC-2 closed** 2026-04-26. Multi-year walk-forward backtests run from the CLI for both strategies. Meanrev OOS-aggregate Sharpe 0.33 — honest refusal, not a setback.
+- **SC-3 closed** 2026-04-28. Regime fired BUY SPY ×12 on 2026-04-23 (filled $710.21). Meanrev fired simultaneous BUY GLD ×23 + BUY SLV ×152 on 2026-04-28 (both filled).
+- **SC-4 closed** 2026-04-23. `RiskEvaluator` rejected a $100k notional order — four simultaneous gate violations, non-synthetic evidence the layer works.
+- **SC-5 closed** 2026-04-23/2026-05-04. Kill switch exercised against both strategies — halted trading, refused submission with `kill_switch_active`, required manual reset.
+- **SC-6 closed** 2026-04-26. Operator can answer "is this strategy making/losing money, and how does it compare to SPY?" from the CLI alone.
 
 ---
 

@@ -306,19 +306,19 @@ Data and broker layers. `DataProvider` and `BrokerClient` abstract interfaces be
 ### Phase 1.1 — Execution & CLI *(complete)*
 `ExecutionService` that normalizes trade intents and pipes them through the `RiskEvaluator` before submission. Eleven enforced risk checks (kill switch, paper-mode enforcement, stage eligibility, market hours, data staleness, daily loss cap, fat-finger, single-position cap, total exposure cap, concurrent positions cap, duplicate-order detection). `KillSwitchStateStore` with manual-reset semantics. `argparse`-based CLI with real `status`, `positions`, `orders`, `data bars`, `config validate`, `trade preview`, `trade submit --paper`, `trade order-status`, `trade cancel`, and `trade kill-switch status` commands.
 
-### Phase 1.2 — Strategy Engine
+### Phase 1.2 — Strategy Engine *(complete)*
 First real signal logic. A strategy runtime that reads a YAML config, subscribes to a `BarSet` stream, produces trade intents, and hands them to `ExecutionService`. Two strategy instances are delivered in this sub-phase at distinct purposes: the **SPY/SHY 200-DMA lifecycle-proof strategy** (exercises the full platform path end-to-end without claims about edge) and the first **mean-reversion** research-target strategy (the first real edge-hunt on daily swing tempo). The harness is structured so momentum or breakout research-target strategies can be added without refactor. A minimal backtest harness rides alongside so the same strategy code runs historical and live with no branches.
 
 The strategy engine runs as a **manually-invoked, long-running foreground process** (`milodex strategy run <name>`). The operator starts it and leaves it running while markets are open. Shutdown is intentional and dialog-driven: the operator distinguishes between a **controlled stop** (graceful, finish the current evaluation cycle and exit without accepting new intents) and the **kill switch** (immediate abort, cancel all open orders, persist halt state). See ADR 0012 for the full runtime model.
 
-### Phase 1.3 — Analytics & Reporting
+### Phase 1.3 — Analytics & Reporting *(complete)*
 Trade log with decision reasoning, daily portfolio snapshots, running SPY benchmark comparison, and the core metrics named in "Observability" (Sharpe, Sortino, max drawdown, win rate, avg win/loss, total return). Exportable reports. Nothing is complete until the operator can answer "is this strategy making money?" from the CLI without opening the code.
 
-### Phase 1.4 — Promotion Pipeline
+### Phase 1.4 — Promotion Pipeline *(complete)*
 Formal state machine for `backtest → paper → micro_live → live`. Stage transitions require evidence (Sharpe > 0.5, max drawdown < 15%, min 30 trades) and — for `micro_live` and above — explicit operator approval. Stage is enforced at the risk layer: a strategy whose config declares `stage: paper` cannot submit live orders even if the operator edits code by accident.
 
-### Phase 2+ *(appendix only — not in scope now)*
-Crypto universe, ML-driven signals, sentiment / alternative data, additional brokers, desktop GUI (PySide6 or Tauri), installer distribution for friends. Each is deliberately parked until phase one has produced at least one validated strategy. See `docs/SRS.md` Phase 2+ appendix for details.
+### Phase 2+ *(Phases 2 and 3 closed; Phase 4 in planning)*
+Phase 2 closed the Phase 1 carry list and locked the honest-signal property (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Phase 4 planning is underway. Longer-horizon items still deferred: Crypto universe, ML-driven signals, sentiment / alternative data, additional brokers, desktop GUI. See `docs/SRS.md` Phase 2+ appendix and [`docs/PHASE4_PLANNING.md`](PHASE4_PLANNING.md) for details.
 
 ---
 
