@@ -13,6 +13,7 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+import yaml
 
 from milodex.backtesting.engine import BacktestEngine, UniverseCoverageError
 from milodex.core.event_store import EventStore
@@ -113,11 +114,17 @@ def _make_event_store() -> EventStore:
     return EventStore(Path(tmp))
 
 
-def _make_engine(loaded: MagicMock, provider: MagicMock) -> BacktestEngine:
+def _make_engine(
+    loaded: MagicMock,
+    provider: MagicMock,
+    *,
+    risk_defaults_path: Path | None = None,
+) -> BacktestEngine:
     return BacktestEngine(
         loaded=loaded,
         data_provider=provider,
         event_store=_make_event_store(),
+        risk_defaults_path=risk_defaults_path,
     )
 
 
@@ -262,5 +269,179 @@ def test_error_message_format():
     assert "0.0%" in msg
     assert "80.0%" in msg
     assert "0/5" in msg
-    # The trailing "..." ellipsis marker must be present.
-    assert "..." in msg
+    # 5 missing symbols → list is NOT truncated, so "..." must be absent.
+    assert "..." not in msg, f"Unexpected '...' in message with short missing list: {msg}"
+
+
+def test_error_message_suffix_absent_when_list_short():
+    """'...' suffix is absent when 10 or fewer symbols are missing."""
+    universe = tuple(f"SYM{i:02d}" for i in range(10))  # exactly 10 symbols
+    loaded = _make_loaded_strategy(universe)
+
+    # All 10 are missing.
+    provider = MagicMock()
+    provider.get_bars.return_value = {}
+
+    engine = _make_engine(loaded, provider)
+
+    with pytest.raises(UniverseCoverageError) as exc_info:
+        engine.prefetch_bars(_START, _END)
+
+    msg = str(exc_info.value)
+    # Exactly 10 missing → not truncated → no suffix.
+    assert "..." not in msg, f"Unexpected '...' with exactly 10 missing: {msg}"
+
+
+def test_error_message_suffix_present_when_list_truncated():
+    """'...' suffix is present when more than 10 symbols are missing."""
+    universe = tuple(f"SYM{i:02d}" for i in range(15))  # 15 symbols
+    loaded = _make_loaded_strategy(universe)
+
+    # All 15 are missing.
+    provider = MagicMock()
+    provider.get_bars.return_value = {}
+
+    engine = _make_engine(loaded, provider)
+
+    with pytest.raises(UniverseCoverageError) as exc_info:
+        engine.prefetch_bars(_START, _END)
+
+    msg = str(exc_info.value)
+    # 15 missing → truncated to 10 → suffix must be present.
+    assert "..." in msg, f"Expected '...' with 15 missing symbols: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# Tier-2: global risk_defaults.yaml as second tier of threshold resolution
+# ---------------------------------------------------------------------------
+
+
+def _write_risk_defaults_yaml(path: Path, coverage_pct: float) -> None:
+    """Write a minimal risk_defaults.yaml with only the backtesting section."""
+    data = {
+        "kill_switch": {
+            "enabled": True,
+            "max_drawdown_pct": 0.10,
+            "require_manual_reset": True,
+        },
+        "portfolio": {
+            "max_single_position_pct": 0.10,
+            "max_concurrent_positions": 10,
+            "max_total_exposure_pct": 0.50,
+        },
+        "daily_limits": {
+            "max_daily_loss_pct": 0.03,
+            "max_trades_per_day": 20,
+        },
+        "order_safety": {
+            "max_order_value_pct": 0.15,
+            "duplicate_order_window_seconds": 60,
+            "max_data_staleness_seconds": 300,
+        },
+        "backtesting": {
+            "min_universe_coverage_pct": coverage_pct,
+        },
+    }
+    path.write_text(yaml.dump(data), encoding="utf-8")
+
+
+def test_tier2_global_default_fires_when_strategy_has_no_override():
+    """Tier 2 fires: strategy has no override → global default (0.95) is used.
+
+    Universe has 90% coverage.  With global default = 0.95, 0.90 < 0.95
+    so UniverseCoverageError must be raised.
+    """
+    universe = tuple(f"SYM{i:02d}" for i in range(10))  # 10 symbols
+    # Strategy does NOT set min_universe_coverage_pct.
+    loaded = _make_loaded_strategy(universe)
+
+    # 9 of 10 symbols covered → 90% coverage.
+    covered = universe[:9]
+    bars = {sym: _make_barset(20, _START) for sym in covered}
+    provider = MagicMock()
+    provider.get_bars.return_value = bars
+
+    # Write a risk_defaults.yaml that sets global threshold to 95%.
+    tmp_dir = Path(tempfile.mkdtemp())
+    risk_path = tmp_dir / "risk_defaults.yaml"
+    _write_risk_defaults_yaml(risk_path, 0.95)
+
+    engine = _make_engine(loaded, provider, risk_defaults_path=risk_path)
+
+    with pytest.raises(UniverseCoverageError) as exc_info:
+        engine.prefetch_bars(_START, _END)
+
+    msg = str(exc_info.value)
+    # Should report 90% coverage vs 95% threshold from tier 2.
+    assert "90.0%" in msg, f"Expected '90.0%' in: {msg}"
+    assert "95.0%" in msg, f"Expected '95.0%' in: {msg}"
+
+
+def test_tier2_global_default_passes_when_coverage_meets_it():
+    """Tier 2 fires: global default = 0.80; 90% coverage passes."""
+    universe = tuple(f"SYM{i:02d}" for i in range(10))
+    loaded = _make_loaded_strategy(universe)
+
+    # 9 of 10 symbols covered → 90% coverage.
+    covered = universe[:9]
+    bars = {sym: _make_barset(20, _START) for sym in covered}
+    provider = MagicMock()
+    provider.get_bars.return_value = bars
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    risk_path = tmp_dir / "risk_defaults.yaml"
+    _write_risk_defaults_yaml(risk_path, 0.80)
+
+    engine = _make_engine(loaded, provider, risk_defaults_path=risk_path)
+
+    # 90% > 80% global default → must not raise.
+    result = engine.prefetch_bars(_START, _END)
+    assert len(result) == 9
+
+
+def test_tier1_strategy_override_takes_precedence_over_tier2():
+    """Tier 1 wins: strategy sets 0.50; global default is 0.95; 60% passes."""
+    universe = tuple(f"SYM{i:02d}" for i in range(10))
+    # Strategy overrides to 50%.
+    loaded = _make_loaded_strategy(universe, risk_override={"min_universe_coverage_pct": 0.50})
+
+    # 6 of 10 → 60% coverage, which is above 50% (tier 1) but below 95% (tier 2).
+    covered = universe[:6]
+    bars = {sym: _make_barset(20, _START) for sym in covered}
+    provider = MagicMock()
+    provider.get_bars.return_value = bars
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    risk_path = tmp_dir / "risk_defaults.yaml"
+    _write_risk_defaults_yaml(risk_path, 0.95)
+
+    engine = _make_engine(loaded, provider, risk_defaults_path=risk_path)
+
+    # Must NOT raise — tier 1 (50%) is used, not tier 2 (95%).
+    result = engine.prefetch_bars(_START, _END)
+    assert len(result) == 6
+
+
+def test_tier3_fallback_used_when_risk_defaults_file_absent():
+    """Tier 3 fires: no risk_defaults.yaml exists → fallback 0.80 is used.
+
+    50% coverage < 80% fallback → raises.
+    """
+    universe = tuple(f"SYM{i:02d}" for i in range(10))
+    loaded = _make_loaded_strategy(universe)
+
+    covered = universe[:5]
+    bars = {sym: _make_barset(20, _START) for sym in covered}
+    provider = MagicMock()
+    provider.get_bars.return_value = bars
+
+    # Point at a non-existent file — tier 3 should kick in.
+    nonexistent = Path(tempfile.mkdtemp()) / "does_not_exist.yaml"
+
+    engine = _make_engine(loaded, provider, risk_defaults_path=nonexistent)
+
+    with pytest.raises(UniverseCoverageError) as exc_info:
+        engine.prefetch_bars(_START, _END)
+
+    msg = str(exc_info.value)
+    assert "80.0%" in msg, f"Expected tier-3 fallback 80.0% in: {msg}"

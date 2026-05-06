@@ -54,6 +54,24 @@ def load_risk_defaults(path: Path) -> RiskDefaults:
     )
 
 
+def load_backtesting_defaults(path: Path) -> dict[str, Any]:
+    """Load the ``backtesting`` section from a risk-defaults YAML.
+
+    Returns the raw mapping so callers can extract individual keys without
+    requiring a full dataclass for the (currently small) backtesting section.
+    Returns an empty dict when the file exists but has no ``backtesting`` key,
+    preserving backward compatibility.
+    """
+    data = _load_yaml(path)
+    backtesting = data.get("backtesting")
+    if backtesting is None:
+        return {}
+    if not isinstance(backtesting, dict):
+        msg = f"{path}: backtesting must be a mapping"
+        raise ValueError(msg)
+    return dict(backtesting)
+
+
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
         msg = f"Config file does not exist: {path}"
