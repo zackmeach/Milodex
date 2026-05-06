@@ -47,6 +47,15 @@ class EvaluationContext:
     strategy_config: StrategyExecutionConfig | None = None
     runtime_config_hash: str | None = None
     frozen_manifest_hash: str | None = None
+    # Runner-bound stage, set once at strategy-runner startup and immutable for
+    # the life of the runner session. When present, the manifest_drift exemption
+    # is keyed off this value instead of the per-cycle YAML stage field — the
+    # YAML on disk can flap (parallel agent edits, git checkouts, backtest runs)
+    # but the runner's bound stage cannot. None for operator manual trades and
+    # for legacy callers that haven't been routed through the runner — those
+    # fall back to ``strategy_config.stage`` (current behavior). See
+    # ``docs/reviews/2026-05-06-manifest-drift-toctou-race.md``.
+    expected_stage: str | None = None
 
 
 class RiskEvaluator:
@@ -138,6 +147,14 @@ class RiskEvaluator:
         operator trades (no ``strategy_config``) and ``backtest``-stage strategies
         are exempt — the former have no strategy to anchor, the latter have no
         promoted state to freeze.
+
+        The exemption decision is keyed off ``context.expected_stage`` when set
+        (the strategy runner's bound stage at startup) instead of
+        ``context.strategy_config.stage`` (re-loaded per cycle from disk). This
+        closes a TOCTOU race in which a parallel writer flipping the YAML's
+        stage field to ``backtest`` for one read cycle could fire a paper order
+        through the gate. See
+        ``docs/reviews/2026-05-06-manifest-drift-toctou-race.md``.
         """
         if context.strategy_config is None:
             return RiskCheckResult(
@@ -145,18 +162,23 @@ class RiskEvaluator:
                 True,
                 "Manual trade; manifest drift check not applicable.",
             )
-        if context.strategy_config.stage not in {"paper", "micro_live", "live"}:
+        # Prefer the runner-bound stage when present. Falls back to the YAML's
+        # per-cycle stage for callers that haven't been routed through a runner
+        # (operator manual flows, legacy entry points). The fallback preserves
+        # the original behavior for those paths.
+        effective_stage = context.expected_stage or context.strategy_config.stage
+        if effective_stage not in {"paper", "micro_live", "live"}:
             return RiskCheckResult(
                 "manifest_drift",
                 True,
-                f"Stage '{context.strategy_config.stage}' is exempt from manifest drift.",
+                f"Stage '{effective_stage}' is exempt from manifest drift.",
             )
         # Promoted stages MUST supply the runtime hash. A None here means the
         # caller skipped manifest plumbing — that is a programmer error, not a
         # trade-level rejection. Fail loud so it cannot silently regress.
         if context.runtime_config_hash is None:
             raise RuntimeError(
-                f"Promoted stage '{context.strategy_config.stage}' for strategy "
+                f"Promoted stage '{effective_stage}' for strategy "
                 f"'{context.strategy_config.name}' requires runtime_config_hash; "
                 "caller must populate EvaluationContext.runtime_config_hash."
             )
@@ -166,7 +188,7 @@ class RiskEvaluator:
                 passed=False,
                 message=(
                     f"Strategy '{context.strategy_config.name}' has no frozen manifest "
-                    f"at stage '{context.strategy_config.stage}'. Run "
+                    f"at stage '{effective_stage}'. Run "
                     "'milodex promotion freeze' to snapshot the current config."
                 ),
                 reason_code="no_frozen_manifest",
@@ -178,7 +200,7 @@ class RiskEvaluator:
                 message=(
                     f"Runtime config hash {context.runtime_config_hash[:12]} "
                     f"differs from frozen manifest {context.frozen_manifest_hash[:12]} "
-                    f"at stage '{context.strategy_config.stage}'."
+                    f"at stage '{effective_stage}'."
                 ),
                 reason_code="manifest_drift",
             )

@@ -38,6 +38,14 @@ class TradeIntent:
     stop_price: float | None = None
     strategy_config_path: Path | None = None
     submitted_by: str = "operator"
+    # Stage the originating runner was bound to at startup. Strategy runners
+    # set this from the YAML's stage field at config-load time and emit it on
+    # every intent for the life of the session. The risk evaluator routes its
+    # manifest_drift exemption through this when present, instead of the
+    # per-cycle YAML stage field, closing the TOCTOU race surfaced 2026-05-06
+    # (see docs/reviews/2026-05-06-manifest-drift-toctou-race.md). None for
+    # operator manual trades.
+    expected_stage: str | None = None
 
     def normalized_symbol(self) -> str:
         """Return an uppercase symbol for downstream systems."""
