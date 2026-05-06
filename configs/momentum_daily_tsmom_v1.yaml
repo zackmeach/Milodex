@@ -25,7 +25,7 @@ strategy:
   # the harness is being tested for its ability to carry a second research
   # thread, not for its ability to expand the universe — universe expansion
   # is a separate Phase 2+ goal.
-  universe_ref: "universe.phase1.curated.v1"
+  universe_ref: "universe.curated_largecap.v2"
 
   parameters:
     momentum_lookback: 20

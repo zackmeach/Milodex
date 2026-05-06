@@ -100,7 +100,7 @@ def _context(
             "ranking_metric": "bbands_zscore_ascending",
         },
         universe=("AAPL",),
-        universe_ref="universe.phase1.curated.v1",
+        universe_ref="universe.curated_largecap.v2",
         disable_conditions=(),
         config_path="configs/meanrev_daily_bbands_lowerband_v1.yaml",
         manifest={},
