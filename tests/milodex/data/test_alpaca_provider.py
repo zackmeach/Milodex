@@ -79,12 +79,19 @@ class TestGetBars:
         request = provider._client.get_stock_bars.call_args.args[0]
         assert request.feed == DataFeed.IEX
 
-    def test_stock_bars_request_uses_split_adjustment(self, provider, mock_alpaca_bar):
-        """StockBarsRequest must carry Adjustment.SPLIT.
+    def test_stock_bars_request_uses_all_adjustment(self, provider, mock_alpaca_bar):
+        """StockBarsRequest must carry Adjustment.ALL (split AND dividend adjusted).
 
-        Without this, raw bars contain ~75% one-day drops on split dates
-        (AAPL 2020-08-31, NVDA 2021-07-20, TSLA 2020/2022, AMZN 2022-06-06,
-        GOOGL 2022-07-18) which are interpreted as real crashes by strategies.
+        Two failure modes this guards against:
+        1. Splits: raw bars contain ~75% one-day drops on split dates
+           (AAPL 2020-08-31, NVDA 2021-07-20, TSLA 2020/2022, AMZN 2022-06-06,
+           GOOGL 2022-07-18) which are interpreted as real crashes by strategies.
+        2. Dividends: raw or split-only bars omit dividend reinvestment, dropping
+           1.5-3% of total return per year for long-only equity strategies and
+           making backtests systematically pessimistic vs. real-world buy-and-hold.
+
+        Adjustment.ALL is the most-inclusive setting and the only one that produces
+        bars matching published total-return benchmarks (e.g., Yahoo Finance SPY).
         """
         provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
 
@@ -96,8 +103,7 @@ class TestGetBars:
         )
 
         request = provider._client.get_stock_bars.call_args.args[0]
-        assert request.adjustment == Adjustment.SPLIT
-
+        assert request.adjustment == Adjustment.ALL
 
 
 class TestGetLatestBar:
