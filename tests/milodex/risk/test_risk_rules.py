@@ -100,6 +100,7 @@ def make_context(
     latest_bar: Bar | None = None,
     runtime_config_hash: str | None = None,
     frozen_manifest_hash: str | None = None,
+    expected_stage: str | None = None,
 ) -> EvaluationContext:
     """Build an ``EvaluationContext`` pre-configured to pass every rule
     except the one under test."""
@@ -157,6 +158,7 @@ def make_context(
         strategy_config=strategy_config,
         runtime_config_hash=runtime_config_hash,
         frozen_manifest_hash=frozen_manifest_hash,
+        expected_stage=expected_stage,
     )
 
 
@@ -589,6 +591,90 @@ def test_manifest_drift_raises_when_promoted_stage_missing_runtime_hash():
                     frozen_manifest_hash="a" * 64,
                 )
             )
+
+
+def test_manifest_drift_uses_runner_bound_stage_when_yaml_transiently_flips_to_backtest():
+    """TOCTOU race fix: a paper-bound runner must NOT exempt drift just because
+    the YAML on disk transiently reads ``stage: backtest`` (parallel agent edit,
+    git checkout, in-place YAML rewrite, etc.). The runner's bound
+    ``expected_stage`` wins — drift gates on the bound stage, not on whatever
+    the file happens to say at config-read time.
+
+    Surfaced 2026-05-06 (one cycle out of 459 fired SELL NVDA x50 because Opus
+    4.7 in parallel had the YAML in a ``stage: backtest`` state for one read).
+    See docs/reviews/2026-05-06-manifest-drift-toctou-race.md.
+    """
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            # Runner was started at paper. YAML on disk is currently backtest
+            # (mid-edit by a parallel writer). Drift hashes diverge.
+            strategy_config=_strategy_config(stage="backtest"),
+            expected_stage="paper",
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="b" * 64,
+        )
+    )
+
+    result = check_result(decision, "manifest_drift")
+    assert result.passed is False, (
+        "paper-bound runner must block drift even when YAML reads backtest"
+    )
+    assert result.reason_code == "manifest_drift"
+
+
+def test_manifest_drift_remains_exempt_when_runner_bound_to_backtest():
+    """Regression guard for the legitimate exemption: a runner started against
+    a backtest-stage YAML must stay drift-exempt across YAML edits (research
+    iteration). The runner's bound ``expected_stage`` keeps it exempt regardless
+    of whether the YAML transiently reads paper/micro_live/live mid-session."""
+    for transient_yaml_stage in ("paper", "micro_live", "live"):
+        decision = RiskEvaluator().evaluate(
+            make_context(
+                strategy_config=_strategy_config(stage=transient_yaml_stage),
+                expected_stage="backtest",
+                # Promoted-stage hashes provided to satisfy the
+                # raise-on-missing-hash invariant; they should be ignored
+                # because the runner-bound stage is exempt.
+                runtime_config_hash="a" * 64,
+                frozen_manifest_hash="b" * 64,
+            )
+        )
+
+        result = check_result(decision, "manifest_drift")
+        assert result.passed is True, (
+            f"backtest-bound runner must stay exempt even when YAML transiently "
+            f"reads {transient_yaml_stage}"
+        )
+
+
+def test_manifest_drift_falls_back_to_yaml_stage_when_no_expected_stage():
+    """Backward-compat: callers that haven't been routed through a runner (e.g.
+    operator manual trades, legacy entry points) supply ``expected_stage=None``
+    and the existing YAML-stage logic applies unchanged."""
+    # backtest-stage YAML, no expected_stage → exempt (existing behavior)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="backtest"),
+            expected_stage=None,
+            runtime_config_hash=None,
+            frozen_manifest_hash=None,
+        )
+    )
+    assert check_result(decision, "manifest_drift").passed is True
+
+    # paper-stage YAML with diverging hashes, no expected_stage → blocks
+    # (existing behavior)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="paper"),
+            expected_stage=None,
+            runtime_config_hash="a" * 64,
+            frozen_manifest_hash="b" * 64,
+        )
+    )
+    result = check_result(decision, "manifest_drift")
+    assert result.passed is False
+    assert result.reason_code == "manifest_drift"
 
 
 def test_manifest_drift_applies_at_micro_live_and_live_stages():

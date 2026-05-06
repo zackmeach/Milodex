@@ -311,6 +311,10 @@ class ExecutionService:
                 strategy_config=strategy_config,
                 runtime_config_hash=runtime_config_hash,
                 frozen_manifest_hash=frozen_manifest_hash,
+                # Plumb the runner-bound stage from the intent through to the
+                # risk evaluator. None for operator manual trades — the
+                # evaluator falls back to ``strategy_config.stage`` for those.
+                expected_stage=normalized_intent.expected_stage,
             )
             decision = self._risk_evaluator.evaluate(context)
         status = (
@@ -366,6 +370,7 @@ class ExecutionService:
             stop_price=float(intent.stop_price) if intent.stop_price is not None else None,
             strategy_config_path=intent.strategy_config_path,
             submitted_by=intent.submitted_by,
+            expected_stage=intent.expected_stage,
         )
 
     def _build_execution_request(

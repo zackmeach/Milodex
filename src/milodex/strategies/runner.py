@@ -320,6 +320,13 @@ class StrategyRunner:
             stop_price=intent.stop_price,
             strategy_config_path=self._loaded.config.path,
             submitted_by="strategy_runner",
+            # Bind the runner's stage as observed at config-load time. The risk
+            # evaluator's manifest_drift exemption keys off this instead of the
+            # YAML's per-cycle stage field, closing the TOCTOU race surfaced
+            # 2026-05-06. ``self._loaded`` is set once in ``__init__`` and is
+            # not refreshed for the life of the runner — the value here is
+            # immutable across cycles by construction.
+            expected_stage=self._loaded.config.stage,
         )
 
     def _record_no_action(
