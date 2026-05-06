@@ -12,6 +12,7 @@
 universe:
   id: "universe.phase1.curated.v1"
   version: 1
+  slippage_pct: 0.0005  # 5 bps — mixed ETF + large-cap single-name universe
   description: >
     Small curated universe of highly liquid U.S. common stocks and plain
     ETFs for Phase 1 research-target strategies. Chosen for stable

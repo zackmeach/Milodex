@@ -12,6 +12,7 @@
 universe:
   id: "universe.gem_quartet.v1"
   version: 1
+  slippage_pct: 0.0003  # 3 bps — highly-liquid GEM ETFs (SPY, EFA, AGG, SHY)
   description: >
     The four ETFs Antonacci's Global Equities Momentum (GEM) algorithm
     operates on: SPY (US equities), EFA (developed-market ex-US equities),

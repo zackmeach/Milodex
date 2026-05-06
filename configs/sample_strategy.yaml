@@ -40,7 +40,8 @@ strategy:
 
   # Backtest assumptions
   backtest:
-    slippage_pct: 0.001           # 0.1% conservative slippage estimate
+    # slippage_pct: omit to inherit from universe manifest (3–5 bps).
+    # Override here only when a strategy-specific reason justifies it.
     commission_per_trade: 0.00    # Alpaca is commission-free
     min_trades_required: 30       # Minimum trades before drawing conclusions
 

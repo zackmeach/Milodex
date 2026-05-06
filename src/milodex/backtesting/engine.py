@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pandas as pd
+import yaml
 
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker.models import AccountInfo, OrderSide, Position
@@ -142,20 +143,16 @@ class BacktestEngine:
         self._data_provider = data_provider
         self._event_store = event_store
         self._initial_equity = initial_equity
-        self._slippage_pct = (
-            slippage_pct
-            if slippage_pct is not None
-            else float(loaded.config.backtest.get("slippage_pct", 0.001))
-        )
+        self._risk_defaults_path: Path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+        # Populated lazily on first call to _load_backtesting_defaults; avoids
+        # re-reading on every walk-forward window.
+        self._backtesting_defaults: dict | None = None
+        self._slippage_pct = self._resolve_slippage_pct(slippage_pct)
         self._commission = (
             commission_per_trade
             if commission_per_trade is not None
             else float(loaded.config.backtest.get("commission_per_trade", 0.0))
         )
-        self._risk_defaults_path: Path = risk_defaults_path or Path("configs/risk_defaults.yaml")
-        # Populated lazily on first call to prefetch_bars; avoids re-reading on
-        # every walk-forward window.
-        self._backtesting_defaults: dict | None = None
 
     def run(
         self,
@@ -287,17 +284,91 @@ class BacktestEngine:
             return float(strategy_value)
 
         # Tier 2: global risk_defaults.yaml (read once, cached).
-        if self._backtesting_defaults is None:
-            if self._risk_defaults_path.exists():
-                self._backtesting_defaults = load_backtesting_defaults(self._risk_defaults_path)
-            else:
-                self._backtesting_defaults = {}
-        global_value = self._backtesting_defaults.get("min_universe_coverage_pct")
+        defaults = self._load_backtesting_defaults()
+        global_value = defaults.get("min_universe_coverage_pct")
         if global_value is not None:
             return float(global_value)
 
         # Tier 3: hardcoded fallback.
         return 0.80
+
+    def _load_backtesting_defaults(self) -> dict:
+        """Return the ``backtesting`` section of ``risk_defaults.yaml`` (cached)."""
+        if self._backtesting_defaults is None:
+            if self._risk_defaults_path.exists():
+                self._backtesting_defaults = load_backtesting_defaults(self._risk_defaults_path)
+            else:
+                self._backtesting_defaults = {}
+        return self._backtesting_defaults
+
+    def _resolve_slippage_pct(self, override: float | None) -> float:
+        """Return the effective slippage fraction using a 4-tier resolution.
+
+        Resolution order (first defined value wins):
+
+        1. Call-site override passed to ``__init__`` as ``slippage_pct``.
+        2. Per-strategy config: ``strategy.backtest.slippage_pct`` in the YAML.
+        3. Universe manifest: ``universe.slippage_pct`` in the matching
+           ``universe_*.yaml`` (resolved via the strategy's ``universe_ref``).
+        4. Global default: ``backtesting.slippage_pct_default`` in
+           ``risk_defaults.yaml``.
+        5. Hardcoded fallback: 0.001 (10 bps).
+        """
+        # Tier 1: explicit call-site override.
+        if override is not None:
+            return float(override)
+
+        # Tier 2: per-strategy config value.
+        strat_value = self._loaded.config.backtest.get("slippage_pct")
+        if strat_value is not None:
+            return float(strat_value)
+
+        # Tier 3: universe manifest value.
+        universe_value = self._resolve_universe_slippage()
+        if universe_value is not None:
+            return float(universe_value)
+
+        # Tier 4: global risk_defaults.yaml value.
+        defaults = self._load_backtesting_defaults()
+        global_value = defaults.get("slippage_pct_default")
+        if global_value is not None:
+            return float(global_value)
+
+        # Tier 5: hardcoded fallback.
+        return 0.001
+
+    def _resolve_universe_slippage(self) -> float | None:
+        """Look up ``slippage_pct`` from the universe manifest referenced by this strategy.
+
+        Scans ``universe_*.yaml`` files in the same directory as the strategy
+        config, matching on ``universe.id == context.universe_ref``.  Returns
+        ``None`` when the strategy has no ``universe_ref`` (inline universe) or
+        when the matched manifest carries no ``slippage_pct`` field.
+        """
+        universe_ref = self._loaded.context.universe_ref
+        if not universe_ref:
+            return None
+
+        config_path = Path(self._loaded.context.config_path)
+        configs_dir = config_path.parent
+        for manifest_path in sorted(configs_dir.glob("universe_*.yaml")):
+            try:
+                with manifest_path.open("r", encoding="utf-8") as handle:
+                    data = yaml.safe_load(handle)
+            except yaml.YAMLError:
+                continue
+            if not isinstance(data, dict):
+                continue
+            universe = data.get("universe")
+            if not isinstance(universe, dict):
+                continue
+            if str(universe.get("id", "")) != universe_ref:
+                continue
+            slippage = universe.get("slippage_pct")
+            if slippage is not None:
+                return float(slippage)
+            return None  # matched but no slippage_pct field
+        return None
 
     def simulate_window(
         self,

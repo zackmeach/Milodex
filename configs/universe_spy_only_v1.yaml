@@ -6,6 +6,7 @@
 universe:
   id: "universe.spy_only.v1"
   version: 1
+  slippage_pct: 0.0003  # 3 bps — single ETF, highest liquidity
   description: >
     Single-ETF SPY universe for broad-market calendar and lifecycle-proof-style
     research candidates. Subject to the instrument whitelist in ADR 0016.

@@ -6,6 +6,7 @@
 universe:
   id: "universe.sp100_liquid.v1"
   version: 1
+  slippage_pct: 0.0005  # 5 bps — large-cap S&P 100 single-name stocks
   description: >
     Liquid large-cap U.S. common-stock universe approximating the S&P 100 and
     filtered toward high dollar-volume constituents for Phase 1 daily-swing
