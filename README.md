@@ -22,7 +22,7 @@ Most personal trading projects are a strategy script plus a broker SDK call. Mil
 - **Kill switch with manual reset.** When tripped, trading halts. There is no auto-resume path. ([ADR 0005](docs/adr/0005-kill-switch-manual-reset.md))
 - **An event-sourced SQLite store as the source of truth** for trades, explanations, promotion-log entries, strategy runs, kill-switch events, and frozen manifests. Append-only, content-hash-keyed where idempotency matters. ([ADR 0011](docs/adr/0011-sqlite-event-store.md))
 - **A rich-terminal CLI that's the daily operator surface.** Color-coded by exposure (live red, paper yellow, backtest cyan), threshold-coded by promotion gate (Sharpe ≥ 0.5 green / 0–0.5 yellow / negative red, drawdown thresholded at 7.5% and 15%), with kill-switch banners that override everything else on screen. The `--json` machine contract sits next to it untouched, so the same command output drives operators or scripts. The CLI is what the GUI gate ([ENGINEERING_STANDARDS.md §"GUI Readiness Gate"](docs/ENGINEERING_STANDARDS.md)) requires before any GUI work begins.
-- **ADR-driven design.** 21 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
+- **ADR-driven design.** 28 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
 
 ---
 
@@ -140,7 +140,7 @@ Every command supports `--json` for machine-readable output. The `--json` contra
 ### Run the test suite
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                                 # 512 tests, ~50s
+.\.venv\Scripts\python.exe -m pytest                                 # 701 tests, ~50s
 .\.venv\Scripts\python.exe -m pytest --cov=src/milodex --cov-report=term-missing
 .\.venv\Scripts\python.exe -m ruff check src tests
 .\.venv\Scripts\python.exe -m ruff format --check src tests
@@ -164,7 +164,7 @@ src/milodex/
     cli/           Command-line interface (Phase 1 primary surface) + rich-terminal views
 configs/           Strategy + risk YAML (parameters live here, not in code)
 docs/              Vision, SRS, ADRs, operations, governance, reporting contract
-tests/             Mirrors src/ structure — 67 test modules, 512 tests
+tests/             Mirrors src/ structure — 70 test modules, 701 tests
 ```
 
 ---
