@@ -10,6 +10,8 @@
 
 Phase 3 closed against three exit criteria — C-1 (second research-target through full lifecycle), C-2 (concurrent multi-strategy architecturally satisfied), and C-6 (Phase 2 invariants preserved) — all evidenced in [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md). The full close-out narrative lives there; this section captures only what carries into Phase 4.
 
+**Phase 4 scope is now locked.** On 2026-05-06, the operator resolved §4.1 as **(f) + (g) — per-strategy attribution + cleanup-only** and §4.2 as **(a) — live remains locked**. [ADR 0028](adr/0028-phase-4-scope-closes-as-cleanup-and-attribution.md) is the authoritative record of that decision. All further Phase 4 work is bounded by this scope; options (a) through (e) are deferred to the Phase 5+ menu.
+
 The single most load-bearing Phase 3 result was **the honest-signal property generalizing across two strategies**. Phase 1 produced a truthful failure on meanrev (Sharpe 0.327 < 0.5); Phase 2 turned that into a regression test; Phase 3 ran a different strategy (momentum.daily.tsmom, Sharpe 0.06, max drawdown 15.37%) through the same gate without per-strategy adaptation, and the gate refused for an *additionally* honest reason. The thesis now reads: *the platform refuses to lie about any research-target whose evidence does not earn the gate*. **Anything Phase 4 adds must not weaken this property** — same binding constraint Phase 2 and Phase 3 inherited from Phase 1, now demonstrated across two strategies, not one.
 
 Phase 3 also left:
@@ -61,9 +63,11 @@ If anything surfaces during Phase 4 planning or execution, it gets added here wi
 
 These are the questions the operator owns. Each is framed with alternatives; **none has a recommended answer here**.
 
-### 4.1 What does Phase 4 actually scope?
+### 4.1 ~~What does Phase 4 actually scope?~~ — **Decided 2026-05-06: (f) + (g) — per-strategy attribution + cleanup-only**
 
-Seven candidates. Phase 3 §4.1's deferred items carry forward; three new candidates surfaced during Phase 3 execution.
+> **Decision ([ADR 0028](adr/0028-phase-4-scope-closes-as-cleanup-and-attribution.md)):** Phase 4 scopes as **(f) per-strategy position attribution at the risk layer** plus **(g) cleanup-only**. This is mechanics-firming, not feature-adding. The operator named a concrete operational pain — inability to quickly tell what strategies exist, where they stand, what they've made or lost — and concluded that the right fix is to firm the underlying mechanics before layering any UI on top. Per FOUNDER_INTENT priority #1 (trustworthy), a UI built on unclear mechanics roughly doubles debugging cost by making anomalies ambiguous between display logic and data layer. Options (a) through (e) are deferred to the Phase 5+ menu. The (f) work extends [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md); ADR 0029 will articulate its semantics. The (g) cleanup bundle's backtest-sandbox item is articulated in ADR 0030.
+
+Seven candidates. Phase 3 §4.1's deferred items carry forward; three new candidates surfaced during Phase 3 execution. *(Historical record — scope decided above.)*
 
 **(a) Micro_live promotion of one strategy** *(Phase 3 §4.1.ii deferred → here)*. Open the live boundary at micro_live only. Currently structurally constrained: regime is the only strategy that *can* promote (lifecycle-exempt — operational evidence, not statistical), since both meanrev and momentum failed the gate. Tied to §4.2 and §4.5.
 
@@ -88,9 +92,11 @@ Seven candidates. Phase 3 §4.1's deferred items carry forward; three new candid
 
 Each option (or bundle) gets a Phase 4 ADR if it crosses an architectural seam. None is pre-recommended here.
 
-### 4.2 What's the live-trading boundary for Phase 4?
+### 4.2 ~~What's the live-trading boundary for Phase 4?~~ — **Decided 2026-05-06: (a) live remains locked**
 
-[ADR 0004](adr/0004-paper-only-phase-one.md) is still in force per [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md). Phase 4 may revisit, but only via a new ADR that supersedes 0004.
+> **Decision ([ADR 0028](adr/0028-phase-4-scope-closes-as-cleanup-and-attribution.md)):** Phase 4 §4.2 = **(a) — live remains locked**. [ADR 0004](adr/0004-paper-only-phase-one.md) is unchanged and stays in force through Phase 4. Neither (f) nor (g) requires the live boundary to move. Live unlocking is a Phase 5+ question and requires a new ADR superseding ADR 0004.
+
+[ADR 0004](adr/0004-paper-only-phase-one.md) is still in force per [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md). Phase 4 may revisit, but only via a new ADR that supersedes 0004. *(Historical record — boundary decided above.)*
 
 **(a) Live remains locked.** Phase 4 stays paper-only. Mirrors Phase 2 and Phase 3's resolution. Compatible with §4.1 (b), (c), (d), (e), (f), (g). Most conservative.
 
