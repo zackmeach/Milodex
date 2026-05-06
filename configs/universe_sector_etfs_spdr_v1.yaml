@@ -12,6 +12,7 @@
 universe:
   id: "universe.sector_etfs_spdr.v1"
   version: 1
+  slippage_pct: 0.0003  # 3 bps — highly-liquid SPDR sector ETFs
   description: >
     The eleven GICS-sector SPDR ETFs (Select Sector SPDR family). Used by
     cross-sectional momentum, channel-breakout, and sector-rotation

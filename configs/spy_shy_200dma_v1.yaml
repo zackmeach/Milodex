@@ -45,7 +45,7 @@ strategy:
   stage: "paper"
 
   backtest:
-    slippage_pct: 0.001
+    slippage_pct: 0.0003          # 3 bps — SPY/SHY are highly-liquid ETFs; inline universe, no universe_ref
     commission_per_trade: 0.00
     min_trades_required: null    # exempt per SRS R-PRM-004
     walk_forward_windows: 1

@@ -189,7 +189,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     backtest = _mapping(strategy.get("backtest"), "strategy.backtest", path)
     _require_keys(
         backtest,
-        {"slippage_pct", "commission_per_trade", "min_trades_required"},
+        {"commission_per_trade", "min_trades_required"},
         "strategy.backtest",
         path,
     )

@@ -73,3 +73,8 @@ backtesting:
   # rows counts as missing even if the provider returned an empty barset.
   # Override per-strategy via `risk.min_universe_coverage_pct` in the strategy YAML.
   min_universe_coverage_pct: 0.80
+  # Fallback slippage when neither the strategy YAML nor the universe YAML
+  # declares a slippage_pct.  Universe-specific values take precedence over this.
+  # Resolution order: strategy.backtest.slippage_pct → universe.slippage_pct
+  #                   → this value → 0.001 hardcoded fallback.
+  slippage_pct_default: 0.001
