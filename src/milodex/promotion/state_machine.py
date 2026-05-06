@@ -5,10 +5,27 @@ Rules
 Stage progression order: backtest → paper → micro_live → live.
 No stage may be skipped; no downgrade is allowed.
 
+Stage-aware thresholds (ADR 0028 supersedes the single-threshold
+formulation in ADR 0020):
+
 Statistical strategies (promotion_type='statistical')
-  Sharpe ratio     > 0.5          (SRS R-PRM-001)
-  Max drawdown     < 15.0%        (SRS R-PRM-002)
-  Trade count      >= 30          (SRS R-PRM-003, R-BKT-003)
+  backtest → paper (paper-readiness):
+    Sharpe ratio     > 0.0
+    Max drawdown     < 25.0%
+    Round-trips      >= 15
+  paper → micro_live and micro_live → live (live-readiness):
+    Sharpe ratio     > 0.5          (SRS R-PRM-001)
+    Max drawdown     < 15.0%        (SRS R-PRM-002)
+    Round-trips      >= 30          (SRS R-PRM-003, R-BKT-003)
+
+The asymmetry is deliberate. A false negative at the paper-readiness gate
+scraps a real edge before any data is collected. A false positive only
+occupies one paper slot at $0 risk. The bar should match the cost.
+
+The gate evaluates ``round_trip_count`` (closed positions) when provided,
+falling back to ``trade_count`` (raw fills) when not. This is the
+counter introduced in PR 2.3 of the rejection-remediation plan; it
+captures statistical-power evidence more honestly than the fill count.
 
 Lifecycle-exempt strategies (promotion_type='lifecycle_exempt')
   Statistical thresholds do not apply (SRS R-PRM-004).
@@ -40,9 +57,30 @@ STAGE_ORDER: list[str] = ["backtest", "paper", "micro_live", "live"]
 # validate_stage_transition — in the future ADR that lifts the live-lock.
 PHASE_ONE_BLOCKED_STAGES: frozenset[str] = frozenset({"micro_live", "live"})
 
-MIN_SHARPE: float = 0.5
-MAX_DRAWDOWN_PCT: float = 15.0
-MIN_TRADES: int = 30
+# Stage-aware threshold dicts (ADR 0028).
+PAPER_READINESS_THRESHOLDS: dict[str, float | int] = {
+    "min_sharpe": 0.0,
+    "max_drawdown_pct": 25.0,
+    "min_round_trips": 15,
+}
+LIVE_READINESS_THRESHOLDS: dict[str, float | int] = {
+    "min_sharpe": 0.5,
+    "max_drawdown_pct": 15.0,
+    "min_round_trips": 30,
+}
+THRESHOLDS_BY_TARGET_STAGE: dict[str, dict[str, float | int]] = {
+    "paper": PAPER_READINESS_THRESHOLDS,
+    "micro_live": LIVE_READINESS_THRESHOLDS,
+    "live": LIVE_READINESS_THRESHOLDS,
+}
+
+# Backward-compat aliases — keep pointing at the live thresholds because
+# that's the bar these were intended to encode pre-ADR 0028. Some external
+# code may still import these directly. Internal callers should use the
+# stage-aware dicts above.
+MIN_SHARPE: float = float(LIVE_READINESS_THRESHOLDS["min_sharpe"])
+MAX_DRAWDOWN_PCT: float = float(LIVE_READINESS_THRESHOLDS["max_drawdown_pct"])
+MIN_TRADES: int = int(LIVE_READINESS_THRESHOLDS["min_round_trips"])
 
 
 @dataclass(frozen=True)
@@ -55,6 +93,8 @@ class PromotionCheckResult:
     sharpe_ratio: float | None = None
     max_drawdown_pct: float | None = None
     trade_count: int | None = None
+    round_trip_count: int | None = None
+    to_stage: str | None = None
 
 
 def validate_stage_transition(from_stage: str, to_stage: str) -> None:
@@ -96,16 +136,34 @@ def validate_stage_transition(from_stage: str, to_stage: str) -> None:
 
 def check_gate(
     *,
+    to_stage: str,
     lifecycle_exempt: bool,
     sharpe_ratio: float | None,
     max_drawdown_pct: float | None,
-    trade_count: int | None,
+    trade_count: int | None = None,
+    round_trip_count: int | None = None,
 ) -> PromotionCheckResult:
-    """Evaluate statistical promotion thresholds.
+    """Evaluate stage-aware statistical promotion thresholds.
 
-    When ``lifecycle_exempt=True`` the thresholds are bypassed and the check
-    always passes (promotion_type='lifecycle_exempt').
+    ``to_stage`` selects the threshold dict (paper-readiness vs
+    live-readiness; see ADR 0028). When ``lifecycle_exempt=True`` the
+    thresholds are bypassed and the check always passes
+    (promotion_type='lifecycle_exempt').
+
+    The "trade count" leg of the gate evaluates ``round_trip_count``
+    (closed positions) when provided. Callers that only have a raw
+    ``trade_count`` (fills) may pass that instead — back-compat for
+    pre-PR-2.3 evidence rows. New callers should always pass
+    ``round_trip_count``.
     """
+    if to_stage not in THRESHOLDS_BY_TARGET_STAGE:
+        msg = (
+            f"check_gate received to_stage={to_stage!r}; expected one of "
+            f"{sorted(THRESHOLDS_BY_TARGET_STAGE)}."
+        )
+        raise ValueError(msg)
+    thresholds = THRESHOLDS_BY_TARGET_STAGE[to_stage]
+
     if lifecycle_exempt:
         return PromotionCheckResult(
             allowed=True,
@@ -114,24 +172,35 @@ def check_gate(
             sharpe_ratio=sharpe_ratio,
             max_drawdown_pct=max_drawdown_pct,
             trade_count=trade_count,
+            round_trip_count=round_trip_count,
+            to_stage=to_stage,
         )
 
     failures: list[str] = []
 
-    if sharpe_ratio is None or sharpe_ratio <= MIN_SHARPE:
+    min_sharpe = float(thresholds["min_sharpe"])
+    max_dd = float(thresholds["max_drawdown_pct"])
+    min_round_trips = int(thresholds["min_round_trips"])
+
+    if sharpe_ratio is None or sharpe_ratio <= min_sharpe:
         failures.append(
-            f"Sharpe {_fmt_or_none(sharpe_ratio)} must be > {MIN_SHARPE} "
-            f"(got {_fmt_or_none(sharpe_ratio)})"
+            f"Sharpe {_fmt_or_none(sharpe_ratio)} must be > {min_sharpe} "
+            f"for promotion to '{to_stage}' (got {_fmt_or_none(sharpe_ratio)})"
         )
 
-    if max_drawdown_pct is None or max_drawdown_pct >= MAX_DRAWDOWN_PCT:
+    if max_drawdown_pct is None or max_drawdown_pct >= max_dd:
         failures.append(
-            f"Max drawdown {_fmt_or_none(max_drawdown_pct)}% must be < {MAX_DRAWDOWN_PCT}% "
-            f"(got {_fmt_or_none(max_drawdown_pct)})"
+            f"Max drawdown {_fmt_or_none(max_drawdown_pct)}% must be < {max_dd}% "
+            f"for promotion to '{to_stage}' (got {_fmt_or_none(max_drawdown_pct)})"
         )
 
-    if trade_count is None or trade_count < MIN_TRADES:
-        failures.append(f"Trade count must be >= {MIN_TRADES} (got {_fmt_or_none(trade_count)})")
+    evidence_count = round_trip_count if round_trip_count is not None else trade_count
+    if evidence_count is None or evidence_count < min_round_trips:
+        kind = "Round-trip" if round_trip_count is not None else "Trade"
+        failures.append(
+            f"{kind} count must be >= {min_round_trips} "
+            f"for promotion to '{to_stage}' (got {_fmt_or_none(evidence_count)})"
+        )
 
     return PromotionCheckResult(
         allowed=len(failures) == 0,
@@ -140,6 +209,8 @@ def check_gate(
         sharpe_ratio=sharpe_ratio,
         max_drawdown_pct=max_drawdown_pct,
         trade_count=trade_count,
+        round_trip_count=round_trip_count,
+        to_stage=to_stage,
     )
 
 

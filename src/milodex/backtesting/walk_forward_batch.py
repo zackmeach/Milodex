@@ -181,11 +181,16 @@ def _screen_one(
             result.run_id, metadata=merged_metadata
         )
 
+    # The screen evaluates whether a strategy clears the BACKTEST → PAPER
+    # gate (paper-readiness). Live promotion uses the stricter live-readiness
+    # thresholds and is decided later via `milodex promotion promote`.
     gate = check_gate(
+        to_stage="paper",
         lifecycle_exempt=(family == "regime"),
         sharpe_ratio=result.oos_sharpe,
         max_drawdown_pct=result.oos_max_drawdown_pct,
         trade_count=result.oos_trade_count,
+        round_trip_count=result.oos_round_trip_count,
     )
 
     return BatchRow(

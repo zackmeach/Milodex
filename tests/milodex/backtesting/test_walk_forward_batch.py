@@ -223,7 +223,12 @@ def test_low_evidence_strategy_flagged_not_dropped():
     row = result.rows[0]
     assert row.trade_count == 0  # no-signal strategy
     assert row.gate_allowed is False
-    assert any("Trade count" in f for f in row.gate_failures)
+    # The screen now uses paper-readiness thresholds which key on round-trips
+    # (PR 2.3 + 3.1). Either "Round-trip count" or "Trade count" is acceptable
+    # depending on whether the run carried a round_trip_count field.
+    assert any(
+        "Round-trip count" in f or "Trade count" in f for f in row.gate_failures
+    )
 
 
 def test_regime_family_gets_lifecycle_exempt_gate():

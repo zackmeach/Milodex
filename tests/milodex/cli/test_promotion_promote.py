@@ -380,14 +380,15 @@ def _seed_meanrev_walk_forward_run(
     store.update_backtest_run_status(run_id, status="completed", ended_at=end + timedelta(days=1))
 
 
-def test_promotion_promote_refuses_meanrev_shape_evidence_through_cli(tmp_path):
-    """End-to-end honest-signal regression — through `milodex promotion promote`.
+def test_promotion_promote_accepts_meanrev_shape_evidence_to_paper(tmp_path):
+    """End-to-end: meanrev shape evidence promotes to PAPER under stage-aware gate.
 
-    Mirrors meanrev's 2026-04-26 reality: walk-forward Sharpe 0.327 (<0.50),
-    max DD 6.41% (<15.0), 752 trades (>=30). The CLI must refuse with a
-    Sharpe-specific reason, write nothing to the event store, and leave the
-    YAML stage unchanged. ADR 0023's "the platform refused to lie about
-    meanrev" thesis lives on this test.
+    Pre-ADR-0028 (single-threshold): the gate refused Sharpe 0.327 globally.
+    Post-ADR-0028 (stage-aware): paper-readiness uses Sharpe > 0.0, so this
+    evidence (Sharpe 0.327, DD 6.41%, 752 trades) now CLEARS the gate to
+    paper. The honest-signal-refusal property survives at paper→live, locked
+    in test_state_machine.py — Phase 1 still blocks live so we can't
+    end-to-end that here through the CLI.
     """
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -408,24 +409,88 @@ def test_promotion_promote_refuses_meanrev_shape_evidence_through_cli(tmp_path):
             "--run-id",
             "bt-meanrev-truthful",
             "--recommendation",
-            "sub-threshold Sharpe; this should refuse",
+            "Sharpe 0.327 clears paper-readiness; collect live-shaped data",
             "--risk",
-            "promotion attempted on insufficient evidence",
+            "edge may not survive paper trading; gate at next stage will catch",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code == 0, (
+        f"under stage-aware gate, Sharpe 0.327 promotes to paper. exit_code={exit_code}, "
+        f"err={err.getvalue()!r}"
+    )
+    # YAML stage line should now be 'paper'
+    yaml_text = config_path.read_text(encoding="utf-8")
+    assert 'stage: "paper"' in yaml_text
+
+
+def test_promotion_promote_refuses_clearly_broken_evidence_at_paper_gate(tmp_path):
+    """Paper-readiness has thresholds — clearly-broken evidence still refuses.
+
+    Sharpe -0.5, DD 30%, 5 trades fails all three paper-readiness thresholds
+    (Sharpe > 0.0, DD < 25.0, round-trips >= 15). The honest-signal property
+    is preserved at paper-readiness; only the bar is lower than at live.
+    """
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest")
+    # Seed a clearly-broken run
+    db_path = tmp_path / "data" / "milodex.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    store = EventStore(db_path)
+    start = datetime(2024, 1, 1, tzinfo=UTC)
+    end = datetime(2024, 12, 31, tzinfo=UTC)
+    store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="bt-broken",
+            strategy_id=_STRATEGY_ID,
+            config_path="configs/test.yaml",
+            config_hash="fp-broken",
+            start_date=start,
+            end_date=end,
+            started_at=start,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={
+                "initial_equity": 100_000.0,
+                "walk_forward": True,
+                "oos_aggregate": {
+                    "total_return_pct": -8.0,
+                    "sharpe": -0.5,
+                    "max_drawdown_pct": 30.0,
+                    "trading_days": 252,
+                    "trade_count": 5,
+                    "round_trip_count": 5,
+                },
+            },
+        )
+    )
+    store.update_backtest_run_status("bt-broken", status="completed", ended_at=end)
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--run-id",
+            "bt-broken",
+            "--recommendation",
+            "negative Sharpe; this should refuse",
+            "--risk",
+            "promotion attempted on negative-edge evidence",
         ],
         tmp_path,
     )
 
     assert exit_code != 0, (
-        "honest-signal regression: a walk-forward run with Sharpe 0.327 must "
-        "be refused at the promotion gate; passing here means the platform "
-        "lost the property ADR 0023 stands on"
+        "paper-readiness must refuse Sharpe<0 / DD>25 / trades<15"
     )
     err_text = err.getvalue()
-    assert "BLOCKED" in err_text, "human-facing refusal must surface as BLOCKED"
-    assert "Sharpe" in err_text, (
-        f"refusal must name Sharpe specifically (max DD and trade count both pass); "
-        f"got: {err_text!r}"
-    )
+    assert "BLOCKED" in err_text
     store = EventStore(tmp_path / "data" / "milodex.db")
     assert store.list_promotions() == [], (
         "refused promotion must write no PromotionEvent; the audit trail is "

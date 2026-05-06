@@ -199,13 +199,17 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     event_store = ctx.get_event_store()
 
-    sharpe_ratio, max_drawdown_pct, trade_count = _metrics_from_run(args.run_id, event_store)
+    sharpe_ratio, max_drawdown_pct, trade_count, round_trip_count = _metrics_from_run(
+        args.run_id, event_store
+    )
 
     gate_result = check_gate(
+        to_stage=to_stage,
         lifecycle_exempt=args.lifecycle_exempt,
         sharpe_ratio=sharpe_ratio,
         max_drawdown_pct=max_drawdown_pct,
         trade_count=trade_count,
+        round_trip_count=round_trip_count,
     )
     if not gate_result.allowed:
         return _promote_blocked_result(args.strategy_id, from_stage, to_stage, gate_result)
@@ -319,8 +323,8 @@ def _require_evidence_inputs(args: argparse.Namespace) -> None:
 
 def _metrics_from_run(
     run_id: str | None, event_store: Any
-) -> tuple[float | None, float | None, int | None]:
-    """Sharpe, max-drawdown, trade-count for a backtest run.
+) -> tuple[float | None, float | None, int | None, int | None]:
+    """Sharpe, max-drawdown, trade-count, round-trip-count for a backtest run.
 
     For walk-forward runs, returns the OOS-aggregate metrics stored in run
     metadata by the orchestrator — *not* the whole-period numbers. This is the
@@ -328,9 +332,14 @@ def _metrics_from_run(
     out-of-sample data, not from data the strategy implicitly had access to.
     For single whole-period runs, falls through to :func:`metrics_for_run`
     which derives metrics from recorded trades.
+
+    ``round_trip_count`` is sourced from the OOS aggregate when available
+    (PR 2.3 added the field) and is ``None`` for single whole-period runs
+    or pre-PR-2.3 walk-forward rows. The gate falls back to ``trade_count``
+    when ``round_trip_count`` is ``None``.
     """
     if run_id is None:
-        return None, None, None
+        return None, None, None, None
     from milodex.cli.commands.analytics import metrics_for_run
 
     run_ = event_store.get_backtest_run(run_id)
@@ -343,9 +352,10 @@ def _metrics_from_run(
             oos.get("sharpe"),
             oos.get("max_drawdown_pct"),
             oos.get("trade_count"),
+            oos.get("round_trip_count"),
         )
     metrics = metrics_for_run(run_, event_store)
-    return metrics.sharpe_ratio, metrics.max_drawdown_pct, metrics.trade_count
+    return metrics.sharpe_ratio, metrics.max_drawdown_pct, metrics.trade_count, None
 
 
 def _compute_post_update_hash(raw_data: dict, to_stage: str) -> str:
