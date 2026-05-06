@@ -267,6 +267,50 @@ milodex promotion demote <strategy_id> \
 
 ---
 
+## Cache management
+
+Backtest data lives in a versioned parquet cache under
+`market_cache/<version>/<timeframe>/<SYMBOL>.parquet`. The version is bumped
+when the underlying fetch semantics change — for example, PR 1.1 bumped v1 → v2
+because raw-bar parquets in v1 do not carry split adjustments. Files cached
+under the old version are ignored automatically; a fresh fill is required before
+any backtest can run.
+
+### Filling the cache for a universe
+
+After a version bump (or when starting fresh), populate the cache for the
+strategy's declared universe with:
+
+```bash
+milodex data fetch-universe \
+    --universe-ref universe.sp100_liquid.v1 \
+    --start 2019-01-01 \
+    --end 2024-12-31
+```
+
+Requires `.env` to have valid `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` under a
+paper-trading subscription. The fill runs against Alpaca's free-tier rate limit
+(200 requests/minute as of 2026-04); a full sp100_liquid universe over 5 years
+takes 5–15 minutes.
+
+### Verifying coverage
+
+```bash
+python -c "
+from pathlib import Path
+from milodex.strategies.loader import resolve_universe_ref
+expected = resolve_universe_ref('universe.sp100_liquid.v1', Path('configs/_dummy.yaml'))
+cached = {f.stem for f in Path('market_cache/v2/1Day').glob('*.parquet')}
+missing = sorted(set(expected) - cached)
+print(f'expected={len(expected)} cached={len(cached)} missing={len(missing)}')
+print('missing:', missing[:10], '...' if len(missing) > 10 else '')
+"
+```
+
+Expected output for a clean fill: `missing: []`.
+
+---
+
 ## Relationship to SRS and Other Docs
 
 - `docs/SRS.md` Domain 9 contains the testable requirements (R-OPS-*) that enforce the rules above.
