@@ -15,6 +15,7 @@ from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
 from milodex.core.event_store import EventStore, StrategyRunEvent
 from milodex.data import DataProvider, Timeframe
+from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.strategies.base import DecisionReasoning
@@ -51,6 +52,13 @@ class StrategyRunner:
         self._close_lockin_min_interval_seconds = close_lockin_min_interval_seconds
         self._close_lockin_max_wait_seconds = close_lockin_max_wait_seconds
         self._loaded = StrategyLoader().load(self._resolve_config_path())
+        # Snapshot the strategy's risk envelope at startup. Every TradeIntent
+        # this runner emits carries these bound values; the risk evaluator
+        # routes its policy decisions through them, closing the TOCTOU class
+        # where a parallel writer mid-session changes a per-strategy cap. See
+        # docs/reviews/2026-05-06-manifest-drift-toctou-race.md (Action Item
+        # #4 follow-up).
+        self._risk_envelope = load_strategy_execution_config(self._loaded.config.path)
         self._session_id = str(uuid4())
         self._started_at = datetime.now(tz=UTC)
         self._last_processed_bar_at: datetime | None = None
@@ -320,13 +328,19 @@ class StrategyRunner:
             stop_price=intent.stop_price,
             strategy_config_path=self._loaded.config.path,
             submitted_by="strategy_runner",
-            # Bind the runner's stage as observed at config-load time. The risk
-            # evaluator's manifest_drift exemption keys off this instead of the
-            # YAML's per-cycle stage field, closing the TOCTOU race surfaced
-            # 2026-05-06. ``self._loaded`` is set once in ``__init__`` and is
-            # not refreshed for the life of the runner — the value here is
-            # immutable across cycles by construction.
+            # Bind the runner's stage and risk envelope as observed at
+            # config-load time. The risk evaluator routes manifest_drift,
+            # strategy_stage, and the cap-based checks (max_positions,
+            # max_position_pct, daily_loss_cap_pct) through these instead of
+            # the per-cycle YAML reads, closing the TOCTOU class surfaced
+            # 2026-05-06. ``self._loaded`` and ``self._risk_envelope`` are
+            # set once in ``__init__`` and are not refreshed for the life of
+            # the runner — the values here are immutable across cycles by
+            # construction.
             expected_stage=self._loaded.config.stage,
+            expected_max_positions=self._risk_envelope.max_positions,
+            expected_max_position_pct=self._risk_envelope.max_position_pct,
+            expected_daily_loss_cap_pct=self._risk_envelope.daily_loss_cap_pct,
         )
 
     def _record_no_action(

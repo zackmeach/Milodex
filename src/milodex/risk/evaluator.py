@@ -56,6 +56,18 @@ class EvaluationContext:
     # fall back to ``strategy_config.stage`` (current behavior). See
     # ``docs/reviews/2026-05-06-manifest-drift-toctou-race.md``.
     expected_stage: str | None = None
+    # Runner-bound risk envelope, snapshot of the strategy YAML's risk fields
+    # at config-load time. Same TOCTOU class as ``expected_stage``: a parallel
+    # writer raising ``max_positions`` (or any cap) mid-session must not let a
+    # cycle in flight take a position that exceeds the runner's bound envelope.
+    # ``min(global_default, per_strategy)`` already provides defense against
+    # mid-session raises being neutralized by the global cap, but it doesn't
+    # guarantee cycle-to-cycle consistency across a long-running runner; these
+    # bindings do. None for callers not routed through a runner — those fall
+    # back to ``strategy_config.<field>`` (current behavior).
+    expected_max_positions: int | None = None
+    expected_max_position_pct: float | None = None
+    expected_daily_loss_cap_pct: float | None = None
 
 
 class RiskEvaluator:
@@ -123,13 +135,19 @@ class RiskEvaluator:
                 reason_code="strategy_disabled",
             )
 
-        if context.strategy_config.stage not in {"backtest", "paper"}:
+        # Prefer the runner-bound stage when present (closes the same TOCTOU
+        # class as ``_check_manifest_drift``: a parallel writer flipping the
+        # YAML's stage field mid-session must not change the eligibility
+        # decision for a runner already in flight). Falls back to the YAML's
+        # per-cycle stage for callers without runner binding.
+        effective_stage = context.expected_stage or context.strategy_config.stage
+        if effective_stage not in {"backtest", "paper"}:
             return RiskCheckResult(
                 name="strategy_stage",
                 passed=False,
                 message=(
                     f"Strategy '{context.strategy_config.name}' stage "
-                    f"'{context.strategy_config.stage}' is not eligible for paper submission."
+                    f"'{effective_stage}' is not eligible for paper submission."
                 ),
                 reason_code="strategy_stage_ineligible",
             )
@@ -373,26 +391,36 @@ class RiskEvaluator:
     def _effective_daily_loss_pct(self, context: EvaluationContext) -> float:
         if context.strategy_config is None:
             return context.risk_defaults.max_daily_loss_pct
-        return min(
-            context.risk_defaults.max_daily_loss_pct,
-            context.strategy_config.daily_loss_cap_pct,
+        # Prefer the runner-bound cap when present (TOCTOU follow-up: a
+        # parallel writer raising ``daily_loss_cap_pct`` mid-session must not
+        # let a cycle in flight exceed the runner's bound envelope). Falls
+        # back to the YAML value for callers without runner binding.
+        per_strategy = (
+            context.expected_daily_loss_cap_pct
+            if context.expected_daily_loss_cap_pct is not None
+            else context.strategy_config.daily_loss_cap_pct
         )
+        return min(context.risk_defaults.max_daily_loss_pct, per_strategy)
 
     def _effective_position_pct(self, context: EvaluationContext) -> float:
         if context.strategy_config is None:
             return context.risk_defaults.max_single_position_pct
-        return min(
-            context.risk_defaults.max_single_position_pct,
-            context.strategy_config.max_position_pct,
+        per_strategy = (
+            context.expected_max_position_pct
+            if context.expected_max_position_pct is not None
+            else context.strategy_config.max_position_pct
         )
+        return min(context.risk_defaults.max_single_position_pct, per_strategy)
 
     def _effective_max_positions(self, context: EvaluationContext) -> int:
         if context.strategy_config is None:
             return context.risk_defaults.max_concurrent_positions
-        return min(
-            context.risk_defaults.max_concurrent_positions,
-            context.strategy_config.max_positions,
+        per_strategy = (
+            context.expected_max_positions
+            if context.expected_max_positions is not None
+            else context.strategy_config.max_positions
         )
+        return min(context.risk_defaults.max_concurrent_positions, per_strategy)
 
     def _projected_position_value(self, context: EvaluationContext) -> float:
         current = next(
