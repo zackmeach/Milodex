@@ -161,6 +161,52 @@ Warnings accumulate and may themselves become a kill-switch trigger if they repe
 
 ---
 
+## Known Backtest Limitations and Biases
+
+Backtest results in Milodex are produced by an engine that is itself well-tested (T+1 fill timing, universe coverage assertion, tiered slippage, split- and dividend-adjusted bars, walk-forward OOS aggregation). The engine is not the credibility-limiting factor. **The data is.** Two known biases distort backtest numbers in ways the engine cannot correct on its own:
+
+### Survivorship bias (universe selection)
+
+Several universe manifests in `configs/` declare their members as a present-day ticker list and apply that list retroactively to historical evaluation windows. This silently:
+
+- **Excludes** names that were in the universe in 2020 but are no longer there in 2026 (delistings, demotions, corporate restructurings).
+- **Includes** names that were not in the universe in 2020 but are now (recent additions, IPOs that grew into large-cap status).
+
+The bias is asymmetric: the names that disappear are disproportionately the ones whose price declined catastrophically; the names that appear are disproportionately the ones whose price appreciated. Backtests on hindsight-selected stock universes are therefore **systematically optimistic** — Sharpe ratios are inflated by an unknown but typically meaningful amount (rule of thumb: 0.2–0.4 for a 5-year curated-large-cap window).
+
+Each universe manifest carries a `survivorship_corrected: bool` field declaring its status. ETF-only universes with stable constituents are immune (`survivorship_corrected: true`); stock universes built from current ticker lists are not (`survivorship_corrected: false`). The `milodex research screen` output reports this per-strategy as the `surv_corr` column so the operator knows which Sharpes are credibility-corrected and which are not.
+
+**Affected universes (Phase 1):**
+
+| Universe | Status | Reason |
+| --- | --- | --- |
+| `universe.spy_only.v1` | corrected | Single ETF (SPY 1993–) |
+| `universe.index_etfs.v1` | corrected | 4 broad-market ETFs, all stable since pre-2020 |
+| `universe.gem_quartet.v1` | corrected | 4 GEM ETFs, all stable since pre-2020 |
+| `universe.sector_etfs_spdr.v1` | corrected | 11 SPDR sector ETFs, family stable since 1998 (XLRE 2015, XLC 2018) |
+| `universe.phase1.curated.v1` | **not corrected** | 20 ETFs (immune) + 20 large-cap single-names (hindsight-selected) |
+| `universe.sp100_liquid.v1` | **not corrected** | 99 single-name stocks; ~20–30 constituent changes 2020–2024 |
+
+**Affected research-target strategies:** `tsmom`, `rsi2`, `bbands` (all `curated_largecap`); `nr7`, `52w_high_proximity` (both `sp100_liquid`).
+
+**Lifecycle-proof strategy is not materially affected.** `regime.daily.sma200_rotation.spy_shy.v1` rotates between SPY (1993–) and SHY (2002–), both of which have traded continuously throughout every Phase 1 evaluation window. The screen output reports `surv_corr=no` for regime because the strategy declares its universe inline rather than via a manifest — the disclosure mechanism only reads from manifest YAMLs, and an inline universe has no place to declare its status. This is a known cosmetic gap; the underlying universe is survivorship-immune.
+
+**Strategies with inline universes default to `surv_corr=no`.** The `survivorship_corrected` flag lives on universe manifests, not strategies. A strategy that inlines its universe (rather than declaring `universe_ref:` and pointing at a manifest) cannot declare survivorship-correction status. The default false is the correct conservative answer in absence of an authoritative declaration. Migrating an inline universe to a manifest is the path to opt in.
+
+**Planned fix:** point-in-time membership reconstruction — restructure stock universes from a flat list to a list of `(symbol, valid_from, valid_to)` tuples sourced from historical-as-of date snapshots. The engine then filters to the symbols valid on each backtest day. Out of scope for the current PR; tracked as Phase 1.5 hardening.
+
+**Operational mitigation in the meantime:** the strict promotion gate (Sharpe > 0.5, max DD < 15%, ≥ 30 trades) is doing implicit survivorship-haircut work — strategies that barely clear the gate on biased data are likely below 0.0 in real expectation. Combined with the paper-stage validation requirement, real-money risk from this bias is bounded; the bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
+
+### Date-range truncation (provider history limit)
+
+A subtler bias: Alpaca's free IEX feed silently truncates requests for dates beyond the rolling history window (~5.75 years as of 2026). A request for `2020-01-01` returns bars starting from approximately `2020-07-27` with no error or warning. The `milodex data fetch-universe` CLI reports "100% coverage" because every requested *symbol* received some data — coverage is checked symbol-by-symbol, not date-by-date.
+
+This means evaluations nominally specified as "2020–2024" are in practice "2020-H2 through 2024." The bias is small (~0.5 of a year missing out of 5) and does not advantage any particular strategy class systematically, but it is worth knowing about when comparing run-to-run.
+
+**Planned fix:** add a date-range coverage assertion to `milodex data fetch-universe` so a request that returns less than the requested window emits a warning (or hard error, configurable). Out of scope for the current PR; tracked as Phase 1.5 hardening.
+
+---
+
 ## Relationship to SRS and Config
 
 - `configs/risk_defaults.yaml` is the machine-readable source of truth for every numeric default above. If this document and the config disagree, **the config wins** and this document should be updated.

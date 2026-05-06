@@ -142,6 +142,42 @@ def resolve_universe_ref(universe_ref: str, config_path: Path) -> tuple[str, ...
     raise ValueError(msg)
 
 
+def resolve_universe_survivorship_corrected(universe_ref: str, config_path: Path) -> bool:
+    """Return whether the named universe is point-in-time corrected for survivorship.
+
+    A universe declares ``survivorship_corrected: true`` when its membership
+    has been reconstructed against historical-as-of dates rather than applied
+    retroactively from a present-day list. ETF-only universes (where the
+    constituents are stable instruments that have not been delisted) typically
+    qualify; stock universes assembled from a current ticker list do not.
+
+    The default for a manifest that does not declare the field is ``False`` —
+    the conservative answer. Backtest credibility commentary (per
+    ``docs/RISK_POLICY.md`` "Known Backtest Limitations and Biases") relies on
+    this being a presence-or-absence-of-evidence flag, not an opinion.
+    """
+    configs_dir = config_path.parent
+    for manifest_path in sorted(configs_dir.glob("universe_*.yaml")):
+        try:
+            with manifest_path.open("r", encoding="utf-8") as handle:
+                data = yaml.safe_load(handle)
+        except yaml.YAMLError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        universe = data.get("universe")
+        if not isinstance(universe, dict):
+            continue
+        if str(universe.get("id", "")) != universe_ref:
+            continue
+        return bool(universe.get("survivorship_corrected", False))
+    msg = (
+        f"{config_path}: universe_ref '{universe_ref}' not found in any "
+        f"manifest under {configs_dir}"
+    )
+    raise ValueError(msg)
+
+
 def load_strategy_config(path: Path) -> StrategyConfig:
     """Load and validate a strategy config from YAML."""
     if not path.exists():

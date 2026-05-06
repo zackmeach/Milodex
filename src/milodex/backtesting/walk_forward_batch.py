@@ -24,6 +24,7 @@ from milodex.backtesting.walk_forward_runner import (
     run_walk_forward,
 )
 from milodex.promotion.state_machine import check_gate
+from milodex.strategies.loader import resolve_universe_survivorship_corrected
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -49,6 +50,13 @@ class BatchRow:
     run_id: str | None
     oos_equity_curve: tuple[tuple[date, float], ...] = ()
     error: str | None = None
+    # Whether the strategy's universe is point-in-time corrected for
+    # survivorship bias. False by default — universes built from a present-day
+    # ticker list applied retroactively are silently optimistic. Reported in
+    # the screen output so the operator knows which Sharpes are credibility-
+    # corrected and which are not. See docs/RISK_POLICY.md "Known Backtest
+    # Limitations and Biases".
+    survivorship_corrected: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -68,6 +76,7 @@ class BatchRow:
                 for point_date, equity in self.oos_equity_curve
             ],
             "error": self.error,
+            "survivorship_corrected": self.survivorship_corrected,
         }
 
 
@@ -147,6 +156,7 @@ def _screen_one(
     loaded = engine._loaded  # noqa: SLF001
     family = loaded.context.family
     universe = tuple(sorted(loaded.context.universe))
+    universe_ref = loaded.context.universe_ref
     warmup_days = engine._warmup_calendar_days()  # noqa: SLF001
     warmup_start = start_date - timedelta(days=warmup_days)
     cache_key = (universe, warmup_start, end_date)
@@ -188,6 +198,16 @@ def _screen_one(
         trade_count=result.oos_trade_count,
     )
 
+    # Look up the universe's declared survivorship-correction status. A
+    # missing universe_ref (strategies that inline their universe instead of
+    # referencing a manifest) defaults to False — same conservative answer as
+    # an undeclared field.
+    survivorship_corrected = False
+    if universe_ref is not None:
+        survivorship_corrected = resolve_universe_survivorship_corrected(
+            universe_ref, loaded.config.path
+        )
+
     return BatchRow(
         strategy_id=strategy_id,
         family=family,
@@ -201,6 +221,7 @@ def _screen_one(
         gate_failures=tuple(gate.failures),
         run_id=result.run_id,
         oos_equity_curve=tuple(result.oos_equity_curve),
+        survivorship_corrected=survivorship_corrected,
     )
 
 

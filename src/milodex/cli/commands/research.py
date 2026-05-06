@@ -177,6 +177,7 @@ _TABLE_HEADER = (
     "oos_sharpe",
     "oos_max_dd",
     "fragile",
+    "surv_corr",
     "gate",
 )
 
@@ -190,6 +191,7 @@ def _format_table(rows: tuple[BatchRow, ...]) -> list[str]:
             _fmt(row.oos_sharpe, ".2f"),
             f"{row.oos_max_drawdown_pct:.2f}%",
             "yes" if row.single_window_dependency else "no",
+            "yes" if row.survivorship_corrected else "no",
             _gate_cell(row),
         )
         for row in rows
@@ -256,6 +258,7 @@ def _render_markdown(result: BatchResult) -> str:
                     _fmt(row.oos_sharpe, ".2f"),
                     f"{row.oos_max_drawdown_pct:.2f}%",
                     "yes" if row.single_window_dependency else "no",
+                    "yes" if row.survivorship_corrected else "no",
                     _gate_cell(row),
                 ]
             )
@@ -291,6 +294,7 @@ def _render_markdown(result: BatchResult) -> str:
         body.append(f"- OOS Max DD: {row.oos_max_drawdown_pct:.2f}%")
         body.append(f"- OOS Total Return: {row.oos_total_return_pct:+.2f}%")
         body.append(f"- Single-window dependency: {row.single_window_dependency}")
+        body.append(f"- Survivorship-corrected universe: {row.survivorship_corrected}")
         body.append(f"- Gate: {row.gate_promotion_type} — allowed={row.gate_allowed}")
         if row.gate_failures:
             body.append("- Gate failures:")

@@ -13,6 +13,10 @@ universe:
   id: "universe.gem_quartet.v1"
   version: 1
   slippage_pct: 0.0003  # 3 bps — highly-liquid GEM ETFs (SPY, EFA, AGG, SHY)
+  # Survivorship-bias-immune: all four ETFs have traded continuously since
+  # well before Phase 1 evaluation windows (SPY 1993, EFA 2001, AGG 2003,
+  # SHY 2002). See docs/RISK_POLICY.md "Known Backtest Limitations and Biases".
+  survivorship_corrected: true
   description: >
     The four ETFs Antonacci's Global Equities Momentum (GEM) algorithm
     operates on: SPY (US equities), EFA (developed-market ex-US equities),

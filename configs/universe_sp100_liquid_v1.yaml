@@ -7,6 +7,16 @@ universe:
   id: "universe.sp100_liquid.v1"
   version: 1
   slippage_pct: 0.0005  # 5 bps — large-cap S&P 100 single-name stocks
+  # NOT survivorship-corrected: the S&P 100 has had ~20-30 constituent
+  # changes between 2020 and 2024 (additions, removals, corporate
+  # restructurings). Today's membership applied retroactively silently
+  # excludes any name that was in the index in 2020 but not today, and
+  # silently includes recent additions. Backtests on this universe are
+  # systematically optimistic. Affected research-target strategies: nr7,
+  # 52w_high_proximity. Planned fix: point-in-time membership
+  # reconstruction — see docs/RISK_POLICY.md "Known Backtest Limitations
+  # and Biases".
+  survivorship_corrected: false
   description: >
     Liquid large-cap U.S. common-stock universe approximating the S&P 100 and
     filtered toward high dollar-volume constituents for Phase 1 daily-swing

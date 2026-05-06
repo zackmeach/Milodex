@@ -13,6 +13,10 @@ universe:
   id: "universe.index_etfs.v1"
   version: 1
   slippage_pct: 0.0003  # 3 bps — highly-liquid broad-market index ETFs
+  # Survivorship-bias-immune: SPY (1993), QQQ (1999), IWM (2000), DIA (1998)
+  # have all traded continuously throughout the Phase 1 evaluation windows.
+  # See docs/RISK_POLICY.md "Known Backtest Limitations and Biases".
+  survivorship_corrected: true
   description: >
     Four broad-market U.S. equity index ETFs. Used by IBS-style mean-reversion
     strategies that target overshoot/snapback behavior on highly-liquid index
