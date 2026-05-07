@@ -23,6 +23,7 @@ from milodex.risk.models import RiskCheckResult, RiskDecision
 
 if TYPE_CHECKING:
     from milodex.broker.models import AccountInfo, Order, Position
+    from milodex.core.event_store import EventStore
     from milodex.data.models import Bar
     from milodex.execution.config import StrategyExecutionConfig
     from milodex.execution.models import ExecutionRequest, TradeIntent
@@ -68,6 +69,14 @@ class EvaluationContext:
     expected_max_positions: int | None = None
     expected_max_position_pct: float | None = None
     expected_daily_loss_cap_pct: float | None = None
+    # Event store for per-strategy attribution reconstruction (ADR 0029).
+    # The new ``_check_strategy_concurrent_positions`` consults trade
+    # history to count positions attributed to the proposing strategy.
+    # When None, the per-strategy check is skipped — it is a no-op for
+    # callers that haven't been routed through the execution service
+    # (e.g. legacy entry points). The account-scoped check
+    # (``_check_concurrent_positions``, ADR 0024) is unaffected.
+    event_store: EventStore | None = None
 
 
 class RiskEvaluator:
@@ -86,6 +95,7 @@ class RiskEvaluator:
             self._check_single_position_limit(context),
             self._check_total_exposure(context),
             self._check_concurrent_positions(context),
+            self._check_strategy_concurrent_positions(context),
             self._check_duplicate_order(context),
         ]
 
@@ -366,6 +376,110 @@ class RiskEvaluator:
             "concurrent_positions",
             True,
             "Projected open positions are within limits.",
+        )
+
+    def _check_strategy_concurrent_positions(self, context: EvaluationContext) -> RiskCheckResult:
+        """Per-strategy concurrent-positions cap (ADR 0029).
+
+        Counts current broker positions whose attribution (reconstructed
+        from the durable ``trades`` history per
+        :func:`milodex.risk.attribution.attribute_position`) matches the
+        proposing strategy, projects the post-trade count using the same
+        rules as :meth:`_check_concurrent_positions`, and refuses when
+        the projected count would exceed the strategy's own declared
+        cap.
+
+        Reads ``context.expected_max_positions`` directly per ADR 0029
+        Decision 6 — the per-strategy cap is an independent ceiling and
+        MUST NOT be clamped by the global default via
+        :meth:`_effective_max_positions`. That clamp is for the
+        account-scoped check.
+
+        Skipped (returns a passing :class:`RiskCheckResult`) when:
+          - ``context.expected_max_positions`` is None (operator manual
+            trades, or a strategy YAML with no ``risk.max_positions``
+            field).
+          - ``context.event_store`` is None (caller not routed through
+            the execution service — preserves the pre-ADR-0029 behavior
+            for legacy entry points).
+          - ``context.request.strategy_name`` is None (operator
+            attribution; the operator pseudo-strategy has no per-
+            strategy cap).
+
+        Independent of the existing account-scoped check
+        (:meth:`_check_concurrent_positions`, ADR 0024). Both must pass
+        for the trade to be allowed; either failure produces a distinct
+        reason code in :attr:`RiskDecision.reason_codes`.
+        """
+        if context.expected_max_positions is None:
+            return RiskCheckResult(
+                "strategy_concurrent_positions",
+                True,
+                "No per-strategy cap declared.",
+            )
+        if context.event_store is None:
+            return RiskCheckResult(
+                "strategy_concurrent_positions",
+                True,
+                "No event store available; skipping per-strategy attribution.",
+            )
+        proposing_strategy = context.request.strategy_name
+        if proposing_strategy is None:
+            return RiskCheckResult(
+                "strategy_concurrent_positions",
+                True,
+                "Operator-attributed trade has no per-strategy cap.",
+            )
+
+        # Lazy import keeps this module importable without circular issues.
+        from milodex.risk.attribution import attribute_position
+
+        existing_symbols = {
+            position.symbol.upper() for position in context.positions if position.quantity > 0
+        }
+        owned = 0
+        for symbol in existing_symbols:
+            owner = attribute_position(symbol=symbol, event_store=context.event_store)
+            if owner == proposing_strategy:
+                owned += 1
+
+        symbol = context.intent.normalized_symbol()
+        projected_count = owned
+        if context.intent.side == OrderSide.BUY:
+            # An entry adds 1 only if the strategy doesn't already hold
+            # the symbol (mirrors _check_concurrent_positions). Whether
+            # the strategy *currently* holds the symbol is determined by
+            # attribution: strategy A buying more of a symbol it owns
+            # adds zero slots; strategy B buying a symbol that strategy
+            # A holds adds 1 (under per-strategy semantics).
+            currently_owned_by_strategy = (
+                symbol in existing_symbols
+                and attribute_position(symbol=symbol, event_store=context.event_store)
+                == proposing_strategy
+            )
+            if not currently_owned_by_strategy:
+                projected_count += 1
+        elif context.intent.side == OrderSide.SELL and symbol in existing_symbols:
+            position = next(pos for pos in context.positions if pos.symbol.upper() == symbol)
+            owner = attribute_position(symbol=symbol, event_store=context.event_store)
+            if owner == proposing_strategy and context.intent.quantity >= position.quantity:
+                projected_count -= 1
+
+        cap = context.expected_max_positions
+        if projected_count > cap:
+            return RiskCheckResult(
+                name="strategy_concurrent_positions",
+                passed=False,
+                message=(
+                    f"Projected positions {projected_count} attributed to strategy "
+                    f"'{proposing_strategy}' exceeds per-strategy limit {cap}."
+                ),
+                reason_code="max_strategy_positions_exceeded",
+            )
+        return RiskCheckResult(
+            "strategy_concurrent_positions",
+            True,
+            f"Projected positions for strategy '{proposing_strategy}' are within limits.",
         )
 
     def _check_duplicate_order(self, context: EvaluationContext) -> RiskCheckResult:

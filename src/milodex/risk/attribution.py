@@ -1,0 +1,179 @@
+"""Per-strategy position attribution helpers (ADR 0029).
+
+The risk evaluator needs to answer "which strategy owns the current
+position in symbol X?" without storing a parallel ``position_attribution``
+table — option (a) in ADR 0024 was rejected in ADR 0029 Decision 2.
+Attribution is reconstructed on demand from the durable ``trades``
+history.
+
+Decision 1: A broker position belongs to the strategy whose runner
+submitted its opening fill — the BUY that took the symbol from zero
+shares to a non-zero balance. Subsequent increases preserve attribution.
+Full liquidation followed by a fresh BUY creates a new attribution.
+
+Decision 2 (CRITICAL FILTER): Only rows with ``status="submitted"``
+count as fills. Rows with ``status`` in ``{"preview", "blocked",
+"cancelled"}`` are NOT fills — a ``side="buy"`` row with
+``status="blocked"`` is a rejected intent, not an opening fill, and
+counting it would misattribute the symbol to whichever strategy
+proposed the rejected trade. The reconstruction walk MUST exclude
+those rows.
+
+Decision 3: Pre-attribution positions (no recoverable submitted opening
+fill, or one whose ``strategy_name IS NULL``) are attributed to the
+reserved pseudo-strategy id ``"operator"``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from milodex.core.event_store import EventStore
+
+
+OPERATOR_ATTRIBUTION = "operator"
+"""Reserved pseudo-strategy id for positions opened outside any runner.
+
+A current broker position whose opening fill was placed by the operator
+(`strategy_name IS NULL`), or whose symbol has no recoverable submitted
+opening fill in the event store at all, is treated as belonging to this
+pseudo-strategy. Operator-attributed positions count toward the
+account-scoped cap (ADR 0024 unchanged) but do not count toward any
+runner-strategy's per-strategy cap.
+
+Per ADR 0029 Decision 3, ``configs/`` MUST NOT define a strategy whose
+id is the literal string ``"operator"``.
+"""
+
+
+def attribute_position(
+    *,
+    symbol: str,
+    event_store: EventStore,
+) -> str:
+    """Return the strategy_id that owns the current position in ``symbol``.
+
+    Walks the symbol-indexed ``trades`` rows backwards (newest-first),
+    filters to rows with ``status="submitted"`` only (Decision 2), and
+    locates the most recent zero -> non-zero opening fill. Returns the
+    ``strategy_name`` from that row, or :data:`OPERATOR_ATTRIBUTION`
+    when (a) the row's ``strategy_name`` is NULL, or (b) the symbol has
+    no submitted fills in the event store at all.
+
+    The "opening fill" is the BUY that made the running submitted-share
+    balance non-zero. Subsequent BUYs on top of an open position do not
+    re-attribute. A SELL that fully liquidates breaks the chain — a
+    later BUY starts a new attribution from zero shares.
+
+    Args:
+        symbol: The position symbol to attribute. Compared case-insensitively
+            (uppercase) since ``ExecutionRequest`` already normalizes.
+        event_store: Source of truth for trade history.
+
+    Returns:
+        The owning ``strategy_id`` as a string, or
+        :data:`OPERATOR_ATTRIBUTION` per Decision 3.
+    """
+    normalized = symbol.strip().upper()
+    rows = _fetch_submitted_trade_rows(event_store, normalized)
+    if not rows:
+        return OPERATOR_ATTRIBUTION
+
+    # Walk forward through the submitted-fills timeline and track the
+    # running share balance. We need forward order (oldest-first) to
+    # detect zero -> non-zero transitions correctly. Each transition
+    # captures the strategy_name of the row that did the opening BUY;
+    # the result is the most recent such transition that's still open.
+    rows_sorted = sorted(rows, key=lambda r: r["id"])
+    running_qty = 0.0
+    opening_strategy_name: str | None = None
+    opening_recorded = False
+    for row in rows_sorted:
+        side = str(row["side"]).lower()
+        qty = float(row["quantity"])
+        prior_qty = running_qty
+        if side == "buy":
+            running_qty += qty
+        elif side == "sell":
+            running_qty -= qty
+        else:
+            # Unknown side — defensive: don't change the running total.
+            continue
+        # Detect zero -> non-zero opening transition.
+        if prior_qty <= 0 and running_qty > 0:
+            opening_strategy_name = row["strategy_name"]
+            opening_recorded = True
+        # Detect full liquidation: any time we drop to <= 0, the next
+        # opening BUY starts a fresh attribution.
+        if running_qty <= 0:
+            opening_recorded = False
+            opening_strategy_name = None
+
+    if not opening_recorded:
+        # No open chain in the durable history (everything liquidated,
+        # or we only saw exits). Treat as operator-owned per Decision 3.
+        return OPERATOR_ATTRIBUTION
+
+    if opening_strategy_name is None or opening_strategy_name == "":
+        return OPERATOR_ATTRIBUTION
+    return str(opening_strategy_name)
+
+
+def count_positions_by_strategy(
+    *,
+    positions: dict[str, float],
+    event_store: EventStore,
+) -> dict[str, int]:
+    """Return ``{strategy_id: count}`` for the given current positions.
+
+    Uses :func:`attribute_position` per symbol. Only symbols with
+    non-zero quantity are counted; the broker is the position arbiter
+    per [ADR 0010](../../docs/adr/0010-hybrid-source-of-truth.md), so
+    a symbol absent from ``positions`` is absent from the result.
+
+    The ``"operator"`` pseudo-strategy is included as a key when any
+    symbol resolves to operator attribution (per Decision 3).
+
+    Args:
+        positions: Mapping of symbol to current quantity (broker truth).
+            Symbols with zero or negative quantity are ignored.
+        event_store: Source of truth for trade history.
+
+    Returns:
+        Dict mapping each attributed ``strategy_id`` (or
+        :data:`OPERATOR_ATTRIBUTION`) to the number of held symbols
+        attributed to it.
+    """
+    counts: dict[str, int] = {}
+    for symbol, qty in positions.items():
+        if qty <= 0:
+            continue
+        owner = attribute_position(symbol=symbol, event_store=event_store)
+        counts[owner] = counts.get(owner, 0) + 1
+    return counts
+
+
+def _fetch_submitted_trade_rows(event_store: EventStore, symbol: str) -> list[dict]:
+    """Fetch submitted-status trade rows for ``symbol`` from the event store.
+
+    Uses the ``idx_trades_symbol`` index. Filters to ``status="submitted"``
+    in SQL — Decision 2's requirement that blocked, preview, and
+    cancelled rows are excluded from the walk.
+
+    Returns a list of dicts (column -> value), ordered ascending by id.
+    """
+    # Reach into the event store's connection. We do this through a
+    # private helper to keep the attribution module self-contained
+    # without bloating EventStore's public surface.
+    with event_store._connect() as connection:  # noqa: SLF001 — see ADR 0029 §Open questions
+        rows = connection.execute(
+            """
+            SELECT id, recorded_at, side, quantity, strategy_name, submitted_by, status
+            FROM trades
+            WHERE symbol = ? AND status = 'submitted'
+            ORDER BY id ASC
+            """,
+            (symbol,),
+        ).fetchall()
+    return [dict(row) for row in rows]

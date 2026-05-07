@@ -1,0 +1,355 @@
+"""Tests for ``milodex.risk.attribution`` (ADR 0029).
+
+Pin the reconstruction-from-trades semantics:
+- only ``status="submitted"`` rows count as fills (Decision 2)
+- ``strategy_name`` is the primary attribution key (Decision 3)
+- absence of a recoverable opening fill resolves to ``"operator"``
+- partial liquidations preserve attribution; full liquidations break it
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+from milodex.risk.attribution import (
+    OPERATOR_ATTRIBUTION,
+    attribute_position,
+    count_positions_by_strategy,
+)
+
+_NOW = datetime(2026, 5, 6, 18, 0, tzinfo=UTC)
+
+
+def _explanation(store: EventStore, *, recorded_at: datetime, status: str = "submitted") -> int:
+    """Insert a minimal explanation row and return its id."""
+    return store.append_explanation(
+        ExplanationEvent(
+            recorded_at=recorded_at,
+            decision_type="submit",
+            status=status,
+            strategy_name=None,
+            strategy_stage=None,
+            strategy_config_path=None,
+            config_hash=None,
+            symbol="X",
+            side="buy",
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=recorded_at,
+            latest_bar_close=100.0,
+            account_equity=10_000.0,
+            account_cash=10_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=status == "submitted",
+            risk_summary="Allowed" if status == "submitted" else "Blocked",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+        )
+    )
+
+
+def _record_trade(
+    store: EventStore,
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    strategy_name: str | None,
+    status: str = "submitted",
+    submitted_by: str = "strategy_runner",
+    recorded_at: datetime | None = None,
+    broker_order_id: str | None = "broker-1",
+) -> int:
+    """Insert a paired explanation+trade row and return the trade id."""
+    when = recorded_at if recorded_at is not None else _NOW
+    explanation_id = _explanation(store, recorded_at=when, status=status)
+    return store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=when,
+            status=status,
+            source="paper",
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=100.0,
+            estimated_order_value=quantity * 100.0,
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path=None,
+            submitted_by=submitted_by,
+            broker_order_id=broker_order_id if status == "submitted" else None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
+@pytest.fixture
+def store(tmp_path):
+    return EventStore(tmp_path / "milodex.db")
+
+
+# ---------------------------------------------------------------------------
+# attribute_position
+# ---------------------------------------------------------------------------
+
+
+def test_attribute_position_returns_strategy_for_single_submitted_buy(store):
+    """Single submitted opening BUY attributes the symbol to its strategy."""
+    _record_trade(store, symbol="SPY", side="buy", quantity=10, strategy_name="regime")
+
+    assert attribute_position(symbol="SPY", event_store=store) == "regime"
+
+
+def test_attribute_position_full_liquidation_then_rebuy_creates_new_attribution(store):
+    """Held -> liquidated -> bought-by-different-strategy returns the latest owner.
+
+    Pins Decision 1's "full liquidation followed by a fresh opening BUY
+    creates a new attribution." Strategy A's chain is broken when the
+    running balance hits zero; strategy B's later BUY starts fresh.
+    """
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=3),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=5,
+        strategy_name="strategy_b",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="SPY", event_store=store) == "strategy_b"
+
+
+def test_attribute_position_returns_operator_when_opening_strategy_name_is_null(store):
+    """A submitted opening row with strategy_name=None resolves to 'operator'.
+
+    Pins Decision 3: ``strategy_name IS NULL`` co-occurs with operator-
+    submitted trades (the execution service sets it via
+    ``strategy_config.name if strategy_config else None``).
+    """
+    _record_trade(
+        store,
+        symbol="GLD",
+        side="buy",
+        quantity=2,
+        strategy_name=None,
+        submitted_by="operator",
+    )
+
+    assert attribute_position(symbol="GLD", event_store=store) == OPERATOR_ATTRIBUTION
+
+
+def test_attribute_position_returns_operator_when_no_submitted_rows(store):
+    """A symbol with no submitted fills at all resolves to 'operator'."""
+    # Empty store -> operator.
+    assert attribute_position(symbol="MSFT", event_store=store) == OPERATOR_ATTRIBUTION
+
+
+def test_attribute_position_returns_operator_when_only_blocked_row_exists(store):
+    """A blocked BUY is NOT a fill — its strategy must not be attributed.
+
+    Pins Decision 2's filter: ``status="blocked"`` is excluded from the
+    walk even when it is the most recent row for the symbol. A naive
+    implementation that read the latest row regardless of status would
+    misattribute the symbol to the strategy that proposed the rejected
+    trade.
+    """
+    _record_trade(
+        store,
+        symbol="AAPL",
+        side="buy",
+        quantity=1,
+        strategy_name="malicious_attribution_attempt",
+        status="blocked",
+        broker_order_id=None,
+    )
+
+    assert attribute_position(symbol="AAPL", event_store=store) == OPERATOR_ATTRIBUTION
+
+
+def test_attribute_position_ignores_blocked_row_more_recent_than_submitted(store):
+    """A more-recent blocked row must not override the older submitted opener.
+
+    Decision 2 must filter blocked even when the row is newer.
+    """
+    _record_trade(
+        store,
+        symbol="QQQ",
+        side="buy",
+        quantity=1,
+        strategy_name="real_owner",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="QQQ",
+        side="buy",
+        quantity=1,
+        strategy_name="rejected_proposer",
+        status="blocked",
+        broker_order_id=None,
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="QQQ", event_store=store) == "real_owner"
+
+
+def test_attribute_position_ignores_cancelled_rows(store):
+    """Decision 2 explicitly names cancelled rows as non-fills."""
+    _record_trade(
+        store,
+        symbol="IWM",
+        side="buy",
+        quantity=1,
+        strategy_name="real_owner",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="IWM",
+        side="buy",
+        quantity=1,
+        strategy_name="cancelled_proposer",
+        status="cancelled",
+        broker_order_id=None,
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="IWM", event_store=store) == "real_owner"
+
+
+def test_attribute_position_ignores_preview_rows(store):
+    """Decision 2 explicitly names preview rows as non-fills."""
+    _record_trade(
+        store,
+        symbol="DIA",
+        side="buy",
+        quantity=1,
+        strategy_name="real_owner",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="DIA",
+        side="buy",
+        quantity=1,
+        strategy_name="preview_proposer",
+        status="preview",
+        broker_order_id=None,
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="DIA", event_store=store) == "real_owner"
+
+
+def test_attribute_position_partial_liquidation_preserves_attribution(store):
+    """Partial liquidation must NOT reset attribution.
+
+    Decision 1: "Subsequent increases preserve attribution. Partial
+    liquidations leave attribution unchanged on the remaining shares."
+    """
+    _record_trade(
+        store,
+        symbol="VTI",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="VTI",
+        side="sell",
+        quantity=4,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="VTI", event_store=store) == "strategy_a"
+
+
+def test_attribute_position_normalizes_symbol_case(store):
+    """Symbol comparison must be case-insensitive (matches request normalization)."""
+    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
+
+    assert attribute_position(symbol="spy", event_store=store) == "regime"
+
+
+# ---------------------------------------------------------------------------
+# count_positions_by_strategy
+# ---------------------------------------------------------------------------
+
+
+def test_count_positions_by_strategy_aggregates_across_multiple_symbols(store):
+    """Multiple symbols owned by multiple strategies aggregate correctly."""
+    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
+    _record_trade(store, symbol="QQQ", side="buy", quantity=1, strategy_name="meanrev")
+    _record_trade(store, symbol="IWM", side="buy", quantity=1, strategy_name="meanrev")
+    _record_trade(store, symbol="DIA", side="buy", quantity=1, strategy_name="meanrev")
+
+    counts = count_positions_by_strategy(
+        positions={"SPY": 1.0, "QQQ": 1.0, "IWM": 1.0, "DIA": 1.0},
+        event_store=store,
+    )
+
+    assert counts == {"regime": 1, "meanrev": 3}
+
+
+def test_count_positions_by_strategy_includes_operator_key(store):
+    """Operator-attributed positions appear under the 'operator' key."""
+    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
+    _record_trade(
+        store,
+        symbol="GLD",
+        side="buy",
+        quantity=1,
+        strategy_name=None,
+        submitted_by="operator",
+    )
+
+    counts = count_positions_by_strategy(
+        positions={"SPY": 1.0, "GLD": 1.0},
+        event_store=store,
+    )
+
+    assert counts == {"regime": 1, OPERATOR_ATTRIBUTION: 1}
+
+
+def test_count_positions_by_strategy_skips_zero_quantity(store):
+    """Symbols with zero or negative quantity are not counted."""
+    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
+
+    counts = count_positions_by_strategy(
+        positions={"SPY": 1.0, "QQQ": 0.0},
+        event_store=store,
+    )
+
+    assert "QQQ" not in counts
+    assert counts.get("regime") == 1

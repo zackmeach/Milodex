@@ -29,7 +29,7 @@ strategy:
   # Per-strategy risk controls (layered on top of global risk_defaults)
   risk:
     max_position_pct: 0.10        # Max 10% of portfolio in a single position
-    max_positions: 3              # Strategy's expected concurrent position count (informational only — see ADR 0024). The risk evaluator's binding cap is `max_concurrent_positions` in configs/risk_defaults.yaml.
+    max_positions: 3              # Per-strategy concurrent-position cap. BINDING when set (ADR 0029): the risk evaluator counts positions attributed to this strategy and refuses an intent that would push the projected count above this value (reason code `max_strategy_positions_exceeded`). Absence of the field leaves the per-strategy check skipped — only the account-scoped `max_concurrent_positions` in configs/risk_defaults.yaml applies. Both caps run together; either failing blocks the trade. ADR 0024's account-scoped floor is unchanged.
     daily_loss_cap_pct: 0.02      # Halt this strategy if it loses 2% in a day
     stop_loss_pct: 0.05           # Per-position stop loss at 5%
     # min_universe_coverage_pct: 0.90  # Override global 0.80; refuse to backtest when fewer than 90% of declared-universe symbols have bars
