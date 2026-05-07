@@ -1,7 +1,9 @@
 """Tests for ParquetCache."""
 
 import multiprocessing
+import os
 from datetime import date
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
@@ -327,6 +329,60 @@ def test_concurrent_writers_do_not_collide(tmp_path):
     final = ParquetCache(cache_dir).read("AAPL", Timeframe.DAY_1)
     assert final is not None and len(final) == 1
     assert float(final["close"].iloc[0]) in {1.0, 2.0, 3.0, 4.0}
+
+
+# ---------------------------------------------------------------------------
+# _replace_with_retry tests (writer-vs-writer rename collision fix)
+# ---------------------------------------------------------------------------
+
+
+def test_replace_with_retry_succeeds_after_transient_permission_error(cache, cache_dir, sample_df):
+    """A single transient PermissionError on os.replace is retried and the
+    write succeeds — the destination file is created with correct content.
+    """
+    real_replace = os.replace
+    call_count = 0
+
+    def _fail_once(src, dst):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise PermissionError("[WinError 5] Access is denied (simulated)")
+        real_replace(src, dst)
+
+    with patch("milodex.data.cache.os.replace", side_effect=_fail_once):
+        cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    assert call_count == 2, f"expected os.replace to be called twice, got {call_count}"
+
+    result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None
+    assert len(result) == len(sample_df)
+
+
+def test_replace_with_retry_gives_up_after_max_attempts(cache, cache_dir, sample_df):
+    """When os.replace always raises PermissionError, _replace_with_retry
+    exhausts max_attempts (default 4) calls then re-raises.
+
+    The BaseException cleanup path must have run — no .tmp* files remain.
+    """
+    call_count = 0
+
+    def _always_fail(src, dst):
+        nonlocal call_count
+        call_count += 1
+        raise PermissionError("[WinError 5] Access is denied (simulated)")
+
+    with patch("milodex.data.cache.os.replace", side_effect=_always_fail):
+        with patch("milodex.data.cache.time.sleep"):  # don't actually sleep in tests
+            with pytest.raises(PermissionError):
+                cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    assert call_count == 4, f"expected exactly 4 os.replace calls (max_attempts), got {call_count}"
+
+    # BaseException cleanup must have removed the tmp file.
+    tmp_files = list(cache_dir.rglob("*.tmp*"))
+    assert tmp_files == [], f"orphan tmp files found after exhausted retry: {tmp_files}"
 
 
 def test_concurrent_failure_leaves_no_orphan_tmp_for_other_writer(

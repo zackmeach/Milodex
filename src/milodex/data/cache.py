@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import date
 from pathlib import Path
@@ -23,6 +24,33 @@ import pandas as pd
 from milodex.data.models import Timeframe
 
 _logger = logging.getLogger(__name__)
+
+
+def _replace_with_retry(
+    src: Path, dst: Path, *, max_attempts: int = 4, base_delay: float = 0.01
+) -> None:
+    """Atomic rename with bounded retry on Windows PermissionError.
+
+    Two concurrent ``os.replace`` calls targeting the same destination can
+    collide on Windows: the OS briefly holds the destination locked by the
+    first rename when the second is issued, surfacing as ``PermissionError``
+    [WinError 5]. The retry burst (~150 ms total) lets the first rename
+    settle before the second proceeds.
+
+    Re-raises non-``PermissionError`` ``OSError`` immediately (don't mask
+    real permission/path bugs). Re-raises the last ``PermissionError`` if
+    all attempts are exhausted.
+    """
+    last_err: PermissionError | None = None
+    for attempt in range(max_attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError as exc:
+            last_err = exc
+            time.sleep(base_delay * 2**attempt)
+    assert last_err is not None
+    raise last_err
 
 
 class ParquetCache:
@@ -86,7 +114,10 @@ class ParquetCache:
 
         The tmp filename is per-writer-unique (``{pid}.{uuid_hex}``) so that
         concurrent writers for the same symbol each land in their own tmp file
-        and do not truncate one another's in-flight write.  The existing
+        and do not truncate one another's in-flight write.  On Windows, two
+        concurrent writers' rename calls to the same destination can briefly
+        contend; a bounded burst-retry on ``PermissionError`` resolves the
+        collision (see ``_replace_with_retry``).  The existing
         ``try/except BaseException + unlink(missing_ok=True)`` cleanup is
         correct and unchanged: each writer is responsible for removing its own
         tmp on failure.
@@ -95,7 +126,7 @@ class ParquetCache:
         tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
         try:
             df.to_parquet(tmp_path, index=False)
-            os.replace(tmp_path, path)
+            _replace_with_retry(tmp_path, path)
         except BaseException:
             # On any failure (including KeyboardInterrupt), discard the
             # half-written temp so a subsequent retry does not see stale state.
