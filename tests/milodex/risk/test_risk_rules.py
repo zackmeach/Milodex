@@ -1339,62 +1339,75 @@ def test_only_per_strategy_fails_when_account_scoped_below(tmp_path):
 def test_strategy_concurrent_positions_uses_expected_max_positions_directly_not_effective(
     tmp_path,
 ):
-    """Per-strategy check reads ``expected_max_positions`` raw; no min() clamp.
+    """Per-strategy check reads ``expected_max_positions`` raw; no clamp.
 
-    Kills the regression where a developer naively reuses
-    ``_effective_max_positions()`` (which clamps to ``min(global,
-    per_strategy)``). Set up a scenario where the global default is
-    TIGHTER than ``expected_max_positions`` — the per-strategy cap must
-    be the raw bound value, not the clamped effective value.
+    Pins ADR 0029 Decision 6 by forcing the two implementations to
+    diverge. Construct a scenario where ``expected_max_positions`` is
+    LOOSER than the global account-scoped cap — the per-strategy check
+    must use the raw per-strategy bound, not anything routed through
+    :meth:`_effective_max_positions`.
 
-    Concretely: global default = 1, expected_max_positions = 5. A
-    naive implementation calling ``_effective_max_positions()`` would
-    treat the per-strategy cap as ``min(1, 5) = 1`` and refuse a 2nd
-    position. The correct implementation reads ``5`` directly and
-    allows it (the account-scoped check is what enforces the global 1).
+    Scenario:
+      - ``risk_defaults.max_concurrent_positions = 2`` (global tight)
+      - ``expected_max_positions = 10`` (per-strategy loose)
+      - ``strategy_config = None`` (the unbound case — operator runner
+        wiring or callers that pass ``expected_max_positions`` without
+        a full ``StrategyExecutionConfig``).
+      - Strategy 'regime' currently holds 2 attributed positions
+        (AAPL, MSFT). It proposes BUY GOOG (a new symbol).
+      - Projected per-strategy count = 3.
 
-    To isolate the new check from the account-scoped check (which would
-    refuse first under a global cap of 1), we craft the account-scoped
-    cap to permit but the new check would refuse if it clamped.
+    Two implementations, two outcomes:
+      - Correct (raw read): cap = 10 → 3 <= 10 → PASS.
+      - Naive (calls ``_effective_max_positions(context)`` which, with
+        ``strategy_config=None``, returns
+        ``risk_defaults.max_concurrent_positions = 2``):
+        cap = 2 → 3 > 2 → FAIL.
+
+    The account-scoped check
+    (:meth:`RiskEvaluator._check_concurrent_positions`) WILL fail in
+    this scenario (3 > 2), and that's by design — this test is
+    isolating the per-strategy check's behavior. The assertion is
+    pinned only to ``strategy_concurrent_positions``.
     """
     # Strategy 'regime' already owns 2 attributed positions (AAPL, MSFT).
     store = _attrib_store(tmp_path, attributions={"AAPL": "regime", "MSFT": "regime"})
     held = [_position("AAPL", 1.0), _position("MSFT", 1.0)]
 
-    # Account cap = 10 (account-scoped check passes).
-    # Strategy cap (expected_max_positions) = 5 (raw).
-    # YAML max_positions = 999 (would clamp differently).
-    # If the new check (incorrectly) called _effective_max_positions(),
-    # it would compute min(global_default=10, per_strategy=5) = 5 — same
-    # answer in this layout. So we craft a sharper distinction:
-    # global default = 2, per_strategy = 5. Strategy currently holds 2,
-    # buying SPY projects 3.
-    # - Naive (clamped) cap = min(2, 5) = 2 -> projected 3 > 2 -> FAIL
-    # - Correct (raw) cap = 5 -> projected 3 <= 5 -> PASS
     decision = RiskEvaluator().evaluate(
         make_context(
-            symbol="SPY",
+            symbol="GOOG",  # New symbol -> projected per-strategy count = 3.
             side=OrderSide.BUY,
             positions=held,
             request_strategy_name="regime",
             event_store=store,
-            expected_max_positions=5,
+            # Per-strategy raw cap is 10 (loose). A naive implementation
+            # that piped this through _effective_max_positions() would,
+            # with strategy_config=None, return
+            # risk_defaults.max_concurrent_positions = 2 — and refuse.
+            expected_max_positions=10,
             estimated_order_value=500.0,
-            # Account-scoped global default of 5 leaves strategy_concurrent
-            # isolated from the global account-scoped check (which would
-            # otherwise refuse at projected 3 > 2). With max_concurrent=5,
-            # account-scoped projects 3 <= 5 -> passes; per-strategy also
-            # passes only if it reads the raw 5 cap.
-            risk_defaults=_with_overrides(max_concurrent_positions=5),
+            # Global default is intentionally tight at 2. This is what
+            # makes the two implementations diverge: raw read sees 10,
+            # any path through _effective_max_positions() sees 2.
+            risk_defaults=_with_overrides(max_concurrent_positions=2),
         )
     )
-    result = check_result(decision, "strategy_concurrent_positions")
-    assert result.passed is True, (
-        "per-strategy check must read expected_max_positions raw (=5), not "
-        "_effective_max_positions() (would clamp to min(global=2, 5)=2 and fail)"
+    strategy_check = check_result(decision, "strategy_concurrent_positions")
+    assert strategy_check.passed is True, (
+        "Per-strategy check must use raw expected_max_positions=10, not "
+        "_effective_max_positions() (which would return "
+        "risk_defaults.max_concurrent_positions=2 with strategy_config=None "
+        "and refuse at projected=3 > cap=2)."
     )
-    # Defense in depth: the account-scoped check is genuinely independent.
-    assert check_result(decision, "concurrent_positions").passed is True
+    # The account-scoped check legitimately fails here (3 > 2). That is
+    # the global cap doing its job and is unrelated to the per-strategy
+    # behavior under test — pinned explicitly so a future refactor that
+    # accidentally couples the two checks can't silently pass this test.
+    account_check = check_result(decision, "concurrent_positions")
+    assert account_check.passed is False
+    assert "max_concurrent_positions_exceeded" in decision.reason_codes
+    assert "max_strategy_positions_exceeded" not in decision.reason_codes
 
 
 def test_regime_can_enter_when_meanrev_holds_unrelated_positions(tmp_path):
