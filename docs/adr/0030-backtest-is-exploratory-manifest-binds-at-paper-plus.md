@@ -43,7 +43,11 @@ When `is_backtest=True`, `_check_manifest_drift` returns immediately with a pass
 
 When `is_backtest=False` (the default), `_check_manifest_drift` behaves exactly as today: exempt `backtest`-stage strategies via effective-stage check, require hash match for `paper`/`micro_live`/`live`.
 
-Note: the existing `BacktestEngine` already injects `NullRiskEvaluator` (not `RiskEvaluator`) as the evaluator, so in practice `_check_manifest_drift` is never reached during a backtest simulation today. The `is_backtest` flag matters for any future path that constructs a full `EvaluationContext` in a backtest-adjacent context (e.g., a research-mode preview that uses the real evaluator for non-risk checks but should skip manifest enforcement). Naming the flag and placing it on `EvaluationContext` is the correct architectural hook regardless; PR #9 chooses the exact wiring.
+**Wiring scope for PR #9:** The existing `BacktestEngine` already injects `NullRiskEvaluator` (not `RiskEvaluator`) as the evaluator, so `_check_manifest_drift` is never reached during a backtest simulation today — `NullRiskEvaluator` short-circuits the entire risk evaluation before any check method is called. As a result, no existing production call site sets `is_backtest=True`; none is needed to fix the current behavior.
+
+PR #9 should add the field and the fast-path bypass as a clean architectural hook for future research-mode paths (e.g., a preview runner that uses the full evaluator for all checks except manifest enforcement). The production call site is a placeholder for that future path; it must not be force-wired to any existing call site today.
+
+PR #9 must also add a unit test that constructs an `EvaluationContext` with `is_backtest=True` and calls `_check_manifest_drift` directly, verifying it returns a passing `RiskCheckResult` without inspecting `runtime_config_hash`, `frozen_manifest_hash`, or the effective stage. No production wiring beyond the field definition and fast-path is needed in this PR.
 
 ### Decision 4 — Audit trail preservation
 
@@ -104,7 +108,8 @@ These questions are genuine design choices that belong to implementation; the AD
   - A fast-path bypass in `_check_manifest_drift` that returns a passing `RiskCheckResult` when `is_backtest=True`, before any stage or hash logic.
   - Verification that `BacktestEngine.run` records `config_hash` from the YAML at invocation time (Decision 4 audit trail guarantee — existing behavior to be explicitly tested).
   - A documentation update to `docs/PROMOTION_GOVERNANCE.md` (or equivalent) capturing the sandbox semantic and the paper+ scope of ADR 0015.
-- ADR 0015's frozen-manifest discipline is unchanged at `paper`/`micro_live`/`live` stages. Its scope is clarified in its Status header and in `docs/PROMOTION_GOVERNANCE.md`.
+  - Amend ADR 0015's Status header to note "scope clarified by ADR 0030" — the concrete change is appending `"Scope clarified at ADR 0030 (manifest discipline binds at paper+, backtest is exploratory)."` to the existing Status line. This is a small, additive note; it does not change ADR 0015's Decision or Rationale.
+- ADR 0015's frozen-manifest discipline is unchanged at `paper`/`micro_live`/`live` stages. Its scope is clarified in its Status header (PR #9's responsibility per bullet 5 above) and in `docs/PROMOTION_GOVERNANCE.md`.
 - Operator can invoke `milodex backtest <id>` against a paper-stage strategy without demotion. The strategy's paper-stage frozen manifest is not disturbed.
 - Backtest run-id metadata carries the actual invocation `config_hash`, not the frozen manifest hash. When the two differ, the operator can inspect both.
 - The live runner's manifest enforcement is unchanged. The promotion gate's hash-match requirement is unchanged.
