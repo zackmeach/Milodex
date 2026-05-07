@@ -418,6 +418,38 @@ class EventStore:
             )
             connection.commit()
 
+    def reconcile_orphan_strategy_runs(
+        self,
+        *,
+        strategy_id: str,
+        ended_at: datetime,
+        exit_reason: str = "orphan_recovered",
+    ) -> int:
+        """Close stale ``strategy_runs`` rows for ``strategy_id``.
+
+        Any row with ``ended_at IS NULL`` is leftover from a runner that died
+        without writing its close-out (kill -9, machine sleep, OS crash, OOM).
+        The advisory lock for that runner has long since been released, so a
+        fresh runner can start; this method is the database-side counterpart —
+        it closes the dangling row so reports that count active sessions by
+        ``WHERE ended_at IS NULL`` no longer see a phantom.
+
+        Scope is intentionally per-``strategy_id``: an orphan for a different
+        strategy is that strategy's next-startup responsibility, not this
+        runner's. Returns the number of rows reconciled.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE strategy_runs
+                SET ended_at = ?, exit_reason = ?
+                WHERE strategy_id = ? AND ended_at IS NULL
+                """,
+                (_dt(ended_at), exit_reason, strategy_id),
+            )
+            connection.commit()
+            return cursor.rowcount
+
     def list_explanations(self) -> list[ExplanationEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM explanations ORDER BY id ASC").fetchall()

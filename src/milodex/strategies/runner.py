@@ -68,6 +68,15 @@ class StrategyRunner:
         self._requested_shutdown: str | None = None
         self._closed = False
         self._dialog_open = False
+        # Reconcile any prior strategy_runs row for this strategy still left
+        # open by a runner that died without writing ended_at. Must precede
+        # the append below — otherwise the WHERE ended_at IS NULL clause
+        # would sweep up our own freshly-inserted row.
+        self._event_store.reconcile_orphan_strategy_runs(
+            strategy_id=self._strategy_id,
+            ended_at=self._started_at,
+            exit_reason="orphan_recovered",
+        )
         self._event_store.append_strategy_run(
             StrategyRunEvent(
                 session_id=self._session_id,

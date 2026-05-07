@@ -192,3 +192,64 @@ def test_read_logs_cache_hit_when_file_present(cache, sample_df, caplog):
         result = cache.read("AAPL", Timeframe.DAY_1)
     assert result is not None
     assert any("cache_hit" in r.message and "rows=3" in r.message for r in caplog.records)
+
+
+def test_read_treats_zero_byte_parquet_as_cache_miss(cache, cache_dir, caplog):
+    # A 0-byte parquet file results from a write interrupted before any bytes
+    # land on disk (process death mid-write, OS crash, OOM). Without this
+    # guard, the next read crashes pyarrow with "Parquet file size is 0 bytes"
+    # and takes the runner down. Treating the corrupt file as a cache miss
+    # lets the upstream fetcher re-acquire the data from the source.
+    target = cache_dir / "v1" / "1Day" / "AAPL.parquet"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"")
+    with caplog.at_level("WARNING", logger="milodex.data.cache"):
+        result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is None
+    assert any("cache_corrupt" in r.message and "AAPL" in r.message for r in caplog.records)
+
+
+def test_write_is_atomic_when_underlying_serializer_corrupts_target(
+    cache, cache_dir, sample_df, monkeypatch
+):
+    # Failure mode reproduced from a real runner crash: the parquet serializer
+    # opens the destination in 'wb' mode (truncating it to 0 bytes), starts
+    # writing, then the process dies before completing. Without atomic write,
+    # the destination is left at 0 bytes and the next read crashes pyarrow
+    # with "Parquet file size is 0 bytes" — exactly the production failure.
+    # The write-to-temp + atomic rename pattern keeps the destination intact.
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+    target = cache_dir / "v1" / "1Day" / "AAPL.parquet"
+    original_bytes = target.read_bytes()
+    assert len(original_bytes) > 0
+
+    real_to_parquet = pd.DataFrame.to_parquet
+
+    def _truncate_then_raise(self, path, *args, **kwargs):
+        # Simulate a serializer that opened+truncated the file, then died.
+        with open(path, "wb"):
+            pass
+        raise OSError("simulated mid-write interruption")
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", _truncate_then_raise)
+
+    new_df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-02-01"], utc=True),
+            "open": [200.0],
+            "high": [201.0],
+            "low": [199.0],
+            "close": [200.5],
+            "volume": [1000000],
+            "vwap": [200.2],
+        }
+    )
+    with pytest.raises(OSError):
+        cache.write("AAPL", Timeframe.DAY_1, new_df)
+
+    # Restore so the post-write assertion path can read the file normally.
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", real_to_parquet)
+
+    # Destination is unchanged — the failed write never touched it.
+    assert target.exists()
+    assert target.read_bytes() == original_bytes

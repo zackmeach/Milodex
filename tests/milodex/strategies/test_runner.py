@@ -1509,6 +1509,14 @@ def test_runner_active_session_findable_via_ended_at_is_null_query(
 
     The operational point of CI-2: an operator or audit tool can ask the
     event store "what's running?" and get a useful answer mid-session.
+
+    Production-faithful setup: a runner that previously ran and shut down
+    cleanly, followed by a runner that is currently alive. The advisory lock
+    in `cli/commands/strategy.py` (per ADR 0026, scoped per strategy_id)
+    prevents two runners for the same strategy from coexisting in real use,
+    and startup reconciliation closes any prior `ended_at IS NULL` rows for
+    the same strategy_id — together those guarantee the open-row set tracks
+    exactly the live runners.
     """
     provider = StubProvider(
         {
@@ -1531,14 +1539,6 @@ def test_runner_active_session_findable_via_ended_at_is_null_query(
         provider=provider,
         risk_defaults_file=risk_defaults_file,
     )
-    active_runner = StrategyRunner(
-        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
-        config_dir=strategy_config_dir,
-        broker_client=broker,
-        data_provider=provider,
-        execution_service=service,
-        event_store=event_store,
-    )
     completed_runner = StrategyRunner(
         strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
         config_dir=strategy_config_dir,
@@ -1548,6 +1548,14 @@ def test_runner_active_session_findable_via_ended_at_is_null_query(
         event_store=event_store,
     )
     completed_runner.shutdown(mode="controlled")
+    active_runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
 
     active_sessions = [
         run.session_id for run in event_store.list_strategy_runs() if run.ended_at is None
@@ -1609,3 +1617,96 @@ def test_runner_snapshot_failure_does_not_block_shutdown(
     assert runs[0].exit_reason == "controlled_stop"
     snapshots = event_store.list_portfolio_snapshots_for_session(runner.session_id)
     assert snapshots == [], "snapshot failure should leave no half-written row"
+
+
+def test_runner_startup_reconciles_orphan_strategy_runs_for_same_strategy(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    # A runner that dies without writing ended_at (machine sleep, terminal
+    # close, OOM, OS crash) leaves a strategy_runs row with ended_at=NULL.
+    # Reports that count active sessions by `WHERE ended_at IS NULL` then
+    # see a phantom session that lasts forever. Startup of the next runner
+    # for the same strategy_id must close out those orphans with
+    # exit_reason='orphan_recovered'.
+    from milodex.core.event_store import StrategyRunEvent
+
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+    other_strategy_id = "meanrev.daily.pullback_rsi2.curated_largecap.v1"
+    orphan_started_at = datetime(2026, 5, 6, 15, 2, 57, tzinfo=UTC)
+    other_orphan_started_at = datetime(2026, 5, 6, 15, 3, 8, tzinfo=UTC)
+
+    event_store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="orphan-session-of-killed-runner",
+            strategy_id=strategy_id,
+            started_at=orphan_started_at,
+            ended_at=None,
+            exit_reason=None,
+            metadata={"stage": "paper"},
+        )
+    )
+    event_store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="orphan-session-of-different-strategy",
+            strategy_id=other_strategy_id,
+            started_at=other_orphan_started_at,
+            ended_at=None,
+            exit_reason=None,
+            metadata={"stage": "backtest"},
+        )
+    )
+
+    runner = StrategyRunner(
+        strategy_id=strategy_id,
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    runs_by_session = {r.session_id: r for r in event_store.list_strategy_runs()}
+
+    reconciled = runs_by_session["orphan-session-of-killed-runner"]
+    assert reconciled.ended_at is not None, (
+        "orphan row for the same strategy must have ended_at populated at runner startup"
+    )
+    assert reconciled.exit_reason == "orphan_recovered"
+
+    # An orphan for a *different* strategy is not this runner's responsibility
+    # to clean up — leave it for that strategy's next startup.
+    untouched = runs_by_session["orphan-session-of-different-strategy"]
+    assert untouched.ended_at is None
+    assert untouched.exit_reason is None
+
+    # The new runner's own row is still open (ended_at=NULL) — startup
+    # reconciliation must not accidentally close the row it just appended.
+    fresh = runs_by_session[runner.session_id]
+    assert fresh.ended_at is None
+    assert fresh.exit_reason is None
+
+    runner.shutdown(mode="controlled")
