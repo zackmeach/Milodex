@@ -1,5 +1,6 @@
 """Tests for ParquetCache."""
 
+import multiprocessing
 from datetime import date
 
 import pandas as pd
@@ -7,6 +8,25 @@ import pytest
 
 from milodex.data.cache import ParquetCache
 from milodex.data.models import Timeframe
+
+
+# Top-level so multiprocessing can serialize it on Windows.
+def _writer_worker(args):
+    cache_dir, value = args
+    cache = ParquetCache(cache_dir)
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-01-15"], utc=True),
+            "open": [value],
+            "high": [value],
+            "low": [value],
+            "close": [value],
+            "volume": [1000000],
+            "vwap": [value],
+        }
+    )
+    cache.write("AAPL", Timeframe.DAY_1, df)
+    return value
 
 
 @pytest.fixture()
@@ -253,3 +273,93 @@ def test_write_is_atomic_when_underlying_serializer_corrupts_target(
     # Destination is unchanged — the failed write never touched it.
     assert target.exists()
     assert target.read_bytes() == original_bytes
+
+
+# ---------------------------------------------------------------------------
+# Unique-tmp-name tests (PR-A: fix concurrent-writer race)
+# ---------------------------------------------------------------------------
+
+
+def test_write_uses_unique_tmp_path_per_call(cache, cache_dir, sample_df, monkeypatch):
+    """Each call to write() must use a distinct tmp filename.
+
+    Two concurrent writers that share the same symbol both land their tmp files
+    in the same directory. If the tmp name is deterministic, the second open()
+    truncates the first writer's temp — corrupting its in-flight write.
+    """
+    captured_paths: list = []
+    real_to_parquet = pd.DataFrame.to_parquet
+
+    def _capture_path(self, path, *args, **kwargs):
+        captured_paths.append(path)
+        real_to_parquet(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", _capture_path)
+
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    assert len(captured_paths) == 2, "expected two to_parquet calls"
+    assert captured_paths[0] != captured_paths[1], "tmp paths must differ between calls"
+
+    expected_parent = cache_dir / "v1" / "1Day"
+    for p in captured_paths:
+        assert str(p).startswith(str(expected_parent)), f"unexpected parent for {p}"
+        assert str(p).startswith(str(expected_parent / "AAPL.parquet.")), (
+            f"tmp path {p!r} does not start with AAPL.parquet."
+        )
+
+
+def test_concurrent_writers_do_not_collide(tmp_path):
+    """Four processes writing the same symbol concurrently must all succeed.
+
+    With a deterministic tmp name, two writers race to open() the same path;
+    the loser silently truncates the winner's temp file, producing a corrupt
+    rename target.  The unique-per-writer tmp name eliminates that race.
+    """
+    cache_dir = tmp_path / "market_cache"
+    cache_dir.mkdir()
+    args = [(cache_dir, v) for v in [1.0, 2.0, 3.0, 4.0]]
+    with multiprocessing.Pool(4) as pool:
+        results = pool.map(_writer_worker, args)
+    assert sorted(results) == [1.0, 2.0, 3.0, 4.0]
+
+    final = ParquetCache(cache_dir).read("AAPL", Timeframe.DAY_1)
+    assert final is not None and len(final) == 1
+    assert float(final["close"].iloc[0]) in {1.0, 2.0, 3.0, 4.0}
+
+
+def test_concurrent_failure_leaves_no_orphan_tmp_for_other_writer(
+    cache, cache_dir, sample_df, monkeypatch
+):
+    """A failed write's BaseException-catch unlinks its own tmp; a subsequent
+    successful write must find zero leftover ``.tmp*`` files and produce a
+    valid destination.
+    """
+    real_to_parquet = pd.DataFrame.to_parquet
+    call_count = 0
+
+    def _fail_first_call(self, path, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # Write 0 bytes to the tmp path then raise — simulates a mid-write crash.
+            with open(path, "wb"):
+                pass
+            raise OSError("simulated first-write failure")
+        real_to_parquet(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", _fail_first_call)
+
+    with pytest.raises(OSError):
+        cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    # Second call uses the real to_parquet (call_count == 2 path above).
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None and len(result) == 3
+
+    # No orphan tmp files in the whole cache tree.
+    tmp_files = list(cache_dir.rglob("*.tmp*"))
+    assert tmp_files == [], f"orphan tmp files found: {tmp_files}"
