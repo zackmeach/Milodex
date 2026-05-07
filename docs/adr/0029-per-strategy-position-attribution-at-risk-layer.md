@@ -17,7 +17,7 @@ The architectural extension is small in surface area but precise in semantics. T
 
 3. **ADR 0024's account-scoped floor stays authoritative.** [CLAUDE.md](../../CLAUDE.md)'s "risk layer is sacred" — and [FOUNDER_INTENT.md](../FOUNDER_INTENT.md) priority #1 (trustworthy) — require that the account never exceed its global cap. Per-strategy enforcement is **additive**, not substitutive. Both checks must pass.
 
-This ADR articulates the eight architectural decisions PR #7 will implement.
+This ADR articulates the eight architectural decisions PR #39 will implement.
 
 ## Decision
 
@@ -33,9 +33,9 @@ This ADR articulates the eight architectural decisions PR #7 will implement.
 
 6. **Strategy YAML `risk.max_positions` becomes binding for the per-strategy cap.** Its interpretation is now: *"this strategy can never own more than N broker positions attributed to it, regardless of account-scoped headroom."* `risk_defaults.yaml`'s `max_concurrent_positions` remains the account-wide floor — unchanged. A strategy YAML with no `risk.max_positions` set: the per-strategy check is **skipped** (treated as no per-strategy limit). The account-scoped floor still applies.
 
-7. **ADR 0024 is extended, not superseded.** The account-scoped check (`_check_concurrent_positions`) remains in place with identical semantics. Tests pinning the existing behavior — notably `tests/milodex/risk/test_evaluator.py` cases asserting `max_concurrent_positions_exceeded` against the global cap — must remain green after PR #7. The new per-strategy check sits beside the account-scoped check, not in front of it or in place of it.
+7. **ADR 0024 is extended, not superseded.** The account-scoped check (`_check_concurrent_positions`) remains in place with identical semantics. Tests pinning the existing behavior — notably `tests/milodex/risk/test_evaluator.py` cases asserting `max_concurrent_positions_exceeded` against the global cap — must remain green after PR #39. The new per-strategy check sits beside the account-scoped check, not in front of it or in place of it.
 
-8. **No schema migration; no feature flag.** Decision 2 leaves the `trades` table unchanged; PR #7 adds no migration. The mechanism activates for any strategy whose YAML carries `risk.max_positions`; it is a no-op for any strategy without that field. Operator-attributed positions and strategies without the field continue under the ADR 0024 regime alone.
+8. **No schema migration; no feature flag.** Decision 2 leaves the `trades` table unchanged; PR #39 adds no migration. The mechanism activates for any strategy whose YAML carries `risk.max_positions`; it is a no-op for any strategy without that field. Operator-attributed positions and strategies without the field continue under the ADR 0024 regime alone.
 
 ## Rationale
 
@@ -51,17 +51,17 @@ This ADR articulates the eight architectural decisions PR #7 will implement.
 
 ## Consequences
 
-- **PR #7 implements:**
+- **PR #39 implements:**
   - A new `_check_strategy_concurrent_positions` method on `RiskEvaluator` ([src/milodex/risk/evaluator.py](../../src/milodex/risk/evaluator.py)) wired into `evaluate()`'s checks list.
-  - An attribution helper (location TBD by PR #7 — likely `milodex.risk.attribution` or a new method on `EventStore`) that walks the symbol-indexed `trades` rows, **filtering to `status="submitted"` rows only** per Decision 2, and returns the attributed `strategy_id` (or `"operator"` when the chain resolves to a `strategy_name IS NULL` row per Decision 3, or the chain is absent).
+  - An attribution helper (location TBD by PR #39 — likely `milodex.risk.attribution` or a new method on `EventStore`) that walks the symbol-indexed `trades` rows, **filtering to `status="submitted"` rows only** per Decision 2, and returns the attributed `strategy_id` (or `"operator"` when the chain resolves to a `strategy_name IS NULL` row per Decision 3, or the chain is absent).
   - Risk evaluator wiring to consume the helper: for each broker position in `context.positions`, resolve attribution, count those matching the proposing strategy, project the post-trade count for the proposing strategy, compare against `context.expected_max_positions` directly. **The new check MUST read `expected_max_positions` straight off `EvaluationContext` — it must NOT call `_effective_max_positions()` ([src/milodex/risk/evaluator.py:415-423](../../src/milodex/risk/evaluator.py)), which applies a `min(global_default, per_strategy)` clamp. That clamp belongs to the existing account-scoped check; the per-strategy cap is now an independent ceiling alongside the global one, not a value derived from it.** When `expected_max_positions is None` (operator manual trades, or a strategy YAML with no `risk.max_positions` field), the per-strategy check is skipped per Decision 6. The runner-bound envelope already plumbs the value through every cycle of a runner ([src/milodex/risk/evaluator.py:68](../../src/milodex/risk/evaluator.py) `expected_max_positions`).
   - New unit and integration tests pinning the new semantics: per-strategy block, account-scoped block, both-block (both reason codes appear), pre-attribution positions counted to operator, partial-liquidation preserves attribution, full-liquidation-then-rebuy creates new attribution, and **blocked/preview/cancelled rows are ignored by the reconstruction walk** (Decision 2 filter).
 - ADR 0024's account-scoped enforcement is **preserved as the floor**. Existing tests pinning `max_concurrent_positions_exceeded` semantics remain green.
 - New reason code `max_strategy_positions_exceeded` enters the risk vocabulary. `docs/RISK_POLICY.md` adds it alongside the existing list.
 - Strategy YAML's `risk.max_positions` becomes **binding** for runner-attributed positions of that strategy. The comment in `configs/sample_strategy.yaml` is updated to reflect the binding interpretation; ADR 0024's note that the field was advisory is amended in `docs/RISK_POLICY.md` (not in ADR 0024 itself — this ADR is the extension point per [ADR 0028 Non-goals](0028-phase-4-scope-closes-as-cleanup-and-attribution.md)).
 - Operator-placed orders work unchanged at the execution surface. They are now categorized as `"operator"`-attributed and counted only against the account-scoped cap.
-- The runner-bound risk envelope ([src/milodex/risk/evaluator.py:68](../../src/milodex/risk/evaluator.py) `expected_max_positions`) already plumbs `risk.max_positions` through every cycle of a strategy runner. PR #7 reuses that channel — no new TOCTOU surface is introduced.
-- The `"operator"` string is a **reserved pseudo-strategy id** going forward. `configs/` MUST NOT define a strategy named `operator`; PR #7 may add a startup-time check guarding this.
+- The runner-bound risk envelope ([src/milodex/risk/evaluator.py:68](../../src/milodex/risk/evaluator.py) `expected_max_positions`) already plumbs `risk.max_positions` through every cycle of a strategy runner. PR #39 reuses that channel — no new TOCTOU surface is introduced.
+- The `"operator"` string is a **reserved pseudo-strategy id** going forward. `configs/` MUST NOT define a strategy named `operator`; PR #39 may add a startup-time check guarding this.
 - Phase 4's close-out ADR (PR #10) will reference this ADR as a major architectural artifact — the closing of [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md)'s deferred path (a).
 
 ## Non-goals
@@ -70,15 +70,15 @@ This ADR articulates the eight architectural decisions PR #7 will implement.
 - This ADR does **not** add new fields to the `trades` table beyond what's already present (`strategy_name`, `submitted_by`, etc.).
 - This ADR does **not** introduce strategy-to-strategy position transfers. A position attributed to strategy A stays attributed to strategy A until fully liquidated; a subsequent BUY by strategy B is a new attribution starting from zero shares.
 - This ADR does **not** change broker-side semantics. Alpaca still sees positions as account-level. Per-strategy attribution is a Milodex-internal layer over a flat broker view.
-- This ADR does **not** pre-commit specific implementation code. PR #7 is the implementation; the helper's location, signature, and exact query shape are PR-#7-owned within the constraints stated in Decisions 1–8.
+- This ADR does **not** pre-commit specific implementation code. PR #39 is the implementation; the helper's location, signature, and exact query shape are PR-#7-owned within the constraints stated in Decisions 1–8.
 - This ADR does **not** alter [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md)'s per-process model. Two runners writing to the same `data/milodex.db` continue to read each other's `trades` rows when reconstructing attribution — the durable shared state model is what makes per-process attribution coherent across processes.
 - This ADR does **not** change the backtest path. `NullRiskEvaluator` ([src/milodex/risk/policy.py](../../src/milodex/risk/policy.py)) still bypasses the entire risk layer in backtest simulation per [CLAUDE.md](../../CLAUDE.md) "risk is enforced at promotion, not simulation."
 - This ADR does **not** define per-strategy *notional* caps. Decision 6 pins per-strategy enforcement to **position count**, consistent with the `max_positions` field's existing semantic. A separate per-strategy notional cap is a Phase 5+ candidate, not a Phase 4 commitment.
 
-## Open questions surfaced for PR #7 implementation
+## Open questions surfaced for PR #39 implementation
 
-- **Helper placement and signature.** Whether the attribution lookup lives on `EventStore` (e.g. `event_store.attribute_position(symbol)` returning `str | None`), in a new `milodex.risk.attribution` module, or as a method on `RiskEvaluator` is left to PR #7. The constraint: it must be a single call site that the evaluator invokes per position-symbol per evaluation, so the cost is auditable.
-- **Exact `trades` query shape.** Decision 2 fixes the **rule** (most recent zero → non-zero opening fill); the **query** (single SQL with running balance, or per-symbol fetch + Python walk) is PR #7's call. The `idx_trades_symbol` index supports either; profiling under realistic data volume (hundreds to low-thousands of trade rows) will pick the simpler path.
+- **Helper placement and signature.** Whether the attribution lookup lives on `EventStore` (e.g. `event_store.attribute_position(symbol)` returning `str | None`), in a new `milodex.risk.attribution` module, or as a method on `RiskEvaluator` is left to PR #39. The constraint: it must be a single call site that the evaluator invokes per position-symbol per evaluation, so the cost is auditable.
+- **Exact `trades` query shape.** Decision 2 fixes the **rule** (most recent zero → non-zero opening fill); the **query** (single SQL with running balance, or per-symbol fetch + Python walk) is PR #39's call. The `idx_trades_symbol` index supports either; profiling under realistic data volume (hundreds to low-thousands of trade rows) will pick the simpler path.
 - **Explanation rendering when both caps fail.** The existing `risk_checks` array already records every check independently; both reason codes already appear in `reason_codes`. Whether `milodex report` and any future GUI render the dual failure as one combined message or two stacked messages is a presentation question, not an architecture question, and is owned by the surface that consumes the explanation row.
-- **Pre-attribution audit (optional).** Whether PR #7 adds a one-shot `milodex reconcile attributions` command that prints the current attribution map (per current broker position: which strategy_id, or `"operator"`) is PR #7's discretion. Useful for operator confidence at first activation; not architecturally required.
+- **Pre-attribution audit (optional).** Whether PR #39 adds a one-shot `milodex reconcile attributions` command that prints the current attribution map (per current broker position: which strategy_id, or `"operator"`) is PR #39's discretion. Useful for operator confidence at first activation; not architecturally required.
 - **Rename of the existing reason code (out of scope).** `max_concurrent_positions_exceeded` is the account-scoped failure code today. Decision 5 keeps that name unchanged for backward compatibility with explanation history. A future ADR may rename it to `max_account_positions_exceeded` for symmetry; this ADR explicitly does not.

@@ -21,7 +21,7 @@ Five commands for what is fundamentally a read operation against a simulation. T
 
 The architectural question this ADR resolves: **does manifest discipline apply to `BacktestEngine` invocations?**
 
-[ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) §(g) authorizes this ADR under the "backtest sandbox semantics" cleanup-only work: *"Allow backtest-stage queries against frozen-stage strategies without manifest comparison."* This ADR articulates the concrete decisions; PR #9 implements.
+[ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) §(g) authorizes this ADR under the "backtest sandbox semantics" cleanup-only work: *"Allow backtest-stage queries against frozen-stage strategies without manifest comparison."* This ADR articulates the concrete decisions; PR #41 implements.
 
 ## Decision
 
@@ -43,23 +43,23 @@ When `is_backtest=True`, `_check_manifest_drift` returns immediately with a pass
 
 When `is_backtest=False` (the default), `_check_manifest_drift` behaves exactly as today: exempt `backtest`-stage strategies via effective-stage check, require hash match for `paper`/`micro_live`/`live`.
 
-**Wiring scope for PR #9:** The existing `BacktestEngine` already injects `NullRiskEvaluator` (not `RiskEvaluator`) as the evaluator, so `_check_manifest_drift` is never reached during a backtest simulation today — `NullRiskEvaluator` short-circuits the entire risk evaluation before any check method is called. As a result, no existing production call site sets `is_backtest=True`; none is needed to fix the current behavior.
+**Wiring scope for PR #41:** The existing `BacktestEngine` already injects `NullRiskEvaluator` (not `RiskEvaluator`) as the evaluator, so `_check_manifest_drift` is never reached during a backtest simulation today — `NullRiskEvaluator` short-circuits the entire risk evaluation before any check method is called. As a result, no existing production call site sets `is_backtest=True`; none is needed to fix the current behavior.
 
-PR #9 should add the field and the fast-path bypass as a clean architectural hook for future research-mode paths (e.g., a preview runner that uses the full evaluator for all checks except manifest enforcement). The production call site is a placeholder for that future path; it must not be force-wired to any existing call site today.
+PR #41 should add the field and the fast-path bypass as a clean architectural hook for future research-mode paths (e.g., a preview runner that uses the full evaluator for all checks except manifest enforcement). The production call site is a placeholder for that future path; it must not be force-wired to any existing call site today.
 
-PR #9 must also add a unit test that constructs an `EvaluationContext` with `is_backtest=True` and calls `_check_manifest_drift` directly, verifying it returns a passing `RiskCheckResult` without inspecting `runtime_config_hash`, `frozen_manifest_hash`, or the effective stage. No production wiring beyond the field definition and fast-path is needed in this PR.
+PR #41 must also add a unit test that constructs an `EvaluationContext` with `is_backtest=True` and calls `_check_manifest_drift` directly, verifying it returns a passing `RiskCheckResult` without inspecting `runtime_config_hash`, `frozen_manifest_hash`, or the effective stage. No production wiring beyond the field definition and fast-path is needed in this PR.
 
 ### Decision 4 — Audit trail preservation
 
 The `BacktestRunEvent` written to the event store at the start of every backtest run already carries a `config_hash` field (visible in `src/milodex/backtesting/engine.py:185`). That hash is derived from `self._loaded.context.config_hash`, which reflects the YAML that was actually loaded at invocation time.
 
-This is the guarantee: if the operator runs a backtest against a YAML that differs from the strategy's frozen manifest, the run-id's metadata shows the YAML-at-invocation hash, **not** the frozen manifest hash. The audit trail captures what was actually tested. PR #9 must verify this property is preserved after any changes to the backtest path.
+This is the guarantee: if the operator runs a backtest against a YAML that differs from the strategy's frozen manifest, the run-id's metadata shows the YAML-at-invocation hash, **not** the frozen manifest hash. The audit trail captures what was actually tested. PR #41 must verify this property is preserved after any changes to the backtest path.
 
 The corollary: a run-id whose `config_hash` differs from the strategy's frozen manifest hash is not a violation; it is useful information. The operator can compare the two hashes to understand how far the tested config diverged from the promoted config.
 
 ### Decision 5 — Documentation surface
 
-`docs/PROMOTION_GOVERNANCE.md` (or the equivalent stage-discipline document that covers the promotion pipeline's manifest rules) must be updated to document the sandbox semantic: backtest invocations run against the YAML at invocation time; manifest comparison is a production-evidence guarantee scoped to `paper`/`micro_live`/`live` execution. PR #9 owns this.
+`docs/PROMOTION_GOVERNANCE.md` (or the equivalent stage-discipline document that covers the promotion pipeline's manifest rules) must be updated to document the sandbox semantic: backtest invocations run against the YAML at invocation time; manifest comparison is a production-evidence guarantee scoped to `paper`/`micro_live`/`live` execution. PR #41 owns this.
 
 ### Decision 6 — Scope of the relaxation
 
@@ -85,12 +85,12 @@ Concretely:
 - The promotion gate still requires hash-match between on-disk YAML and frozen manifest.
 - This ADR adds nothing to the freeze path; it adds only the sandbox bypass to the backtest path.
 
-### Decision 8 — Open questions deferred to PR #9
+### Decision 8 — Open questions deferred to PR #41
 
 These questions are genuine design choices that belong to implementation; the ADR does not pre-commit on them.
 
 - Exact field name on `EvaluationContext`: `is_backtest`, `evaluation_mode`, or another name.
-- Whether the backtest report surfaces a visible "running against modified config" annotation when the invocation hash differs from any frozen manifest that exists for the strategy. The audit trail preserves this information; whether the CLI output surfaces it is a UX decision PR #9 owns.
+- Whether the backtest report surfaces a visible "running against modified config" annotation when the invocation hash differs from any frozen manifest that exists for the strategy. The audit trail preserves this information; whether the CLI output surfaces it is a UX decision PR #41 owns.
 - Whether a `--strict-manifest` flag should exist for operators who want the original behavior on the backtest path. The current assessment is no: ADR 0015's discipline already fires correctly in the runner; an opt-in backtest strictness mode adds surface area without a safety property that isn't already covered.
 
 ## Rationale
@@ -103,13 +103,13 @@ These questions are genuine design choices that belong to implementation; the AD
 
 ## Consequences
 
-- **PR #9 implements:**
+- **PR #41 implements:**
   - An `is_backtest` field (or equivalent) on `EvaluationContext` in `src/milodex/risk/evaluator.py`, defaulting to `False`.
   - A fast-path bypass in `_check_manifest_drift` that returns a passing `RiskCheckResult` when `is_backtest=True`, before any stage or hash logic.
   - Verification that `BacktestEngine.run` records `config_hash` from the YAML at invocation time (Decision 4 audit trail guarantee — existing behavior to be explicitly tested).
   - A documentation update to `docs/PROMOTION_GOVERNANCE.md` (or equivalent) capturing the sandbox semantic and the paper+ scope of ADR 0015.
   - Amend ADR 0015's Status header to note "scope clarified by ADR 0030" — the concrete change is appending `"Scope clarified at ADR 0030 (manifest discipline binds at paper+, backtest is exploratory)."` to the existing Status line. This is a small, additive note; it does not change ADR 0015's Decision or Rationale.
-- ADR 0015's frozen-manifest discipline is unchanged at `paper`/`micro_live`/`live` stages. Its scope is clarified in its Status header (PR #9's responsibility per bullet 5 above) and in `docs/PROMOTION_GOVERNANCE.md`.
+- ADR 0015's frozen-manifest discipline is unchanged at `paper`/`micro_live`/`live` stages. Its scope is clarified in its Status header (PR #41's responsibility per bullet 5 above) and in `docs/PROMOTION_GOVERNANCE.md`.
 - Operator can invoke `milodex backtest <id>` against a paper-stage strategy without demotion. The strategy's paper-stage frozen manifest is not disturbed.
 - Backtest run-id metadata carries the actual invocation `config_hash`, not the frozen manifest hash. When the two differ, the operator can inspect both.
 - The live runner's manifest enforcement is unchanged. The promotion gate's hash-match requirement is unchanged.
@@ -121,11 +121,11 @@ These questions are genuine design choices that belong to implementation; the AD
 - Does **not** change the promotion gate behavior. `milodex promotion promote` still refuses when the on-disk YAML hash differs from the frozen manifest.
 - Does **not** relax the risk veto in any form. `_check_manifest_drift` is one check within `RiskEvaluator.evaluate`; the evaluator's authority over all other dimensions is unaffected.
 - Does **not** change universe manifest discipline (ADR 0022). Universe-level config constraints are a separate surface.
-- Does **not** pre-commit the exact field name, query shape, or CLI presentation decisions — those are owned by PR #9.
+- Does **not** pre-commit the exact field name, query shape, or CLI presentation decisions — those are owned by PR #41.
 - Does **not** supersede ADR 0015. ADR 0015 is in force; this ADR clarifies its scope.
 
-## Open questions for PR #9
+## Open questions for PR #41
 
-- **Exact field name on `EvaluationContext`:** `is_backtest`, `evaluation_mode: Literal["live", "backtest"]`, or another scheme. `is_backtest: bool = False` is the simplest and sufficient for Decision 3's needs; PR #9 may choose a richer discriminant if the evaluation-mode surface is expected to grow.
-- **Modified-config annotation in CLI output:** When the operator runs a backtest and the invocation hash differs from any frozen manifest for the strategy, should the CLI print a visible notice (e.g., "Note: backtest ran against config hash `abc123` — differs from frozen manifest `def456`")? The information is already in the event store; surfacing it may help the operator's research loop. PR #9 decides.
+- **Exact field name on `EvaluationContext`:** `is_backtest`, `evaluation_mode: Literal["live", "backtest"]`, or another scheme. `is_backtest: bool = False` is the simplest and sufficient for Decision 3's needs; PR #41 may choose a richer discriminant if the evaluation-mode surface is expected to grow.
+- **Modified-config annotation in CLI output:** When the operator runs a backtest and the invocation hash differs from any frozen manifest for the strategy, should the CLI print a visible notice (e.g., "Note: backtest ran against config hash `abc123` — differs from frozen manifest `def456`")? The information is already in the event store; surfacing it may help the operator's research loop. PR #41 decides.
 - **`--strict-manifest` flag:** Whether to offer an opt-in flag that restores the old behavior (refuse to backtest a paper-stage strategy without demotion). Current assessment: no. The promotion gate already enforces discipline at the only moment that matters (promotion time). Opt-in strictness on the backtest path would add operator surface area for a safety property already covered elsewhere.
