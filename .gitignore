@@ -47,6 +47,12 @@ logs/*
 data/*
 !data/.gitkeep
 
+# Shakeout / paper-runtime scratch directories — never commit these
+data/paper_runtime_*/
+
+# Ad-hoc DB backup snapshots — never commit these
+data/*.backup-*
+
 # Ruff
 .ruff_cache/
 
