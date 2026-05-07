@@ -191,6 +191,8 @@ milodex research screen --configs "*.yaml" --start ... --end ... --report-out
 
 `--configs` and `--strategy-id` are mutually exclusive. `--report-out` with no value writes to `docs/reviews/screen_<today>.md` (plus a JSON sibling at the same stem); pass an explicit path to override. `--fail-fast` aborts on the first error instead of recording it as an `error` row — default is to continue so one malformed config does not mask results for the other candidates.
 
+`--parallel N` runs N strategies concurrently in separate worker processes (default `1` for sequential). SQLite is in WAL mode so child processes share the same event-store database safely (concurrent reads, serialized writes). Use a value `<= cpu_count()` to avoid contention; the in-memory bar cache that benefits sequential runs is forgone in parallel mode (the disk-level Parquet cache still applies). Idempotent — results match sequential mode strategy-for-strategy. Added per ADR 0030 alongside the backtest-sandbox semantic, so the bank can be screened against an edited paper-stage config in one fast pass without demote-edit-promote ceremony.
+
 **Output.** Human-readable ranking table sorted by (gate_allowed desc, oos_sharpe desc). Columns: `strategy_id | family | trades | oos_sharpe | oos_max_dd | fragile | gate`. `fragile=yes` means dropping the best-returning window flips aggregate return negative (ADR 0021 single-window-dependency flag). `gate=pass (statistical)` / `pass (lifecycle_exempt)` / `block` / `error`.
 
 **JSON contract.** `research.screen` payload: `start_date`, `end_date`, `row_count`, `rows[]` (each row includes the metrics and gate failure list), `report_path`. Stable across invocations so downstream tooling can ingest screening snapshots.

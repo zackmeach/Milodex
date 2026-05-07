@@ -82,6 +82,16 @@ def register(subparsers: argparse._SubParsersAction) -> None:
             "the flag with no value to use docs/reviews/screen_<today>.md."
         ),
     )
+    screen.add_argument(
+        "--parallel",
+        type=int,
+        default=1,
+        help=(
+            "Number of strategies to backtest in parallel. Default 1 (sequential). "
+            "Use a value <= cpu_count() to avoid contention. SQLite is in WAL mode "
+            "so concurrent reads + serialized writes are safe."
+        ),
+    )
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
@@ -99,6 +109,7 @@ def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     strategy_ids = _resolve_strategy_ids(args, ctx)
 
+    parallel = max(1, int(getattr(args, "parallel", 1) or 1))
     result = run_batch(
         strategy_ids=strategy_ids,
         start_date=start,
@@ -106,6 +117,7 @@ def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         ctx=ctx,
         fail_fast=args.fail_fast,
         initial_equity=args.initial_equity,
+        parallel=parallel,
     )
 
     report_path: Path | None = None

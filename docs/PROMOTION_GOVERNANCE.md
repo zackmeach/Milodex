@@ -85,6 +85,16 @@ The guiding test for the artifact: *can a future reader answer "why was this pro
 
 ---
 
+## Backtest Sandbox Semantic (ADR 0030)
+
+The frozen-manifest discipline introduced by [ADR 0015](adr/0015-strategy-identifier-and-frozen-manifest.md) is a **production-evidence guarantee scoped to the promoted stages** — `paper`, `micro_live`, and `live`. At those stages, `_check_manifest_drift` refuses execution when the on-disk YAML's hash diverges from the frozen manifest, and the promotion gate likewise refuses to advance a strategy whose runtime hash has drifted from the snapshot under review. That discipline is in force and unchanged.
+
+Backtests, however, are **exploratory simulations** and run against the YAML at invocation time. An operator can invoke `milodex backtest <id>` against a paper-stage strategy without first demoting it: the backtest engine reads the current YAML, hashes it into the `BacktestRunEvent.config_hash` audit row, and runs against that config. The strategy's frozen manifest is not disturbed; no run appended by the backtest engine changes the strategy's stage or replaces the frozen hash. When the invocation hash differs from the frozen manifest, the divergence is captured by the run's audit trail — useful information for the operator's research loop, not a violation. See [ADR 0030](adr/0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) for the full decision and rationale.
+
+The integrity properties this composition preserves: (a) the live runner still refuses to execute under a drifted manifest, (b) the promotion gate still requires hash-match between on-disk YAML and frozen manifest at promotion time, and (c) every backtest run records the YAML actually tested, distinguishable from any frozen manifest the strategy holds.
+
+---
+
 ## Demotion and Disablement
 
 Milodex may **automatically disable** a strategy or **automatically mark it for review** when safety conditions are breached — that is the purpose of the risk layer and kill switch. But **formal lifecycle-stage demotion** (e.g., `paper` → `backtest`) must require explicit human confirmation and a governance artifact, the same way promotion does. This preserves safety (auto-stop is instant) without allowing silent lifecycle changes that are hard to audit.

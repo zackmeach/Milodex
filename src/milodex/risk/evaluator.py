@@ -77,6 +77,17 @@ class EvaluationContext:
     # (e.g. legacy entry points). The account-scoped check
     # (``_check_concurrent_positions``, ADR 0024) is unaffected.
     event_store: EventStore | None = None
+    # ADR 0030: forward-compatibility hook for backtest-mode evaluation
+    # contexts. When True, ``_check_manifest_drift`` short-circuits to a
+    # passing result without inspecting ``runtime_config_hash``,
+    # ``frozen_manifest_hash``, or the effective stage. The current
+    # ``BacktestEngine`` already injects ``NullRiskEvaluator`` (which
+    # short-circuits the entire evaluation), so no production call site
+    # sets True today — this flag is the clean architectural seam for
+    # future research-mode paths (e.g., a preview runner that uses the
+    # full evaluator for all checks except manifest enforcement) without
+    # paying the manifest-drift refusal cost on backtest-stage queries.
+    is_backtest: bool = False
 
 
 class RiskEvaluator:
@@ -183,7 +194,19 @@ class RiskEvaluator:
         stage field to ``backtest`` for one read cycle could fire a paper order
         through the gate. See
         ``docs/reviews/2026-05-06-manifest-drift-toctou-race.md``.
+
+        ADR 0030: ``context.is_backtest=True`` short-circuits the check to a
+        passing result before any other inspection. The manifest-drift refusal
+        is a production-evidence guarantee; backtests are exploratory simulations
+        and run against the YAML at invocation time. The audit trail (the
+        ``BacktestRunEvent.config_hash``) preserves what was actually tested.
         """
+        if context.is_backtest:
+            return RiskCheckResult(
+                "manifest_drift",
+                True,
+                "backtest mode — manifest drift not enforced",
+            )
         if context.strategy_config is None:
             return RiskCheckResult(
                 "manifest_drift",

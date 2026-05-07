@@ -106,6 +106,7 @@ def make_context(
     expected_daily_loss_cap_pct: float | None = None,
     request_strategy_name: str | None = None,
     event_store=None,
+    is_backtest: bool = False,
 ) -> EvaluationContext:
     """Build an ``EvaluationContext`` pre-configured to pass every rule
     except the one under test."""
@@ -169,6 +170,7 @@ def make_context(
         expected_max_position_pct=expected_max_position_pct,
         expected_daily_loss_cap_pct=expected_daily_loss_cap_pct,
         event_store=event_store,
+        is_backtest=is_backtest,
     )
 
 
@@ -705,6 +707,58 @@ def test_manifest_drift_applies_at_micro_live_and_live_stages():
         result = check_result(decision, "manifest_drift")
         assert result.passed is False, f"stage={stage} should be blocked on drift"
         assert result.reason_code == "manifest_drift"
+
+
+def test_manifest_drift_skipped_when_is_backtest_true():
+    """Pins ADR 0030 Decision 3: ``is_backtest=True`` bypasses manifest drift.
+
+    Constructs a worst-case "should-be-blocked" context — paper-stage frozen
+    manifest with mismatched runtime hash — that would normally trip
+    ``_check_manifest_drift`` with ``reason_code='manifest_drift'``. With
+    ``is_backtest=True`` the check must short-circuit to a passing result
+    BEFORE inspecting the effective stage, runtime hash, or frozen hash.
+
+    Calls ``_check_manifest_drift`` directly (not via ``evaluate``) to pin
+    the fast-path's behavior in isolation: the message contains the literal
+    "backtest mode" string from ADR 0030 Decision 3, and no other inspection
+    happens. This is the architectural seam for future research-mode paths
+    that consume the full evaluator without paying the manifest-drift refusal
+    cost on backtest-stage queries.
+    """
+    context = make_context(
+        # Paper-stage strategy with frozen manifest. Without is_backtest,
+        # the diverging hashes would refuse with reason_code='manifest_drift'.
+        strategy_config=_strategy_config(stage="paper"),
+        runtime_config_hash="a" * 64,
+        frozen_manifest_hash="b" * 64,
+        is_backtest=True,
+    )
+
+    result = RiskEvaluator()._check_manifest_drift(context)  # noqa: SLF001
+
+    assert result.name == "manifest_drift"
+    assert result.passed is True
+    assert result.reason_code is None
+    assert "backtest mode" in result.message.lower()
+
+
+def test_manifest_drift_is_backtest_default_false_preserves_drift_block():
+    """Companion to the fast-path test: pins the default behavior unchanged.
+
+    With ``is_backtest=False`` (the dataclass default), a paper-stage strategy
+    with diverging hashes still refuses — confirming the fast-path is opt-in,
+    not a backwards-incompatible change to the default refusal path.
+    """
+    context = make_context(
+        strategy_config=_strategy_config(stage="paper"),
+        runtime_config_hash="a" * 64,
+        frozen_manifest_hash="b" * 64,
+        # is_backtest defaults to False
+    )
+
+    result = RiskEvaluator()._check_manifest_drift(context)  # noqa: SLF001
+    assert result.passed is False
+    assert result.reason_code == "manifest_drift"
 
 
 # --- TOCTOU follow-ups: runner-bound risk envelope wins over per-cycle YAML --
