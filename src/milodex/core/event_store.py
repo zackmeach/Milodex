@@ -535,6 +535,48 @@ class EventStore:
             )
             connection.commit()
 
+    def reconcile_orphan_backtest_runs(
+        self,
+        *,
+        strategy_id: str,
+        ended_at: datetime,
+        status: str = "orphan_recovered",
+    ) -> int:
+        """Close stale ``backtest_runs`` rows for ``strategy_id``.
+
+        Mirrors :meth:`reconcile_orphan_strategy_runs` (PR #44) for the
+        backtest table. Any row matching ``status='running' AND ended_at IS
+        NULL`` is leftover from a backtest process that died without writing
+        its close-out — exactly the failure mode that produced yesterday's
+        three stuck rows when the parquet 0-byte bug killed the runner before
+        fold-1 execution.
+
+        Both halves of the WHERE clause are required defensively:
+        ``status='running'`` is the lifecycle verdict, and ``ended_at IS NULL``
+        guards against any partial-write where status was updated but
+        ``ended_at`` was not (or vice versa). Terminal-status rows
+        (completed / failed) are never swept.
+
+        Scope is intentionally per-``strategy_id``: an orphan for a different
+        strategy is that strategy's next-startup responsibility, not this
+        engine's. ``backtest_runs`` uses ``status`` itself as the verdict
+        column (no ``exit_reason``), so the orphan marker is the new
+        ``status='orphan_recovered'``. Returns the number of rows reconciled.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE backtest_runs
+                SET status = ?, ended_at = ?
+                WHERE strategy_id = ?
+                  AND status = 'running'
+                  AND ended_at IS NULL
+                """,
+                (status, _dt(ended_at), strategy_id),
+            )
+            connection.commit()
+            return cursor.rowcount
+
     def update_backtest_run_metadata(self, run_id: str, *, metadata: dict[str, Any]) -> None:
         """Replace the metadata JSON blob for a backtest run."""
         with self._connect() as connection:

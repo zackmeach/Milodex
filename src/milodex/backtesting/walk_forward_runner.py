@@ -188,6 +188,18 @@ def run_walk_forward(
 
     effective_run_id = run_id or str(uuid.uuid4())
     started_at = datetime.now(tz=UTC)
+    # Reconcile any prior walk-forward backtest_runs row for this strategy
+    # left in status='running' with ended_at=NULL by a process that died
+    # mid-run. The three stuck rows from 2026-05-06 had this exact shape —
+    # metadata showed only {walk_forward: true, windows_planned: 4}, meaning
+    # the parquet 0-byte bug killed the process before fold-1 produced any
+    # results. Must precede the append below — otherwise the WHERE clause
+    # would sweep up our own freshly-inserted row.
+    engine._event_store.reconcile_orphan_backtest_runs(  # noqa: SLF001
+        strategy_id=engine._loaded.config.strategy_id,  # noqa: SLF001
+        ended_at=started_at,
+        status="orphan_recovered",
+    )
     db_run_id = engine._event_store.append_backtest_run(  # noqa: SLF001
         BacktestRunEvent(
             run_id=effective_run_id,

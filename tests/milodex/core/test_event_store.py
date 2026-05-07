@@ -262,6 +262,120 @@ def test_event_store_records_backtest_run_and_links_trades(tmp_path):
     assert listed[0].run_id == "run-abc"
 
 
+def _seed_running_backtest_run(
+    store: EventStore,
+    *,
+    run_id: str,
+    strategy_id: str,
+    started_at: datetime,
+) -> int:
+    return store.append_backtest_run(
+        BacktestRunEvent(
+            run_id=run_id,
+            strategy_id=strategy_id,
+            config_path=f"configs/{strategy_id}.yaml",
+            config_hash="hash-x",
+            start_date=datetime(2024, 1, 1, tzinfo=UTC),
+            end_date=datetime(2024, 12, 31, tzinfo=UTC),
+            started_at=started_at,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"walk_forward": True, "windows_planned": 4},
+        )
+    )
+
+
+def test_reconcile_orphan_backtest_runs_closes_running_rows_for_same_strategy(tmp_path):
+    """A backtest_runs row left in ``status='running'`` with ``ended_at IS NULL``
+    is the database-side fingerprint of a process that died mid-run (machine
+    sleep, OOM, kill -9, parquet corruption — see PR #44 for the cache-side
+    failure mode that produced yesterday's three orphans). The next backtest
+    for the same strategy must close that row out so reports don't see a
+    phantom session that lasts forever.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    strategy_id = "momentum.daily.tsmom.curated_largecap.v1"
+    started_at = datetime(2026, 5, 6, 16, 50, 23, tzinfo=UTC)
+    _seed_running_backtest_run(
+        store,
+        run_id="orphan-run",
+        strategy_id=strategy_id,
+        started_at=started_at,
+    )
+
+    closed_at = datetime(2026, 5, 7, 13, 0, 0, tzinfo=UTC)
+    reconciled = store.reconcile_orphan_backtest_runs(strategy_id=strategy_id, ended_at=closed_at)
+
+    assert reconciled == 1
+    run = store.get_backtest_run("orphan-run")
+    assert run is not None
+    assert run.status == "orphan_recovered"
+    assert run.ended_at == closed_at
+
+
+def test_reconcile_orphan_backtest_runs_leaves_other_strategies_untouched(tmp_path):
+    """Per-strategy_id scope: an orphan for strategy Y is Y's next-startup
+    responsibility, not strategy X's. Mirrors ``reconcile_orphan_strategy_runs``
+    semantics from PR #44.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    target_strategy = "momentum.daily.tsmom.curated_largecap.v1"
+    other_strategy = "breakout.daily.donchian_20_10.sector_etfs.v1"
+    started_at = datetime(2026, 5, 6, 16, 50, 23, tzinfo=UTC)
+    _seed_running_backtest_run(
+        store,
+        run_id="orphan-other",
+        strategy_id=other_strategy,
+        started_at=started_at,
+    )
+
+    reconciled = store.reconcile_orphan_backtest_runs(
+        strategy_id=target_strategy,
+        ended_at=datetime(2026, 5, 7, 13, 0, 0, tzinfo=UTC),
+    )
+
+    assert reconciled == 0
+    untouched = store.get_backtest_run("orphan-other")
+    assert untouched is not None
+    assert untouched.status == "running"
+    assert untouched.ended_at is None
+
+
+def test_reconcile_orphan_backtest_runs_does_not_touch_completed_runs(tmp_path):
+    """A completed (or otherwise terminal-status) run is not an orphan even if
+    ``ended_at`` were somehow null — and conversely, a row that already has a
+    non-null ``ended_at`` is not in scope. Both halves of the WHERE clause
+    must hold for a row to be reconciled, so terminal-state rows are safe.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    strategy_id = "momentum.daily.tsmom.curated_largecap.v1"
+    started_at = datetime(2026, 5, 6, 16, 50, 23, tzinfo=UTC)
+    _seed_running_backtest_run(
+        store,
+        run_id="completed-run",
+        strategy_id=strategy_id,
+        started_at=started_at,
+    )
+    store.update_backtest_run_status(
+        "completed-run",
+        status="completed",
+        ended_at=datetime(2026, 5, 6, 16, 55, 0, tzinfo=UTC),
+    )
+
+    reconciled = store.reconcile_orphan_backtest_runs(
+        strategy_id=strategy_id,
+        ended_at=datetime(2026, 5, 7, 13, 0, 0, tzinfo=UTC),
+    )
+
+    assert reconciled == 0
+    completed = store.get_backtest_run("completed-run")
+    assert completed is not None
+    assert completed.status == "completed"
+    # Original ended_at is preserved — reconcile didn't sweep this row.
+    assert completed.ended_at == datetime(2026, 5, 6, 16, 55, 0, tzinfo=UTC)
+
+
 def test_event_store_paper_trade_has_null_backtest_run_id(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     now = datetime(2026, 4, 21, 20, 0, tzinfo=UTC)
