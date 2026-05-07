@@ -343,6 +343,86 @@ def test_engine_status_set_to_completed():
     assert run_record.status == "completed"
 
 
+def test_engine_startup_reconciles_orphan_backtest_runs_for_same_strategy():
+    """A backtest engine that dies mid-run leaves a ``backtest_runs`` row with
+    ``status='running'`` and ``ended_at IS NULL``. The next backtest for the
+    same strategy must close out that orphan at startup with
+    ``status='orphan_recovered'``.
+
+    Mirrors the runner-side contract from PR #44
+    (``test_runner_startup_reconciles_orphan_strategy_runs_for_same_strategy``):
+    same-strategy orphans are reconciled, other-strategy orphans are left for
+    that strategy's next startup, and the freshly-inserted row for this run
+    must NOT itself be swept by the WHERE clause.
+    """
+    from datetime import UTC, datetime
+
+    from milodex.core.event_store import BacktestRunEvent
+
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    strategy_id = "momentum.daily.tsmom.curated_largecap.v1"
+    other_strategy_id = "breakout.daily.donchian_20_10.sector_etfs.v1"
+
+    loaded = _make_loaded_strategy(strategy_id, ("SPY",))
+    barset = _make_barset([100.0, 101.0], start=start)
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": barset}
+    store = _make_event_store()
+
+    # Pre-seed an orphan row for THIS strategy and one for a DIFFERENT
+    # strategy. Only the same-strategy one should be reconciled.
+    store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="orphan-same-strategy",
+            strategy_id=strategy_id,
+            config_path="configs/momentum_tsmom_v1.yaml",
+            config_hash="hash-1",
+            start_date=datetime(2024, 1, 1, tzinfo=UTC),
+            end_date=datetime(2024, 12, 31, tzinfo=UTC),
+            started_at=datetime(2026, 5, 6, 16, 50, 23, tzinfo=UTC),
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"walk_forward": True, "windows_planned": 4},
+        )
+    )
+    store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="orphan-other-strategy",
+            strategy_id=other_strategy_id,
+            config_path="configs/breakout_donchian_v1.yaml",
+            config_hash="hash-2",
+            start_date=datetime(2024, 1, 1, tzinfo=UTC),
+            end_date=datetime(2024, 12, 31, tzinfo=UTC),
+            started_at=datetime(2026, 5, 6, 17, 2, 24, tzinfo=UTC),
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"walk_forward": True, "windows_planned": 4},
+        )
+    )
+
+    engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
+    result = engine.run(start, end)
+
+    same = store.get_backtest_run("orphan-same-strategy")
+    assert same is not None
+    assert same.status == "orphan_recovered"
+    assert same.ended_at is not None
+
+    other = store.get_backtest_run("orphan-other-strategy")
+    assert other is not None
+    assert other.status == "running"
+    assert other.ended_at is None
+
+    # The newly-started run must reach a terminal status (completed) — not
+    # be swept by its own startup reconcile.
+    fresh = store.get_backtest_run(result.run_id)
+    assert fresh is not None
+    assert fresh.status == "completed"
+
+
 def test_engine_invalid_date_range_raises():
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
     store = _make_event_store()

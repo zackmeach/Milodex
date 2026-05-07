@@ -176,6 +176,17 @@ class BacktestEngine:
         effective_run_id = run_id or str(uuid.uuid4())
         started_at = datetime.now(tz=UTC)
 
+        # Reconcile any prior backtest_runs row for this strategy still left
+        # in status='running' with ended_at=NULL by an engine that died
+        # without writing its close-out (parquet 0-byte cache crash, OOM,
+        # kill -9, machine sleep). Must precede the append below — otherwise
+        # the WHERE clause would sweep up our own freshly-inserted row.
+        self._event_store.reconcile_orphan_backtest_runs(
+            strategy_id=self._loaded.config.strategy_id,
+            ended_at=started_at,
+            status="orphan_recovered",
+        )
+
         db_run_id = self._event_store.append_backtest_run(
             BacktestRunEvent(
                 run_id=effective_run_id,
