@@ -56,7 +56,7 @@ strategy:
   # universe.phase1.curated.v1 — re-promotion to paper requires a fresh
   # backtest run on the v2 universe and a new evidence package per
   # docs/PROMOTION_GOVERNANCE.md.
-  stage: "backtest"
+  stage: "paper"
 
   backtest:
     commission_per_trade: 0.00
