@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import logging
 import os
-import time
 import uuid
 from datetime import date
 from pathlib import Path
@@ -24,29 +23,6 @@ import pandas as pd
 from milodex.data.models import Timeframe
 
 _logger = logging.getLogger(__name__)
-
-_REPLACE_MAX_ATTEMPTS = 4
-_REPLACE_INITIAL_SLEEP_S = 0.01  # 10 ms
-
-
-def _replace_with_retry(src: Path, dst: Path) -> None:
-    """Rename *src* onto *dst* with a short bounded retry for Windows WinError 5.
-
-    On Windows, ``os.replace`` raises ``PermissionError`` (WinError 5) when
-    the destination is momentarily held open by another process.  This helper
-    retries with exponential back-off (10 ms -> 20 ms -> 40 ms) and re-raises
-    on the final attempt so callers still see the failure.
-    """
-    delay = _REPLACE_INITIAL_SLEEP_S
-    for attempt in range(_REPLACE_MAX_ATTEMPTS):
-        try:
-            os.replace(src, dst)
-            return
-        except PermissionError:
-            if attempt == _REPLACE_MAX_ATTEMPTS - 1:
-                raise
-            time.sleep(delay)
-            delay *= 2
 
 
 class ParquetCache:
@@ -114,20 +90,12 @@ class ParquetCache:
         ``try/except BaseException + unlink(missing_ok=True)`` cleanup is
         correct and unchanged: each writer is responsible for removing its own
         tmp on failure.
-
-        On Windows, ``os.replace`` onto a file that is momentarily held open by
-        another process raises ``PermissionError`` (WinError 5).  A short
-        bounded retry makes the rename robust to the narrow window where two
-        concurrent writers finish serializing and race to rename onto the same
-        destination.  The retry sleeps grow exponentially (10 ms, 20 ms, 40 ms)
-        and give up after 4 attempts; any lingering error is re-raised so the
-        BaseException cleanup still runs.
         """
         path = self._path(symbol, timeframe)
         tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
         try:
             df.to_parquet(tmp_path, index=False)
-            _replace_with_retry(tmp_path, path)
+            os.replace(tmp_path, path)
         except BaseException:
             # On any failure (including KeyboardInterrupt), discard the
             # half-written temp so a subsequent retry does not see stale state.
