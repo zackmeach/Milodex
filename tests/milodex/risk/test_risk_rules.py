@@ -104,6 +104,8 @@ def make_context(
     expected_max_positions: int | None = None,
     expected_max_position_pct: float | None = None,
     expected_daily_loss_cap_pct: float | None = None,
+    request_strategy_name: str | None = None,
+    event_store=None,
 ) -> EvaluationContext:
     """Build an ``EvaluationContext`` pre-configured to pass every rule
     except the one under test."""
@@ -126,6 +128,7 @@ def make_context(
         time_in_force=TimeInForce.DAY,
         estimated_unit_price=estimated_unit_price,
         estimated_order_value=order_value,
+        strategy_name=request_strategy_name,
     )
     account = AccountInfo(
         equity=account_portfolio_value,
@@ -165,6 +168,7 @@ def make_context(
         expected_max_positions=expected_max_positions,
         expected_max_position_pct=expected_max_position_pct,
         expected_daily_loss_cap_pct=expected_daily_loss_cap_pct,
+        event_store=event_store,
     )
 
 
@@ -1029,6 +1033,431 @@ def test_data_staleness_fails_just_over_max_age(monkeypatch):
     result = check_result(decision, "data_staleness")
     assert result.passed is False
     assert result.reason_code == "stale_market_data"
+
+
+# --- _check_strategy_concurrent_positions (ADR 0029) ---------------------
+#
+# These tests pin the per-strategy concurrent-positions cap. The new
+# check sits ALONGSIDE _check_concurrent_positions (account-scoped, ADR
+# 0024) — both must pass. The new check uses
+# ``milodex.risk.attribution.attribute_position`` to reconstruct
+# attribution from the durable trades history, and reads the per-strategy
+# cap from ``EvaluationContext.expected_max_positions`` directly (not via
+# ``_effective_max_positions()``, which clamps).
+
+
+def _attrib_store(tmp_path, *, attributions: dict[str, str]):
+    """Create an EventStore seeded with submitted opening BUY rows.
+
+    Each ``(symbol, strategy_name)`` pair becomes a single submitted BUY
+    that takes the symbol from zero to non-zero shares. The strategy_name
+    column carries the attribution per ADR 0029 Decision 3.
+    """
+    from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+
+    store = EventStore(tmp_path / "milodex.db")
+    for idx, (symbol, strategy_name) in enumerate(attributions.items()):
+        explanation_id = store.append_explanation(
+            ExplanationEvent(
+                recorded_at=datetime(2026, 5, 1, tzinfo=UTC) + timedelta(seconds=idx),
+                decision_type="submit",
+                status="submitted",
+                strategy_name=strategy_name,
+                strategy_stage="paper",
+                strategy_config_path=None,
+                config_hash=None,
+                symbol=symbol,
+                side="buy",
+                quantity=1.0,
+                order_type="market",
+                time_in_force="day",
+                submitted_by=("operator" if strategy_name is None else "strategy_runner"),
+                market_open=True,
+                latest_bar_timestamp=None,
+                latest_bar_close=None,
+                account_equity=10_000.0,
+                account_cash=10_000.0,
+                account_portfolio_value=10_000.0,
+                account_daily_pnl=0.0,
+                risk_allowed=True,
+                risk_summary="Allowed",
+                reason_codes=[],
+                risk_checks=[],
+                context={},
+            )
+        )
+        store.append_trade(
+            TradeEvent(
+                explanation_id=explanation_id,
+                recorded_at=datetime(2026, 5, 1, tzinfo=UTC) + timedelta(seconds=idx),
+                status="submitted",
+                source="paper",
+                symbol=symbol,
+                side="buy",
+                quantity=1.0,
+                order_type="market",
+                time_in_force="day",
+                estimated_unit_price=100.0,
+                estimated_order_value=100.0,
+                strategy_name=strategy_name,
+                strategy_stage="paper",
+                strategy_config_path=None,
+                submitted_by=("operator" if strategy_name is None else "strategy_runner"),
+                broker_order_id="broker-1",
+                broker_status=None,
+                message=None,
+            )
+        )
+    return store
+
+
+def test_strategy_concurrent_positions_passes_when_strategy_below_cap(tmp_path):
+    """Strategy 'regime' owns 0 positions; cap=1; BUY SPY -> projected 1 == cap, passes."""
+    store = _attrib_store(tmp_path, attributions={})
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is True
+
+
+def test_strategy_concurrent_positions_fails_when_strategy_at_cap(tmp_path):
+    """Strategy 'regime' owns 1 position (SHY); cap=1; BUY SPY -> projected 2 > 1.
+
+    Pins the failure path with reason code ``max_strategy_positions_exceeded``.
+    """
+    store = _attrib_store(tmp_path, attributions={"SHY": "regime"})
+    held_shy = _position("SHY", 5.0, 100.0)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=[held_shy],
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is False
+    assert result.reason_code == "max_strategy_positions_exceeded"
+
+
+def test_strategy_concurrent_positions_skipped_when_no_cap_declared(tmp_path):
+    """No per-strategy cap declared -> the check is a no-op pass.
+
+    Pins ADR 0029 Decision 6: a strategy YAML with no ``risk.max_positions``
+    set leaves the per-strategy check skipped. The account-scoped floor
+    (``_check_concurrent_positions``) still applies.
+    """
+    store = _attrib_store(tmp_path, attributions={"AAPL": "regime", "MSFT": "regime"})
+    held = [_position("AAPL", 5.0), _position("MSFT", 5.0)]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=None,  # no cap declared
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is True
+    assert "no per-strategy cap" in result.message.lower()
+
+
+def test_strategy_concurrent_positions_does_not_count_operator_positions(tmp_path):
+    """Operator-attributed positions don't consume strategy slots.
+
+    Pins ADR 0029 Decision 3: a strategy with cap=1 can still BUY when its
+    only attributed position is 1 — even if the account also holds operator-
+    attributed positions. The per-strategy check counts only strategy-owned
+    positions; operator positions are visible to the account-scoped check.
+    """
+    # 'regime' owns AAPL; 'operator' owns 2 unrelated symbols.
+    store = _attrib_store(
+        tmp_path,
+        attributions={"AAPL": "regime", "GLD": None, "SLV": None},
+    )
+    held = [
+        _position("AAPL", 5.0),
+        _position("GLD", 1.0),
+        _position("SLV", 1.0),
+    ]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="MSFT",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            # regime cap is 2: AAPL is 1, BUY MSFT projects 2, equality OK.
+            expected_max_positions=2,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is True
+
+
+def test_strategy_concurrent_positions_does_not_count_other_strategies_positions(tmp_path):
+    """Strategy A's positions don't block strategy B.
+
+    Pins ADR 0029 Decision 1: attribution is per-strategy. Strategy A
+    holding 5 positions doesn't reduce the headroom for strategy B's
+    cap.
+    """
+    store = _attrib_store(
+        tmp_path,
+        attributions={
+            "AAPL": "strategy_a",
+            "MSFT": "strategy_a",
+            "GOOG": "strategy_a",
+        },
+    )
+    held = [
+        _position("AAPL", 5.0),
+        _position("MSFT", 5.0),
+        _position("GOOG", 5.0),
+    ]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="strategy_b",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is True
+
+
+def test_both_caps_fail_simultaneously(tmp_path):
+    """Both per-strategy AND account-scoped caps exceeded -> both reason codes appear.
+
+    Pins ADR 0029 Decision 5: when both checks fail, both reason codes
+    appear in ``decision.reason_codes`` and both checks appear in
+    ``decision.checks``.
+    """
+    store = _attrib_store(
+        tmp_path,
+        attributions={"AAPL": "regime", "MSFT": "regime"},
+    )
+    held = [_position("AAPL", 5.0), _position("MSFT", 5.0)]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=1,  # regime owns 2, projected 3 > 1
+            estimated_order_value=500.0,
+            # Account-scoped cap=2: 2 held + 1 new = 3 > 2 (also fails).
+            risk_defaults=_with_overrides(max_concurrent_positions=2),
+        )
+    )
+    assert decision.allowed is False
+    assert "max_concurrent_positions_exceeded" in decision.reason_codes
+    assert "max_strategy_positions_exceeded" in decision.reason_codes
+    # Both checks present in the explanation.
+    check_names = {check.name for check in decision.checks}
+    assert "concurrent_positions" in check_names
+    assert "strategy_concurrent_positions" in check_names
+
+
+def test_only_account_scoped_fails_when_per_strategy_below(tmp_path):
+    """Account-scoped fails alone, per-strategy passes.
+
+    Cap=2 account-wide; 2 operator-held + 1 new BUY = 3 > 2, account-
+    scoped blocks. Per-strategy: regime owns 0, BUY -> 1 within its
+    cap of 2.
+    """
+    # Two operator-held positions.
+    store = _attrib_store(tmp_path, attributions={"GLD": None, "SLV": None})
+    held = [_position("GLD", 1.0), _position("SLV", 1.0)]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=2,  # plenty of strategy-side room
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=2),
+        )
+    )
+    assert decision.allowed is False
+    assert "max_concurrent_positions_exceeded" in decision.reason_codes
+    assert "max_strategy_positions_exceeded" not in decision.reason_codes
+
+
+def test_only_per_strategy_fails_when_account_scoped_below(tmp_path):
+    """Per-strategy fails alone, account-scoped passes.
+
+    Account cap is high (10); strategy cap is tight (1). Strategy holds
+    1, BUY would project 2 > 1 -> per-strategy blocks; the account-
+    scoped check is comfortable.
+    """
+    store = _attrib_store(tmp_path, attributions={"AAPL": "regime"})
+    held = [_position("AAPL", 5.0)]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    assert decision.allowed is False
+    assert "max_strategy_positions_exceeded" in decision.reason_codes
+    assert "max_concurrent_positions_exceeded" not in decision.reason_codes
+
+
+def test_strategy_concurrent_positions_uses_expected_max_positions_directly_not_effective(
+    tmp_path,
+):
+    """Per-strategy check reads ``expected_max_positions`` raw; no clamp.
+
+    Pins ADR 0029 Decision 6 by forcing the two implementations to
+    diverge. Construct a scenario where ``expected_max_positions`` is
+    LOOSER than the global account-scoped cap — the per-strategy check
+    must use the raw per-strategy bound, not anything routed through
+    :meth:`_effective_max_positions`.
+
+    Scenario:
+      - ``risk_defaults.max_concurrent_positions = 2`` (global tight)
+      - ``expected_max_positions = 10`` (per-strategy loose)
+      - ``strategy_config = None`` (the unbound case — operator runner
+        wiring or callers that pass ``expected_max_positions`` without
+        a full ``StrategyExecutionConfig``).
+      - Strategy 'regime' currently holds 2 attributed positions
+        (AAPL, MSFT). It proposes BUY GOOG (a new symbol).
+      - Projected per-strategy count = 3.
+
+    Two implementations, two outcomes:
+      - Correct (raw read): cap = 10 → 3 <= 10 → PASS.
+      - Naive (calls ``_effective_max_positions(context)`` which, with
+        ``strategy_config=None``, returns
+        ``risk_defaults.max_concurrent_positions = 2``):
+        cap = 2 → 3 > 2 → FAIL.
+
+    The account-scoped check
+    (:meth:`RiskEvaluator._check_concurrent_positions`) WILL fail in
+    this scenario (3 > 2), and that's by design — this test is
+    isolating the per-strategy check's behavior. The assertion is
+    pinned only to ``strategy_concurrent_positions``.
+    """
+    # Strategy 'regime' already owns 2 attributed positions (AAPL, MSFT).
+    store = _attrib_store(tmp_path, attributions={"AAPL": "regime", "MSFT": "regime"})
+    held = [_position("AAPL", 1.0), _position("MSFT", 1.0)]
+
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="GOOG",  # New symbol -> projected per-strategy count = 3.
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            # Per-strategy raw cap is 10 (loose). A naive implementation
+            # that piped this through _effective_max_positions() would,
+            # with strategy_config=None, return
+            # risk_defaults.max_concurrent_positions = 2 — and refuse.
+            expected_max_positions=10,
+            estimated_order_value=500.0,
+            # Global default is intentionally tight at 2. This is what
+            # makes the two implementations diverge: raw read sees 10,
+            # any path through _effective_max_positions() sees 2.
+            risk_defaults=_with_overrides(max_concurrent_positions=2),
+        )
+    )
+    strategy_check = check_result(decision, "strategy_concurrent_positions")
+    assert strategy_check.passed is True, (
+        "Per-strategy check must use raw expected_max_positions=10, not "
+        "_effective_max_positions() (which would return "
+        "risk_defaults.max_concurrent_positions=2 with strategy_config=None "
+        "and refuse at projected=3 > cap=2)."
+    )
+    # The account-scoped check legitimately fails here (3 > 2). That is
+    # the global cap doing its job and is unrelated to the per-strategy
+    # behavior under test — pinned explicitly so a future refactor that
+    # accidentally couples the two checks can't silently pass this test.
+    account_check = check_result(decision, "concurrent_positions")
+    assert account_check.passed is False
+    assert "max_concurrent_positions_exceeded" in decision.reason_codes
+    assert "max_strategy_positions_exceeded" not in decision.reason_codes
+
+
+def test_regime_can_enter_when_meanrev_holds_unrelated_positions(tmp_path):
+    """The 2026-05-04 regime/meanrev incident scenario (PHASE2_PLANNING.md §3.2 CS-1).
+
+    Account holds 3 meanrev positions (AVGO, GLD, SLV) at session start.
+    Regime starts with ``risk.max_positions=1`` and proposes BUY SPY.
+    Under ADR 0024 alone, this was blocked with
+    ``max_concurrent_positions_exceeded`` (account count 3+1 > regime's
+    cap 1). Under ADR 0029, regime's per-strategy cap applies only to
+    regime-attributed positions (currently 0), so projected = 1 == 1 ok.
+
+    The account-scoped global cap stays the floor — ``_with_overrides``
+    raises it to 10 to model an operator who has correctly sized
+    ``max_concurrent_positions`` for multi-strategy operation per the
+    RISK_POLICY.md guidance.
+    """
+    store = _attrib_store(
+        tmp_path,
+        attributions={
+            "AVGO": "meanrev",
+            "GLD": "meanrev",
+            "SLV": "meanrev",
+        },
+    )
+    held = [
+        _position("AVGO", 5.0),
+        _position("GLD", 5.0),
+        _position("SLV", 5.0),
+    ]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            # Account-scoped cap raised to 10 — operator sized correctly
+            # per RISK_POLICY.md multi-strategy guidance.
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+
+    assert decision.allowed is True, (
+        "regime BUY SPY must NOT be blocked by meanrev's positions under ADR 0029"
+    )
+    assert "max_strategy_positions_exceeded" not in decision.reason_codes
+    assert "max_concurrent_positions_exceeded" not in decision.reason_codes
 
 
 # --- sanity: reference the pytest and Order/OrderStatus imports so ruff

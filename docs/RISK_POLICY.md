@@ -71,17 +71,21 @@ When in doubt, escalate to the account-level switch. Any hard stop listed below 
 
 ---
 
-## Position Cap Scope: Account-Authoritative
+## Position Cap Scope: Two Orthogonal Layers
 
-Milodex's `max_concurrent_positions` check is **account-scoped**, not strategy-scoped. The risk evaluator counts every open broker position regardless of which strategy proposed it, and refuses any intent that would push the projected open count above `max_concurrent_positions` in `configs/risk_defaults.yaml`. See [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md) for full rationale.
+Milodex enforces position caps at **two independent layers** that run together. Both must pass for an intent to proceed; either failure blocks the trade with its own reason code.
+
+**Account-scoped (the floor — [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md), unchanged).** `max_concurrent_positions` in `configs/risk_defaults.yaml` is the account-wide ceiling. The risk evaluator counts every open broker position regardless of which strategy proposed it, and refuses any intent that would push the projected open count above this value. Reason code: `max_concurrent_positions_exceeded`.
+
+**Per-strategy (the strategy's own ceiling — [ADR 0029](adr/0029-per-strategy-position-attribution-at-risk-layer.md), as of 2026-05-06).** `risk.max_positions` in a strategy's YAML, when set, is **binding** for that strategy's own positions. The risk evaluator reconstructs attribution from the durable `trades` history (filtering to `status="submitted"` rows only), counts positions attributed to the proposing strategy, and refuses an intent that would push that strategy's projected count above its declared cap. Reason code: `max_strategy_positions_exceeded`. Absence of `risk.max_positions` leaves the per-strategy check skipped — the account-scoped floor still applies. Operator-placed positions (whose recorded `strategy_name` is NULL) are attributed to the reserved pseudo-strategy `"operator"` and count toward the account-scoped cap but not toward any runner-strategy's per-strategy cap.
 
 Practical consequences for operators:
 
-- **Single-strategy operation:** size `max_concurrent_positions` to that strategy's expected ceiling. The default `10` accommodates either Phase 1 strategy with headroom.
-- **Multi-strategy operation in one paper account:** size `max_concurrent_positions` ≥ the **sum** of strategies' expected concurrent positions. Underprovisioning produces `max_concurrent_positions_exceeded` rejections of legitimate intents (the 2026-05-04 incident — see [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md)).
-- **Strategy YAML `risk.max_positions`** is informational metadata about each strategy's internal invariant. It does not bind the risk evaluator. Reducing it does not relax the account-scoped check; raising it does not tighten it.
+- **Single-strategy operation:** size `max_concurrent_positions` to that strategy's expected ceiling. The default `10` accommodates either Phase 1 strategy with headroom. Setting `risk.max_positions` in the strategy YAML adds a per-strategy ceiling on top.
+- **Multi-strategy operation in one paper account:** size `max_concurrent_positions` ≥ the **sum** of strategies' expected concurrent positions (the account-scoped floor still has to permit the combined load). Each strategy's `risk.max_positions` then constrains only its own attributed positions. Under ADR 0029, regime can submit BUY SPY against an account that already holds meanrev's three positions because the per-strategy cap counts only regime-attributed positions (zero) — the account-scoped cap remains the only check capable of blocking that specific intent. Underprovisioning the account-scoped cap still produces `max_concurrent_positions_exceeded` (the 2026-05-04 incident — see [ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md)).
+- **Strategy YAML `risk.max_positions`** is now binding for runner-attributed positions of that strategy (ADR 0029 supersedes ADR 0024's "informational only" interpretation of this specific field). The account-scoped floor in `configs/risk_defaults.yaml` is unchanged.
 
-Per-strategy position accounting (counting only positions whose strategy attribution matches the proposing strategy) is the right resolution if/when concurrent multi-strategy execution becomes a system-level goal — but until then, account-scoped enforcement is the only enforceable layer because broker positions don't carry strategy attribution.
+Attribution is reconstructed on demand per evaluation; no parallel `position_attribution` table is maintained. The `trades` table's `strategy_name` column on the most recent zero → non-zero submitted opening fill is the source of truth.
 
 ---
 

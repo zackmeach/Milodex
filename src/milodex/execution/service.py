@@ -319,6 +319,10 @@ class ExecutionService:
                 expected_max_positions=normalized_intent.expected_max_positions,
                 expected_max_position_pct=normalized_intent.expected_max_position_pct,
                 expected_daily_loss_cap_pct=normalized_intent.expected_daily_loss_cap_pct,
+                # ADR 0029: provide the event store so the per-strategy
+                # concurrent-positions check can reconstruct attribution
+                # from the durable trades history.
+                event_store=self._event_store,
             )
             decision = self._risk_evaluator.evaluate(context)
         status = (
