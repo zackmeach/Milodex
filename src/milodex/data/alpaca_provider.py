@@ -8,10 +8,16 @@ being returned to callers.
 
 from __future__ import annotations
 
+import logging
+import random
 import time
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
+from typing import TypeVar
 
 import pandas as pd
+import requests.exceptions
+from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import Adjustment, StockBarsRequest, StockLatestBarRequest
@@ -22,6 +28,60 @@ from milodex.config import get_alpaca_credentials, get_cache_dir, get_trading_mo
 from milodex.data.cache import ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.data.provider import DataProvider
+
+_logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
+
+
+def _call_with_retry_on_429(
+    call: Callable[[], _T],
+    *,
+    max_attempts: int = 5,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+) -> _T:
+    """Invoke ``call()`` and retry on Alpaca 429 with exponential backoff + jitter.
+
+    Returns the call's result on success. Re-raises the original exception
+    when ``max_attempts`` is exhausted. Non-429 exceptions are NOT retried —
+    they bubble up on the first failure (retrying 401/500 hides real problems).
+
+    Backoff schedule: ``base_delay * 2**attempt`` capped at ``max_delay``,
+    plus ``random.uniform(0, base_delay)`` jitter to avoid thundering-herd
+    when multiple runners hit 429 simultaneously and synchronize their retries.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(max_attempts):
+        try:
+            return call()
+        except APIError as exc:
+            status = getattr(exc, "status_code", None)
+            if status is not None and status == 429:
+                delay = min(base_delay * 2**attempt + random.uniform(0, base_delay), max_delay)
+                _logger.warning(
+                    "alpaca_429_retry attempt=%d delay=%.2fs",
+                    attempt,
+                    delay,
+                )
+                time.sleep(delay)
+                last_exc = exc
+            else:
+                raise
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 429:
+                delay = min(base_delay * 2**attempt + random.uniform(0, base_delay), max_delay)
+                _logger.warning(
+                    "alpaca_429_retry attempt=%d delay=%.2fs",
+                    attempt,
+                    delay,
+                )
+                time.sleep(delay)
+                last_exc = exc
+            else:
+                raise
+    raise last_exc  # type: ignore[misc]
+
 
 # Cache schema version — increment when the on-disk bar format changes in a way
 # that makes existing parquet files incompatible or incorrect.
@@ -160,7 +220,7 @@ class AlpacaDataProvider(DataProvider):
                         tzinfo=UTC,
                     ),
                 )
-                response = self._client.get_stock_bars(request)
+                response = _call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
                 time.sleep(0.35)
                 bars_data = response.data.get(symbol, [])
                 if bars_data:
@@ -211,8 +271,10 @@ class AlpacaDataProvider(DataProvider):
 
     def get_latest_bar(self, symbol: str) -> Bar:
         """Fetch the most recent bar from Alpaca."""
-        response = self._client.get_stock_latest_bar(
-            StockLatestBarRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        response = _call_with_retry_on_429(
+            lambda: self._client.get_stock_latest_bar(
+                StockLatestBarRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+            )
         )
         alpaca_bar = response[symbol]
         return Bar(

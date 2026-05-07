@@ -8,11 +8,33 @@ from datetime import UTC, date, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
+from alpaca.common.exceptions import APIError
 from alpaca.data.enums import DataFeed
 from alpaca.data.requests import Adjustment
 
 from milodex.data.alpaca_provider import AlpacaDataProvider
 from milodex.data.models import Bar, BarSet, Timeframe
+
+
+def _make_429_api_error() -> APIError:
+    """Construct an APIError that reports status_code == 429."""
+    http_error = MagicMock(spec=requests.exceptions.HTTPError)
+    http_error.response = MagicMock()
+    http_error.response.status_code = 429
+    return APIError('{"code": 429, "message": "too many requests"}', http_error)
+
+
+def _make_api_error_with_none_response() -> APIError:
+    """Construct an APIError whose status_code property raises AttributeError.
+
+    This happens when http_error.response is None — the SDK property body does
+    ``http_error.response.status_code`` without a None-check, so ``None.status_code``
+    raises AttributeError.
+    """
+    http_error = MagicMock(spec=requests.exceptions.HTTPError)
+    http_error.response = None  # triggers AttributeError in APIError.status_code
+    return APIError('{"code": 0, "message": "unknown"}', http_error)
 
 
 @pytest.fixture()
@@ -219,3 +241,124 @@ class TestGetTradeableAssets:
         assert "AAPL" in result
         assert "GOOG" in result
         assert "DELISTED" not in result
+
+
+class TestRetryOn429:
+    """Tests for _call_with_retry_on_429 via the public get_bars / get_latest_bar surface."""
+
+    def test_get_bars_retries_on_429_then_succeeds(self, provider, mock_alpaca_bar):
+        """429 errors trigger retry; eventual success returns data normally."""
+        err429 = _make_429_api_error()
+        provider._client.get_stock_bars.side_effect = [
+            err429,
+            err429,
+            MagicMock(data={"AAPL": [mock_alpaca_bar]}),
+        ]
+
+        with patch("time.sleep"):
+            result = provider.get_bars(
+                symbols=["AAPL"],
+                timeframe=Timeframe.DAY_1,
+                start=date(2025, 1, 15),
+                end=date(2025, 1, 15),
+            )
+
+        assert "AAPL" in result
+        assert len(result["AAPL"]) == 1
+        assert provider._client.get_stock_bars.call_count == 3
+
+    def test_get_bars_does_not_retry_on_non_429_errors(self, provider):
+        """Non-429 HTTP errors bubble up immediately without retry."""
+        err500 = requests.exceptions.HTTPError(response=MagicMock(status_code=500))
+        provider._client.get_stock_bars.side_effect = err500
+
+        with patch("time.sleep"):
+            with pytest.raises(requests.exceptions.HTTPError):
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        assert provider._client.get_stock_bars.call_count == 1
+
+    def test_get_bars_gives_up_after_max_attempts(self, provider):
+        """After max_attempts (default 5), the last 429 is re-raised."""
+        err429 = _make_429_api_error()
+        # Always fail with 429
+        provider._client.get_stock_bars.side_effect = err429
+
+        with patch("time.sleep"):
+            with pytest.raises(APIError) as exc_info:
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        assert exc_info.value is err429
+        assert provider._client.get_stock_bars.call_count == 5
+
+    def test_retry_uses_exponential_backoff_with_jitter(self, provider, mock_alpaca_bar):
+        """Backoff sleeps follow base_delay * 2^attempt + jitter, capped at max_delay."""
+        err429 = _make_429_api_error()
+        provider._client.get_stock_bars.side_effect = [
+            err429,
+            err429,
+            err429,
+            err429,
+            MagicMock(data={"AAPL": [mock_alpaca_bar]}),
+        ]
+
+        sleep_calls: list[float] = []
+
+        def record_sleep(secs: float) -> None:
+            sleep_calls.append(secs)
+
+        fixed_jitter = 0.5
+
+        with patch("time.sleep", side_effect=record_sleep):
+            with patch("random.uniform", return_value=fixed_jitter):
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        # Filter out the 0.35 intra-runner pacing sleeps; keep only backoff sleeps
+        # (backoff delays are > 0.35 for all 4 retries with base_delay=1.0)
+        backoff_sleeps = [s for s in sleep_calls if s > 0.35]
+
+        # Expected: base_delay=1.0, jitter=0.5
+        # attempt 0: min(1.0 * 2^0 + 0.5, 60) = 1.5
+        # attempt 1: min(1.0 * 2^1 + 0.5, 60) = 2.5
+        # attempt 2: min(1.0 * 2^2 + 0.5, 60) = 4.5
+        # attempt 3: min(1.0 * 2^3 + 0.5, 60) = 8.5
+        assert backoff_sleeps == pytest.approx([1.5, 2.5, 4.5, 8.5], rel=1e-6)
+        assert all(s <= 60.0 for s in backoff_sleeps)
+
+    def test_handles_apierror_with_response_none(self, provider):
+        """APIError whose status_code raises AttributeError (response=None) is re-raised.
+
+        The guard uses getattr(exc, "status_code", None) which catches AttributeError
+        raised by the SDK property when http_error.response is None. The error is NOT
+        retried (we can't determine it was 429), so it propagates on the first attempt.
+        """
+        err = _make_api_error_with_none_response()
+        provider._client.get_stock_bars.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(APIError) as exc_info:
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        # No retry — should propagate immediately on attempt 0.
+        assert exc_info.value is err
+        assert provider._client.get_stock_bars.call_count == 1
