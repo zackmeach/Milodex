@@ -349,6 +349,129 @@ def test_batch_result_includes_pairwise_return_correlation_matrix():
     assert matrix["second"]["first"] == pytest.approx(1.0)
 
 
+# ---------------------------------------------------------------------------
+# --parallel N (PR #9 / ADR 0030 Scope B)
+# ---------------------------------------------------------------------------
+
+
+def test_parallel_one_matches_sequential_results():
+    """Pins idempotency: ``parallel=1`` must produce the same rows as the
+    default (no-arg) sequential path. The flag is opt-in and the default
+    path should not change shape under any circumstances.
+    """
+    e1, _ = _make_engine("a", "meanrev")
+    e2, _ = _make_engine("b", "meanrev")
+    ctx = _make_ctx({"a": e1, "b": e2})
+
+    sequential = run_batch(
+        strategy_ids=["a", "b"],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx,
+    )
+
+    e1b, _ = _make_engine("a", "meanrev")
+    e2b, _ = _make_engine("b", "meanrev")
+    ctx_b = _make_ctx({"a": e1b, "b": e2b})
+
+    parallel_one = run_batch(
+        strategy_ids=["a", "b"],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx_b,
+        parallel=1,
+    )
+
+    assert [row.strategy_id for row in sequential.rows] == [
+        row.strategy_id for row in parallel_one.rows
+    ]
+    for left, right in zip(sequential.rows, parallel_one.rows, strict=True):
+        assert left.gate_allowed == right.gate_allowed
+        assert left.trade_count == right.trade_count
+
+
+def test_parallel_falls_back_to_sequential_when_recipe_unavailable():
+    """A ctx whose ``get_event_store`` raises (test fixture style with
+    closures over MagicMocks) must NOT crash the parallel path. The
+    recipe extractor returns ``None`` and the call falls through to the
+    sequential implementation, preserving research-screen UX even when
+    the operator passes ``--parallel`` on a non-reconstructable ctx.
+    """
+    e1, _ = _make_engine("a", "meanrev")
+    e2, _ = _make_engine("b", "meanrev")
+    ctx = _make_ctx({"a": e1, "b": e2})
+    # Test ctx has no usable get_event_store — extractor returns None,
+    # fallback to sequential. Critically: this must not raise.
+    result = run_batch(
+        strategy_ids=["a", "b"],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx,
+        parallel=4,
+    )
+    assert len(result.rows) == 2
+    assert {row.strategy_id for row in result.rows} == {"a", "b"}
+
+
+def test_run_batch_parallel_zero_or_negative_clamps_to_sequential():
+    """Defensive: parallel<=1 always uses the sequential path. Caller
+    bugs (e.g., args.parallel=0) shouldn't crash or spawn weirdness.
+    """
+    e1, _ = _make_engine("a", "meanrev")
+    ctx = _make_ctx({"a": e1})
+    for value in (0, -1, 1):
+        result = run_batch(
+            strategy_ids=["a"],
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 31),
+            ctx=ctx,
+            parallel=value,
+        )
+        assert len(result.rows) == 1
+
+
+def test_concurrent_engines_share_wal_event_store_safely(tmp_path):
+    """Two ``BacktestEngine`` instances writing to the same SQLite path
+    must coexist under WAL mode. This is the verification for ADR 0030
+    Scope B's "WAL handles it" claim — concurrent reads and serialized
+    writes do not produce ``database is locked`` or
+    ``ProgrammingError`` failures across engines that share a database
+    file.
+
+    We exercise the property through two engines built against one path
+    and run sequentially in this test process (each opens its own
+    connection inside ``EventStore``); the property the test pins is
+    that EventStore connections built against the same path can coexist
+    without conflict. Pinning under true cross-process load is left to
+    integration testing — what the unit test rules out is the
+    same-process double-open regression.
+    """
+    db_path = tmp_path / "milodex.db"
+
+    e1, _ = _make_engine("a", "meanrev")
+    e1._event_store = EventStore(db_path)  # noqa: SLF001
+    e2, _ = _make_engine("b", "meanrev")
+    e2._event_store = EventStore(db_path)  # noqa: SLF001
+
+    ctx = _make_ctx({"a": e1, "b": e2})
+    result = run_batch(
+        strategy_ids=["a", "b"],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx,
+    )
+    assert len(result.rows) == 2
+
+    # Verify both engines wrote backtest_run rows successfully.
+    rows_with_run_ids = [row for row in result.rows if row.run_id is not None]
+    assert len(rows_with_run_ids) == 2
+    # Read back via a third connection — same WAL db, three readers.
+    third = EventStore(db_path)
+    for row in rows_with_run_ids:
+        persisted = third.get_backtest_run(row.run_id)
+        assert persisted is not None
+
+
 def test_correlation_matrix_uses_only_overlapping_return_dates():
     first = _row("first", sharpe=1.0, allowed=True)
     second = _row("second", sharpe=0.8, allowed=True)

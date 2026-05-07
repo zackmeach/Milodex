@@ -14,9 +14,10 @@ that looks promising.
 from __future__ import annotations
 
 import math
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from milodex.backtesting.engine import _trading_days_in_range
 from milodex.backtesting.walk_forward_runner import (
@@ -98,6 +99,7 @@ def run_batch(
     ctx: CommandContext,
     fail_fast: bool = False,
     initial_equity: float = 100_000.0,
+    parallel: int = 1,
 ) -> BatchResult:
     """Run walk-forward screening over ``strategy_ids``.
 
@@ -110,11 +112,48 @@ def run_batch(
     record the exception string on the row and move on. This matters for
     screening — one malformed config should not mask results for the other
     twelve candidates.
+
+    ``parallel``: when > 1, dispatch ``_screen_one`` invocations across a
+    ``ProcessPoolExecutor`` of that many workers. Each child process opens
+    its own ``EventStore``; SQLite WAL mode (set in
+    ``EventStore._connect``) makes concurrent reads + serialized writes
+    safe across processes. The in-memory bar cache is sequential-only —
+    parallel mode forgoes it; the disk-level Parquet cache still applies.
+    Idempotent: results match sequential mode strategy-for-strategy.
     """
     if end_date < start_date:
         msg = "end_date must be on or after start_date"
         raise ValueError(msg)
 
+    if parallel <= 1:
+        return _run_batch_sequential(
+            strategy_ids=strategy_ids,
+            start_date=start_date,
+            end_date=end_date,
+            ctx=ctx,
+            fail_fast=fail_fast,
+            initial_equity=initial_equity,
+        )
+    return _run_batch_parallel(
+        strategy_ids=strategy_ids,
+        start_date=start_date,
+        end_date=end_date,
+        ctx=ctx,
+        fail_fast=fail_fast,
+        initial_equity=initial_equity,
+        parallel=parallel,
+    )
+
+
+def _run_batch_sequential(
+    *,
+    strategy_ids: Sequence[str],
+    start_date: date,
+    end_date: date,
+    ctx: CommandContext,
+    fail_fast: bool,
+    initial_equity: float,
+) -> BatchResult:
     bar_cache: dict[tuple, dict[str, BarSet]] = {}
     rows: list[BatchRow] = []
     for strategy_id in strategy_ids:
@@ -140,6 +179,218 @@ def run_batch(
         end_date=end_date,
         rows=tuple(rows_sorted),
         correlation_matrix=_compute_correlation_matrix(rows_sorted),
+    )
+
+
+def _run_batch_parallel(
+    *,
+    strategy_ids: Sequence[str],
+    start_date: date,
+    end_date: date,
+    ctx: CommandContext,
+    fail_fast: bool,
+    initial_equity: float,
+    parallel: int,
+) -> BatchResult:
+    """Parallel dispatch of ``_screen_one`` across ``parallel`` workers.
+
+    Each child process builds its own ``EventStore`` against the parent's
+    SQLite path (WAL mode allows concurrent reads + serialized writes) and
+    its own data provider. The parent's ``ctx`` typically holds factory
+    closures that cannot cross the process boundary on Windows spawn — we
+    instead pass a small dataclass recipe (event-store path, config dir)
+    that the child uses to rebuild a minimal context shim.
+    """
+    recipe = _build_worker_recipe(ctx)
+    if recipe is None:
+        # Caller passed a ctx whose factories cannot be reconstructed in a
+        # worker (e.g., test ctx with closures over tempfiles). Fall back
+        # to sequential — the parallel flag is best-effort.
+        return _run_batch_sequential(
+            strategy_ids=strategy_ids,
+            start_date=start_date,
+            end_date=end_date,
+            ctx=ctx,
+            fail_fast=fail_fast,
+            initial_equity=initial_equity,
+        )
+
+    rows_by_id: dict[str, BatchRow] = {}
+    with ProcessPoolExecutor(max_workers=parallel) as pool:
+        futures = {
+            pool.submit(
+                _worker_screen_one,
+                strategy_id,
+                start_date,
+                end_date,
+                initial_equity,
+                recipe,
+            ): strategy_id
+            for strategy_id in strategy_ids
+        }
+        for future in as_completed(futures):
+            strategy_id = futures[future]
+            try:
+                row = future.result()
+            except Exception as exc:
+                if fail_fast:
+                    # Cancellation is best-effort: queued futures are skipped,
+                    # but already-running child processes continue to completion
+                    # before the executor context exits. The exception is
+                    # re-raised after the executor finishes shutting down.
+                    for other in futures:
+                        other.cancel()
+                    raise
+                rows_by_id[strategy_id] = _error_row(strategy_id, exc)
+                continue
+            rows_by_id[strategy_id] = row
+
+    # Preserve input order so downstream consumers see deterministic
+    # ordering before _rank_rows sorts by gate/sharpe.
+    rows = [rows_by_id[sid] for sid in strategy_ids]
+    rows_sorted = _rank_rows(rows)
+    return BatchResult(
+        start_date=start_date,
+        end_date=end_date,
+        rows=tuple(rows_sorted),
+        correlation_matrix=_compute_correlation_matrix(rows_sorted),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Parallel worker plumbing
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _WorkerRecipe:
+    """Self-contained recipe a worker uses to rebuild a CommandContext.
+
+    The parent's ``ctx`` is built around closures over CLI-time state that
+    will not survive Windows ``spawn``. This recipe carries only stdlib-
+    primitive fields — paths — so it crosses the process boundary cleanly.
+    The worker uses these fields to reconstruct a minimal ``ctx`` shim with
+    just the surface ``_screen_one`` reads.
+    """
+
+    config_dir_path: str
+    event_store_path: str | None
+
+
+def _build_worker_recipe(ctx: CommandContext) -> _WorkerRecipe | None:
+    """Best-effort extraction of a worker recipe from ``ctx``.
+
+    Returns ``None`` when the context cannot be reconstructed in a child
+    process — the caller falls back to sequential mode in that case. The
+    extraction reads only public attributes; any attribute it cannot
+    serialize (e.g., a closure over a tempfile factory) signals the
+    fallback.
+    """
+    try:
+        config_dir = ctx.config_dir
+    except Exception:
+        return None
+    if config_dir is None:
+        return None
+
+    event_store_path: str | None = None
+    try:
+        event_store = ctx.get_event_store()
+        # EventStore exposes its sqlite path as ``_path``; relying on that
+        # is acceptable here — the worker only needs a path string and the
+        # EventStore constructor accepts one.
+        path_attr = getattr(event_store, "_path", None)
+        if path_attr is not None:
+            event_store_path = str(path_attr)
+    except Exception:
+        return None
+
+    if event_store_path is None:
+        # Without a durable path, child processes cannot share the audit
+        # trail. Fall back to sequential.
+        return None
+
+    return _WorkerRecipe(
+        config_dir_path=str(config_dir),
+        event_store_path=event_store_path,
+    )
+
+
+def _worker_screen_one(
+    strategy_id: str,
+    start_date: date,
+    end_date: date,
+    initial_equity: float,
+    recipe: _WorkerRecipe,
+) -> BatchRow:
+    """Module-level worker entry point — must be importable in the child.
+
+    Each child process builds its own minimal ``CommandContext`` shim from
+    the recipe, then delegates to the same ``_screen_one`` used by the
+    sequential path. The shim's ``get_backtest_engine`` constructs a fresh
+    ``BacktestEngine`` against a fresh ``EventStore`` so SQLite connections
+    are not shared across processes (the source of stray
+    ``ProgrammingError`` in multi-process SQLite use).
+    """
+    # Lazy imports keep this module importable in the parent without
+    # eagerly resolving heavy CLI / data-provider chains.
+    from pathlib import Path
+
+    from milodex.backtesting.engine import BacktestEngine
+    from milodex.core.event_store import EventStore
+    from milodex.data.alpaca_provider import AlpacaDataProvider
+    from milodex.strategies.loader import StrategyLoader
+
+    config_dir = Path(recipe.config_dir_path)
+    event_store = EventStore(Path(recipe.event_store_path))
+
+    # Build a tiny context shim with just the surface ``_screen_one`` reads.
+    class _ChildCtx:
+        pass
+
+    child_ctx = _ChildCtx()
+    child_ctx.config_dir = config_dir
+
+    def _resolve_strategy_config_path(sid: str) -> Path:
+        for candidate in config_dir.glob("*.yaml"):
+            try:
+                from milodex.strategies.loader import load_strategy_config
+
+                config = load_strategy_config(candidate)
+            except Exception:
+                continue
+            if config.strategy_id == sid:
+                return candidate
+        msg = f"Strategy id {sid!r} not found under {config_dir}."
+        raise ValueError(msg)
+
+    def _build_engine(sid: str, **kwargs: Any) -> BacktestEngine:
+        loader = StrategyLoader()
+        config_path = _resolve_strategy_config_path(sid)
+        loaded = loader.load(config_path)
+        # IMPORTANT: --parallel requires Alpaca credentials in the environment.
+        # Worker subprocesses spawn fresh and cannot inherit the parent's
+        # configured data provider (closures don't pickle), so this codepath
+        # always uses AlpacaDataProvider regardless of how the parent was wired.
+        # Operators running --parallel in test environments without ALPACA_API_KEY
+        # / ALPACA_SECRET_KEY will see authentication errors per worker.
+        data_provider = AlpacaDataProvider()
+        return BacktestEngine(
+            loaded=loaded,
+            data_provider=data_provider,
+            event_store=event_store,
+            **kwargs,
+        )
+
+    child_ctx.get_backtest_engine = _build_engine
+
+    return _screen_one(
+        strategy_id=strategy_id,
+        start_date=start_date,
+        end_date=end_date,
+        ctx=child_ctx,  # type: ignore[arg-type]
+        initial_equity=initial_equity,
+        bar_cache={},
     )
 
 

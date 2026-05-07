@@ -19,7 +19,7 @@ from milodex.backtesting.engine import (
 )
 from milodex.core.event_store import EventStore
 from milodex.data.models import BarSet
-from milodex.strategies.base import DecisionReasoning, StrategyDecision
+from milodex.strategies.base import DecisionReasoning, StrategyContext, StrategyDecision
 
 
 def _decision(intents: list) -> StrategyDecision:
@@ -510,3 +510,97 @@ def test_engine_empty_run_records_zero_snapshots():
     assert result.trading_days == 0
     snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
     assert snapshots == []
+
+
+# ---------------------------------------------------------------------------
+# ADR 0030 audit trail: BacktestRunEvent.config_hash captures invocation YAML
+# ---------------------------------------------------------------------------
+
+
+def test_backtest_run_config_hash_reflects_invocation_yaml_not_frozen():
+    """Pins ADR 0030 Decision 4: ``BacktestRunEvent.config_hash`` captures the
+    YAML hash that was actually used at backtest invocation, NOT a frozen
+    manifest hash from a paper-stage strategy.
+
+    This guarantees the audit trail when an operator backtests a paper-stage
+    strategy against an edited config: the run row's ``config_hash`` reflects
+    what was tested. An operator comparing a backtest result to the strategy's
+    frozen manifest can detect divergence by hash inspection alone — and can
+    do so without any demote-edit-promote ceremony.
+
+    Test shape: two backtests of the same strategy with two different YAML
+    hashes (modeled by the loaded strategy's ``context.config_hash``) produce
+    distinct ``BacktestRunEvent.config_hash`` rows. The hash reflects what
+    was used, not what's frozen.
+    """
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 4)
+
+    # Run 1: simulate the operator backtesting against the YAML as-loaded —
+    # config hash 'H_INVOCATION_1'.
+    loaded_1 = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded_1.context = StrategyContext(  # type: ignore[assignment]
+        strategy_id=loaded_1.context.strategy_id,
+        family=loaded_1.context.family,
+        template=loaded_1.context.template,
+        variant=loaded_1.context.variant,
+        version=loaded_1.context.version,
+        config_hash="H_INVOCATION_1",
+        parameters=loaded_1.context.parameters,
+        universe=loaded_1.context.universe,
+        universe_ref=loaded_1.context.universe_ref,
+        disable_conditions=loaded_1.context.disable_conditions,
+        config_path=loaded_1.context.config_path,
+        manifest=loaded_1.context.manifest,
+    )
+    barset = _make_barset([100.0, 101.0, 102.0], start=start)
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": barset}
+    store = _make_event_store()
+    engine_1 = BacktestEngine(
+        loaded=loaded_1,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+    result_1 = engine_1.run(start, end)
+
+    # Run 2: same strategy id, edited YAML — context.config_hash is now
+    # 'H_INVOCATION_2'. Models the operator iterating on parameters mid-paper.
+    loaded_2 = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded_2.context = StrategyContext(  # type: ignore[assignment]
+        strategy_id=loaded_2.context.strategy_id,
+        family=loaded_2.context.family,
+        template=loaded_2.context.template,
+        variant=loaded_2.context.variant,
+        version=loaded_2.context.version,
+        config_hash="H_INVOCATION_2",
+        parameters=loaded_2.context.parameters,
+        universe=loaded_2.context.universe,
+        universe_ref=loaded_2.context.universe_ref,
+        disable_conditions=loaded_2.context.disable_conditions,
+        config_path=loaded_2.context.config_path,
+        manifest=loaded_2.context.manifest,
+    )
+    engine_2 = BacktestEngine(
+        loaded=loaded_2,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+    result_2 = engine_2.run(start, end)
+
+    # Pull both rows from the event store and verify the config_hash captured
+    # is the YAML-at-invocation hash, distinct between runs.
+    run_1 = store.get_backtest_run(result_1.run_id)
+    run_2 = store.get_backtest_run(result_2.run_id)
+    assert run_1 is not None and run_2 is not None
+    assert run_1.config_hash == "H_INVOCATION_1"
+    assert run_2.config_hash == "H_INVOCATION_2"
+    assert run_1.config_hash != run_2.config_hash, (
+        "ADR 0030 Decision 4: each backtest run records the YAML hash actually "
+        "tested, not a shared frozen-manifest hash. An operator iterating on "
+        "parameters mid-paper must see distinct config_hash values per run."
+    )
