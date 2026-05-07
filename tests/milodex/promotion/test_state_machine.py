@@ -279,3 +279,55 @@ def test_check_gate_lifecycle_exempt_preserves_metrics() -> None:
     assert result.sharpe_ratio == 0.38
     assert result.max_drawdown_pct == 23.44
     assert result.trade_count == 49
+
+
+# ---------------------------------------------------------------------------
+# Threshold literal pins (mutation audit Critical #2)
+#
+# The other gate tests use the constants symbolically (``MIN_SHARPE - 1``,
+# ``MAX_DRAWDOWN_PCT``) — an edit that silently changed any of the three
+# values would not trip them. SRS R-PRM-001/002/003 name these literals
+# explicitly; the assertions below lock them so a silent relaxation cannot
+# slip past CI.
+# ---------------------------------------------------------------------------
+
+
+def test_min_sharpe_is_pinned_to_exactly_zero_point_five() -> None:
+    """Kills mutation: state_machine.py:43 ``MIN_SHARPE: float = 0.5``
+    -> any other literal (e.g. 1.5, 0.25, 0.0).
+
+    SRS R-PRM-001 names ``Sharpe > 0.5`` as the statistical-promotion
+    threshold. A relaxation would silently lower the bar.
+    """
+    assert MIN_SHARPE == 0.5
+
+
+def test_max_drawdown_pct_is_pinned_to_exactly_fifteen() -> None:
+    """Kills mutation: state_machine.py:44 ``MAX_DRAWDOWN_PCT: float = 15.0``
+    -> any other literal (e.g. 16.0).
+
+    SRS R-PRM-002 names ``Max drawdown < 15%`` as the statistical-promotion
+    threshold. A relaxation would silently widen the acceptable drawdown.
+    """
+    assert MAX_DRAWDOWN_PCT == 15.0
+
+
+def test_min_trades_is_pinned_to_exactly_thirty() -> None:
+    """Kills mutation: state_machine.py:45 ``MIN_TRADES: int = 30``
+    -> any other literal (e.g. 31, 1, 0).
+
+    SRS R-PRM-003 / R-BKT-003 name ``>= 30 trades`` as the
+    statistical-promotion floor.
+    """
+    assert MIN_TRADES == 30
+
+
+def test_stage_order_literal_contents_are_pinned() -> None:
+    """Kills mutation: state_machine.py:35 STAGE_ORDER element substitutions.
+
+    The existing ``test_stage_order_is_complete`` already pins this; this
+    test is intentional duplication to make the 'literal contents pinned'
+    intent explicit and survive a future refactor that loosens the
+    other test.
+    """
+    assert STAGE_ORDER == ["backtest", "paper", "micro_live", "live"]

@@ -872,6 +872,165 @@ def test_toctou_followups_fall_back_to_yaml_when_no_binding():
     assert check_result(decision, "concurrent_positions").passed is True
 
 
+# --- decision.allowed aggregator (mutation audit Critical #1) -------------
+#
+# The risk evaluator's load-bearing AND across all checks
+# (``allowed = all(check.passed for check in checks)`` at evaluator.py:91)
+# was never asserted directly. The tests above pin individual
+# ``check.passed`` values but a regression that returned ``None`` or a
+# fixed ``True``/``False`` would slip through. The two tests below pin
+# the global aggregation in both directions.
+
+
+def test_decision_allowed_is_true_when_every_check_passes():
+    """Kills mutation: evaluator.py:91 ``allowed = all(...)`` -> ``allowed = None``.
+
+    Also kills the constant-flip mutations on the aggregator
+    (``True`` -> ``False`` and vice versa). The default ``make_context``
+    is engineered to satisfy every rule, so the global ``allowed`` must
+    be the literal ``True``.
+    """
+    decision = RiskEvaluator().evaluate(make_context())
+
+    # Every individual check passes — sanity-check the precondition before
+    # the load-bearing global assertion.
+    assert all(check.passed for check in decision.checks), (
+        f"precondition failed: at least one check failed: "
+        f"{[(c.name, c.passed, c.reason_code) for c in decision.checks if not c.passed]}"
+    )
+    assert decision.allowed is True
+    assert decision.reason_codes == []
+    assert decision.summary == "Allowed"
+
+
+def test_decision_allowed_is_false_when_any_check_fails():
+    """Kills mutation: evaluator.py:91 ``allowed = all(...)`` -> ``allowed = None``.
+
+    Also kills the negation-flip on the aggregator
+    (``all(...)`` -> ``not all(...)`` would invert this). Forces a single
+    check to fail (kill switch active) and asserts the global decision
+    flips to ``False`` with the failure surfaced in ``reason_codes``.
+    """
+    decision = RiskEvaluator().evaluate(make_context(kill_switch_active=True))
+
+    assert decision.allowed is False
+    assert "kill_switch_active" in decision.reason_codes
+    assert decision.summary == "Blocked by risk checks"
+
+
+# --- boundary tests (mutation audit Important #4) -------------------------
+
+
+def test_daily_loss_passes_exactly_at_cap():
+    """Kills mutation: evaluator.py:281 ``current_loss_pct > max_daily_loss``
+    -> ``current_loss_pct >= max_daily_loss``.
+
+    The rule uses strict ``>`` so equality must pass. Construct a loss
+    that lands exactly on the 3% global cap: equity_base = portfolio - pnl
+    = 10_000 - (-pnl) = 10_000 + |pnl|; current_loss_pct = |pnl| /
+    (10_000 + |pnl|). Solving |pnl| / (10_000 + |pnl|) = 0.03 ->
+    |pnl| = 300/0.97 ≈ 309.27835...
+    """
+    # |pnl| computed so current_loss_pct equals exactly max_daily_loss_pct (0.03).
+    target_pct = DEFAULT_RISK_DEFAULTS.max_daily_loss_pct
+    portfolio = 10_000.0
+    # current_loss_pct = |pnl| / (portfolio + |pnl|) = target_pct
+    # solve: |pnl| = target_pct * portfolio / (1 - target_pct)
+    daily_pnl = -(target_pct * portfolio / (1.0 - target_pct))
+
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            account_portfolio_value=portfolio,
+            account_daily_pnl=daily_pnl,
+        )
+    )
+
+    result = check_result(decision, "daily_loss")
+    assert result.passed is True, (
+        "strict-> boundary: a loss exactly at the cap must pass; only > cap fails"
+    )
+
+
+def test_data_staleness_passes_exactly_at_max_age(monkeypatch):
+    """Kills mutation: evaluator.py:254 ``age > max_age``
+    -> ``age >= max_age``.
+
+    The rule reads ``datetime.now(tz=UTC)`` internally; pin it via
+    ``monkeypatch`` against ``milodex.risk.evaluator.datetime`` so we
+    can engineer ``age == max_age`` exactly. Under strict ``>`` this
+    must pass; the mutation to ``>=`` would flip it to fail.
+    """
+    from milodex.risk import evaluator as evaluator_module
+
+    fixed_now = datetime(2026, 5, 6, 18, 0, 0, tzinfo=UTC)
+    max_age_seconds = DEFAULT_RISK_DEFAULTS.max_data_staleness_seconds
+    bar_timestamp = fixed_now - timedelta(seconds=max_age_seconds)
+
+    class _FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(evaluator_module, "datetime", _FrozenDateTime)
+
+    bar = Bar(
+        timestamp=bar_timestamp,
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+
+    decision = RiskEvaluator().evaluate(make_context(latest_bar=bar))
+
+    result = check_result(decision, "data_staleness")
+    assert result.passed is True, (
+        "strict-> boundary: a bar exactly at the staleness limit must pass; "
+        "the > -> >= mutation would flip this to fail"
+    )
+
+
+def test_data_staleness_fails_just_over_max_age(monkeypatch):
+    """Companion to ``test_data_staleness_passes_exactly_at_max_age``.
+
+    Pin ``datetime.now`` and place the bar one microsecond beyond
+    ``max_data_staleness_seconds``. Must fail under both the original
+    and mutated comparison — but combined with the equality-passes
+    test above, the pair pins the strict-``>`` semantic against the
+    ``>=`` mutation.
+    """
+    from milodex.risk import evaluator as evaluator_module
+
+    fixed_now = datetime(2026, 5, 6, 18, 0, 0, tzinfo=UTC)
+    max_age_seconds = DEFAULT_RISK_DEFAULTS.max_data_staleness_seconds
+    bar_timestamp = fixed_now - timedelta(seconds=max_age_seconds) - timedelta(microseconds=1)
+
+    class _FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(evaluator_module, "datetime", _FrozenDateTime)
+
+    bar = Bar(
+        timestamp=bar_timestamp,
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+
+    decision = RiskEvaluator().evaluate(make_context(latest_bar=bar))
+
+    result = check_result(decision, "data_staleness")
+    assert result.passed is False
+    assert result.reason_code == "stale_market_data"
+
+
 # --- sanity: reference the pytest and Order/OrderStatus imports so ruff
 #     does not flag them unused if tests are trimmed. The pytest import
 #     stays available for future parametrization.
