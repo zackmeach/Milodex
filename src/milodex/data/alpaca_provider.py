@@ -56,7 +56,8 @@ def _call_with_retry_on_429(
         try:
             return call()
         except APIError as exc:
-            if exc.status_code == 429:
+            status = getattr(exc, "status_code", None)
+            if status is not None and status == 429:
                 delay = min(base_delay * 2**attempt + random.uniform(0, base_delay), max_delay)
                 _logger.warning(
                     "alpaca_429_retry attempt=%d delay=%.2fs",

@@ -25,6 +25,18 @@ def _make_429_api_error() -> APIError:
     return APIError('{"code": 429, "message": "too many requests"}', http_error)
 
 
+def _make_api_error_with_none_response() -> APIError:
+    """Construct an APIError whose status_code property raises AttributeError.
+
+    This happens when http_error.response is None — the SDK property body does
+    ``http_error.response.status_code`` without a None-check, so ``None.status_code``
+    raises AttributeError.
+    """
+    http_error = MagicMock(spec=requests.exceptions.HTTPError)
+    http_error.response = None  # triggers AttributeError in APIError.status_code
+    return APIError('{"code": 0, "message": "unknown"}', http_error)
+
+
 @pytest.fixture()
 def mock_alpaca_bar():
     """Create a mock Alpaca bar object."""
@@ -327,3 +339,26 @@ class TestRetryOn429:
         # attempt 3: min(1.0 * 2^3 + 0.5, 60) = 8.5
         assert backoff_sleeps == pytest.approx([1.5, 2.5, 4.5, 8.5], rel=1e-6)
         assert all(s <= 60.0 for s in backoff_sleeps)
+
+    def test_handles_apierror_with_response_none(self, provider):
+        """APIError whose status_code raises AttributeError (response=None) is re-raised.
+
+        The guard uses getattr(exc, "status_code", None) which catches AttributeError
+        raised by the SDK property when http_error.response is None. The error is NOT
+        retried (we can't determine it was 429), so it propagates on the first attempt.
+        """
+        err = _make_api_error_with_none_response()
+        provider._client.get_stock_bars.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(APIError) as exc_info:
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        # No retry — should propagate immediately on attempt 0.
+        assert exc_info.value is err
+        assert provider._client.get_stock_bars.call_count == 1
