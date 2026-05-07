@@ -44,7 +44,7 @@ def _call_with_retry_on_429(
     """Invoke ``call()`` and retry on Alpaca 429 with exponential backoff + jitter.
 
     Returns the call's result on success. Re-raises the original exception
-    when ``max_attempts`` is exhausted. Non-429 exceptions are NOT retried —
+    when ``max_attempts`` is exhausted. Non-429 exceptions are NOT retried --
     they bubble up on the first failure (retrying 401/500 hides real problems).
 
     Backoff schedule: ``base_delay * 2**attempt`` capped at ``max_delay``,
@@ -83,11 +83,11 @@ def _call_with_retry_on_429(
     raise last_exc  # type: ignore[misc]
 
 
-# Cache schema version — increment when the on-disk bar format changes in a way
+# Cache schema version -- increment when the on-disk bar format changes in a way
 # that makes existing parquet files incompatible or incorrect.
-# v1 → v2 (2026-05-05): switched StockBarsRequest to Adjustment.SPLIT so all
+# v1 -> v2 (2026-05-05): switched StockBarsRequest to Adjustment.SPLIT so all
 #   cached bars are now split-adjusted. Old raw-bar parquets must be discarded.
-# v2 → v3 (2026-05-06): switched to Adjustment.ALL so cached bars are now split-
+# v2 -> v3 (2026-05-06): switched to Adjustment.ALL so cached bars are now split-
 #   AND dividend-adjusted. Without this, long-only equity backtests are
 #   systematically pessimistic by ~1.5-3% per year (missing dividend
 #   reinvestment). Old split-only parquets are silently incompatible with code
@@ -132,10 +132,23 @@ class AlpacaDataProvider(DataProvider):
         - Otherwise, identify missing date ranges and fetch only those.
         - Today's date is always re-fetched (market may still be open).
         - Merge fetched data into cache for future use.
+
+        Batching strategy:
+        Symbols that share the same missing date range are grouped into a single
+        multi-symbol StockBarsRequest, dramatically reducing API call volume for
+        large universes (e.g. S&P-100: ~1 call instead of ~98 for a cold cache).
+        Different missing ranges each get their own batched request; per-symbol
+        cache layout is unchanged.
         """
         alpaca_tf = _TIMEFRAME_MAP[timeframe]
         today = datetime.now(tz=UTC).date()
         result: dict[str, BarSet] = {}
+
+        # -- Phase 1: per-symbol cache check -----------------------------------
+        # Symbols with a full cache hit go directly to `result`.
+        # Symbols with any missing range are collected in `symbol_ranges`.
+        # symbol -> list of (fetch_start, fetch_end) tuples it needs
+        symbol_ranges: dict[str, list[tuple[date, date]]] = {}
 
         for symbol in symbols:
             cached_df = self._cache.read(symbol, timeframe)
@@ -157,7 +170,7 @@ class AlpacaDataProvider(DataProvider):
             # Determine what ranges to fetch from Alpaca
             ranges_to_fetch: list[tuple[date, date]] = []
             if cached_range is None or cached_df is None:
-                # No cache — fetch everything
+                # No cache -- fetch everything
                 ranges_to_fetch.append((start, end))
             else:
                 cache_start, cache_end = cached_range
@@ -175,7 +188,7 @@ class AlpacaDataProvider(DataProvider):
                     if fetch_from <= end:
                         ranges_to_fetch.append((fetch_from, end))
                 # Gaps in the middle: check for missing dates in range.
-                # Only scan the recent window — historical data from initial
+                # Only scan the recent window -- historical data from initial
                 # backtest fetches is assumed complete. Skip weekend-only gaps
                 # that produce empty API responses and are never written to cache.
                 recent_gap_start = max(start, cache_start, today - timedelta(days=60))
@@ -196,33 +209,59 @@ class AlpacaDataProvider(DataProvider):
                         if _range_has_weekday(gap_start, gap_end):
                             ranges_to_fetch.append((gap_start, gap_end))
 
-            # Fetch each missing range from Alpaca
-            all_new_dfs: list[pd.DataFrame] = []
-            for fetch_start, fetch_end in ranges_to_fetch:
-                request = StockBarsRequest(
-                    symbol_or_symbols=symbol,
-                    timeframe=alpaca_tf,
-                    feed=DataFeed.IEX,
-                    adjustment=Adjustment.ALL,
-                    start=datetime(
-                        fetch_start.year,
-                        fetch_start.month,
-                        fetch_start.day,
-                        tzinfo=UTC,
-                    ),
-                    end=datetime(
-                        fetch_end.year,
-                        fetch_end.month,
-                        fetch_end.day,
-                        23,
-                        59,
-                        59,
-                        tzinfo=UTC,
-                    ),
-                )
-                response = _call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
-                time.sleep(0.35)
-                bars_data = response.data.get(symbol, [])
+            symbol_ranges[symbol] = ranges_to_fetch
+
+        # -- Phase 2: batch API calls by date range ----------------------------
+        # Group symbols by the date range they need so we can send one batched
+        # StockBarsRequest per (fetch_start, fetch_end) tuple instead of one
+        # request per symbol.  Symbols that share identical missing ranges -- the
+        # common case for a cold cache or a daily incremental update -- collapse
+        # into a single call.
+        #
+        # range_key -> list[symbol]
+        range_to_symbols: dict[tuple[date, date], list[str]] = {}
+        for symbol, ranges in symbol_ranges.items():
+            for r in ranges:
+                range_to_symbols.setdefault(r, []).append(symbol)
+
+        # Accumulate per-symbol DataFrames across all batch responses.
+        # symbol -> list[pd.DataFrame]
+        fetched: dict[str, list[pd.DataFrame]] = {s: [] for s in symbol_ranges}
+
+        for (fetch_start, fetch_end), batch_symbols in range_to_symbols.items():
+            symbol_or_symbols: str | list[str] = (
+                batch_symbols[0] if len(batch_symbols) == 1 else batch_symbols
+            )
+            request = StockBarsRequest(
+                symbol_or_symbols=symbol_or_symbols,
+                timeframe=alpaca_tf,
+                feed=DataFeed.IEX,
+                adjustment=Adjustment.ALL,
+                start=datetime(
+                    fetch_start.year,
+                    fetch_start.month,
+                    fetch_start.day,
+                    tzinfo=UTC,
+                ),
+                end=datetime(
+                    fetch_end.year,
+                    fetch_end.month,
+                    fetch_end.day,
+                    23,
+                    59,
+                    59,
+                    tzinfo=UTC,
+                ),
+            )
+            response = _call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
+
+            # Split the batched response back into per-symbol DataFrames.
+            # Alpaca returns an empty list (not an error) for symbols with no
+            # data in the requested range, so missing symbols are handled
+            # gracefully: fetched[sym] stays [] and the symbol gets an empty
+            # BarSet in Phase 3.
+            for sym in batch_symbols:
+                bars_data = response.data.get(sym, [])
                 if bars_data:
                     df = pd.DataFrame(
                         [
@@ -239,14 +278,15 @@ class AlpacaDataProvider(DataProvider):
                         ]
                     )
                     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-                    all_new_dfs.append(df)
+                    fetched[sym].append(df)
 
-            # Merge new data into cache
-            if all_new_dfs:
-                new_data = pd.concat(all_new_dfs, ignore_index=True)
+        # -- Phase 3: merge into cache, read back, slice to requested range ----
+        for symbol in symbol_ranges:
+            sym_dfs = fetched[symbol]
+            if sym_dfs:
+                new_data = pd.concat(sym_dfs, ignore_index=True)
                 self._cache.merge(symbol, timeframe, new_data)
 
-            # Read full cache and slice to requested range
             full_cache = self._cache.read(symbol, timeframe)
             if full_cache is not None and not full_cache.empty:
                 ts = pd.to_datetime(full_cache["timestamp"])
@@ -299,7 +339,7 @@ class AlpacaDataProvider(DataProvider):
 
 
 def _range_has_weekday(start: date, end: date) -> bool:
-    """Return True if [start, end] contains at least one weekday (Mon–Fri).
+    """Return True if [start, end] contains at least one weekday (Mon-Fri).
 
     Used to skip fetching weekend-only gap ranges that never contain market
     data and are never written back to cache.
