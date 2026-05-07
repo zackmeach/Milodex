@@ -52,3 +52,12 @@ data/*
 
 # Market data cache (local Parquet files)
 market_cache/
+
+# Mutation testing (mutmut) — discovery artifacts; do not commit
+.mutmut-cache
+.mutmut-cache*
+.mutmut-cache/
+.mutmut-*.log
+.mutmut-*.db
+mutants/
+html/
