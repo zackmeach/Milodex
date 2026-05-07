@@ -1,7 +1,7 @@
 # tests/milodex/data/test_alpaca_provider.py
 """Tests for AlpacaDataProvider.
 
-All tests mock the Alpaca SDK — no real API calls.
+All tests mock the Alpaca SDK -- no real API calls.
 """
 
 from datetime import UTC, date, datetime
@@ -28,7 +28,7 @@ def _make_429_api_error() -> APIError:
 def _make_api_error_with_none_response() -> APIError:
     """Construct an APIError whose status_code property raises AttributeError.
 
-    This happens when http_error.response is None — the SDK property body does
+    This happens when http_error.response is None -- the SDK property body does
     ``http_error.response.status_code`` without a None-check, so ``None.status_code``
     raises AttributeError.
     """
@@ -37,18 +37,23 @@ def _make_api_error_with_none_response() -> APIError:
     return APIError('{"code": 0, "message": "unknown"}', http_error)
 
 
+def _make_bar(timestamp: datetime, close: float = 151.0) -> MagicMock:
+    """Create a mock Alpaca bar object."""
+    bar = MagicMock()
+    bar.timestamp = timestamp
+    bar.open = close - 1.0
+    bar.high = close + 1.0
+    bar.low = close - 1.5
+    bar.close = close
+    bar.volume = 1_000_000
+    bar.vwap = close
+    return bar
+
+
 @pytest.fixture()
 def mock_alpaca_bar():
     """Create a mock Alpaca bar object."""
-    bar = MagicMock()
-    bar.timestamp = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
-    bar.open = 150.0
-    bar.high = 152.0
-    bar.low = 149.5
-    bar.close = 151.0
-    bar.volume = 1000000
-    bar.vwap = 150.8
-    return bar
+    return _make_bar(datetime(2025, 1, 15, 5, 0, tzinfo=UTC), close=151.0)
 
 
 @pytest.fixture()
@@ -128,13 +133,189 @@ class TestGetBars:
         assert request.adjustment == Adjustment.ALL
 
 
+class TestGetBarsBatching:
+    """Verify that get_bars collapses N symbols into ONE API call when they share
+    the same missing date range (the common case for a cold cache or daily
+    incremental update)."""
+
+    def test_single_api_call_for_multiple_symbols_cold_cache(self, provider):
+        """N symbols with no cache -> 1 batched request, not N individual requests."""
+        symbols = ["AAPL", "MSFT", "GOOG", "AMZN", "META", "NVDA", "TSLA", "JPM", "V", "WMT"]
+        ts = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        response_data = {sym: [_make_bar(ts)] for sym in symbols}
+        provider._client.get_stock_bars.return_value = MagicMock(data=response_data)
+
+        result = provider.get_bars(
+            symbols=symbols,
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        # All 10 symbols share the same missing range -> exactly 1 API call
+        assert provider._client.get_stock_bars.call_count == 1
+        for sym in symbols:
+            assert sym in result
+
+    def test_batched_request_symbol_or_symbols_is_list(self, provider):
+        """When multiple symbols are batched, symbol_or_symbols must be a list."""
+        symbols = ["AAPL", "MSFT"]
+        ts = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        response_data = {sym: [_make_bar(ts)] for sym in symbols}
+        provider._client.get_stock_bars.return_value = MagicMock(data=response_data)
+
+        provider.get_bars(
+            symbols=symbols,
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert isinstance(request.symbol_or_symbols, list)
+        assert set(request.symbol_or_symbols) == set(symbols)
+
+    def test_single_symbol_uses_string_not_list(self, provider, mock_alpaca_bar):
+        """Single-symbol requests use a plain string, not a 1-element list."""
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert request.symbol_or_symbols == "AAPL"
+
+    def test_per_symbol_cache_written_correctly_after_batch(self, provider):
+        """After a batched fetch, each symbol has correct data and caches independently."""
+        symbols = ["AAPL", "MSFT"]
+        ts = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        response_data = {
+            "AAPL": [_make_bar(ts, close=150.0)],
+            "MSFT": [_make_bar(ts, close=300.0)],
+        }
+        provider._client.get_stock_bars.return_value = MagicMock(data=response_data)
+
+        result = provider.get_bars(
+            symbols=symbols,
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        # Both symbols have correct data in their BarSets
+        assert len(result["AAPL"]) == 1
+        assert len(result["MSFT"]) == 1
+        assert float(result["AAPL"].to_dataframe()["close"].iloc[0]) == pytest.approx(150.0)
+        assert float(result["MSFT"].to_dataframe()["close"].iloc[0]) == pytest.approx(300.0)
+
+        # Cache is readable per-symbol on a second call (no API hit)
+        provider._client.get_stock_bars.reset_mock()
+        result2 = provider.get_bars(
+            symbols=symbols,
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+        assert provider._client.get_stock_bars.call_count == 0
+        assert float(result2["AAPL"].to_dataframe()["close"].iloc[0]) == pytest.approx(150.0)
+        assert float(result2["MSFT"].to_dataframe()["close"].iloc[0]) == pytest.approx(300.0)
+
+    def test_symbol_absent_from_response_gets_empty_barset(self, provider):
+        """A symbol with no data in the Alpaca response gets an empty BarSet; others are ok."""
+        ts = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        # AAPL returns data; UNKNOWN returns nothing (absent from response.data)
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts)]}
+        )
+
+        result = provider.get_bars(
+            symbols=["AAPL", "UNKNOWN"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        assert provider._client.get_stock_bars.call_count == 1  # still one batched call
+        assert len(result["AAPL"]) == 1
+        assert "UNKNOWN" in result
+        assert len(result["UNKNOWN"]) == 0
+
+    def test_no_sleep_between_batched_calls(self, provider, mock_alpaca_bar):
+        """No time.sleep calls occur on a successful single-batch fetch (0.35s sleep removed)."""
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+
+        sleep_calls: list[float] = []
+        with patch("time.sleep", side_effect=sleep_calls.append):
+            provider.get_bars(
+                symbols=["AAPL"],
+                timeframe=Timeframe.DAY_1,
+                start=date(2025, 1, 15),
+                end=date(2025, 1, 15),
+            )
+
+        # No sleeps at all on a successful single-call fetch
+        assert sleep_calls == []
+
+    def test_two_distinct_missing_ranges_produce_two_api_calls(self, provider):
+        """Symbols needing different date ranges each get their own batched call.
+
+        Setup: AAPL has cache covering 2024-06-01 to 2025-01-14; MSFT has no cache.
+        Request range: 2024-06-01 to 2025-01-15.
+        - AAPL only needs the 1-day tail: (2025-01-15, 2025-01-15)
+        - MSFT needs the full range: (2024-06-01, 2025-01-15)
+        These are different date ranges -> 2 batched API calls.
+        """
+        # Populate AAPL cache with data from 2024-06-01 to 2025-01-14
+        aapl_bars = [
+            _make_bar(datetime(2024, 6, 3, 5, 0, tzinfo=UTC)),   # Mon
+            _make_bar(datetime(2025, 1, 14, 5, 0, tzinfo=UTC)),  # Tue
+        ]
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": aapl_bars}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2024, 6, 1),
+            end=date(2025, 1, 14),
+        )
+        provider._client.get_stock_bars.reset_mock()
+
+        # Now request AAPL + MSFT from 2024-06-01 to 2025-01-15.
+        # AAPL cache covers 2024-06-01..2025-01-14; it only needs the +1 day tail.
+        # MSFT has no cache; it needs the full range.
+        # These are two different ranges -> 2 API calls.
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={
+                "AAPL": [_make_bar(datetime(2025, 1, 15, 5, 0, tzinfo=UTC))],
+                "MSFT": [
+                    _make_bar(datetime(2024, 6, 3, 5, 0, tzinfo=UTC)),
+                    _make_bar(datetime(2025, 1, 15, 5, 0, tzinfo=UTC)),
+                ],
+            }
+        )
+        provider.get_bars(
+            symbols=["AAPL", "MSFT"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2024, 6, 1),
+            end=date(2025, 1, 15),
+        )
+
+        # AAPL needs (2025-01-15, 2025-01-15); MSFT needs (2024-06-01, 2025-01-15) -> 2 calls
+        assert provider._client.get_stock_bars.call_count >= 2
+
+
 class TestGetLatestBar:
     def test_returns_bar(self, provider, mock_alpaca_bar):
         provider._client.get_stock_latest_bar.return_value = {"AAPL": mock_alpaca_bar}
         result = provider.get_latest_bar("AAPL")
         assert isinstance(result, Bar)
         assert result.close == 151.0
-        assert result.vwap == 150.8
+        assert result.vwap == 151.0
 
     def test_requests_iex_feed_for_latest_bar(self, provider, mock_alpaca_bar):
         provider._client.get_stock_latest_bar.return_value = {"AAPL": mock_alpaca_bar}
@@ -181,7 +362,7 @@ class TestGetBarsCaching:
         )
         first_count = provider._client.get_stock_bars.call_count
 
-        # Second call — today should still hit API
+        # Second call -- today should still hit API
         provider.get_bars(
             symbols=["AAPL"],
             timeframe=Timeframe.DAY_1,
@@ -328,24 +509,21 @@ class TestRetryOn429:
                     end=date(2025, 1, 15),
                 )
 
-        # Filter out the 0.35 intra-runner pacing sleeps; keep only backoff sleeps
-        # (backoff delays are > 0.35 for all 4 retries with base_delay=1.0)
-        backoff_sleeps = [s for s in sleep_calls if s > 0.35]
-
+        # The per-symbol 0.35s sleep has been removed; all recorded sleeps are backoff.
         # Expected: base_delay=1.0, jitter=0.5
         # attempt 0: min(1.0 * 2^0 + 0.5, 60) = 1.5
         # attempt 1: min(1.0 * 2^1 + 0.5, 60) = 2.5
         # attempt 2: min(1.0 * 2^2 + 0.5, 60) = 4.5
         # attempt 3: min(1.0 * 2^3 + 0.5, 60) = 8.5
-        assert backoff_sleeps == pytest.approx([1.5, 2.5, 4.5, 8.5], rel=1e-6)
-        assert all(s <= 60.0 for s in backoff_sleeps)
+        assert sleep_calls == pytest.approx([1.5, 2.5, 4.5, 8.5], rel=1e-6)
+        assert all(s <= 60.0 for s in sleep_calls)
 
     def test_handles_apierror_with_response_none(self, provider):
         """APIError whose status_code raises AttributeError (response=None) is re-raised.
 
         The guard uses getattr(exc, "status_code", None) which catches AttributeError
         raised by the SDK property when http_error.response is None. The error is NOT
-        retried (we can't determine it was 429), so it propagates on the first attempt.
+        retried (we cannot determine it was 429), so it propagates on the first attempt.
         """
         err = _make_api_error_with_none_response()
         provider._client.get_stock_bars.side_effect = err
@@ -359,6 +537,6 @@ class TestRetryOn429:
                     end=date(2025, 1, 15),
                 )
 
-        # No retry — should propagate immediately on attempt 0.
+        # No retry -- should propagate immediately on attempt 0.
         assert exc_info.value is err
         assert provider._client.get_stock_bars.call_count == 1
