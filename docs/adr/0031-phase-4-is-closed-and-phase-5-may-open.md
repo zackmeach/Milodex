@@ -1,0 +1,81 @@
+# ADR 0031 — Phase 4 is closed and Phase 5 may open
+
+**Status:** Accepted · 2026-05-06
+**Related:** [PHASE4_PLANNING.md](../PHASE4_PLANNING.md) §5, [ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) (Phase 4 scope), [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md) (per-strategy attribution semantics), [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest sandbox semantics), [ADR 0027](0027-phase-3-is-closed-and-phase-4-may-open.md) (Phase 3 close-out, Phase 4 authorization), [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) (extended by ADR 0029, preserved as floor), [VISION.md](../VISION.md), [FOUNDER_INTENT.md](../FOUNDER_INTENT.md)
+
+## Context
+
+Phase 4 was opened via [ADR 0027](0027-phase-3-is-closed-and-phase-4-may-open.md) on 2026-05-05. On 2026-05-06, [ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) resolved §4.1 as **(f) + (g) — per-strategy attribution + cleanup-only** and §4.2 as **(a) — live remains locked**. ADR 0028 was the first Phase close-out to require a standalone scope ADR rather than inline strikethrough — the departure was deliberate: §4.1 = (f) authorized work that extends [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md)'s architectural semantics, and ADR-discipline holds that architectural extensions deserve their own records.
+
+Phase 4's job, articulated by the operator on 2026-05-06 as the deciding principle: **mechanics before UI**. The operator declined to jump to option (b) GUI — the pull from FOUNDER_INTENT priority #3 (accessibility) — on the grounds that a UI built on mechanics with known ambiguities roughly doubles debugging cost: every anomaly is ambiguous between display logic and data layer. Phase 4 was therefore scoped to firm the mechanics so that when a UI sits on them, the surface it exposes is trustworthy.
+
+[PHASE4_PLANNING.md §8](../PHASE4_PLANNING.md) follows the same convention all prior phases used: a close-out ADR before Phase 5 planning may open. This ADR is that close-out.
+
+## Decision
+
+Phase 4 is closed. Phase 5 planning is authorized to begin.
+
+Specifically:
+
+1. **The exit criteria implicit in §4.1 = (f)+(g) are accepted as closed** against the evidence summarized below. The §4.1 (f) criterion maps to PHASE4_PLANNING.md §5 C-6; the (g) cleanup bundle maps to C-7 (prior-phase invariants preserved) plus the four (g) sub-categories (doc drift, test audit, backtest UX, backtest sandbox semantics). The audit trail in commits, test files, and `data/milodex.db` is the durable record; nothing in this ADR substitutes for it.
+
+2. **Phase 4 closed without weakening any prior trust property.** The honest-signal regression tests still pass (556 tests at Phase 3 close → 771 at Phase 4 close, net +42 tests, zero regressions). [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md)'s account-scoped enforcement is preserved as the authoritative floor under [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md)'s per-strategy extension. [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md)'s frozen-manifest discipline is preserved at paper+ stages while its scope is clarified at the backtest boundary by [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md).
+
+3. **The §3 carry list is empty.** Phase 4 opened with an empty §3 carry list per [ADR 0027](0027-phase-3-is-closed-and-phase-4-may-open.md). Phase 4 execution surfaced no new cleanup items. Phase 5 starts from zero outstanding §3 items.
+
+4. **Live trading remains structurally locked.** [ADR 0004](0004-paper-only-phase-one.md) was not relaxed. Phase 5 may revisit, but only via a new ADR superseding 0004.
+
+## Rationale
+
+**The mechanics-before-UI principle was honored throughout.** Every Phase 4 PR addressed real engineering surface — attribution semantics, test coverage gaps, backtest operator friction, documentation accuracy — not features. No Phase 4 commit added a user-facing surface that sits on unclear mechanics. The operator's stated principle now has structural evidence: the Phase 5 GUI work, if Phase 5 takes option (b), sits on attribution mechanics that are tested, on a test suite that was audited and gap-closed, and on a backtest path that no longer imposes ceremony-for-its-own-sake. The foundation is solid; the UI is ready to be built on top of it.
+
+**The test audit produced concrete, actionable findings.** PR #35 produced a requirement-to-test traceability matrix covering all major SRS requirements. PR #36 ran mutation testing on four critical files (risk evaluator, promotion, execution service, CLI), surfacing 472 mutants and a 48.3% baseline efficacy measurement — with explicit caveats that per-directory scoping understated the true figure for the risk layer. The operator chose Option B: authorize closure of Critical and Important gaps only, not every surfaced gap. PR #37 executed that authorization: 24 net new tests targeting the authorized gaps (aggregator pin, threshold-literal pins, `demote()` direct unit tests, boundary tests, kill-switch event-type pin). The discovery-then-decide model worked as designed — the audit surfaces, the operator authorizes, and no gap is assumed to require a fix in advance of evidence.
+
+**Per-strategy attribution closed [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md)'s deferred path (a).** Phase 2's CS-1 incident (`a140da6c-...`) was closed in Phase 2 by documenting the schema overload and accepting account-scoped enforcement as authoritative. ADR 0024's Consequences explicitly held open option (a) — per-strategy attribution — for a future phase that needed it. Phase 4 §4.1 = (f) opened that goal. ADR 0029 articulated eight architectural decisions; PR #39 implemented them: `src/milodex/risk/attribution.py`, `_check_strategy_concurrent_positions` wired alongside (not in place of) `_check_concurrent_positions`, and 23 new tests including a regime+meanrev integration scenario. The account-scoped floor is intact; the per-strategy ceiling is additive above it.
+
+**Backtest sandbox semantics close the five-command demotion ceremony without weakening manifest discipline.** ADR 0030 diagnosed the architectural question precisely: does manifest discipline apply to `BacktestEngine` invocations? The answer is no — backtesting is a read-only simulation that cannot touch the broker, cannot corrupt the production evidence package, and cannot change a strategy's stage. The five-command ceremony (demote → edit → backtest → evaluate → freeze + promote) imposed real operator cost in exchange for zero safety improvement. PR #41 implemented the `is_backtest` flag on `EvaluationContext` and the fast-path bypass in `_check_manifest_drift`, along with a `--parallel N` UX for concurrent research screens. ADR 0015's manifest discipline at `paper`/`micro_live`/`live` is unchanged; its scope is now explicit.
+
+**Doc drift cleanup preserved the documents as durable records.** PR #34 corrected ROADMAP_PHASE1.md §7 checkbox state, README.md, and VISION.md — items that had accumulated minor inaccuracies since Phase 2's close-out. Drift of this kind undermines the documents' value precisely when they are most needed (e.g., by a fresh operator reading the history). The cost of correction was small; the cost of leaving it grows with each phase that inherits the confusion.
+
+**42 net new tests (556 → 771 net across the phase, 729 → 771 from Phase 4 start) without disabling any prior test.** The count increase is not the metric that matters — the quality of what was added is. Every new test in Phase 4 locks a specific behavior: attribution semantics (correct open-fill reconstruction, blocked/preview/cancelled row exclusion, pre-attribution operator assignment), backtest sandbox fast-path, kill-switch event-type pin, demote() direct unit tests, and the regime+meanrev concurrent integration scenario. The C-2 honest-signal regression tests (Phase 2's load-bearing artifact) still pass. ADR 0024's account-scoped tests still pass. No silent removal.
+
+**Phase 4 ended exactly where it was scoped to end.** The operator declined options (a) through (e) at scope-decision time; Phase 4 execution did not drift into any of them. The platform now has firmer mechanics than it started with, a tested and gap-closed test suite, per-strategy attribution at the risk layer, and a backtest path that encourages exploration rather than discouraging it. That is the mechanics-before-UI outcome rendered as an actual delta.
+
+## Closed exit criteria — evidence summary
+
+| Deliverable | Closed | Evidence (abbreviated) |
+|---|---|---|
+| §4.1 scope closure as (f)+(g), §4.2 = (a) | 2026-05-06 | [ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) accepted. `PHASE4_PLANNING.md` §4.1 and §4.2 struck through with decision callouts. |
+| (g) Doc drift cleanup | 2026-05-06 | PR #34 (#34 → commit `6d82260`): ROADMAP_PHASE1.md §7 checkboxes corrected; README.md and VISION.md updated for accuracy. Documents now consistent with Phase 2 and Phase 3 close-out evidence. |
+| (g) Test traceability matrix | 2026-05-06 | PR #35 (#35 → commit `8ed55b2`): `scripts/audit_requirements_coverage.py` + `docs/REQUIREMENTS_COVERAGE.md`. All major SRS requirements mapped to test files; gaps surfaced for operator decision. |
+| (g) Test-efficacy audit | 2026-05-06 | PR #36 (#36 → commit `69fea8d`): mutmut mutation testing on 4 critical files. 472 mutants; 48.3% baseline efficacy (with per-directory scoping caveat); `docs/TEST_EFFICACY_AUDIT.md` produced. Discovery-only per ADR 0028's discovery-then-decide model. |
+| (g) Test gap closure (Option B — Critical + Important) | 2026-05-06 | PR #37 (#37 → commit `d906054`): +24 net tests (aggregator pin, threshold-literal pins, `demote()` unit tests, boundary tests, kill-switch event-type pin). Test count 705 → 729 within Phase 4 gap-closure work. No prior tests disabled. |
+| (f) Per-strategy attribution semantics | 2026-05-06 | [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md) accepted. Eight architectural decisions articulated: opening-fill ownership anchor, on-demand reconstruction from `trades` (status=submitted filter), operator pseudo-strategy, dual-cap requirement, `risk.max_positions` binding, ADR 0024 preserved as floor. |
+| (f) Per-strategy attribution implementation (C-6) | 2026-05-06 | PR #39 (#39 → commit `eccf2bb`): `src/milodex/risk/attribution.py` new module; `_check_strategy_concurrent_positions` wired into `RiskEvaluator.evaluate()`; 23 new tests including regime+meanrev integration scenario; reason code `max_strategy_positions_exceeded` added to `docs/RISK_POLICY.md`. ADR 0024's `_check_concurrent_positions` unchanged. Test count 741 → 764. |
+| (g) Backtest sandbox semantics | 2026-05-06 | [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) accepted. Decision 1: manifest discipline scoped to `paper`/`micro_live`/`live`. Decision 2: backtesting a paper-stage strategy requires no demotion. Decision 3: `is_backtest` flag on `EvaluationContext` as clean architectural hook. ADR 0015 status amended to note scope clarification. |
+| (g) Backtest sandbox + `--parallel N` implementation | 2026-05-06 | PR #41 (#41 → commit `d42248d`): `is_backtest` flag + fast-path bypass in `_check_manifest_drift`; `ProcessPoolExecutor` parallel research screen path; ADR 0015 status header amended. Test count 764 → 771. Operator can run `milodex backtest <paper-stage-id>` without demotion ceremony. |
+
+## §3 carry-list classification
+
+**Empty at open, empty at close.** Phase 4 opened with an empty §3 carry list per [ADR 0027](0027-phase-3-is-closed-and-phase-4-may-open.md). Phase 4 execution surfaced no new cleanup items requiring carry forward. Phase 5 starts from zero outstanding §3 items.
+
+## Consequences
+
+- **Phase 5 planning is unblocked.** A separate planning artifact (`PHASE5_PLANNING.md`) is the next document; this ADR is the prerequisite, not the planning doc itself.
+- **`PHASE4_PLANNING.md` becomes a historical record.** A pointer at the top references this ADR. Future updates to that file are limited to historical-accuracy corrections, not active planning.
+- **Live trading remains structurally locked.** This ADR does not relax [ADR 0004](0004-paper-only-phase-one.md) in any form. Phase 5 may revisit the live-trading lock, but only via a new ADR that supersedes 0004.
+- **Phase 5 carry list is empty.** Phase 5 starts from zero outstanding §3 items. Any new carry items belong to Phase 5's planning artifact.
+- **Phase 5 inherits the §4.1 deferred menu as candidates, not commitments.** Options (a) micro_live promotion, (b) GUI, (c) distributable installer, (d) third research-target, (e) disciplined re-tune are all Phase 5+ candidates in exactly the state they were deferred from Phase 4. None is pre-authorized; each requires its own scoping decision. The mechanics-firming foundation Phase 4 produced positions any future GUI work — option (b) — to sit on solid data. That is the operator's stated mechanics-before-UI principle, now structurally satisfied.
+- **Two new ADRs (0029, 0030) are load-bearing architectural artifacts.** ADR 0024 is preserved as the account-scoped floor; ADR 0029 is the per-strategy extension above it. ADR 0015 is in force at `paper`/`micro_live`/`live`; ADR 0030 clarifies that scope and removes the backtest ceremony. Both new ADRs are supersession-safe: future ADRs may extend them via the same extension-point mechanism without retro-editing.
+- **42 net new tests (729 → 771) are part of the regression armor.** The honest-signal regression tests (Phase 2's load-bearing artifact), ADR 0024's account-scoped tests, and the Phase 3 momentum tests are all still green. The C-2 honest-signal property continues to hold across two research-target strategies.
+- **The `"operator"` pseudo-strategy id is now a reserved string.** `configs/` must not define a strategy named `operator`. This is a consequence of ADR 0029 Decision 3 and is enforced by startup-time check per PR #39.
+- **The audit trail is the durable proof.** Every claim in this ADR is backed by commit hashes, test files, or `docs/` artifacts. Future readers should not need to take this ADR's word for any of it.
+
+## Non-goals
+
+- **This ADR does not open Phase 5.** It authorizes Phase 5 planning to begin. The planning artifact (`PHASE5_PLANNING.md`) is separate.
+- **This ADR does not commit to any specific Phase 5 scope.** The Phase 4 §4.1 deferred menu items form the Phase 5 candidate set; the operator has not chosen.
+- **This ADR does not promote any strategy beyond `paper`.** Promotion remains a separate operator action governed by [ADR 0009](0009-promotion-pipeline-stage-model.md) and the paper-only safeguard from [ADR 0004](0004-paper-only-phase-one.md).
+- **This ADR does not declare any strategy a successful edge.** Meanrev (Sharpe 0.327) and momentum (Sharpe 0.06) have both been honestly refused. Per-strategy attribution and backtest sandbox improvements do not change those facts.
+- **This ADR does not reframe profitability as the success metric.** Per [FOUNDER_INTENT.md](../FOUNDER_INTENT.md), profitability is validation, not purpose. Phase 4 validated that the platform's mechanics are firm enough to support any future surface — CLI report, GUI dashboard, or otherwise. That is the success.
+- **This ADR does not relax ADR 0004 (paper-only) in any form.**

@@ -1,5 +1,7 @@
 # Phase 4 Planning
 
+> **Phase 4 was formally closed on 2026-05-06 via [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md).** This document is now a historical record. C-6 (per-strategy attribution) and C-7 (prior-phase invariants preserved) were satisfied; the §4.1 (g) cleanup bundle (doc drift, test audit, test gap closure, backtest sandbox semantics + `--parallel` UX) was fully delivered. The §4.1 deferred candidates — (a) micro_live, (b) GUI, (c) installer, (d) third research-target, (e) re-tune — carry forward as Phase 5 menu items, not commitments. New planning belongs in `PHASE5_PLANNING.md`.
+
 **Status:** Opened 2026-05-05 as the prerequisite-mandated planning artifact per [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md). Filename `PHASE4_PLANNING.md` is chosen deliberately over `ROADMAP_PHASE4.md` because Phase 4 has no committed scope at opening — same convention Phase 2 and Phase 3 used. **§4 is open.** No scope decided. The §4.1 menu carries forward Phase 3 §4.1's deferred alternatives ((ii) micro_live, (iv) GUI, (v) installer, (vi) cleanup-only) plus three new candidates that surfaced during Phase 3.
 
 **Predecessors:** [PHASE3_PLANNING.md](PHASE3_PLANNING.md) (closed historical record), [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md) (authorizes this doc), [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (Phase 3's named architectural artifact, foundation for any further concurrency work), [VISION.md](VISION.md), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), [SRS.md](SRS.md).
