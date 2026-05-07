@@ -3,7 +3,8 @@
 
 This is the ONLY file in the broker layer that imports alpaca-py.
 All Alpaca-specific types are translated to milodex models before
-being returned to callers. Does not retry on failure — raises immediately.
+being returned to callers. Retries on Alpaca 429 rate-limit responses;
+raises immediately on all other errors.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.config import get_alpaca_credentials, get_trading_mode
+from milodex.core._alpaca_retry import call_with_retry_on_429
 
 # Map our enums to Alpaca's
 _SIDE_MAP = {
@@ -180,7 +182,9 @@ class AlpacaBrokerClient(BrokerClient):
                 msg = f"Unsupported order type: {order_type}"
                 raise ValueError(msg)
 
-            alpaca_order = self._client.submit_order(request)
+            # Retry on 429 is safe: Alpaca returns 429 BEFORE any state change, so
+            # no duplicate order can result from a rate-limit retry.
+            alpaca_order = call_with_retry_on_429(lambda: self._client.submit_order(request))
             return self._translate_order(alpaca_order)
 
         except APIError as e:
@@ -197,20 +201,20 @@ class AlpacaBrokerClient(BrokerClient):
 
     def get_order(self, order_id: str) -> Order:
         """Get order status from Alpaca."""
-        alpaca_order = self._client.get_order_by_id(order_id)
+        alpaca_order = call_with_retry_on_429(lambda: self._client.get_order_by_id(order_id))
         return self._translate_order(alpaca_order)
 
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order. Returns True if successful."""
         try:
-            self._client.cancel_order_by_id(order_id)
+            call_with_retry_on_429(lambda: self._client.cancel_order_by_id(order_id))
             return True
         except APIError:
             return False
 
     def cancel_all_orders(self) -> list[Order]:
         """Cancel all open orders."""
-        cancelled = self._client.cancel_orders()
+        cancelled = call_with_retry_on_429(lambda: self._client.cancel_orders())
         return [self._translate_order(o) for o in cancelled]
 
     def get_orders(self, status: str = "all", limit: int = 100) -> list[Order]:
@@ -224,25 +228,25 @@ class AlpacaBrokerClient(BrokerClient):
             status=status_map.get(status, QueryOrderStatus.ALL),
             limit=limit,
         )
-        alpaca_orders = self._client.get_orders(request)
+        alpaca_orders = call_with_retry_on_429(lambda: self._client.get_orders(request))
         return [self._translate_order(o) for o in alpaca_orders]
 
     def get_positions(self) -> list[Position]:
         """Get all open positions from Alpaca."""
-        alpaca_positions = self._client.get_all_positions()
+        alpaca_positions = call_with_retry_on_429(lambda: self._client.get_all_positions())
         return [self._translate_position(p) for p in alpaca_positions]
 
     def get_position(self, symbol: str) -> Position | None:
         """Get position for a symbol, or None if not held."""
         try:
-            alpaca_pos = self._client.get_open_position(symbol)
+            alpaca_pos = call_with_retry_on_429(lambda: self._client.get_open_position(symbol))
             return self._translate_position(alpaca_pos)
         except Exception:
             return None
 
     def get_account(self) -> AccountInfo:
         """Get account summary from Alpaca."""
-        acct = self._client.get_account()
+        acct = call_with_retry_on_429(lambda: self._client.get_account())
         equity = float(acct.equity)
         prev_close_raw = getattr(acct, "equity_previous_close", None)
         if prev_close_raw is None:
@@ -258,5 +262,5 @@ class AlpacaBrokerClient(BrokerClient):
 
     def is_market_open(self) -> bool:
         """Check if the market is currently open."""
-        clock = self._client.get_clock()
+        clock = call_with_retry_on_429(lambda: self._client.get_clock())
         return clock.is_open
