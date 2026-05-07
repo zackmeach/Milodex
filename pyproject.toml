@@ -27,6 +27,10 @@ dev = [
     "ruff",
     "pytest",
     "pytest-cov",
+    # Mutation testing (test-efficacy audit). Pinned to the 2.x line because 3.x
+    # refuses to run on native Windows (boxed/mutmut#397) and the operator's
+    # primary dev environment is Windows. See docs/TEST_EFFICACY_AUDIT.md.
+    "mutmut>=2.4,<3",
 ]
 
 [tool.ruff]
