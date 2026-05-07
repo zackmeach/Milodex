@@ -234,7 +234,10 @@ def _run_batch_parallel(
                 row = future.result()
             except Exception as exc:
                 if fail_fast:
-                    # Cancel remaining work and re-raise.
+                    # Cancellation is best-effort: queued futures are skipped,
+                    # but already-running child processes continue to completion
+                    # before the executor context exits. The exception is
+                    # re-raised after the executor finishes shutting down.
                     for other in futures:
                         other.cancel()
                     raise
@@ -265,21 +268,13 @@ class _WorkerRecipe:
 
     The parent's ``ctx`` is built around closures over CLI-time state that
     will not survive Windows ``spawn``. This recipe carries only stdlib-
-    primitive fields — paths and a float — so it crosses the process
-    boundary cleanly. The worker uses these fields to reconstruct a
-    minimal ``ctx`` shim with just the surface ``_screen_one`` reads.
+    primitive fields — paths — so it crosses the process boundary cleanly.
+    The worker uses these fields to reconstruct a minimal ``ctx`` shim with
+    just the surface ``_screen_one`` reads.
     """
 
     config_dir_path: str
     event_store_path: str | None
-    initial_equity: float
-
-    def to_kwargs(self) -> dict[str, Any]:
-        return {
-            "config_dir_path": self.config_dir_path,
-            "event_store_path": self.event_store_path,
-            "initial_equity": self.initial_equity,
-        }
 
 
 def _build_worker_recipe(ctx: CommandContext) -> _WorkerRecipe | None:
@@ -318,7 +313,6 @@ def _build_worker_recipe(ctx: CommandContext) -> _WorkerRecipe | None:
     return _WorkerRecipe(
         config_dir_path=str(config_dir),
         event_store_path=event_store_path,
-        initial_equity=100_000.0,  # overridden per-call; placeholder for symmetry
     )
 
 
@@ -374,10 +368,12 @@ def _worker_screen_one(
         loader = StrategyLoader()
         config_path = _resolve_strategy_config_path(sid)
         loaded = loader.load(config_path)
-        # Default to the live Alpaca provider unless the data layer
-        # supplies an alternative; the backtest engine drives the
-        # provider only via prefetch_bars, which the disk Parquet cache
-        # in the data layer fronts.
+        # IMPORTANT: --parallel requires Alpaca credentials in the environment.
+        # Worker subprocesses spawn fresh and cannot inherit the parent's
+        # configured data provider (closures don't pickle), so this codepath
+        # always uses AlpacaDataProvider regardless of how the parent was wired.
+        # Operators running --parallel in test environments without ALPACA_API_KEY
+        # / ALPACA_SECRET_KEY will see authentication errors per worker.
         data_provider = AlpacaDataProvider()
         return BacktestEngine(
             loaded=loaded,
