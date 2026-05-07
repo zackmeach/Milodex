@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -77,14 +78,21 @@ class ParquetCache:
     def write(self, symbol: str, timeframe: Timeframe, df: pd.DataFrame) -> None:
         """Write bars to cache, replacing any existing data.
 
-        Atomic on Windows and POSIX: write to a sibling ``.tmp`` file, then
+        Atomic on Windows and POSIX: write to a sibling tmp file, then
         ``os.replace`` it onto the destination. ``os.replace`` is atomic on
         the same filesystem, so the destination is never seen in a partial
         state by a concurrent reader, and a process death mid-write leaves
         only a stale temp file behind — never a 0-byte destination.
+
+        The tmp filename is per-writer-unique (``{pid}.{uuid_hex}``) so that
+        concurrent writers for the same symbol each land in their own tmp file
+        and do not truncate one another's in-flight write.  The existing
+        ``try/except BaseException + unlink(missing_ok=True)`` cleanup is
+        correct and unchanged: each writer is responsible for removing its own
+        tmp on failure.
         """
         path = self._path(symbol, timeframe)
-        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
         try:
             df.to_parquet(tmp_path, index=False)
             os.replace(tmp_path, path)
