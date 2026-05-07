@@ -13,6 +13,7 @@ considered stale (re-fetched) since the market may still be open.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date
 from pathlib import Path
 
@@ -38,11 +39,26 @@ class ParquetCache:
         return dir_path / f"{symbol.upper()}.parquet"
 
     def read(self, symbol: str, timeframe: Timeframe) -> pd.DataFrame | None:
-        """Read cached bars for a symbol/timeframe. Returns None if no cache exists."""
+        """Read cached bars for a symbol/timeframe. Returns None if no cache exists.
+
+        A 0-byte parquet file (left over from a write interrupted mid-stream
+        before the atomic-rename guard landed, or from any future cache layout
+        regression) is treated as a cache miss with a logged warning rather
+        than crashing pyarrow on the unreadable buffer. The caller's
+        upstream-fetch path then re-acquires the data.
+        """
         path = self._path(symbol, timeframe)
         if not path.exists():
             _logger.info(
                 "cache_miss symbol=%s timeframe=%s path=%s",
+                symbol.upper(),
+                timeframe.value,
+                path,
+            )
+            return None
+        if path.stat().st_size == 0:
+            _logger.warning(
+                "cache_corrupt symbol=%s timeframe=%s path=%s reason=zero_byte_file",
                 symbol.upper(),
                 timeframe.value,
                 path,
@@ -59,9 +75,27 @@ class ParquetCache:
         return df
 
     def write(self, symbol: str, timeframe: Timeframe, df: pd.DataFrame) -> None:
-        """Write bars to cache, replacing any existing data."""
+        """Write bars to cache, replacing any existing data.
+
+        Atomic on Windows and POSIX: write to a sibling ``.tmp`` file, then
+        ``os.replace`` it onto the destination. ``os.replace`` is atomic on
+        the same filesystem, so the destination is never seen in a partial
+        state by a concurrent reader, and a process death mid-write leaves
+        only a stale temp file behind — never a 0-byte destination.
+        """
         path = self._path(symbol, timeframe)
-        df.to_parquet(path, index=False)
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        try:
+            df.to_parquet(tmp_path, index=False)
+            os.replace(tmp_path, path)
+        except BaseException:
+            # On any failure (including KeyboardInterrupt), discard the
+            # half-written temp so a subsequent retry does not see stale state.
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
 
     def get_cached_range(self, symbol: str, timeframe: Timeframe) -> tuple[date, date] | None:
         """Return the (start, end) date range of cached data. None if no cache."""
