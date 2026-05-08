@@ -54,3 +54,10 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0025](0025-phase-2-is-closed-and-phase-3-may-open.md) | Phase 2 is closed and Phase 3 may open | Accepted |
 | [0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) | Concurrent multi-strategy uses per-process supervisor | Accepted |
 | [0027](0027-phase-3-is-closed-and-phase-4-may-open.md) | Phase 3 is closed and Phase 4 may open | Accepted |
+| [0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) | Phase 4 scope closes as cleanup and per-strategy attribution | Accepted |
+| [0029](0029-per-strategy-position-attribution-at-risk-layer.md) | Per-strategy position attribution at the risk layer | Accepted |
+| [0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) | Backtest is exploratory; manifest discipline binds at paper+ | Accepted |
+| [0031](0031-phase-4-is-closed-and-phase-5-may-open.md) | Phase 4 is closed and Phase 5 may open | Accepted |
+| [0032](0032-audit-trail-backfill-policy.md) | Audit-trail backfill policy | Accepted |
+| [0033](0033-gui-runtime-is-pyside6-qt-quick.md) | GUI runtime is PySide6 + Qt Quick (full QML) | Accepted |
+| [0034](0034-phase-5-scope-orders-observability-before-features.md) | Phase 5 scope orders observability before features | Accepted |
