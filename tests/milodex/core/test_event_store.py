@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -38,7 +39,7 @@ def test_event_store_rejects_below_minimum_schema_version(tmp_path, monkeypatch)
 def test_event_store_min_compatible_matches_current_schema():
     """If MIN_COMPATIBLE_SCHEMA_VERSION ever exceeds the head migration, the
     guard would refuse a freshly-built store. Lock that contract."""
-    assert MIN_COMPATIBLE_SCHEMA_VERSION == 7
+    assert MIN_COMPATIBLE_SCHEMA_VERSION == 8
 
 
 def test_event_store_applies_initial_schema(tmp_path):
@@ -47,7 +48,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 7
+    assert store.schema_version == 8
     assert {
         "_schema_version",
         "explanations",
@@ -209,6 +210,7 @@ def test_event_store_records_backtest_run_and_links_trades(tmp_path):
             reason_codes=[],
             risk_checks=[],
             context={"source": "backtest"},
+            backtest_run_id=run_db_id,
         )
     )
     trade_id = store.append_trade(
@@ -498,3 +500,352 @@ def test_promotion_event_roundtrips_evidence_fields(tmp_path):
     assert reversal.reverses_event_id == first_id
     assert reversal.manifest_id is None
     assert reversal.evidence_json is None
+
+
+# ---------------------------------------------------------------------------
+# Dual-ancestor enforcement (migration 008)
+# ---------------------------------------------------------------------------
+
+
+def _explanation_kwargs(**overrides) -> dict:
+    """Build a minimal valid ExplanationEvent payload for ancestor tests."""
+    recorded_at = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    base = {
+        "recorded_at": recorded_at,
+        "decision_type": "submit",
+        "status": "submitted",
+        "strategy_name": "regime.daily.sma200_rotation.spy_shy.v1",
+        "strategy_stage": "paper",
+        "strategy_config_path": "configs/regime.yaml",
+        "config_hash": "abc",
+        "symbol": "SPY",
+        "side": "buy",
+        "quantity": 1.0,
+        "order_type": "market",
+        "time_in_force": "day",
+        "submitted_by": "strategy_runner",
+        "market_open": True,
+        "latest_bar_timestamp": recorded_at,
+        "latest_bar_close": 400.0,
+        "account_equity": 10_000.0,
+        "account_cash": 10_000.0,
+        "account_portfolio_value": 10_000.0,
+        "account_daily_pnl": 0.0,
+        "risk_allowed": True,
+        "risk_summary": "Allowed",
+        "reason_codes": [],
+        "risk_checks": [],
+        "context": {},
+    }
+    base.update(overrides)
+    return base
+
+
+def test_append_explanation_rejects_strategy_runner_with_no_ancestor(tmp_path):
+    """A strategy_runner row with neither session_id nor backtest_run_id raises."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    with pytest.raises(ValueError, match="must carry an ancestor"):
+        store.append_explanation(
+            ExplanationEvent(**_explanation_kwargs(submitted_by="strategy_runner"))
+        )
+
+
+def test_append_explanation_rejects_backtest_engine_with_no_ancestor(tmp_path):
+    """A backtest_engine row with neither session_id nor backtest_run_id raises."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    with pytest.raises(ValueError, match="must carry an ancestor"):
+        store.append_explanation(
+            ExplanationEvent(**_explanation_kwargs(submitted_by="backtest_engine"))
+        )
+
+
+def test_append_explanation_accepts_strategy_runner_with_session_id(tmp_path):
+    """A paper-runner row with a session_id is accepted (the live path)."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    explanation_id = store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(submitted_by="strategy_runner", session_id="paper-1")
+        )
+    )
+
+    assert explanation_id > 0
+    rows = store.list_explanations()
+    assert len(rows) == 1
+    assert rows[0].session_id == "paper-1"
+    assert rows[0].backtest_run_id is None
+
+
+def test_append_explanation_accepts_backtest_engine_with_backtest_run_id(tmp_path):
+    """A backtest engine row with backtest_run_id is accepted (the new path)."""
+    store = EventStore(tmp_path / "milodex.db")
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-1",
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+
+    explanation_id = store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="backtest_engine",
+                backtest_run_id=db_run_id,
+            )
+        )
+    )
+
+    assert explanation_id > 0
+    rows = store.list_explanations()
+    assert len(rows) == 1
+    assert rows[0].backtest_run_id == db_run_id
+    assert rows[0].session_id is None
+
+
+def test_append_explanation_allows_operator_without_ancestor(tmp_path):
+    """System events (operator CLI, reconcile) bypass the ancestor check."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    op_id = store.append_explanation(
+        ExplanationEvent(**_explanation_kwargs(submitted_by="operator"))
+    )
+    rec_id = store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(submitted_by="reconcile", decision_type="reconcile_incident")
+        )
+    )
+
+    assert op_id > 0
+    assert rec_id > 0
+    rows = store.list_explanations()
+    assert len(rows) == 2
+    assert all(r.session_id is None and r.backtest_run_id is None for r in rows)
+
+
+def test_append_explanation_rejects_invalid_backtest_run_id_via_fk(tmp_path):
+    """SQLite FK rejects backtest_run_id that doesn't reference a real row."""
+    import sqlite3
+
+    store = EventStore(tmp_path / "milodex.db")
+
+    with pytest.raises(sqlite3.IntegrityError):
+        store.append_explanation(
+            ExplanationEvent(
+                **_explanation_kwargs(submitted_by="backtest_engine", backtest_run_id=999_999)
+            )
+        )
+
+
+def test_migration_008_backfills_walk_forward_explanations(tmp_path):
+    """Walk-forward orphan rows (session_id ``<run_id>:wN``) are linked to
+    their parent ``backtest_runs`` id via the migration 008 backfill.
+
+    Build a v7 schema by hand (no `backtest_run_id` column on explanations,
+    `session_id` carrying the walk-forward suffix), then open the file with
+    the live `EventStore`. Migration 008 fires automatically; the rows it
+    finds get the canonical ancestor id.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "milodex.db"
+
+    # Build v7 schema manually from migrations 001-007.
+    migrations_dir = (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "src"
+        / "milodex"
+        / "core"
+        / "migrations"
+    )
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE _schema_version (version INTEGER NOT NULL)")
+    for sql_path in sorted(migrations_dir.glob("00[1-7]_*.sql")):
+        con.executescript(sql_path.read_text(encoding="utf-8"))
+    con.execute("DELETE FROM _schema_version")
+    con.execute("INSERT INTO _schema_version(version) VALUES (7)")
+    con.commit()
+
+    # Seed two backtest_runs and three explanation rows referencing them via
+    # session_id syntax (whole-period + two walk-forward windows).
+    con.execute(
+        """
+        INSERT INTO backtest_runs (
+            run_id, strategy_id, config_path, config_hash,
+            start_date, end_date, started_at, status, slippage_pct,
+            commission_per_trade, metadata_json
+        ) VALUES (
+            'run-A', 'strat.A', 'configs/a.yaml', 'hashA',
+            '2024-01-01T00:00:00+00:00', '2024-12-31T00:00:00+00:00',
+            '2026-05-07T14:00:00+00:00', 'completed', 0.001, 0.0, '{}'
+        )
+        """
+    )
+    run_a_id = con.execute("SELECT id FROM backtest_runs WHERE run_id='run-A'").fetchone()[0]
+
+    con.execute(
+        """
+        INSERT INTO backtest_runs (
+            run_id, strategy_id, config_path, config_hash,
+            start_date, end_date, started_at, status, slippage_pct,
+            commission_per_trade, metadata_json
+        ) VALUES (
+            'run-B', 'strat.B', 'configs/b.yaml', 'hashB',
+            '2024-01-01T00:00:00+00:00', '2024-12-31T00:00:00+00:00',
+            '2026-05-07T15:00:00+00:00', 'completed', 0.001, 0.0, '{}'
+        )
+        """
+    )
+    run_b_id = con.execute("SELECT id FROM backtest_runs WHERE run_id='run-B'").fetchone()[0]
+
+    # Three pre-migration explanation rows, all from backtest_engine, with
+    # session_ids in the three formats migration 008 backfills.
+    explanation_template = (
+        "INSERT INTO explanations ("
+        "recorded_at, decision_type, status, strategy_name, strategy_stage, "
+        "strategy_config_path, config_hash, symbol, side, quantity, "
+        "order_type, time_in_force, submitted_by, market_open, "
+        "latest_bar_timestamp, latest_bar_close, account_equity, "
+        "account_cash, account_portfolio_value, account_daily_pnl, "
+        "risk_allowed, risk_summary, reason_codes_json, risk_checks_json, "
+        "context_json, session_id) VALUES (?, 'no_trade', 'no_signal', "
+        "'strat.X', 'backtest', 'configs/x.yaml', 'h', 'SPY', 'hold', 0.0, "
+        "'none', 'day', 'backtest_engine', 1, NULL, NULL, 10000.0, 10000.0, "
+        "10000.0, 0.0, 1, 'allowed', '[]', '[]', '{}', ?)"
+    )
+
+    # Tier 2: walk-forward suffix matches run-A
+    con.execute(explanation_template, ("2026-05-07T14:00:00+00:00", "run-A:w0"))
+    con.execute(explanation_template, ("2026-05-07T14:01:00+00:00", "run-A:w1"))
+    # Tier 3: whole-period (session_id == run_id) matches run-B
+    con.execute(explanation_template, ("2026-05-07T15:00:00+00:00", "run-B"))
+    # No-match orphan: session_id matches no run
+    con.execute(
+        explanation_template,
+        ("2026-05-07T16:00:00+00:00", "ghost-session-no-such-run"),
+    )
+
+    con.commit()
+    con.close()
+
+    # Open with the live EventStore — this triggers migration 008.
+    store = EventStore(db_path)
+    assert store.schema_version == 8
+
+    rows = sorted(store.list_explanations(), key=lambda r: r.recorded_at)
+    assert len(rows) == 4
+
+    # Tier 2: walk-forward windows linked to run-A
+    assert rows[0].session_id == "run-A:w0"
+    assert rows[0].backtest_run_id == run_a_id
+    assert rows[1].session_id == "run-A:w1"
+    assert rows[1].backtest_run_id == run_a_id
+
+    # Tier 3: whole-period linked to run-B
+    assert rows[2].session_id == "run-B"
+    assert rows[2].backtest_run_id == run_b_id
+
+    # Unmatched session stays with NULL backtest_run_id (no false linkage)
+    assert rows[3].session_id == "ghost-session-no-such-run"
+    assert rows[3].backtest_run_id is None
+
+
+def test_migration_008_backfills_via_trades_backtest_run_id(tmp_path):
+    """Tier 1 backfill: an explanation paired with a trade row that already
+    has ``trades.backtest_run_id`` should adopt that id even when the
+    explanation's session_id is NULL or unparseable.
+    """
+    import sqlite3
+
+    db_path = tmp_path / "milodex.db"
+    migrations_dir = (
+        Path(__file__).resolve().parent.parent.parent.parent
+        / "src"
+        / "milodex"
+        / "core"
+        / "migrations"
+    )
+
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE _schema_version (version INTEGER NOT NULL)")
+    for sql_path in sorted(migrations_dir.glob("00[1-7]_*.sql")):
+        con.executescript(sql_path.read_text(encoding="utf-8"))
+    con.execute("DELETE FROM _schema_version")
+    con.execute("INSERT INTO _schema_version(version) VALUES (7)")
+    con.commit()
+
+    con.execute(
+        """
+        INSERT INTO backtest_runs (
+            run_id, strategy_id, config_path, config_hash,
+            start_date, end_date, started_at, status, slippage_pct,
+            commission_per_trade, metadata_json
+        ) VALUES (
+            'run-T', 'strat.T', 'configs/t.yaml', 'hT',
+            '2024-01-01T00:00:00+00:00', '2024-12-31T00:00:00+00:00',
+            '2026-05-07T14:00:00+00:00', 'completed', 0.001, 0.0, '{}'
+        )
+        """
+    )
+    run_t_id = con.execute("SELECT id FROM backtest_runs WHERE run_id='run-T'").fetchone()[0]
+
+    cursor = con.execute(
+        "INSERT INTO explanations ("
+        "recorded_at, decision_type, status, strategy_name, strategy_stage, "
+        "strategy_config_path, config_hash, symbol, side, quantity, "
+        "order_type, time_in_force, submitted_by, market_open, "
+        "latest_bar_timestamp, latest_bar_close, account_equity, "
+        "account_cash, account_portfolio_value, account_daily_pnl, "
+        "risk_allowed, risk_summary, reason_codes_json, risk_checks_json, "
+        "context_json, session_id) VALUES ("
+        "'2026-05-07T14:00:00+00:00', 'submit', 'submitted', 'strat.T', 'backtest', "
+        "'configs/t.yaml', 'h', 'AAPL', 'buy', 1.0, 'market', 'day', "
+        "'backtest_engine', 1, NULL, NULL, 10000.0, 10000.0, 10000.0, 0.0, 1, "
+        "'ok', '[]', '[]', '{}', NULL)"
+    )
+    explanation_id = cursor.lastrowid
+    con.execute(
+        "INSERT INTO trades ("
+        "explanation_id, recorded_at, status, source, symbol, side, quantity, "
+        "order_type, time_in_force, estimated_unit_price, estimated_order_value, "
+        "strategy_name, strategy_stage, strategy_config_path, submitted_by, "
+        "broker_order_id, broker_status, message, session_id, backtest_run_id) "
+        "VALUES (?, '2026-05-07T14:00:00+00:00', 'submitted', 'backtest', 'AAPL', "
+        "'buy', 1.0, 'market', 'day', 100.0, 100.0, 'strat.T', 'backtest', "
+        "'configs/t.yaml', 'backtest_engine', NULL, NULL, NULL, NULL, ?)",
+        (explanation_id, run_t_id),
+    )
+    con.commit()
+    con.close()
+
+    store = EventStore(db_path)
+    rows = store.list_explanations()
+    assert len(rows) == 1
+    # Tier 1 picked up the link from trades.backtest_run_id even though the
+    # explanation's session_id is NULL.
+    assert rows[0].session_id is None
+    assert rows[0].backtest_run_id == run_t_id
+
+
+def test_migration_008_is_idempotent(tmp_path):
+    """Re-opening an already-migrated store does nothing destructive."""
+    store = EventStore(tmp_path / "milodex.db")
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-id",
+        strategy_id="strat.x",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(submitted_by="backtest_engine", backtest_run_id=db_run_id)
+        )
+    )
+
+    # Re-open. Migration 008 should not run again (already at v8).
+    store2 = EventStore(tmp_path / "milodex.db")
+    rows = store2.list_explanations()
+    assert len(rows) == 1
+    assert rows[0].backtest_run_id == db_run_id
+    assert store2.schema_version == 8

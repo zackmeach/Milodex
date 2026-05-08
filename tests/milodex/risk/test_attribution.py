@@ -24,7 +24,14 @@ _NOW = datetime(2026, 5, 6, 18, 0, tzinfo=UTC)
 
 
 def _explanation(store: EventStore, *, recorded_at: datetime, status: str = "submitted") -> int:
-    """Insert a minimal explanation row and return its id."""
+    """Insert a minimal explanation row and return its id.
+
+    Carries a synthetic ``session_id`` so the dual-ancestor enforcement in
+    :meth:`EventStore.append_explanation` accepts the row. These tests
+    don't depend on the ancestor's existence in ``strategy_runs`` — they
+    exercise position attribution from trades, not session lifecycle — so
+    a stable string suffices.
+    """
     return store.append_explanation(
         ExplanationEvent(
             recorded_at=recorded_at,
@@ -52,6 +59,7 @@ def _explanation(store: EventStore, *, recorded_at: datetime, status: str = "sub
             reason_codes=[],
             risk_checks=[],
             context={},
+            session_id="test-attribution-session",
         )
     )
 

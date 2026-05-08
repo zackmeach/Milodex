@@ -12,7 +12,16 @@ from typing import Any
 
 @dataclass(frozen=True)
 class ExplanationEvent:
-    """Explanation record for a preview or submit decision."""
+    """Explanation record for a preview or submit decision.
+
+    Carries one of two parent ancestors (the dual-ancestor model — see
+    migration 008): ``session_id`` for live paper-runner rows (references
+    ``strategy_runs.session_id``) or ``backtest_run_id`` for backtest engine
+    rows (references ``backtest_runs.id``). At least one must be set going
+    forward — :meth:`EventStore.append_explanation` rejects writes with
+    neither, closing the data-integrity gap that produced the 2026-05-07
+    "orphan evaluations" audit finding.
+    """
 
     recorded_at: datetime
     decision_type: str
@@ -40,6 +49,7 @@ class ExplanationEvent:
     risk_checks: list[dict[str, Any]]
     context: dict[str, Any]
     session_id: str | None = None
+    backtest_run_id: int | None = None
     id: int | None = None
 
 
@@ -185,7 +195,17 @@ class PortfolioSnapshotEvent:
     id: int | None = None
 
 
-MIN_COMPATIBLE_SCHEMA_VERSION = 7
+_STRATEGY_RUN_SUBMITTERS: frozenset[str] = frozenset({"strategy_runner", "backtest_engine"})
+"""Submitter labels whose explanation rows must carry a run ancestor.
+
+Any explanation written with ``submitted_by`` in this set is enforced by
+:meth:`EventStore.append_explanation` to have a non-NULL ``session_id`` or
+``backtest_run_id``. System-emitted rows (``operator``, ``reconcile``, etc.)
+have no run ancestry by design and pass through unchecked.
+"""
+
+
+MIN_COMPATIBLE_SCHEMA_VERSION = 8
 """Minimum event-store schema version this build can safely operate on.
 
 Bumped whenever a migration introduces a column or table that older code
@@ -230,6 +250,35 @@ class EventStore:
         return [str(row["name"]) for row in rows]
 
     def append_explanation(self, event: ExplanationEvent) -> int:
+        """Insert an explanation row and return its autoincrement id.
+
+        Enforces the dual-ancestor rule (migration 008) for explanations
+        emitted by a strategy run: when ``submitted_by`` is ``'strategy_runner'``
+        or ``'backtest_engine'``, at least one of ``session_id`` or
+        ``backtest_run_id`` must be set, or :class:`ValueError` is raised
+        before the write reaches the database. System-emitted explanations
+        (operator-initiated CLI smoke tests, reconciliation incidents,
+        kill-switch events) carry no run ancestry by design and pass through
+        without the check.
+
+        This is the code-path enforcement that closes the orphan-evaluation
+        gap surfaced by the 2026-05-07 EOD audit — see migration 008's
+        header for the full rationale, including why we do not use a SQLite
+        CHECK constraint here.
+        """
+        if (
+            event.submitted_by in _STRATEGY_RUN_SUBMITTERS
+            and event.session_id is None
+            and event.backtest_run_id is None
+        ):
+            raise ValueError(
+                "ExplanationEvent emitted by "
+                f"submitted_by={event.submitted_by!r} must carry an ancestor: "
+                "either session_id (referencing strategy_runs.session_id for "
+                "paper-runner rows) or backtest_run_id (referencing "
+                "backtest_runs.id for backtest engine rows). Refusing to "
+                "write an unparented strategy-run explanation."
+            )
         with self._connect() as connection:
             cursor = connection.execute(
                 """
@@ -259,10 +308,11 @@ class EventStore:
                     reason_codes_json,
                     risk_checks_json,
                     context_json,
-                    session_id
+                    session_id,
+                    backtest_run_id
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     _dt(event.recorded_at),
@@ -291,6 +341,7 @@ class EventStore:
                     _dump_json(event.risk_checks),
                     _dump_json(event.context),
                     event.session_id,
+                    event.backtest_run_id,
                 ),
             )
             connection.commit()
@@ -919,6 +970,7 @@ class EventStore:
 
 
 def _explanation_from_row(row: sqlite3.Row) -> ExplanationEvent:
+    backtest_run_id = row["backtest_run_id"] if "backtest_run_id" in row.keys() else None
     return ExplanationEvent(
         id=int(row["id"]),
         recorded_at=_parse_datetime(row["recorded_at"]),
@@ -949,6 +1001,7 @@ def _explanation_from_row(row: sqlite3.Row) -> ExplanationEvent:
         risk_checks=list(_load_json(row["risk_checks_json"])),
         context=dict(_load_json(row["context_json"])),
         session_id=row["session_id"],
+        backtest_run_id=int(backtest_run_id) if backtest_run_id is not None else None,
     )
 
 

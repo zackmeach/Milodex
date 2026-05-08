@@ -288,6 +288,14 @@ def test_engine_buy_sell_round_trip():
     assert all(t.source == "backtest" for t in trades)
     assert all(t.backtest_run_id == result.db_id for t in trades)
 
+    # Every explanation written by the backtest engine must be parented to
+    # the run it produced. Closes the orphan-evaluation gap (migration 008).
+    explanations = [e for e in store.list_explanations() if e.submitted_by == "backtest_engine"]
+    assert explanations, "engine should have written at least one explanation"
+    assert all(e.backtest_run_id == result.db_id for e in explanations), (
+        "every backtest_engine explanation must carry backtest_run_id"
+    )
+
 
 def test_engine_skips_buy_when_insufficient_cash():
     """Strategy asks to buy more than cash allows — trade should be skipped."""

@@ -1138,6 +1138,10 @@ def _attrib_store(tmp_path, *, attributions: dict[str, str]):
                 reason_codes=[],
                 risk_checks=[],
                 context={},
+                # operator rows have no run ancestor; strategy_runner rows
+                # carry a synthetic session for the dual-ancestor enforcement
+                # in EventStore.append_explanation (migration 008).
+                session_id=(None if strategy_name is None else "test-attrib-session"),
             )
         )
         store.append_trade(
