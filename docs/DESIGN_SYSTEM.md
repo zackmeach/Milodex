@@ -203,6 +203,7 @@ tables, anywhere a multi-cell row appears). Theme-invariant: constant across all
 |---|---|---|
 | `column.pill` | `96px` | Stage / status pill column (accommodates "blocked") |
 | `column.metric` | `64px` | Right-aligned numeric metric (e.g., "+1.19") |
+| `column.chips` | `200px` | Gate-chip slot + optional "— flagged, not retired" marginalia. Max case is 2 chips (~52px) + 8px left-padding + the flagged marginalia (~125px italic Newsreader 14px) ≈ 185px; 200 leaves headroom. |
 | `column.tradeCount` | `88px` | Right-aligned secondary metric (e.g., "433 trades") |
 
 Accessed via `Theme.column.pill` etc. Surfaces that need different proportions
@@ -339,7 +340,7 @@ Layout: `RowLayout` with fixed column widths enforces tabular alignment across a
   - `auditFlag: true` renders a `*` superscript immediately after the strategy ID (ADR 0032 audit trail).
   - `note: string` renders italic Newsreader marginalia (`typography.deck`) after the ID (and asterisk), prefixed with an em-dash. See &sect;6.5.
 - Stage pill: `Layout.preferredWidth: Theme.column.pill` (96px — accommodates "blocked").
-- Gate-failure chips (optional, `gateFailures: var`): a `Row` of small inline chips rendered between metric and tradeCount columns when non-empty. Each chip renders a single capital letter (S, D, or N) inside a framed pill per ADR 0009 — the chip frame is the bracket; no literal `[`/`]` characters. Color: `status.negative` @ 0.12 background, 0.30 border. Typography: `data.xs` mono. When `flagFailingNotRetired: true`, italic Newsreader marginalia "— flagged, not retired" (`typography.deck`, `text.muted`) renders inline in the same row (see &sect;6.5).
+- Gate-failure chips (optional, `gateFailures: var`): a `Row` of small inline chips rendered between metric and tradeCount columns when non-empty. Each chip renders a single capital letter (S, D, or N) inside a framed pill per ADR 0009 — the chip frame is the bracket; no literal `[`/`]` characters. Color: `status.negative` @ 0.12 background, 0.30 border. Typography: `data.xs` mono. When `flagFailingNotRetired: true`, italic Newsreader marginalia "— flagged, not retired" (`typography.deck`, `text.muted`) renders inline in the same row (see &sect;6.5). The slot uses the column-reservation pattern: `Layout.preferredWidth: Theme.column.chips` (200px) so all BLOCKED-section rows reserve the same width regardless of chip count, keeping the pill/metric/tradeCount columns horizontally stable. Rows with fewer chips fill less of the slot; the slot itself does not shrink. Paper rows (no chips, `visible: false`) collapse the slot to 0 — paper section aligns internally because every paper row has 0 chips. `clip: true` backstops future overflow into the tradeCount column.
 - Primary metric: `Layout.preferredWidth: Theme.column.metric` (64px), right-aligned.
 - Trade count: `Layout.preferredWidth: Theme.column.tradeCount` (88px), right-aligned.
 
