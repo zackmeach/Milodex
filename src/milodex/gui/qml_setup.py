@@ -1,18 +1,21 @@
 """QML registration for the Milodex GUI.
 
 Bridges Python-side ``QObject`` types into QML.  Registers
-:class:`~milodex.gui.theme_manager.ThemeManager` and (optionally)
-:class:`~milodex.gui.operational_state.OperationalState` as QML *singleton
-instances* under the ``Milodex`` import URI, which makes the Python-owned
-objects visible to every QML file (including the ``Theme`` singleton).
+:class:`~milodex.gui.theme_manager.ThemeManager`,
+:class:`~milodex.gui.operational_state.OperationalState`, and
+:class:`~milodex.gui.strategy_bank_state.StrategyBankState` as QML
+*singleton instances* under the ``Milodex`` import URI, which makes the
+Python-owned objects visible to every QML file (including the ``Theme``
+singleton).
 
 QML singletons are the right shape for these objects because the
 ``Theme`` singleton itself needs to reach the ``ThemeManager`` during
 its own property bindings — context properties on the root context are
 not visible to QML singletons, so a registered singleton is the
-load-bearing mechanism.  ``OperationalState`` follows the same pattern
-so multiple surfaces (Anchor, future Strategy Bank, future Attribution)
-can bind to the same live state without each receiving its own copy.
+load-bearing mechanism.  ``OperationalState`` and ``StrategyBankState``
+follow the same pattern so multiple surfaces (Anchor, Strategy Bank,
+future Attribution) can bind to the same live state without each
+receiving its own copy.
 
 Subsequent PRs (app shell, components) call :func:`register_qml_types`
 once during application startup *before* loading any QML.
@@ -23,6 +26,7 @@ from __future__ import annotations
 from PySide6.QtQml import qmlRegisterSingletonInstance
 
 from milodex.gui.operational_state import OperationalState
+from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
 #: QML import URI under which Milodex types and QML files live.  Matches
@@ -37,19 +41,25 @@ QML_IMPORT_VERSION: tuple[int, int] = (1, 0)
 # ownership of singleton instances passed to ``qmlRegisterSingletonInstance``.
 _singleton_instance: ThemeManager | None = None
 _operational_state_instance: OperationalState | None = None
+_strategy_bank_state_instance: StrategyBankState | None = None
 
 
 def register_qml_types(
     theme_manager: ThemeManager | None = None,
     operational_state: OperationalState | None = None,
+    strategy_bank_state: StrategyBankState | None = None,
 ) -> ThemeManager:
     """Register Python QML types and return the :class:`ThemeManager` singleton.
 
     Registers the *theme_manager* (or a freshly constructed instance
     when *None*) as the QML singleton ``Milodex.ThemeManager``.  When
     *operational_state* is provided, it is registered as
-    ``Milodex.OperationalState``.  After this call any QML file can
-    ``import Milodex 1.0`` and reference ``ThemeManager.theme`` etc.
+    ``Milodex.OperationalState``.  When *strategy_bank_state* is
+    provided, it is registered as ``Milodex.StrategyBankState``.
+
+    After this call any QML file can ``import Milodex 1.0`` and reference
+    ``ThemeManager.theme``, ``OperationalState.*``,
+    ``StrategyBankState.*`` etc.
 
     Calling this function more than once with different instances is a
     Qt-level error; the first registration wins.  Tests that need to
@@ -67,6 +77,11 @@ def register_qml_types(
         QML singleton.  When omitted (e.g. for tests that only exercise
         Theme), the singleton is not registered and QML surfaces that
         depend on it will not load.
+    strategy_bank_state
+        Optional pre-constructed :class:`StrategyBankState`.  When
+        provided, it is registered as the ``Milodex.StrategyBankState``
+        QML singleton.  When omitted, the Strategy Bank surface will not
+        load.
 
     Returns
     -------
@@ -75,7 +90,7 @@ def register_qml_types(
         caller should keep a Python reference; the module also holds
         one to defend against premature garbage collection.
     """
-    global _singleton_instance, _operational_state_instance
+    global _singleton_instance, _operational_state_instance, _strategy_bank_state_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
     qmlRegisterSingletonInstance(
@@ -98,5 +113,16 @@ def register_qml_types(
             operational_state,
         )
         _operational_state_instance = operational_state
+
+    if strategy_bank_state is not None:
+        qmlRegisterSingletonInstance(
+            StrategyBankState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "StrategyBankState",
+            strategy_bank_state,
+        )
+        _strategy_bank_state_instance = strategy_bank_state
 
     return instance

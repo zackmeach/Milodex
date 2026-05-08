@@ -322,14 +322,17 @@ See &sect;6.3. Compact, rounded, role-keyed.
 The load-bearing component for the Strategy Bank surface. Anatomy:
 
 ```
-[strategy-id mono]    [stage-pill]   [primary-metric mono]   [trade-count mono muted]
+[strategy-id mono] [*]   [stage-pill]   [gate chips]   [primary-metric mono]   [trade-count mono muted]   [badge label]
 ```
 
 Layout: `RowLayout` with fixed column widths enforces tabular alignment across all rows.
 - Strategy ID: `Layout.fillWidth: true` + `elide: Text.ElideRight` — absorbs available space, truncates long identifiers cleanly.
+  - `auditFlag: true` renders a `*` superscript immediately after the strategy ID (ADR 0032 audit trail).
 - Stage pill: `Layout.preferredWidth: Theme.column.pill` (96px — accommodates "blocked").
+- Gate-failure chips (optional, `gateFailures: var`): a `Row` of small inline chips rendered between metric and tradeCount columns when non-empty. Each chip reads `[S]`, `[D]`, or `[N]` per ADR 0009. Color: `status.negative` @ 0.12 background, 0.30 border. Typography: `data.xs` mono. When `flagFailingNotRetired: true`, a `"FLAGGED"` badge in `status.warning` renders inline in the same row.
 - Primary metric: `Layout.preferredWidth: Theme.column.metric` (64px), right-aligned.
 - Trade count: `Layout.preferredWidth: Theme.column.tradeCount` (88px), right-aligned.
+- Badge (optional, `badge: string`): renders at `Layout.preferredWidth: 96` when non-empty; 0 otherwise. Typography: `label.xs` uppercase muted. Typical use: `"LIFECYCLE EXEMPT"` on the regime strategy row.
 
 Column width tokens are defined in `Theme.column.*` (&sect;4.1).
 
@@ -337,9 +340,51 @@ Typography: `typography.data.md` for IDs and metrics, `typography.data.sm` muted
 
 Selected/active state: `2px` left border in `color.brand.accent`, otherwise unchanged.
 
+**Optional properties** (default to "off" values; existing call sites that omit them are unaffected):
+
+| Property | Type | Default | Effect |
+|---|---|---|---|
+| `badge` | `string` | `""` | Renders a label.xs uppercase label to the right of tradeCount. |
+| `gateFailures` | `var` (list of strings) | `[]` | Renders gate-code chips between metric and tradeCount. |
+| `auditFlag` | `bool` | `false` | Renders `*` superscript after strategyId. |
+| `flagFailingNotRetired` | `bool` | `false` | Renders `"FLAGGED"` warning badge in the chip row. |
+
 ### 7.4 Surface containers
 
 The default panel/card. Background `color.surface.base`, border `1px color.border.subtle`, `radius.lg`, `space.5` padding. Hover (when interactive) -> `color.border.regular`.
+
+### 7.5 Section-wash editorial flourish
+
+Surfaces with categorically-distinct sections (e.g. "blocked" vs "running")
+may use a low-alpha section-wash to signal section semantics before text is
+parsed. Follows the same pattern as the kill-switch panel wash on AnchorSurface:
+
+```qml
+// Wash rectangle, z-ordered behind section content.
+color: Qt.rgba(Theme.status.<role>.r, .g, .b, 0.04)
+```
+
+Implemented as a Rectangle behind the section content, optionally with
+negative margins to bleed slightly past the content edge ("blood under
+the headline" editorial convention):
+
+```qml
+anchors {
+    fill:         sectionContent
+    topMargin:    -Theme.space[3]
+    bottomMargin: -Theme.space[3]
+    leftMargin:   -Theme.space[3]
+    rightMargin:  -Theme.space[3]
+}
+```
+
+Use sparingly — one section-wash per surface maximum, and only when the
+section's status is itself the structural information. Do not use for
+visual variety alone.
+
+First use: `StrategyBankSurface.qml` BLOCKED section (`status.negative` @
+0.04); the kill-switch panel on `AnchorSurface.qml` uses a higher alpha
+(0.10) as an active-alarm indicator, not a section hint.
 
 ---
 

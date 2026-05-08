@@ -18,9 +18,8 @@
 //   - Component.onCompleted logs Qt+QML+ThemeManager connectivity
 //   - engine.quit is connected to app.quit by the Python shell
 //
-// Stub tabs ("Strategy Bank", "Attribution") are present-but-disabled
-// so subsequent Phase 5 PRs land into known homes rather than retrofit
-// the navigation skeleton.
+// Strategy Bank tab (PR E): enabled; loads StrategyBankSurface.qml.
+// Attribution tab remains stubbed; PR F will enable it.
 //
 // Uses QtQuick.Window (plain Window) rather than QtQuick.Controls
 // ApplicationWindow so that loading Main.qml does not trigger the
@@ -52,7 +51,7 @@ Window {
     // ------------------------------------------------------------------
     // Active surface state
     //
-    // String enum: "anchor" | "design-system" | "strategy-bank-stub" |
+    // String enum: "anchor" | "strategy-bank" | "design-system" |
     // "attribution-stub".  Stubs render a "(coming soon)" placeholder.
     // ------------------------------------------------------------------
 
@@ -152,7 +151,7 @@ Window {
             spacing: Theme.space[2]
 
             NavTab { label: "Operations";     surfaceId: "anchor" }
-            NavTab { label: "Strategy Bank";  surfaceId: "strategy-bank-stub";  tabEnabled: false }
+            NavTab { label: "Strategy Bank";  surfaceId: "strategy-bank" }
             NavTab { label: "Attribution";    surfaceId: "attribution-stub";    tabEnabled: false }
             NavTab { label: "Design System";  surfaceId: "design-system" }
         }
@@ -180,8 +179,9 @@ Window {
             bottom: parent.bottom
         }
         source: {
-            if (root.activeSurface === "design-system") return "surfaces/DesignSystemShowcase.qml"
-            if (root.activeSurface === "anchor")        return "surfaces/AnchorSurface.qml"
+            if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
+            if (root.activeSurface === "anchor")         return "surfaces/AnchorSurface.qml"
+            if (root.activeSurface === "strategy-bank")  return "surfaces/StrategyBankSurface.qml"
             return ""  // stub tabs render the placeholder Item below
         }
 

@@ -113,10 +113,11 @@ def run_app() -> int:
         )
         return 1
 
-    from milodex.config import get_trading_mode
+    from milodex.config import get_data_dir, get_trading_mode
     from milodex.gui.fonts import load_fonts
     from milodex.gui.operational_state import OperationalState
     from milodex.gui.qml_setup import register_qml_types
+    from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
 
     # --- 1. QGuiApplication ---------------------------------------------------
@@ -166,12 +167,20 @@ def run_app() -> int:
         kill_switch_store=kill_switch_store,
         trading_mode=trading_mode,
     )
-    register_qml_types(theme_manager, operational_state)
+
+    # StrategyBankState polls data/milodex.db every 30s for the canonical
+    # strategy bank state.  Uses the same get_data_dir() resolution as the
+    # CLI and the kill-switch store above.  Graceful if the DB is absent on
+    # a fresh checkout — the surface renders the loading-then-error state.
+    strategy_bank_state = StrategyBankState(db_path=get_data_dir() / "milodex.db")
+
+    register_qml_types(theme_manager, operational_state, strategy_bank_state)
     logger.info("run_app: active theme = %r", theme_manager.theme)
 
     # Begin polling AFTER registration so the GUI sees a populated state
     # on the first frame instead of empty defaults.
     operational_state.start()
+    strategy_bank_state.start()
 
     # --- 4. Engine ------------------------------------------------------------
     engine = QQmlApplicationEngine()
@@ -191,6 +200,7 @@ def run_app() -> int:
             "Main.qml failed to initialize. Check QML errors above."
         )
         operational_state.stop()
+        strategy_bank_state.stop()
         return 1
 
     logger.info(
@@ -201,6 +211,7 @@ def run_app() -> int:
     # --- 8. Wire quit + polling teardown -------------------------------------
     engine.quit.connect(app.quit)
     app.aboutToQuit.connect(operational_state.stop)
+    app.aboutToQuit.connect(strategy_bank_state.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()
