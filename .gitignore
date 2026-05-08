@@ -69,3 +69,9 @@ mutants/
 html/
 .superpowers/
 /docs/prototypes/
+
+# PyInstaller build outputs (ADR 0037) — installer/ source stays in git;
+# only the build-time artifacts produced by build_installer.ps1 are ignored.
+/build/
+/dist/
+*.spec.bak
