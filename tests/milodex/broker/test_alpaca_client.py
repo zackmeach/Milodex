@@ -1,13 +1,15 @@
 # tests/milodex/broker/test_alpaca_client.py
 """Tests for AlpacaBrokerClient.
 
-All tests mock the Alpaca SDK — no real API calls.
+All tests mock the Alpaca SDK -- no real API calls.
 """
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+import requests
+from alpaca.common.exceptions import APIError
 
 from milodex.broker.alpaca_client import AlpacaBrokerClient
 from milodex.broker.models import (
@@ -18,6 +20,14 @@ from milodex.broker.models import (
     OrderType,
     Position,
 )
+
+
+def _make_429_api_error() -> APIError:
+    """Construct an APIError that reports status_code == 429."""
+    http_error = MagicMock(spec=requests.exceptions.HTTPError)
+    http_error.response = MagicMock()
+    http_error.response.status_code = 429
+    return APIError('{"code": 429, "message": "too many requests"}', http_error)
 
 
 @pytest.fixture()
@@ -195,3 +205,82 @@ class TestIsMarketOpen:
         clock.is_open = False
         client._client.get_clock.return_value = clock
         assert client.is_market_open() is False
+
+
+class TestRetryOn429:
+    """Verify that broker calls retry on Alpaca 429 rate-limit responses."""
+
+    def test_get_account_retries_on_429_then_succeeds(self, client):
+        """get_account retries when Alpaca returns 429, then returns on success."""
+        err = _make_429_api_error()
+        acct = MagicMock()
+        acct.equity = "10000.0"
+        acct.cash = "5000.0"
+        acct.buying_power = "5000.0"
+        acct.portfolio_value = "10000.0"
+        acct.equity_previous_close = "9900.0"
+
+        client._client.get_account.side_effect = [err, err, acct]
+
+        with patch("time.sleep"):
+            result = client.get_account()
+
+        assert isinstance(result, AccountInfo)
+        assert client._client.get_account.call_count == 3
+
+    def test_get_account_exhausts_retries_and_reraises(self, client):
+        """get_account re-raises 429 after max_attempts (default 5)."""
+        err = _make_429_api_error()
+        client._client.get_account.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(APIError) as exc_info:
+                client.get_account()
+
+        assert exc_info.value is err
+        assert client._client.get_account.call_count == 5
+
+    def test_submit_order_retries_on_429_then_succeeds(self, client):
+        """submit_order retries on 429.
+
+        Alpaca returns 429 before any state change, so retry is safe and
+        cannot produce duplicate orders.
+        """
+        err = _make_429_api_error()
+        client._client.submit_order.side_effect = [err, _mock_alpaca_order()]
+
+        with patch("time.sleep"):
+            result = client.submit_order("AAPL", OrderSide.BUY, 10.0)
+
+        assert isinstance(result, Order)
+        assert client._client.submit_order.call_count == 2
+
+    def test_get_orders_retries_on_429_then_succeeds(self, client):
+        """get_orders retries on 429 then returns the order list."""
+        err = _make_429_api_error()
+        client._client.get_orders.side_effect = [err, [_mock_alpaca_order()]]
+
+        with patch("time.sleep"):
+            result = client.get_orders()
+
+        assert len(result) == 1
+        assert client._client.get_orders.call_count == 2
+
+    def test_get_positions_retries_on_429_then_succeeds(self, client):
+        """get_positions retries on 429 then returns the position list."""
+        err = _make_429_api_error()
+        pos = MagicMock()
+        pos.symbol = "AAPL"
+        pos.qty = "5"
+        pos.avg_entry_price = "150.0"
+        pos.current_price = "155.0"
+        pos.market_value = "775.0"
+        pos.unrealized_pl = "25.0"
+        pos.unrealized_plpc = "0.033"
+        client._client.get_all_positions.side_effect = [err, [pos]]
+
+        with patch("time.sleep"):
+            result = client.get_positions()
+
+        assert len(result) == 1
+        assert client._client.get_all_positions.call_count == 2
