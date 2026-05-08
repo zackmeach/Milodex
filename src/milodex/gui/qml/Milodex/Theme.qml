@@ -196,6 +196,24 @@ QtObject {
             }
         }
 
+        // Editorial deck and marginalia — italic Newsreader at body size.
+        // Roles: section sub-headers ("kickers"), inline editor's-note-style
+        // callouts (lifecycle-exempt, flagged-not-retired), and any text that
+        // reads as commentary rather than data.
+        //
+        // Sized to mirror body.md (14px) so it sits at body weight in a column
+        // next to data.md mono cells; italic + serif distinguishes commentary
+        // from data.
+        //
+        // Single-line role — no `lineHeight` property; if multi-line use is
+        // added later, define `lineHeight` then and wire it at every consumer.
+        readonly property var deck: QtObject {
+            readonly property string family: "Newsreader"
+            readonly property int size: 14
+            readonly property int weight: Font.Normal
+            readonly property bool italic: true
+        }
+
         readonly property var body: QtObject {
             readonly property var lg: QtObject {
                 readonly property string family: "Public Sans"
