@@ -14,8 +14,14 @@
 # Design rationale: ADR 0037 — manual build for Phase 5; CI-driven builds
 # are Phase 6+ scope.  This script is the operator's one-command build.
 #
-# Usage (from repo root):
-#   pwsh .\installer\build_installer.ps1
+# Usage (from repo root, in any PowerShell):
+#   .\installer\build_installer.ps1
+#
+# If execution policy blocks the script:
+#   powershell.exe -ExecutionPolicy Bypass -File .\installer\build_installer.ps1
+#
+# Works in both Windows PowerShell 5.1 (built-in to Windows) and
+# PowerShell 7+ (`pwsh`). No version-specific syntax used.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"

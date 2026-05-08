@@ -90,9 +90,13 @@ If you are building the installer from source:
 
 2. **Install Inno Setup 6** from [https://jrsoftware.org/isdl.php](https://jrsoftware.org/isdl.php). The free version is sufficient; no registration required.
 
-3. **Run the build script** from the repo root:
+3. **Run the build script** from the repo root, in any PowerShell:
    ```powershell
-   pwsh .\installer\build_installer.ps1
+   .\installer\build_installer.ps1
+   ```
+   Works in both Windows PowerShell 5.1 (built-in to Windows) and PowerShell 7+ (`pwsh`). If execution policy blocks the script, run instead:
+   ```powershell
+   powershell.exe -ExecutionPolicy Bypass -File .\installer\build_installer.ps1
    ```
 
 The script validates prerequisites, runs PyInstaller, smoke-tests the bundle, runs Inno Setup, computes the SHA-256 hash of the resulting installer, and prints all output paths.
