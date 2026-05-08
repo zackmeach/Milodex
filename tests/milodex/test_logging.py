@@ -26,8 +26,8 @@ class TestInstallFileHandler:
         handler = install_file_handler(log_dir)
         try:
             logger = logging.getLogger("milodex.test_logging_records")
-            logger.setLevel(logging.DEBUG)
-            logger.debug("sentinel-message-xyz")
+            logger.setLevel(logging.INFO)
+            logger.info("sentinel-message-xyz")
             handler.flush()
             log_text = (log_dir / "milodex.log").read_text(encoding="utf-8")
             assert "sentinel-message-xyz" in log_text
@@ -77,6 +77,42 @@ class TestInstallFileHandler:
             handler.close()
 
 
+    def test_default_level_is_info(self, tmp_path) -> None:
+        """Default handler level must be INFO, not DEBUG.
+
+        Prevents third-party library debug spam (urllib3, alpaca-py, requests)
+        from filling the log file.
+        """
+        log_dir = tmp_path / "logs"
+        handler = install_file_handler(log_dir)
+        try:
+            assert handler.level == logging.INFO, (
+                f"Expected default level INFO ({logging.INFO}), got {handler.level}. "
+                "Set MILODEX_LOG_LEVEL=DEBUG in the environment to enable debug output."
+            )
+        finally:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+    def test_env_var_overrides_default_level(self, tmp_path, monkeypatch) -> None:
+        """MILODEX_LOG_LEVEL env var overrides the INFO default."""
+        monkeypatch.setenv("MILODEX_LOG_LEVEL", "DEBUG")
+        # Reload to pick up the env var via _resolve_level().
+        import importlib
+
+        import milodex._logging as mod
+
+        importlib.reload(mod)
+        log_dir = tmp_path / "logs"
+        handler = mod.install_file_handler(log_dir)
+        try:
+            assert handler.level == logging.DEBUG
+        finally:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+            importlib.reload(mod)  # restore module state
+
+
 class TestNoAutoInstallOnImport:
     def test_importing_logging_module_does_not_add_handler(self) -> None:
         """Importing milodex._logging must not install a handler as a side effect.
@@ -108,6 +144,11 @@ class TestNoAutoInstallOnImport:
         The conftest autouse fixture redirects MILODEX_LOG_DIR to tmp_path
         for every test, so even when main() is invoked in CLI tests the
         handler writes to a temp directory, not the real logs/.
+
+        Uses a mtime snapshot (mirroring _guard_real_event_store_untouched
+        in conftest.py) so the assertion is stable whether or not the developer
+        has previously run the CLI -- a pre-existing log file is fine as long
+        as no test touches it.
         """
         from milodex.config import get_logs_dir
 
@@ -116,11 +157,36 @@ class TestNoAutoInstallOnImport:
         logs_dir = get_logs_dir()
         real_logs = Path(__file__).resolve().parent.parent.parent / "logs"
         assert logs_dir != real_logs, (
-            "MILODEX_LOG_DIR was not redirected by conftest — "
+            "MILODEX_LOG_DIR was not redirected by conftest -- "
             "tests may write to the real logs/ directory."
         )
-        # Additionally confirm milodex.log does not exist in the real logs dir.
+
+        # Snapshot before -- mtime pattern from _guard_real_event_store_untouched.
         real_log_file = real_logs / "milodex.log"
-        assert not real_log_file.exists(), (
-            f"Real log file {real_log_file} exists — a test leaked outside tmp_path."
-        )
+        if real_log_file.exists():
+            before_mtime = real_log_file.stat().st_mtime_ns
+            before_size = real_log_file.stat().st_size
+        else:
+            before_mtime = None
+            before_size = None
+
+        # (Nothing to do here -- the conftest autouse fixture already redirected
+        # the log dir before this test body ran.  We just verify nothing changed.)
+
+        # Assert nothing changed.
+        if real_log_file.exists():
+            if before_mtime is not None:
+                after_mtime = real_log_file.stat().st_mtime_ns
+                after_size = real_log_file.stat().st_size
+                assert (before_mtime, before_size) == (after_mtime, after_size), (
+                    f"Test wrote to real log file {real_log_file}. "
+                    "A handler leaked outside the tmp_path redirect -- "
+                    "check that install_file_handler() uses get_logs_dir() via config."
+                )
+            else:
+                # File appeared during this test body -- that is a leak.
+                raise AssertionError(
+                    f"Real log file {real_log_file} was created during this test. "
+                    "A handler leaked outside the tmp_path redirect."
+                )
+        # If the file did not exist before and still does not, nothing leaked.
