@@ -266,7 +266,12 @@ Item {
             visible: root.gateFailures.length > 0 || root.flagFailingNotRetired
             spacing: Theme.space[1]
             Layout.preferredWidth: visible ? implicitWidth : 0
-            verticalAlignment: Qt.AlignVCenter
+            // Vertical centering inside RowLayout uses Layout.alignment, NOT
+            // a verticalAlignment property — Row has no such property and
+            // assigning it errors at QML load (silent: chipsRow's parent
+            // StrategyRow becomes "Type unavailable", invalidating every
+            // surface that imports it).
+            Layout.alignment: Qt.AlignVCenter
 
             Repeater {
                 model: root.gateFailures
