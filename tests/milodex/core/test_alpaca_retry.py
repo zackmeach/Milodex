@@ -122,9 +122,7 @@ class TestCallWithRetryOn429:
         with patch("time.sleep", side_effect=lambda s: sleep_calls.append(s)):
             with patch("random.uniform", return_value=0.0):
                 with pytest.raises(APIError):
-                    call_with_retry_on_429(
-                        call, max_attempts=5, base_delay=10.0, max_delay=15.0
-                    )
+                    call_with_retry_on_429(call, max_attempts=5, base_delay=10.0, max_delay=15.0)
 
         # attempt 0: min(10*1 + 0, 15) = 10
         # attempt 1: min(10*2 + 0, 15) = 15

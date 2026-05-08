@@ -228,9 +228,7 @@ class TestGetBarsBatching:
         """A symbol with no data in the Alpaca response gets an empty BarSet; others are ok."""
         ts = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
         # AAPL returns data; UNKNOWN returns nothing (absent from response.data)
-        provider._client.get_stock_bars.return_value = MagicMock(
-            data={"AAPL": [_make_bar(ts)]}
-        )
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [_make_bar(ts)]})
 
         result = provider.get_bars(
             symbols=["AAPL", "UNKNOWN"],
@@ -271,12 +269,10 @@ class TestGetBarsBatching:
         """
         # Populate AAPL cache with data from 2024-06-01 to 2025-01-14
         aapl_bars = [
-            _make_bar(datetime(2024, 6, 3, 5, 0, tzinfo=UTC)),   # Mon
+            _make_bar(datetime(2024, 6, 3, 5, 0, tzinfo=UTC)),  # Mon
             _make_bar(datetime(2025, 1, 14, 5, 0, tzinfo=UTC)),  # Tue
         ]
-        provider._client.get_stock_bars.return_value = MagicMock(
-            data={"AAPL": aapl_bars}
-        )
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": aapl_bars})
         provider.get_bars(
             symbols=["AAPL"],
             timeframe=Timeframe.DAY_1,
