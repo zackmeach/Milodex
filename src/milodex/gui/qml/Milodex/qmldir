@@ -7,3 +7,4 @@ Button 1.0 components/Button.qml
 StatusPill 1.0 components/StatusPill.qml
 StrategyRow 1.0 components/StrategyRow.qml
 Surface 1.0 components/Surface.qml
+Main 1.0 Main.qml
