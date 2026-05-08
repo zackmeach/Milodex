@@ -529,3 +529,151 @@ def test_query_bank_missing_db_raises(tmp_path) -> None:
 
     with pytest.raises(Exception):  # noqa: B017 — sqlite3.OperationalError subtype
         _query_bank(tmp_path / "nonexistent.db")
+
+
+# ---------------------------------------------------------------------------
+# Helpers for lifecycle_exempt / COALESCE tests (no Qt required)
+# ---------------------------------------------------------------------------
+
+
+def _seed_paper_row_null_metrics(
+    path: Path,
+    strategy_id: str,
+    promotion_type: str = "lifecycle_exempt",
+    recorded_at: str = "2026-01-01T00:00:00+00:00",
+) -> None:
+    """Insert a paper-stage promotion row with NULL sharpe / max_dd / trade_count.
+
+    Mirrors the real regime promotion that was recorded before the re-baseline
+    run — metrics were not captured in the promotions table.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        """
+        INSERT INTO promotions
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type,
+             approved_by, backtest_run_id, sharpe_ratio, max_drawdown_pct, trade_count)
+        VALUES (?, ?, 'backtest', 'paper', ?, 'test', NULL, NULL, NULL, NULL)
+        """,
+        (recorded_at, strategy_id, promotion_type),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_backtest_run(
+    path: Path,
+    strategy_id: str,
+    run_id: str,
+    sharpe: float,
+    max_dd: float,
+    trade_count: int,
+    started_at: str = "2026-02-01T00:00:00+00:00",
+) -> None:
+    """Insert a completed backtest_run with oos_aggregate metrics in metadata_json."""
+    metadata = {
+        "oos_aggregate": {
+            "sharpe": sharpe,
+            "max_drawdown_pct": max_dd,
+            "trade_count": trade_count,
+        }
+    }
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        """
+        INSERT INTO backtest_runs
+            (run_id, strategy_id, start_date, end_date, started_at, status, metadata_json)
+        VALUES (?, ?, '2020-01-01', '2024-12-31', ?, 'completed', ?)
+        """,
+        (run_id, strategy_id, started_at, json.dumps(metadata)),
+    )
+    conn.commit()
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# COALESCE fallback tests — no Qt required
+# ---------------------------------------------------------------------------
+
+
+def test_lifecycle_exempt_metrics_fallback_to_backtest_runs(tmp_path) -> None:
+    """A lifecycle_exempt promotion with NULL metrics falls back to backtest_runs.
+
+    Reproduces the regime strategy bug: promotions.sharpe_ratio is NULL but
+    the re-baseline backtest_run carries the actual walk-forward figures.
+    The COALESCE in _SQL_PAPER must resolve sharpe_ratio to 1.19, not NULL.
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    _seed_paper_row_null_metrics(db, "regime.daily.sma200_rotation.spy_shy.v1")
+    _seed_backtest_run(
+        db,
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        run_id="f7e0730c-fbdb-4c05-919d-622f8b61185d",
+        sharpe=1.19,
+        max_dd=0.95,
+        trade_count=27,
+    )
+
+    paper, _ = _query_bank(db)
+
+    assert len(paper) == 1
+    row = paper[0]
+    assert row["strategyId"] == "regime.daily.sma200_rotation.spy_shy.v1"
+    assert row["promotionType"] == "lifecycle_exempt"
+    # The COALESCE must surface the backtest_runs values, not None.
+    assert abs(row["sharpeRatio"] - 1.19) < 1e-9, (
+        f"Expected sharpeRatio=1.19 (from backtest_runs), got {row['sharpeRatio']!r}"
+    )
+    assert abs(row["maxDrawdownPct"] - 0.95) < 1e-9, (
+        f"Expected maxDrawdownPct=0.95, got {row['maxDrawdownPct']!r}"
+    )
+    assert row["tradeCount"] == 27, f"Expected tradeCount=27, got {row['tradeCount']!r}"
+
+
+def test_statistical_promotion_metrics_use_promotion_record(tmp_path) -> None:
+    """When promotions.sharpe_ratio is set, COALESCE uses it — not backtest_runs.
+
+    Pins the precedence rule: the promotion record wins over the re-baseline
+    backtest_run when both carry values (they intentionally differ here to make
+    the precedence unambiguous).
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+
+    # Promotion record carries explicit metrics.
+    _seed_paper_row(
+        db,
+        "breakout.daily.atr_channel.sector_etfs.v1",
+        promotion_type="statistical",
+        sharpe=0.72,
+        max_dd=8.5,
+        trade_count=150,
+    )
+    # backtest_run for the same strategy carries DIFFERENT values — COALESCE
+    # must NOT use these because the promotion record is non-NULL.
+    _seed_backtest_run(
+        db,
+        strategy_id="breakout.daily.atr_channel.sector_etfs.v1",
+        run_id="run-backtest-99",
+        sharpe=0.55,  # intentionally different from 0.72
+        max_dd=12.0,  # intentionally different from 8.5
+        trade_count=120,  # intentionally different from 150
+    )
+
+    paper, _ = _query_bank(db)
+
+    assert len(paper) == 1
+    row = paper[0]
+    # Promotion-record values must take precedence.
+    assert abs(row["sharpeRatio"] - 0.72) < 1e-9, (
+        f"Expected sharpeRatio=0.72 (from promotions), got {row['sharpeRatio']!r}"
+    )
+    assert abs(row["maxDrawdownPct"] - 8.5) < 1e-9, (
+        f"Expected maxDrawdownPct=8.5, got {row['maxDrawdownPct']!r}"
+    )
+    assert row["tradeCount"] == 150, f"Expected tradeCount=150, got {row['tradeCount']!r}"

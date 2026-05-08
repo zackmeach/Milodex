@@ -133,6 +133,13 @@ Item {
         anchors.topMargin:    Theme.radius.md
         anchors.bottomMargin: Theme.radius.md
         color:  Theme.color.brand.accent
+        // If the bar isn't visually appearing on selected state, verify:
+        // (a) the parent row's bg Rectangle isn't overdrawing it — z-order
+        //     is correct here: bg is the first child, selectedAccent is later,
+        //     so selectedAccent naturally paints on top.
+        // (b) brand.accent has sufficient contrast with surface.raised on
+        //     Editorial Dark (brand.accent = #C9A85C mustard vs surface.raised
+        //     = near-black — should be clearly visible).
     }
 
     // ------------------------------------------------------------------
