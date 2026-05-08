@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from typing import TextIO
 
+from milodex._logging import install_file_handler
 from milodex.backtesting.engine import BacktestEngine
 from milodex.broker import BrokerError
 from milodex.broker.alpaca_client import AlpacaBrokerClient
@@ -103,6 +104,7 @@ def main(
     """Run the CLI and return a process exit code."""
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    install_file_handler(get_logs_dir())
     _locks_dir = locks_dir if locks_dir is not None else get_locks_dir()
     parser = build_parser()
     args = parser.parse_args(list(argv) if argv is not None else None)
