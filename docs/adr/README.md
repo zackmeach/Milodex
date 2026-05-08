@@ -61,3 +61,4 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0032](0032-audit-trail-backfill-policy.md) | Audit-trail backfill policy | Accepted |
 | [0033](0033-gui-runtime-is-pyside6-qt-quick.md) | GUI runtime is PySide6 + Qt Quick (full QML) | Accepted |
 | [0034](0034-phase-5-scope-orders-observability-before-features.md) | Phase 5 scope orders observability before features | Accepted |
+| [0035](0035-design-system-and-theme-architecture.md) | Design system and theme architecture | Accepted |

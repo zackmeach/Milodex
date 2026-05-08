@@ -67,3 +67,4 @@ market_cache/
 .mutmut-*.db
 mutants/
 html/
+.superpowers/
