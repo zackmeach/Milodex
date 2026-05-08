@@ -41,7 +41,11 @@ AppUpdatesURL=https://github.com/zdm80/milodex/releases
 DefaultDirName={localappdata}\Programs\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
-OutputDir=dist
+; OutputDir is resolved relative to the .iss file's location. Using ..\dist
+; lands the installer at <repo_root>\dist\Milodex-Setup-vX.Y.Z.exe alongside
+; PyInstaller's <repo_root>\dist\Milodex\ bundle — both build artifacts in
+; the conventional dist/ directory. The build script's hash step looks here.
+OutputDir=..\dist
 OutputBaseFilename={#MyAppName}-Setup-v{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
