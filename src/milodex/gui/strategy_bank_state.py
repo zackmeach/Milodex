@@ -93,14 +93,25 @@ logger = logging.getLogger(__name__)
 
 # Paper-stage strategies (the runnable list).
 # Cross-reference: docs/STRATEGY_BANK.md lines 30–48.
+#
+# Diverges from STRATEGY_BANK.md's reference query: this version COALESCEs
+# promotion-record metrics with backtest_runs.metadata_json so lifecycle_exempt
+# promotions (where sharpe_ratio / max_drawdown_pct / trade_count are NULL in
+# the promotions table) display correctly.  The doc's reference query renders
+# those columns as NULL for regime — this fix surfaces the actual walk-forward
+# figures from the re-baseline run (e.g. Sharpe 1.19, MaxDD 0.95, 27 trades
+# for regime.daily.sma200_rotation.spy_shy.v1 per STRATEGY_BANK.md lines 49, 95).
 _SQL_PAPER = """
 SELECT p.strategy_id,
-       p.recorded_at            AS promoted_at,
-       p.backtest_run_id        AS evidence_run_id,
+       p.recorded_at                AS promoted_at,
+       p.backtest_run_id            AS evidence_run_id,
        p.promotion_type,
-       p.sharpe_ratio,
-       p.max_drawdown_pct,
-       p.trade_count
+       COALESCE(p.sharpe_ratio,
+           json_extract(br.metadata_json, '$.oos_aggregate.sharpe'))        AS sharpe_ratio,
+       COALESCE(p.max_drawdown_pct,
+           json_extract(br.metadata_json, '$.oos_aggregate.max_drawdown_pct')) AS max_drawdown_pct,
+       COALESCE(p.trade_count,
+           json_extract(br.metadata_json, '$.oos_aggregate.trade_count'))   AS trade_count
 FROM promotions p
 INNER JOIN (
     SELECT strategy_id, MAX(id) AS max_id
@@ -108,6 +119,15 @@ INNER JOIN (
     WHERE to_stage = 'paper'
     GROUP BY strategy_id
 ) latest ON p.strategy_id = latest.strategy_id AND p.id = latest.max_id
+LEFT JOIN (
+    SELECT br1.strategy_id, br1.metadata_json
+    FROM backtest_runs br1
+    WHERE br1.id = (
+        SELECT MAX(br2.id)
+        FROM backtest_runs br2
+        WHERE br2.strategy_id = br1.strategy_id AND br2.status = 'completed'
+    )
+) br ON p.strategy_id = br.strategy_id
 WHERE p.to_stage = 'paper'
 ORDER BY p.recorded_at;
 """
