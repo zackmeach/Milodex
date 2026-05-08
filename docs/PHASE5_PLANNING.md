@@ -141,19 +141,11 @@ Same Phase 4 floor table, with each item updated for Phase 5. The default remain
 
 Five candidates considered; Tauri, Electron, Flet, Widgets-only PySide6, and Widgets+QML-hybrid PySide6 were each rejected with explicit reasons recorded in [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md). The decision matrix is in that ADR; this section preserves only the resolution.
 
-### 4.7 What's the distribution model? — **OPEN**
+### 4.7 ~~What's the distribution model?~~ — **Decided 2026-05-08: (γ) PyInstaller `--onedir` + Inno Setup, unsigned with documented SmartScreen workaround**
 
-The remaining open question. Resolves with a new ADR when the installer PR opens. PyInstaller is the default candidate per [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md), but the actual model is a separate decision.
+> **Decision ([ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md)):** Bundle is PyInstaller `--onedir` (not `--onefile`). Installer wrapper is Inno Setup producing a per-user `%LOCALAPPDATA%\Programs\Milodex\` install (no admin elevation). Code-signing posture is **unsigned** for Phase 5; SmartScreen "More info → Run anyway" workaround documented in `docs/INSTALL.md` with SHA-256 verification instructions. Auto-update deferred to Phase 6+. Platform scope is Windows only for Phase 5; macOS / Linux deferred. The unsigned posture is reversible without architectural rework when an audience-driven case for a code-signing certificate emerges.
 
-**(α) GitHub clone + `pip install`** — developer-only. Smallest distribution code. Fails FOUNDER_INTENT priority #3 (accessibility) and #4 (shareability) for a non-developer audience. Not the friend-installable path.
-
-**(β) PyInstaller single-file or single-folder binary** — pre-bundled Python interpreter + Qt runtime + Milodex code. Mid-friction. No code-signing by default (Windows SmartScreen warning on first run for unsigned binaries). PySide6 + QML bundles cleanly here. **Default candidate.**
-
-**(γ) Native installer (MSI / NSIS / WiX)** — most polished install UX. Highest setup cost (code-signing certificate, installer-script authoring, update path). Builds on top of the PyInstaller bundle in most workflows.
-
-**(δ) Containerized distribution (Docker)** — for technical friends only. Doesn't fit "polished desktop product" intent or FOUNDER_INTENT's non-developer audience.
-
-A new ADR for the chosen model is required when this resolves. The §4.7 ADR may also document the code-signing posture (signed with what authority, or unsigned with a documented SmartScreen workaround).
+Four candidates considered; (α) `pip install` was ruled out for failing FOUNDER_INTENT priorities #3/#4 for a non-developer audience, (β) PyInstaller alone was passed-over in favor of the more polished installer-wrapper UX, and (δ) Docker was ruled out for not fitting the "polished desktop product" intent. The decision matrix and rationale are in [ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md); this section preserves only the resolution.
 
 ---
 
