@@ -210,6 +210,35 @@ Accessed via `Theme.column.pill` etc. Surfaces that need different proportions
 may compose `StrategyRow` with their own column widths via property overrides
 (future enhancement; not in Phase 5 scope).
 
+#### Column-reservation contract
+
+**Rule: content never determines column width &mdash; the column always determines it.**
+
+Every variable-content row slot must reserve a stable `Theme.column.*` width
+sized for the maximum-case content. Smaller cases fill less of the slot; the
+slot itself does not shrink. Within a section, columns then align across all
+rows regardless of per-row content variance.
+
+The contract emerged from a visible regression in PR E: the gate-chips slot
+used `Layout.preferredWidth: visible ? implicitWidth : 0`, which made the slot
+content-driven. RowLayout shifted every column to the right of the fillWidth
+column to absorb the chip-row's variance, producing visibly drifting pill /
+metric / tradeCount column positions row-to-row in the BLOCKED section.
+PR E.3 introduced `column.chips` and the contract.
+
+When adding a new variable-content slot to a row component:
+
+1. Identify the maximum-case content (longest possible label, most chips, etc.).
+2. Add a `Theme.column.<name>` token sized to fit it with breathing room.
+3. Bind `Layout.preferredWidth: visible ? Theme.column.<name> : 0`.
+4. Add `clip: true` on the slot's container as a backstop &mdash; if a future
+   change makes the content overflow the reserved width, the overflow stays
+   inside the slot rather than silently bleeding into adjacent columns.
+
+Cross-section alignment (paper section vs blocked section) is not enforced.
+Sections may legitimately have different column structures; section-level
+visual treatment (e.g., the BLOCKED rust-wash) signals the difference.
+
 ---
 
 ## 5. Motion
