@@ -69,6 +69,11 @@ from milodex.execution.state import KillSwitchStateStore
 
 logger = logging.getLogger(__name__)
 
+# The confirmation token QML must pass to reset_kill_switch().  A module-level
+# constant makes the value testable and avoids hardcoding the string in two
+# places (Python + QML read it via the resetKillSwitchToken Q_PROPERTY).
+RESET_KILL_SWITCH_TOKEN = "CONFIRM"
+
 
 # ---------------------------------------------------------------------------
 # Worker
@@ -214,7 +219,11 @@ class OperationalState(QObject):
         self._broker_status: str = "stale"
         self._broker_error_message: str = ""
 
-        # Timers (lazily started via .start()).
+        # KILL-SWITCH POLL THREAD: runs on the GUI thread (1s timer). SQLite
+        # reads are fast — current store size keeps _poll_kill_switch well
+        # under 1ms. If the event store grows large enough that this exceeds
+        # ~8ms, move it onto _broker_pool to avoid frame drops.
+        # Round-2 reviewer flag; not fix-now.
         self._kill_switch_timer = QTimer(self)
         self._kill_switch_timer.setInterval(self._kill_switch_poll_ms)
         self._kill_switch_timer.timeout.connect(self._poll_kill_switch)
@@ -426,6 +435,9 @@ class OperationalState(QObject):
     def _get_broker_error_message(self) -> str:
         return self._broker_error_message
 
+    def _get_reset_kill_switch_token(self) -> str:
+        return RESET_KILL_SWITCH_TOKEN
+
     # Q_PROPERTY declarations.  ``Property`` here is PySide6's
     # ``QtCore.Property`` shim that builds Q_PROPERTYs from Python.
     killSwitchActive = Property(  # noqa: N815
@@ -453,6 +465,9 @@ class OperationalState(QObject):
     brokerErrorMessage = Property(  # noqa: N815
         str, _get_broker_error_message, notify=brokerStatusChanged
     )
+    resetKillSwitchToken = Property(  # noqa: N815
+        str, _get_reset_kill_switch_token, constant=True
+    )
 
     # ------------------------------------------------------------------
     # Q_INVOKABLE actions
@@ -463,22 +478,32 @@ class OperationalState(QObject):
         """Reset the kill switch — manual confirmation required.
 
         Per ADR 0005, the kill switch only resets on a deliberate manual
-        operator action.  The QML layer must pass ``"CONFIRM"`` (or a
-        future operator-typed phrase) as ``confirmation_token`` — any
-        other value is rejected.  This is belt-and-braces over the
-        confirmation dialog: even if a UI bug ever fired this slot
-        without a dialog, a stray click could not silently reset.
+        operator action.  The QML layer must pass the value of
+        :data:`RESET_KILL_SWITCH_TOKEN` (exposed to QML via the
+        ``resetKillSwitchToken`` Q_PROPERTY) as ``confirmation_token`` —
+        any other value is rejected.  This is belt-and-braces over the
+        confirmation dialog: even if a UI bug ever fired this slot without
+        a dialog, a stray click could not silently reset.
 
         Returns
         -------
         bool
             ``True`` on accepted reset, ``False`` on rejected token.
+
+        **On per-call nonce hardening.** A standard pattern for irreversible
+        actions is a per-call UUID with TTL — dialog requests a token,
+        slot validates and burns it, replays fail. We deliberately do not
+        implement this: the threat model is single-operator, and the
+        combination of (a) the constant-token check above, (b) the dialog
+        type-to-confirm gate, and (c) the manual-reset requirement from
+        ADR 0005 covers the realistic failure modes. Revisit if/when QML
+        contributors are added.
         """
-        if confirmation_token != "CONFIRM":
+        if confirmation_token != RESET_KILL_SWITCH_TOKEN:
             logger.warning(
-                "OperationalState.reset_kill_switch: rejected token %r "
-                "(must be 'CONFIRM' — see ADR 0005)",
+                "OperationalState.reset_kill_switch: rejected token %r (must be %r — see ADR 0005)",
                 confirmation_token,
+                RESET_KILL_SWITCH_TOKEN,
             )
             return False
         try:

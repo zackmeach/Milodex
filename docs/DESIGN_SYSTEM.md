@@ -277,6 +277,10 @@ Token references for the four built-in pill variants:
 
 `@ 0.12` and `@ 0.30` denote alpha blends of the role color against the surface. QML implements via `Qt.alpha()` or pre-computed values bound to the Theme singleton.
 
+### 6.4 Modal scope
+
+**Modal scope.** The kill-switch confirmation dialog in `AnchorSurface.qml` masks at the surface level only — clicking a tab in `Main.qml` while the dialog is open will dismiss it without confirmation. Future dialogs that gate destructive actions should mask at the window level (overlay in `Main.qml`). Tracked for the next surface that adds a dialog.
+
 ---
 
 ## 7. Components (initial set)
@@ -306,6 +310,8 @@ Hover state: critical uses `status.negativeHover` background; primary uses `colo
 - `ghost` — dismissive action ("Cancel"). No chrome, text only.
 
 The split between `danger` and `critical` is the key distinction: `danger` is for actions whose worst-case is "you have to recreate a row"; `critical` is for actions whose worst-case is "the platform was protecting you from a real-money loss and you just disabled the protection."
+
+- **Theme variation is by design.** The critical button's rust color reads differently across themes (Dark: warm caution; Light: hard stop; Bronze: between). All three pass WCAG AA per the contrast audit. Forcing visual uniformity would mean overriding the active theme's `status.negative`, which fights the theme system. Acceptable; deliberate.
 
 ### 7.2 Status pills
 

@@ -414,6 +414,35 @@ def test_stop_drains_in_flight_broker_worker(qapp) -> None:
 
 
 @_skip_no_qt
+def test_reset_kill_switch_token_property_matches_constant(qapp) -> None:
+    """resetKillSwitchToken Q_PROPERTY returns the module constant.
+
+    Belt-and-braces against silent mismatch: if the constant is renamed or
+    the property getter is wired to a different value, this fails loudly.
+    """
+    _ = qapp
+    from milodex.gui.operational_state import (  # noqa: F401
+        RESET_KILL_SWITCH_TOKEN,
+        OperationalState,
+    )
+
+    state = _make_state()
+    assert state.resetKillSwitchToken == RESET_KILL_SWITCH_TOKEN
+
+
+def test_reset_kill_switch_token_constant_value_is_canonical() -> None:
+    """RESET_KILL_SWITCH_TOKEN must equal the literal string 'CONFIRM'.
+
+    No Qt needed — this pins the constant's value so any change to the
+    canonical token fails explicitly rather than quietly altering the
+    operator's expected input.
+    """
+    from milodex.gui.operational_state import RESET_KILL_SWITCH_TOKEN
+
+    assert RESET_KILL_SWITCH_TOKEN == "CONFIRM"
+
+
+@_skip_no_qt
 @pytest.mark.parametrize(
     "token",
     [
