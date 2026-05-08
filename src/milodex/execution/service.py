@@ -204,11 +204,16 @@ class ExecutionService:
         message: str = "No trade intents emitted for this bar.",
         reasoning: DecisionReasoning | None = None,
         submitted_by: str = "strategy_runner",
+        backtest_run_id: int | None = None,
     ) -> None:
         """Record a hold decision (no trade intents emitted) for the event log.
 
         Routed through the service so every explanation event — preview,
-        submit, hold — is constructed in one place.
+        submit, hold — is constructed in one place. ``backtest_run_id`` is
+        the backtest engine's parent ``backtest_runs.id``; the runner path
+        leaves it ``None`` and relies on ``session_id`` for ancestry. At
+        least one must be supplied or
+        :meth:`EventStore.append_explanation` rejects the write.
         """
         account = self._broker.get_account()
         context: dict[str, object | None] = {"message": message}
@@ -242,6 +247,7 @@ class ExecutionService:
                 risk_checks=[],
                 context=context,
                 session_id=session_id,
+                backtest_run_id=backtest_run_id,
             )
         )
 
@@ -491,6 +497,7 @@ class ExecutionService:
                 ],
                 context=context,
                 session_id=session_id,
+                backtest_run_id=backtest_run_id,
             )
         )
         # When the broker has already reported a fill (synchronous path —

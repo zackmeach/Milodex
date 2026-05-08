@@ -195,6 +195,7 @@ def test_assemble_trust_report_surfaces_recent_decisions(tmp_path: Path) -> None
                 reason_codes=[],
                 risk_checks=[],
                 context={"reasoning": {"rule": rule, "narrative": narrative}},
+                session_id="test-trust-report-session",
             )
         )
 
@@ -229,6 +230,7 @@ def test_assemble_trust_report_surfaces_recent_decisions(tmp_path: Path) -> None
             reason_codes=[],
             risk_checks=[],
             context={"reasoning": {"rule": "x", "narrative": "y"}},
+            session_id="test-trust-report-other-session",
         )
     )
 

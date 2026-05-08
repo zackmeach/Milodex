@@ -175,6 +175,36 @@ def test_walk_forward_creates_one_parent_run_not_one_per_window():
     assert runs[0].metadata["walk_forward"] is True
 
 
+def test_walk_forward_explanations_are_parented_to_backtest_run():
+    """Every walk-forward explanation row must carry backtest_run_id.
+
+    Closes the orphan-evaluation gap (migration 008): walk-forward used to
+    write explanations with session_id ``<run_id>:wN`` and no explicit
+    backtest_run_id link, so analytics joining only on session_id
+    ↔ strategy_runs lost them. The runner now passes the parent
+    backtest_run.id through to record_no_action/_record_execution; this
+    test pins that contract end-to-end.
+    """
+    engine, store, bars_start = _make_engine(bar_count=30)
+    result = run_walk_forward(
+        engine,
+        start_date=bars_start,
+        end_date=bars_start + timedelta(days=29),
+        train_days=10,
+        test_days=5,
+        step_days=5,
+    )
+
+    parent = store.get_backtest_run(result.run_id)
+    assert parent is not None
+    explanations = [e for e in store.list_explanations() if e.submitted_by == "backtest_engine"]
+    assert explanations, "walk-forward should have produced at least one explanation"
+    assert all(e.backtest_run_id == parent.id for e in explanations), (
+        "every walk-forward explanation must point at the parent backtest_run.id "
+        "(not just the synthetic walk-forward session_id)"
+    )
+
+
 def test_walk_forward_metadata_contains_oos_aggregate_and_stability():
     engine, store, bars_start = _make_engine(bar_count=30)
     result = run_walk_forward(

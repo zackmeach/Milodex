@@ -589,6 +589,7 @@ class BacktestEngine:
                     session_id=session_id,
                     reasoning=decision.reasoning,
                     submitted_by="backtest_engine",
+                    backtest_run_id=db_run_id,
                 )
             else:
                 for intent in intents:
