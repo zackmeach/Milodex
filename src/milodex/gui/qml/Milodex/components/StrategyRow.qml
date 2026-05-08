@@ -149,62 +149,76 @@ Item {
         spacing: Theme.space[5]
 
         // Strategy ID column — mono, fills remaining width with elision.
-        // When auditFlag is true, the ID and the asterisk sit in a Row so the
-        // asterisk floats directly after the last visible character rather than
-        // hanging at the end of the full column width.
+        // Uses an inner Row so the strategy ID, audit asterisk, and inline note
+        // flow left-to-right based on actual content widths.  An anchor-based
+        // layout here previously had a silent overflow vector (idText.right
+        // resolved to parent.right regardless of glyph content, sending noteText
+        // past the column boundary into the adjacent StatusPill column).
+        //
+        // `clip: true` on the column is a backstop: even if a future change
+        // reintroduces an over-wide child, the overflow stays inside this column.
         Item {
             id: idColumn
             Layout.fillWidth: true
-            implicitHeight: idText.implicitHeight
+            implicitHeight: idRow.implicitHeight
+            clip: true
 
-            Text {
-                id: idText
+            Row {
+                id: idRow
                 anchors.left:           parent.left
-                anchors.right:          auditAsterisk.visible ? auditAsterisk.left : parent.right
+                anchors.right:          parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                text:  root.strategyId
-                color: Theme.color.text.primary
-                font.family:    Theme.typography.data.md.family
-                font.pixelSize: Theme.typography.data.md.size
-                font.weight:    Theme.typography.data.md.weight
-                font.features:  Theme.typography.data.md.features
-                verticalAlignment: Text.AlignVCenter
-                elide: Text.ElideRight
-            }
+                spacing: 0
 
-            // Audit-trail asterisk (ADR 0032). Rendered as a superscript "*"
-            // immediately after the strategy ID when auditFlag is true.
-            // Hover/tooltip is out of scope for PR E.
-            Text {
-                id: auditAsterisk
-                visible:         root.auditFlag
-                anchors.left:    idText.right
-                anchors.top:     parent.top
-                text:            "*"
-                color:           Theme.color.text.muted
-                font.family:     Theme.typography.data.xs.family
-                font.pixelSize:  Theme.typography.data.xs.size
-            }
+                Text {
+                    id: idText
+                    // Explicit width so elision triggers when the column is narrow.
+                    // Reserve space for the audit asterisk and the inline note when
+                    // they're visible; otherwise consume all available width.
+                    width: Math.min(
+                        implicitWidth,
+                        idRow.width
+                            - (auditAsterisk.visible ? auditAsterisk.implicitWidth : 0)
+                            - (noteText.visible ? noteText.implicitWidth + Theme.space[2] : 0)
+                    )
+                    text:  root.strategyId
+                    color: Theme.color.text.primary
+                    font.family:    Theme.typography.data.md.family
+                    font.pixelSize: Theme.typography.data.md.size
+                    font.weight:    Theme.typography.data.md.weight
+                    font.features:  Theme.typography.data.md.features
+                    verticalAlignment: Text.AlignVCenter
+                    elide: Text.ElideRight
+                }
 
-            // Inline editorial marginalia — italic Newsreader at body size
-            // (Theme.typography.deck), prefixed with an em-dash.  The em-dash
-            // convention makes the note read as a deliberate aside rather than
-            // a concatenated label.  Sits after the audit asterisk (if present)
-            // and elides gracefully if remaining column space is short — long
-            // strategy IDs always get the most space; the note takes what's left.
-            Text {
-                id: noteText
-                visible: root.note !== ""
-                anchors.left:           root.auditFlag ? auditAsterisk.right : idText.right
-                anchors.leftMargin:     Theme.space[2]
-                anchors.verticalCenter: parent.verticalCenter
-                text:  "— " + root.note
-                color: Theme.color.text.muted
-                font.family:    Theme.typography.deck.family
-                font.pixelSize: Theme.typography.deck.size
-                font.weight:    Theme.typography.deck.weight
-                font.italic:    Theme.typography.deck.italic
-                elide: Text.ElideRight
+                // Audit-trail asterisk (ADR 0032). Rendered as a "*" after the
+                // strategy ID when auditFlag is true. Hover/tooltip is out of
+                // scope for PR E.
+                Text {
+                    id: auditAsterisk
+                    visible:        root.auditFlag
+                    text:           "*"
+                    color:          Theme.color.text.muted
+                    font.family:    Theme.typography.data.xs.family
+                    font.pixelSize: Theme.typography.data.xs.size
+                }
+
+                // Inline editorial marginalia — italic Newsreader at body size,
+                // prefixed with em-dash. Used for "lifecycle exempt" and similar
+                // editor's-note callouts. Lower-case is intentional (commentary,
+                // not bureaucratic label). See DESIGN_SYSTEM.md §6.5.
+                Text {
+                    id: noteText
+                    visible:     root.note !== ""
+                    leftPadding: Theme.space[2]
+                    text:        "— " + root.note
+                    color:       Theme.color.text.muted
+                    font.family:    Theme.typography.deck.family
+                    font.pixelSize: Theme.typography.deck.size
+                    font.weight:    Theme.typography.deck.weight
+                    font.italic:    Theme.typography.deck.italic
+                    elide:          Text.ElideRight
+                }
             }
         }
 

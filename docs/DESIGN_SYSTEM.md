@@ -72,7 +72,7 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 | `typography.display.md` | Newsreader | 24 / 1.20 | 500 | Section titles ("Strategy Bank") |
 | `typography.display.sm` | Newsreader | 18 / 1.30 | 500 | Subsection titles |
 | `typography.display.sm.italic` | Newsreader | 18 / 1.30 | 400 italic | Editorial accents ("No. 6 in paper") |
-| `typography.deck` | Newsreader | 14 / 1.45 | 400 italic | Editorial deck/marginalia — section kickers, inline editor's-note callouts. See &sect;6.5. |
+| `typography.deck` | Newsreader | 14 / n/a (single-line role) | 400 italic | Editorial deck/marginalia — section kickers, inline editor's-note callouts. See &sect;6.5. |
 | `typography.body.lg` | Public Sans | 15 / 1.50 | 400 | Primary body text |
 | `typography.body.md` | Public Sans | 14 / 1.50 | 400 | Default UI text, dense forms |
 | `typography.body.sm` | Public Sans | 13 / 1.45 | 400 | Captions, secondary metadata |

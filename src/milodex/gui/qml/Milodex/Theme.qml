@@ -204,10 +204,12 @@ QtObject {
         // Sized to mirror body.md (14px) so it sits at body weight in a column
         // next to data.md mono cells; italic + serif distinguishes commentary
         // from data.
+        //
+        // Single-line role — no `lineHeight` property; if multi-line use is
+        // added later, define `lineHeight` then and wire it at every consumer.
         readonly property var deck: QtObject {
             readonly property string family: "Newsreader"
             readonly property int size: 14
-            readonly property real lineHeight: 1.45
             readonly property int weight: Font.Normal
             readonly property bool italic: true
         }
