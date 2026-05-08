@@ -178,9 +178,7 @@ def test_tier2_strategy_config_fires_when_no_override():
     # Universe also has slippage_pct; tier 2 must win.
     _write_universe_yaml(tmp, "universe.test.v1", slippage_pct=0.0003)
 
-    loaded = _make_loaded(
-        universe_ref="universe.test.v1", config_dir=tmp, backtest_slippage=0.0007
-    )
+    loaded = _make_loaded(universe_ref="universe.test.v1", config_dir=tmp, backtest_slippage=0.0007)
 
     engine = _make_engine(loaded)
 

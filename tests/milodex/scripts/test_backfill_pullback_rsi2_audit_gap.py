@@ -141,9 +141,7 @@ class TestIdempotency:
         assert first["inserted"] is True
         assert second["inserted"] is False
 
-    def test_row_count_unchanged_on_second_run(
-        self, seeded_store: tuple[EventStore, int]
-    ) -> None:
+    def test_row_count_unchanged_on_second_run(self, seeded_store: tuple[EventStore, int]) -> None:
         store, _ = seeded_store
         db_path = store._path
 

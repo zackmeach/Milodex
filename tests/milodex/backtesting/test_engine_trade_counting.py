@@ -201,17 +201,21 @@ def test_partial_close_three_buys_two_sells():
         n = call_count[0]
         if n == 1:
             # Day 1: enqueue buy all three
-            return _decision([
-                _make_intent("SPY", OrderSide.BUY),
-                _make_intent("AAPL", OrderSide.BUY),
-                _make_intent("TSLA", OrderSide.BUY),
-            ])
+            return _decision(
+                [
+                    _make_intent("SPY", OrderSide.BUY),
+                    _make_intent("AAPL", OrderSide.BUY),
+                    _make_intent("TSLA", OrderSide.BUY),
+                ]
+            )
         if n == 2:
             # Day 2 (after buys filled): sell SPY and AAPL only
-            return _decision([
-                _make_intent("SPY", OrderSide.SELL),
-                _make_intent("AAPL", OrderSide.SELL),
-            ])
+            return _decision(
+                [
+                    _make_intent("SPY", OrderSide.SELL),
+                    _make_intent("AAPL", OrderSide.SELL),
+                ]
+            )
         return _decision([])
 
     strategy.evaluate.side_effect = fake_evaluate
@@ -256,17 +260,21 @@ def test_all_closed_three_symbols():
         call_count[0] += 1
         n = call_count[0]
         if n == 1:
-            return _decision([
-                _make_intent("SPY", OrderSide.BUY),
-                _make_intent("AAPL", OrderSide.BUY),
-                _make_intent("TSLA", OrderSide.BUY),
-            ])
+            return _decision(
+                [
+                    _make_intent("SPY", OrderSide.BUY),
+                    _make_intent("AAPL", OrderSide.BUY),
+                    _make_intent("TSLA", OrderSide.BUY),
+                ]
+            )
         if n == 2:
-            return _decision([
-                _make_intent("SPY", OrderSide.SELL),
-                _make_intent("AAPL", OrderSide.SELL),
-                _make_intent("TSLA", OrderSide.SELL),
-            ])
+            return _decision(
+                [
+                    _make_intent("SPY", OrderSide.SELL),
+                    _make_intent("AAPL", OrderSide.SELL),
+                    _make_intent("TSLA", OrderSide.SELL),
+                ]
+            )
         return _decision([])
 
     strategy.evaluate.side_effect = fake_evaluate
@@ -423,6 +431,7 @@ def test_round_trip_count_defaults_to_zero_when_no_trades():
 
 def test_aggregate_oos_sums_round_trip_count():
     """_aggregate_oos sums round_trip_count across windows."""
+
     # Build minimal WalkForwardWindow objects using keyword overrides
     def _win(idx: int, rt: int) -> WalkForwardWindow:
         d = date(2024, 1, 1) + timedelta(days=idx * 5)
@@ -447,4 +456,4 @@ def test_aggregate_oos_sums_round_trip_count():
     windows = [_win(0, 3), _win(1, 2), _win(2, 1)]
     agg = _aggregate_oos(windows, initial_equity=100_000.0)
     assert agg.round_trip_count == 6  # 3 + 2 + 1
-    assert agg.trade_count == 12     # (3+2+1)*2
+    assert agg.trade_count == 12  # (3+2+1)*2

@@ -76,7 +76,6 @@ class TestInstallFileHandler:
             logging.getLogger().removeHandler(handler)
             handler.close()
 
-
     def test_default_level_is_info(self, tmp_path) -> None:
         """Default handler level must be INFO, not DEBUG.
 

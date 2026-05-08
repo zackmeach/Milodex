@@ -48,9 +48,7 @@ def _make_barset(n_rows: int, start: date) -> BarSet:
 def _empty_barset() -> BarSet:
     """Return an empty BarSet (symbol was returned by the provider but has no rows)."""
     return BarSet(
-        pd.DataFrame(
-            columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"]
-        )
+        pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"])
     )
 
 
