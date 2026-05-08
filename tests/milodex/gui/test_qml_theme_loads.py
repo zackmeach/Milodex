@@ -315,3 +315,38 @@ def test_invariant_tokens_stable_across_themes(engine):
     assert obj.property("spaceFour") == space_dark
     assert obj.property("motionStandard") == motion_dark
     assert obj.property("radiusMd") == radius_dark
+
+
+@_skip_no_qt
+def test_theme_column_widths_exist_and_are_invariant(engine):
+    """Theme.column.* tokens exist, have the correct values, and are theme-invariant."""
+    qml_engine, manager = engine
+    manager.set_theme("editorial-dark")
+
+    qml = """
+    import QtQuick
+    import Milodex 1.0
+
+    Item {
+        property int pill:       Theme.column.pill
+        property int metric:     Theme.column.metric
+        property int tradeCount: Theme.column.tradeCount
+    }
+    """
+    component, obj = _load_qml(qml_engine, qml)
+    _ = component  # keep alive for the test's lifetime
+
+    assert obj.property("pill") == 96
+    assert obj.property("metric") == 64
+    assert obj.property("tradeCount") == 88
+
+    # Invariant — values must not change across theme switches
+    manager.set_theme("editorial-light")
+    assert obj.property("pill") == 96
+    assert obj.property("metric") == 64
+    assert obj.property("tradeCount") == 88
+
+    manager.set_theme("bronze")
+    assert obj.property("pill") == 96
+    assert obj.property("metric") == 64
+    assert obj.property("tradeCount") == 88

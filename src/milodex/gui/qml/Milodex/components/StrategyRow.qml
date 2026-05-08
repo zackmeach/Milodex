@@ -29,6 +29,7 @@
 //   to another.  Row background/border may animate; values update instantly.
 
 import QtQuick
+import QtQuick.Layouts
 import Milodex 1.0
 
 Item {
@@ -50,7 +51,7 @@ Item {
     // Sizing
     // ------------------------------------------------------------------
 
-    implicitWidth:  rowLayout.implicitWidth + Theme.space[3] * 2
+    implicitWidth:  400
     implicitHeight: rowLayout.implicitHeight + Theme.space[2] * 2
 
     // ------------------------------------------------------------------
@@ -100,10 +101,10 @@ Item {
     }
 
     // ------------------------------------------------------------------
-    // Row layout
+    // Row layout — RowLayout for fixed-width column alignment
     // ------------------------------------------------------------------
 
-    Row {
+    RowLayout {
         id: rowLayout
         anchors.left:           parent.left
         anchors.right:          parent.right
@@ -111,14 +112,8 @@ Item {
         anchors.leftMargin:     Theme.space[3]
         anchors.rightMargin:    Theme.space[3]
         spacing: Theme.space[5]
-        // Long strategy IDs (e.g., `momentum.daily.dual_absolute.gem_weekly.v1`)
-        // can exceed the row width. clip: true masks overflow at the row
-        // boundary rather than letting text spill outside the surface.
-        // For full elision (with "...") a future refactor to RowLayout
-        // with Layout.fillWidth on idText would be ideal.
-        clip: true
 
-        // Strategy ID — data.md mono
+        // Strategy ID — data.md mono; fills remaining width with elision
         Text {
             id: idText
             text:  root.strategyId
@@ -129,17 +124,28 @@ Item {
             font.features:  Theme.typography.data.md.features
             verticalAlignment: Text.AlignVCenter
             elide: Text.ElideRight
+            Layout.fillWidth: true
         }
 
-        // Stage pill — composed from StatusPill (DESIGN_SYSTEM.md §10 principle #3)
-        StatusPill {
-            id: stagePill
-            variant: root.stage
-            text:    root.stage
-            anchors.verticalCenter: parent.verticalCenter
+        // Stage pill column — fixed-width slot, pill itself sizes to its label
+        // so the capsule shape (DESIGN_SYSTEM.md §6.3) is preserved. Wrapping
+        // the StatusPill in an Item lets RowLayout allocate the column width
+        // (Theme.column.pill) without forcing the pill background to stretch
+        // across the whole slot.
+        Item {
+            Layout.preferredWidth: Theme.column.pill
+            Layout.fillHeight: true
+
+            StatusPill {
+                id: stagePill
+                variant: root.stage
+                text:    root.stage
+                anchors.left:           parent.left
+                anchors.verticalCenter: parent.verticalCenter
+            }
         }
 
-        // Primary metric — data.md mono
+        // Primary metric — data.md mono, right-aligned
         Text {
             id: metricText
             text:  root.metricValue
@@ -148,10 +154,12 @@ Item {
             font.pixelSize: Theme.typography.data.md.size
             font.weight:    Theme.typography.data.md.weight
             font.features:  Theme.typography.data.md.features
-            verticalAlignment: Text.AlignVCenter
+            verticalAlignment:   Text.AlignVCenter
+            horizontalAlignment: Text.AlignRight
+            Layout.preferredWidth: Theme.column.metric
         }
 
-        // Trade count — data.sm mono, muted
+        // Trade count — data.sm mono, muted, right-aligned
         Text {
             id: tradeCountText
             text:  root.tradeCount + " trades"
@@ -160,7 +168,9 @@ Item {
             font.pixelSize: Theme.typography.data.sm.size
             font.weight:    Theme.typography.data.sm.weight
             font.features:  Theme.typography.data.sm.features
-            verticalAlignment: Text.AlignVCenter
+            verticalAlignment:   Text.AlignVCenter
+            horizontalAlignment: Text.AlignRight
+            Layout.preferredWidth: Theme.column.tradeCount
         }
     }
 }

@@ -72,13 +72,13 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 | `typography.display.md` | Newsreader | 24 / 1.20 | 500 | Section titles ("Strategy Bank") |
 | `typography.display.sm` | Newsreader | 18 / 1.30 | 500 | Subsection titles |
 | `typography.display.sm.italic` | Newsreader | 18 / 1.30 | 400 italic | Editorial accents ("No. 6 in paper") |
-| `typography.body.lg` | Public Sans | 14 / 1.50 | 400 | Primary body text |
-| `typography.body.md` | Public Sans | 13 / 1.50 | 400 | Default UI text, dense forms |
-| `typography.body.sm` | Public Sans | 12 / 1.45 | 400 | Captions, secondary metadata |
-| `typography.label.xs` | Public Sans | 10 / 1.40 | 500 + `0.12em` letter-spacing + uppercase | Section labels ("STRATEGY BANK") |
+| `typography.body.lg` | Public Sans | 15 / 1.50 | 400 | Primary body text |
+| `typography.body.md` | Public Sans | 14 / 1.50 | 400 | Default UI text, dense forms |
+| `typography.body.sm` | Public Sans | 13 / 1.45 | 400 | Captions, secondary metadata |
+| `typography.label.xs` | Public Sans | 12 / 1.40 | 500 + `0.12em` letter-spacing + uppercase | Section labels ("STRATEGY BANK") |
 | `typography.data.md` | JetBrains Mono | 13 / 1.60 | 400 + `tnum` | Default tabular data |
-| `typography.data.sm` | JetBrains Mono | 11 / 1.60 | 400 + `tnum` | Compact tables |
-| `typography.data.xs` | JetBrains Mono | 10 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
+| `typography.data.sm` | JetBrains Mono | 12 / 1.60 | 400 + `tnum` | Compact tables |
+| `typography.data.xs` | JetBrains Mono | 12 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
 
 **Tabular figures (`tnum`) are mandatory** for any data role. Strategy Bank rows, Sharpe ratios, trade counts, P&amp;L &mdash; all must align numerically. Set via `font.features: ["tnum"]` in QML. Without this, monospaced numbers still drift across rows in proportional-figure mode.
 
@@ -193,6 +193,21 @@ Spacing tokens are accessed via bracket syntax (`Theme.space[4]`) because numeri
 | `radius.xl` | `8px` | Hero / feature surfaces |
 | `radius.full` | `9999px` | Avatars, status dots |
 
+### 4.1 Column widths
+
+Domain-specific layout dimensions for tabular surfaces (Strategy Bank, attribution
+tables, anywhere a multi-cell row appears). Theme-invariant: constant across all themes.
+
+| Token | Value | Use |
+|---|---|---|
+| `column.pill` | `96px` | Stage / status pill column (accommodates "blocked") |
+| `column.metric` | `64px` | Right-aligned numeric metric (e.g., "+1.19") |
+| `column.tradeCount` | `88px` | Right-aligned secondary metric (e.g., "433 trades") |
+
+Accessed via `Theme.column.pill` etc. Surfaces that need different proportions
+may compose `StrategyRow` with their own column widths via property overrides
+(future enhancement; not in Phase 5 scope).
+
 ---
 
 ## 5. Motion
@@ -291,7 +306,15 @@ The load-bearing component for the Strategy Bank surface. Anatomy:
 [strategy-id mono]    [stage-pill]   [primary-metric mono]   [trade-count mono muted]
 ```
 
-Tokens: `typography.data.md` for IDs and metrics, `typography.data.sm` muted for trade count, `space.5` (24px) inter-column gap, `space.3` horizontal padding, `space.2` vertical, `radius.md`, `color.surface.base` background, `color.border.subtle` border, hover -> `color.surface.raised` + `color.border.regular`.
+Layout: `RowLayout` with fixed column widths enforces tabular alignment across all rows.
+- Strategy ID: `Layout.fillWidth: true` + `elide: Text.ElideRight` — absorbs available space, truncates long identifiers cleanly.
+- Stage pill: `Layout.preferredWidth: Theme.column.pill` (96px — accommodates "blocked").
+- Primary metric: `Layout.preferredWidth: Theme.column.metric` (64px), right-aligned.
+- Trade count: `Layout.preferredWidth: Theme.column.tradeCount` (88px), right-aligned.
+
+Column width tokens are defined in `Theme.column.*` (&sect;4.1).
+
+Typography: `typography.data.md` for IDs and metrics, `typography.data.sm` muted for trade count. Spacing: `space[5]` (24px) inter-column gap, `space[3]` horizontal padding, `space[2]` vertical. Surface: `radius.md`, `color.surface.base` background, `color.border.subtle` border, hover -> `color.surface.raised` + `color.border.regular`.
 
 Selected/active state: `2px` left border in `color.brand.accent`, otherwise unchanged.
 

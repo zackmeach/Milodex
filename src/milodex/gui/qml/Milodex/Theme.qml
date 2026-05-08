@@ -199,21 +199,21 @@ QtObject {
         readonly property var body: QtObject {
             readonly property var lg: QtObject {
                 readonly property string family: "Public Sans"
-                readonly property int size: 14
+                readonly property int size: 15
                 readonly property real lineHeight: 1.50
                 readonly property int weight: Font.Normal
                 readonly property bool italic: false
             }
             readonly property var md: QtObject {
                 readonly property string family: "Public Sans"
-                readonly property int size: 13
+                readonly property int size: 14
                 readonly property real lineHeight: 1.50
                 readonly property int weight: Font.Normal
                 readonly property bool italic: false
             }
             readonly property var sm: QtObject {
                 readonly property string family: "Public Sans"
-                readonly property int size: 12
+                readonly property int size: 13
                 readonly property real lineHeight: 1.45
                 readonly property int weight: Font.Normal
                 readonly property bool italic: false
@@ -223,7 +223,7 @@ QtObject {
         readonly property var label: QtObject {
             readonly property var xs: QtObject {
                 readonly property string family: "Public Sans"
-                readonly property int size: 10
+                readonly property int size: 12
                 readonly property real lineHeight: 1.40
                 readonly property int weight: Font.Medium
                 readonly property real letterSpacing: 0.12
@@ -243,7 +243,7 @@ QtObject {
             }
             readonly property var sm: QtObject {
                 readonly property string family: "JetBrains Mono"
-                readonly property int size: 11
+                readonly property int size: 12
                 readonly property real lineHeight: 1.60
                 readonly property int weight: Font.Normal
                 readonly property var features: ["tnum"]
@@ -251,7 +251,7 @@ QtObject {
             }
             readonly property var xs: QtObject {
                 readonly property string family: "JetBrains Mono"
-                readonly property int size: 10
+                readonly property int size: 12
                 readonly property real lineHeight: 1.55
                 readonly property int weight: Font.Normal
                 readonly property var features: ["tnum"]
@@ -259,4 +259,13 @@ QtObject {
             }
         }
     }
+
+    // Column widths — DESIGN_SYSTEM.md section 4.1.  Domain-specific layout
+    // dimensions for tabular surfaces (Strategy Bank, attribution tables,
+    // anywhere a multi-cell row appears).  Theme-invariant: declared inline.
+    readonly property var column: ({
+        pill: 96,         // accommodates "blocked" pill + padding
+        metric: 64,       // "+1.19" or "-0.27" right-aligned
+        tradeCount: 88    // "433 trades" or "27 trades" right-aligned
+    })
 }
