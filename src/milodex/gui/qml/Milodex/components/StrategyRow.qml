@@ -6,14 +6,13 @@
 //   color.border.subtle       — default border
 //   color.border.regular      — hover border
 //   color.brand.accent        — selected left-accent bar (2px)
-//   color.text.muted          — trade-count muted color + lifecycle-exempt badge color
+//   color.text.muted          — trade-count muted color + marginalia color
 //   color.text.primary        — strategy ID + metric text
 //   status.negative           — gate-failure chip color
-//   status.warning            — FLAGGED badge color
 //   typography.data.md        — strategy ID + metric text
 //   typography.data.sm        — trade count text
 //   typography.data.xs        — gate-failure chip text + audit asterisk
-//   typography.label.xs       — lifecycle-exempt badge + FLAGGED badge text
+//   typography.deck           — inline editorial marginalia (note, flagged-not-retired)
 //   space[1], space[2], space[3], space[5] — padding + inter-column gap
 //   radius.md                 — row corner radius
 //   radius.sm                 — gate-failure chip radius
@@ -28,10 +27,14 @@
 //   metricValue        : string   — pre-formatted metric string (e.g. "+1.19")
 //   tradeCount         : int      — trade count (e.g. 433)
 //   selected           : bool     — selected state (default false)
-//   badge              : string   — optional badge label right of tradeCount (e.g. "LIFECYCLE EXEMPT")
-//   gateFailures       : var      — optional list of gate-code strings (e.g. ["S", "D"])
+//   note               : string   — optional inline italic serif marginalia after strategyId
+//                                   (e.g. "lifecycle exempt").  Lower-case; reads as commentary.
+//   gateFailures       : var      — optional list of gate-code strings (e.g. ["S", "D"]);
+//                                   each code renders as a single capital letter inside a
+//                                   framed chip (no literal brackets — the chip frame is the bracket)
 //   auditFlag          : bool     — optional; when true renders a "*" superscript after strategyId
-//   flagFailingNotRetired : bool  — optional; when true renders a "FLAGGED" warning badge
+//   flagFailingNotRetired : bool  — optional; when true renders inline italic serif marginalia
+//                                   "flagged, not retired" alongside gate chips
 //   signal clicked()
 //
 // MOTION DISCIPLINE (DESIGN_SYSTEM.md §5.3, §8):
@@ -56,20 +59,25 @@ Item {
     property bool   selected: false
 
     // Optional extensions — existing call sites that omit these see no change.
-    // badge: non-empty string renders a small label after the tradeCount column.
-    //   Typical use: "LIFECYCLE EXEMPT" on the regime strategy row.
-    property string badge: ""
+    // note: optional inline marginalia rendered after the strategy ID
+    //   (and after the audit asterisk if present) in italic Newsreader at
+    //   body size.  Lower-case text, text.muted color.  Used for editor's-note
+    //   callouts like "lifecycle exempt" — should read as commentary, not data.
+    property string note: ""
     // gateFailures: list of short gate-code strings rendered as inline chips
-    //   between the metric and tradeCount columns.  Each chip reads "[code]".
+    //   between the metric and tradeCount columns.  Each chip renders the code
+    //   letter inside a framed pill — no literal brackets; the chip frame is
+    //   the bracket.
     //   Typical use: ["S", "D", "N"] for blocked strategies (ADR 0009).
     property var    gateFailures: []
     // auditFlag: when true, renders a "*" superscript to the right of strategyId.
     //   Signals a manual audit trail event (ADR 0032).
     property bool   auditFlag: false
-    // flagFailingNotRetired: when true, renders a "FLAGGED" warning badge alongside
-    //   the gate chips.  Used for dual_absolute.gem_weekly per governance callout
-    //   in STRATEGY_BANK.md — strategy is kept at backtest pending a methodology
-    //   decision, not retired.
+    // flagFailingNotRetired: when true, renders inline italic serif marginalia
+    //   "— flagged, not retired" alongside the gate chips.  Used for
+    //   dual_absolute.gem_weekly per governance callout in STRATEGY_BANK.md —
+    //   strategy is kept at backtest pending a methodology decision, not retired.
+    //   Renders as editorial commentary (deck token), not as a warning badge.
     property bool   flagFailingNotRetired: false
 
     signal clicked()
@@ -177,6 +185,27 @@ Item {
                 font.family:     Theme.typography.data.xs.family
                 font.pixelSize:  Theme.typography.data.xs.size
             }
+
+            // Inline editorial marginalia — italic Newsreader at body size
+            // (Theme.typography.deck), prefixed with an em-dash.  The em-dash
+            // convention makes the note read as a deliberate aside rather than
+            // a concatenated label.  Sits after the audit asterisk (if present)
+            // and elides gracefully if remaining column space is short — long
+            // strategy IDs always get the most space; the note takes what's left.
+            Text {
+                id: noteText
+                visible: root.note !== ""
+                anchors.left:           root.auditFlag ? auditAsterisk.right : idText.right
+                anchors.leftMargin:     Theme.space[2]
+                anchors.verticalCenter: parent.verticalCenter
+                text:  "— " + root.note
+                color: Theme.color.text.muted
+                font.family:    Theme.typography.deck.family
+                font.pixelSize: Theme.typography.deck.size
+                font.weight:    Theme.typography.deck.weight
+                font.italic:    Theme.typography.deck.italic
+                elide: Text.ElideRight
+            }
         }
 
         // Stage pill column — fixed-width slot, pill itself sizes to its label
@@ -211,12 +240,13 @@ Item {
             Layout.preferredWidth: Theme.column.metric
         }
 
-        // Gate-failure chips (ADR 0009) + optional FLAGGED badge.
+        // Gate-failure chips (ADR 0009) + optional "flagged, not retired" marginalia.
         // Rendered between metric and tradeCount columns when gateFailures is
-        // non-empty.  Each chip reads "[S]", "[D]", or "[N]".
-        // The flagFailingNotRetired badge sits inline in the same Row so that
-        // the dual_absolute "flagged, not retired" governance note is always
-        // adjacent to the failure codes.
+        // non-empty.  Each chip renders a single capital letter (S, D, or N) inside
+        // a framed pill — the chip frame is the bracket; no literal [/] characters.
+        // The flagFailingNotRetired text sits inline in the same Row so that the
+        // dual_absolute "flagged, not retired" governance note is always adjacent
+        // to the failure codes.
         Row {
             id: chipsRow
             visible: root.gateFailures.length > 0 || root.flagFailingNotRetired
@@ -227,7 +257,13 @@ Item {
             Repeater {
                 model: root.gateFailures
                 delegate: Item {
-                    implicitWidth:  chipLabel.implicitWidth + Theme.space[1] * 2
+                    // Horizontal padding uses space[2] (8px each side = 16px total)
+                    // so a single-letter chip reads at a deliberate width — dropping
+                    // the literal [/] brackets means the chip now holds one character,
+                    // and space[1]*2 (4px/side) was too narrow for a framed pill.
+                    // Vertical padding stays at space[1]*2 — letters don't need the
+                    // same horizontal breathing room.
+                    implicitWidth:  chipLabel.implicitWidth + Theme.space[2] * 2
                     implicitHeight: chipLabel.implicitHeight + Theme.space[1] * 2
                     anchors.verticalCenter: parent.verticalCenter
 
@@ -246,7 +282,9 @@ Item {
                     Text {
                         id: chipLabel
                         anchors.centerIn: parent
-                        text:  "[" + modelData + "]"
+                        // The chip frame is the bracket — no literal [/] characters.
+                        // The single uppercase letter sits centred inside the pill.
+                        text:  modelData
                         color: Theme.status.negative
                         font.family:    Theme.typography.data.xs.family
                         font.pixelSize: Theme.typography.data.xs.size
@@ -255,39 +293,23 @@ Item {
                 }
             }
 
-            // FLAGGED badge: dual_absolute.gem_weekly governance status —
-            // strategy is kept at backtest pending a methodology resolution,
-            // not retired.  Warning color (mustard) signals "review needed"
-            // without the urgency of status.negative.
-            Item {
+            // "flagged, not retired" marginalia — italic Newsreader (deck token),
+            // prefixed with an em-dash.  Shares the same editorial-commentary
+            // treatment as the lifecycle-exempt note on the strategy-ID column:
+            // both are editor's-note callouts, not data fields or warning badges.
+            // The mustard warning chip was replaced here because it read as scolding
+            // (a bright warning widget on a row that the PM deliberately chose to
+            // keep rather than retire) — italic serif reads as "editorial aside."
+            Text {
                 visible: root.flagFailingNotRetired
-                implicitWidth:  flagLabel.implicitWidth + Theme.space[1] * 2
-                implicitHeight: flagLabel.implicitHeight + Theme.space[1] * 2
                 anchors.verticalCenter: parent.verticalCenter
-
-                Rectangle {
-                    anchors.fill: parent
-                    radius: Theme.radius.sm
-                    color:        Qt.rgba(Theme.status.warning.r,
-                                          Theme.status.warning.g,
-                                          Theme.status.warning.b, 0.12)
-                    border.color: Qt.rgba(Theme.status.warning.r,
-                                          Theme.status.warning.g,
-                                          Theme.status.warning.b, 0.30)
-                    border.width: 1
-                }
-
-                Text {
-                    id: flagLabel
-                    anchors.centerIn: parent
-                    text:  "FLAGGED"
-                    color: Theme.status.warning
-                    font.family:         Theme.typography.label.xs.family
-                    font.pixelSize:      Theme.typography.label.xs.size
-                    font.weight:         Theme.typography.label.xs.weight
-                    font.letterSpacing:  Theme.typography.label.xs.letterSpacing
-                    font.capitalization: Font.AllUppercase
-                }
+                text:  "— flagged, not retired"
+                color: Theme.color.text.muted
+                font.family:    Theme.typography.deck.family
+                font.pixelSize: Theme.typography.deck.size
+                font.weight:    Theme.typography.deck.weight
+                font.italic:    Theme.typography.deck.italic
+                leftPadding: Theme.space[2]
             }
         }
 
@@ -305,23 +327,10 @@ Item {
             Layout.preferredWidth: Theme.column.tradeCount
         }
 
-        // Badge column — optional label right of tradeCount.
-        // Non-empty badge (e.g. "LIFECYCLE EXEMPT") renders in label.xs muted.
-        // Layout.preferredWidth collapses to 0 when badge is empty so the
-        // empty string doesn't consume column space.
-        Text {
-            id: badgeText
-            visible: root.badge !== ""
-            text:    root.badge
-            color:   Theme.color.text.muted
-            font.family:         Theme.typography.label.xs.family
-            font.pixelSize:      Theme.typography.label.xs.size
-            font.weight:         Theme.typography.label.xs.weight
-            font.letterSpacing:  Theme.typography.label.xs.letterSpacing
-            font.capitalization: Font.AllUppercase
-            verticalAlignment:   Text.AlignVCenter
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: root.badge !== "" ? 96 : 0
-        }
+        // (badge column removed in PR E polish pass — lifecycle-exempt callout
+        //  moved to inline italic Newsreader marginalia in the idColumn via the
+        //  `note` property; see noteText above.  The 96px fixed column created
+        //  row-width asymmetry and read as a bureaucratic stamp rather than
+        //  editorial commentary.)
     }
 }

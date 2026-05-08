@@ -72,6 +72,7 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 | `typography.display.md` | Newsreader | 24 / 1.20 | 500 | Section titles ("Strategy Bank") |
 | `typography.display.sm` | Newsreader | 18 / 1.30 | 500 | Subsection titles |
 | `typography.display.sm.italic` | Newsreader | 18 / 1.30 | 400 italic | Editorial accents ("No. 6 in paper") |
+| `typography.deck` | Newsreader | 14 / 1.45 | 400 italic | Editorial deck/marginalia — section kickers, inline editor's-note callouts. See &sect;6.5. |
 | `typography.body.lg` | Public Sans | 15 / 1.50 | 400 | Primary body text |
 | `typography.body.md` | Public Sans | 14 / 1.50 | 400 | Default UI text, dense forms |
 | `typography.body.sm` | Public Sans | 13 / 1.45 | 400 | Captions, secondary metadata |
@@ -281,6 +282,14 @@ Token references for the four built-in pill variants:
 
 **Modal scope.** The kill-switch confirmation dialog in `AnchorSurface.qml` masks at the surface level only — clicking a tab in `Main.qml` while the dialog is open will dismiss it without confirmation. Future dialogs that gate destructive actions should mask at the window level (overlay in `Main.qml`). Tracked for the next surface that adds a dialog.
 
+### 6.5 Editorial marginalia
+
+Inline commentary text &mdash; "lifecycle exempt", "flagged, not retired", or other editor's-note callouts on tabular rows &mdash; should render as italic Newsreader at body size (`Theme.typography.deck`), prefixed with an em-dash, color `text.muted`. Lower-case is intentional: the marginalia reads as commentary, not as a bureaucratic label. Compare to `label.xs` uppercase, which reads as column-header / data-tag.
+
+Typical placement: inside the strategy-ID column on `StrategyRow`, anchored after the strategy ID (and the audit asterisk, if present), elides if the remaining column space is short. Long strategy IDs always get the most space; the note takes whatever is left and elides gracefully.
+
+The em-dash prefix gives the marginalia a deliberate-aside feel and visually separates it from the strategyId. The pattern was introduced in the PR E polish pass for `StrategyBankSurface.qml`; the same token and em-dash convention should be used wherever similar commentary is needed on tabular rows in future surfaces.
+
 ---
 
 ## 7. Components (initial set)
@@ -322,21 +331,21 @@ See &sect;6.3. Compact, rounded, role-keyed.
 The load-bearing component for the Strategy Bank surface. Anatomy:
 
 ```
-[strategy-id mono] [*]   [stage-pill]   [gate chips]   [primary-metric mono]   [trade-count mono muted]   [badge label]
+[strategy-id mono] [*] [— note italic]   [stage-pill]   [gate chips] [— flagged, not retired italic]   [primary-metric mono]   [trade-count mono muted]
 ```
 
 Layout: `RowLayout` with fixed column widths enforces tabular alignment across all rows.
 - Strategy ID: `Layout.fillWidth: true` + `elide: Text.ElideRight` — absorbs available space, truncates long identifiers cleanly.
   - `auditFlag: true` renders a `*` superscript immediately after the strategy ID (ADR 0032 audit trail).
+  - `note: string` renders italic Newsreader marginalia (`typography.deck`) after the ID (and asterisk), prefixed with an em-dash. See &sect;6.5.
 - Stage pill: `Layout.preferredWidth: Theme.column.pill` (96px — accommodates "blocked").
-- Gate-failure chips (optional, `gateFailures: var`): a `Row` of small inline chips rendered between metric and tradeCount columns when non-empty. Each chip reads `[S]`, `[D]`, or `[N]` per ADR 0009. Color: `status.negative` @ 0.12 background, 0.30 border. Typography: `data.xs` mono. When `flagFailingNotRetired: true`, a `"FLAGGED"` badge in `status.warning` renders inline in the same row.
+- Gate-failure chips (optional, `gateFailures: var`): a `Row` of small inline chips rendered between metric and tradeCount columns when non-empty. Each chip renders a single capital letter (S, D, or N) inside a framed pill per ADR 0009 — the chip frame is the bracket; no literal `[`/`]` characters. Color: `status.negative` @ 0.12 background, 0.30 border. Typography: `data.xs` mono. When `flagFailingNotRetired: true`, italic Newsreader marginalia "— flagged, not retired" (`typography.deck`, `text.muted`) renders inline in the same row (see &sect;6.5).
 - Primary metric: `Layout.preferredWidth: Theme.column.metric` (64px), right-aligned.
 - Trade count: `Layout.preferredWidth: Theme.column.tradeCount` (88px), right-aligned.
-- Badge (optional, `badge: string`): renders at `Layout.preferredWidth: 96` when non-empty; 0 otherwise. Typography: `label.xs` uppercase muted. Typical use: `"LIFECYCLE EXEMPT"` on the regime strategy row.
 
 Column width tokens are defined in `Theme.column.*` (&sect;4.1).
 
-Typography: `typography.data.md` for IDs and metrics, `typography.data.sm` muted for trade count. Spacing: `space[5]` (24px) inter-column gap, `space[3]` horizontal padding, `space[2]` vertical. Surface: `radius.md`, `color.surface.base` background, `color.border.subtle` border, hover -> `color.surface.raised` + `color.border.regular`.
+Typography: `typography.data.md` for IDs and metrics, `typography.data.sm` muted for trade count, `typography.deck` for inline editorial marginalia. Spacing: `space[5]` (24px) inter-column gap, `space[3]` horizontal padding, `space[2]` vertical. Surface: `radius.md`, `color.surface.base` background, `color.border.subtle` border, hover -> `color.surface.raised` + `color.border.regular`.
 
 Selected/active state: `2px` left border in `color.brand.accent`, otherwise unchanged.
 
@@ -344,10 +353,10 @@ Selected/active state: `2px` left border in `color.brand.accent`, otherwise unch
 
 | Property | Type | Default | Effect |
 |---|---|---|---|
-| `badge` | `string` | `""` | Renders a label.xs uppercase label to the right of tradeCount. |
+| `note` | `string` | `""` | Renders italic Newsreader marginalia after strategyId (and audit asterisk). Lower-case. Typical use: `"lifecycle exempt"`. See &sect;6.5. |
 | `gateFailures` | `var` (list of strings) | `[]` | Renders gate-code chips between metric and tradeCount. |
 | `auditFlag` | `bool` | `false` | Renders `*` superscript after strategyId. |
-| `flagFailingNotRetired` | `bool` | `false` | Renders `"FLAGGED"` warning badge in the chip row. |
+| `flagFailingNotRetired` | `bool` | `false` | Renders italic serif marginalia "flagged, not retired" alongside gate chips. See &sect;6.5. |
 
 ### 7.4 Surface containers
 
@@ -361,7 +370,9 @@ parsed. Follows the same pattern as the kill-switch panel wash on AnchorSurface:
 
 ```qml
 // Wash rectangle, z-ordered behind section content.
-color: Qt.rgba(Theme.status.<role>.r, .g, .b, 0.04)
+// 0.06 is the recommended alpha — registers on Editorial Dark's near-black
+// canvas without becoming alarming on Editorial Light or Bronze.
+color: Qt.rgba(Theme.status.<role>.r, .g, .b, 0.06)
 ```
 
 Implemented as a Rectangle behind the section content, optionally with
@@ -383,7 +394,7 @@ section's status is itself the structural information. Do not use for
 visual variety alone.
 
 First use: `StrategyBankSurface.qml` BLOCKED section (`status.negative` @
-0.04); the kill-switch panel on `AnchorSurface.qml` uses a higher alpha
+0.06); the kill-switch panel on `AnchorSurface.qml` uses a higher alpha
 (0.10) as an active-alarm indicator, not a section hint.
 
 ---

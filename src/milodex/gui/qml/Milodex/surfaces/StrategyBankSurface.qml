@@ -4,10 +4,11 @@
 // architectural pattern (DESIGN_SYSTEM.md §9.1, AnchorSurface.qml pattern).
 //
 // Renders the canonical strategy bank from docs/STRATEGY_BANK.md:
-//   - PAPER section: strategies authorised to run (with lifecycle-exempt badge
-//     on the regime row and audit asterisk on pullback_rsi2)
-//   - BLOCKED section: strategies failing walk-forward gates (with [S]/[D]/[N]
-//     gate-failure chips and FLAGGED marker for dual_absolute)
+//   - PAPER section: strategies authorised to run (with lifecycle-exempt
+//     marginalia on the regime row and audit asterisk on pullback_rsi2)
+//   - BLOCKED section: strategies failing walk-forward gates (with S/D/N
+//     gate-failure chips and "flagged, not retired" italic marginalia for
+//     dual_absolute)
 //
 // Data source: StrategyBankState QObject singleton (Python-side, 30s poll against
 // data/milodex.db).  All property reads go through that singleton so the surface
@@ -19,7 +20,8 @@
 //   color.brand.accent          — selected row accent bar (via StrategyRow)
 //   status.negative             — error banner border, BLOCKED section wash, gate chips
 //   typography.display.sm / .smItalic  — section headers + empty state
-//   typography.body.sm / .body.md      — subheaders + banner body
+//   typography.deck             — section subheaders (italic Newsreader kickers)
+//   typography.body.md          — banner body text
 //   typography.label.xs         — section labels
 //   space[2], space[3], space[5], space[6] — margins, gaps
 //   radius.lg                   — BLOCKED section wash + banner
@@ -30,10 +32,11 @@
 // StrategyRow.selected is wired to it.  No detail inset in PR E; this is
 // readiness for PR F (details panel).
 //
-// Editorial flourish (round-2 reviewer steer): the BLOCKED section carries a
-// low-alpha rust wash (status.negative @ 0.04) that reads "these are the
-// failures" before any text is parsed.  One wash per surface; used only because
-// the section's failure status IS the structural information.
+// Editorial flourish (PR E polish): the BLOCKED section carries a low-alpha rust
+// wash (status.negative @ 0.06 — bumped from 0.04 so it registers on Editorial
+// Dark's near-black canvas) that reads "these are the failures" before any text
+// is parsed.  One wash per surface; used only because the section's failure
+// status IS the structural information.
 
 import QtQuick
 import QtQuick.Layouts
@@ -177,14 +180,19 @@ Item {
                         font.weight:    Theme.typography.display.sm.weight
                     }
 
+                    // Italic Newsreader deck / kicker — the phrase "the deserving
+                    // list" is sourced verbatim from STRATEGY_BANK.md's section
+                    // heading and carries founder voice into the surface.
                     Text {
                         text: {
                             var n = StrategyBankState.paperStrategies.length
-                            return n + (n === 1 ? " strategy running" : " strategies running")
+                            return "the deserving list — " + n + (n === 1 ? " strategy running" : " strategies running")
                         }
                         color: Theme.color.text.muted
-                        font.family:    Theme.typography.body.sm.family
-                        font.pixelSize: Theme.typography.body.sm.size
+                        font.family:    Theme.typography.deck.family
+                        font.pixelSize: Theme.typography.deck.size
+                        font.weight:    Theme.typography.deck.weight
+                        font.italic:    Theme.typography.deck.italic
                     }
                 }
 
@@ -205,12 +213,14 @@ Item {
                             selected:    root.selectedStrategyId === modelData.strategyId
                             auditFlag:   modelData.auditFlag || false
 
-                            // Lifecycle-exempt badge on the regime strategy row.
-                            // "LIFECYCLE EXEMPT" signals to the operator that this row
-                            // is not subject to the standard gate thresholds.
-                            badge: (modelData.promotionType === "lifecycle_exempt")
-                                   ? "LIFECYCLE EXEMPT"
-                                   : ""
+                            // Lifecycle-exempt marginalia on the regime strategy row.
+                            // Lower-case italic serif reads as editorial commentary —
+                            // "this row has a different story" — rather than a
+                            // bureaucratic stamp.  The operator still gets the
+                            // information; the visual tone is calibrated.
+                            note: (modelData.promotionType === "lifecycle_exempt")
+                                  ? "lifecycle exempt"
+                                  : ""
 
                             onClicked: root.selectedStrategyId = modelData.strategyId
                         }
@@ -235,10 +245,11 @@ Item {
             // BLOCKED section — with editorial rust-wash flourish.
             //
             // Round-2 reviewer requested more editorial flourishes.
-            // The rust wash (status.negative @ 0.04) signals "these are the
+            // The rust wash (status.negative @ 0.06) signals "these are the
             // failures" before any text is parsed — the section's failure status
             // IS the structural information, per DESIGN_SYSTEM.md §6.
-            // One section-wash per surface; used only here.
+            // Alpha bumped to 0.06 in PR E polish pass (0.04 was invisible on
+            // Editorial Dark canvas).  One section-wash per surface; used only here.
             // ==============================================================
 
             Item {
@@ -263,12 +274,13 @@ Item {
                         rightMargin:   -Theme.space[3]
                     }
                     radius: Theme.radius.lg
-                    // status.negative @ 0.04 — same formula as kill-switch panel wash
-                    // (AnchorSurface.qml) but lower alpha; this is a section hint,
-                    // not an active-alarm indicator.
+                    // status.negative @ 0.06 — empirically registers across all three
+                    // themes; 0.04 disappears on Editorial Dark's near-black canvas.
+                    // Still well below the kill-switch panel wash (0.10), which is an
+                    // active-alarm indicator; this is a section hint only.
                     color: Qt.rgba(Theme.status.negative.r,
                                    Theme.status.negative.g,
-                                   Theme.status.negative.b, 0.04)
+                                   Theme.status.negative.b, 0.06)
                 }
 
                 // Section inner column (sits above the wash in z-order by default)
@@ -294,15 +306,20 @@ Item {
                             font.weight:    Theme.typography.display.sm.weight
                         }
 
+                        // Italic Newsreader deck / kicker — the phrase "the
+                        // failures" is sourced from the STRATEGY_BANK.md section
+                        // tone and carries founder voice without invention.
                         Text {
                             text: {
                                 var n = StrategyBankState.blockedStrategies.length
-                                return n + (n === 1 ? " strategy failing gates"
-                                                    : " strategies failing gates")
+                                return "the failures — " + n + (n === 1 ? " strategy failing gates"
+                                                                         : " strategies failing gates")
                             }
                             color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.sm.family
-                            font.pixelSize: Theme.typography.body.sm.size
+                            font.family:    Theme.typography.deck.family
+                            font.pixelSize: Theme.typography.deck.size
+                            font.weight:    Theme.typography.deck.weight
+                            font.italic:    Theme.typography.deck.italic
                         }
                     }
 
