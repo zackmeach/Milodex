@@ -154,3 +154,16 @@ class TestCheckStageCompatibilityUnit:
         assert "strat.foo.v1" in msg
         assert "backtest" in msg
         assert "paper" in msg
+
+    def test_unrecognized_mode_raises_with_actionable_message(self):
+        """An unrecognized trading_mode must raise ValueError naming the bad mode
+        and listing the recognized modes -- never silently produce an empty set."""
+        from milodex.cli.commands.strategy import _check_stage_compatibility
+
+        with pytest.raises(ValueError) as exc_info:
+            _check_stage_compatibility(_STRATEGY_ID, "paper", "typo_mode")
+
+        msg = str(exc_info.value)
+        assert "typo_mode" in msg, "error must name the unrecognized mode"
+        assert "paper" in msg, "error must list recognized modes"
+        assert "TRADING_MODE" in msg, "error must point to the env var"

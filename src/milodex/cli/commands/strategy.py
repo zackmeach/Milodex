@@ -49,11 +49,13 @@ def _format_decision_line(result: ExecutionResult) -> str:
     return f"rejected {side} {req.symbol} x{req.quantity:g} — {reason}"
 
 
+# TODO(phase-2): when live mode opens, extend this table AND relax the
+# `trading_mode != "paper"` guard in run() below.
 _ALLOWED_STAGES_BY_MODE: dict[str, frozenset[str]] = {
     "paper": frozenset({"paper"}),
-    "micro_live": frozenset({"micro_live", "live"}),
-    "live": frozenset({"micro_live", "live"}),
 }
+
+_RECOGNIZED_MODES: frozenset[str] = frozenset(_ALLOWED_STAGES_BY_MODE)
 
 
 def _check_stage_compatibility(strategy_id: str, config_stage: str, trading_mode: str) -> None:
@@ -69,7 +71,15 @@ def _check_stage_compatibility(strategy_id: str, config_stage: str, trading_mode
     If no convention existed, the strictest interpretation was chosen so that
     a reviewer can relax it rather than having to tighten a bug.
     """
-    allowed = _ALLOWED_STAGES_BY_MODE.get(trading_mode, frozenset())
+    if trading_mode not in _RECOGNIZED_MODES:
+        recognized = ", ".join(sorted(_RECOGNIZED_MODES))
+        msg = (
+            f"Unrecognized trading mode '{trading_mode}'. "
+            f"Recognized modes: {recognized}. "
+            "Check your TRADING_MODE environment variable."
+        )
+        raise ValueError(msg)
+    allowed = _ALLOWED_STAGES_BY_MODE[trading_mode]
     if config_stage not in allowed:
         msg = (
             f"Strategy '{strategy_id}' has stage='{config_stage}' but the active "
