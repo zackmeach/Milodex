@@ -16,6 +16,7 @@ from __future__ import annotations
 import importlib.resources
 import logging
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,43 @@ QML_IMPORT_PATH: Path = Path(str(importlib.resources.files("milodex.gui").joinpa
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _build_default_broker_factory() -> Callable[[], object]:
+    """Return a broker-client factory matching the CLI's wiring.
+
+    The factory raises on construction failure, which the
+    OperationalState worker catches and surfaces as ``broker_status =
+    "error"``.  Mirroring the CLI is deliberate — divergence between
+    GUI and CLI broker construction would be a footgun (different
+    credential lookup paths, different defaults).
+    """
+    from milodex.broker.alpaca_client import AlpacaBrokerClient
+
+    return AlpacaBrokerClient
+
+
+def _build_default_kill_switch_store():
+    """Construct the kill-switch store the same way the CLI does.
+
+    See ``milodex.cli.main.main`` (``get_strategy_runner`` for the
+    canonical wiring): the store is event-store-backed with a legacy
+    JSON migration path under ``logs/kill_switch_state.json``.
+    """
+    from milodex.config import get_data_dir, get_logs_dir
+    from milodex.core.event_store import EventStore
+    from milodex.execution.state import KillSwitchStateStore
+
+    event_store = EventStore(get_data_dir() / "milodex.db")
+    return KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=get_logs_dir() / "kill_switch_state.json",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -45,16 +83,19 @@ def run_app() -> int:
        Qt Quick only; no Widgets are used per ADR 0033).
     2. Call :func:`~milodex.gui.fonts.load_fonts` to register bundled font
        families (Newsreader, Public Sans, JetBrains Mono) with Qt.
-    3. Construct :class:`~milodex.gui.theme_manager.ThemeManager` and call
-       :func:`~milodex.gui.qml_setup.register_qml_types` to bind it as the
-       ``Milodex.ThemeManager`` QML singleton.
+    3. Construct :class:`~milodex.gui.theme_manager.ThemeManager` and
+       :class:`~milodex.gui.operational_state.OperationalState`, then call
+       :func:`~milodex.gui.qml_setup.register_qml_types` to bind them as
+       the ``Milodex.ThemeManager`` and ``Milodex.OperationalState`` QML
+       singletons.
     4. Construct :class:`QQmlApplicationEngine`.
     5. Add :data:`QML_IMPORT_PATH` as a QML import search path so
        ``import Milodex 1.0`` resolves.
     6. Load ``Main.qml`` (the top-level ApplicationWindow).
     7. If no root objects were created (load failure), log an error and
        return exit code 1.
-    8. Wire the QML ``quit`` signal to ``app.quit``.
+    8. Wire the QML ``quit`` signal to ``app.quit``; stop the
+       OperationalState polling on app quit.
     9. Return ``app.exec()`` (the Qt event-loop exit code).
 
     Returns
@@ -72,7 +113,9 @@ def run_app() -> int:
         )
         return 1
 
+    from milodex.config import get_trading_mode
     from milodex.gui.fonts import load_fonts
+    from milodex.gui.operational_state import OperationalState
     from milodex.gui.qml_setup import register_qml_types
     from milodex.gui.theme_manager import ThemeManager
 
@@ -91,10 +134,44 @@ def run_app() -> int:
             len(failed),
         )
 
-    # --- 3. ThemeManager + QML type registration ------------------------------
+    # --- 3. ThemeManager + OperationalState + QML type registration ----------
     theme_manager = ThemeManager()
-    register_qml_types(theme_manager)
+
+    # Trading mode read once at startup; OperationalState exposes it
+    # statically.  If the env var is malformed get_trading_mode() raises;
+    # we catch it so the GUI still launches and shows the error in the
+    # broker-error indicator.
+    try:
+        trading_mode = get_trading_mode()
+    except ValueError as exc:
+        logger.warning("run_app: get_trading_mode failed (%s) — defaulting to 'paper'", exc)
+        trading_mode = "paper"
+
+    # Kill-switch store may itself fail (DB locked, disk full, etc.).
+    # Surface the failure rather than crash; the GUI then runs with a
+    # degraded operational-state object that always reports inactive.
+    try:
+        kill_switch_store = _build_default_kill_switch_store()
+    except Exception as exc:  # noqa: BLE001 — durable-state ops can fail at startup
+        logger.warning("run_app: kill-switch store construction failed (%s) — using stub", exc)
+        from unittest.mock import MagicMock
+
+        kill_switch_store = MagicMock()
+        kill_switch_store.get_state.return_value = MagicMock(
+            active=False, reason=None, last_triggered_at=None
+        )
+
+    operational_state = OperationalState(
+        broker_client_factory=_build_default_broker_factory(),
+        kill_switch_store=kill_switch_store,
+        trading_mode=trading_mode,
+    )
+    register_qml_types(theme_manager, operational_state)
     logger.info("run_app: active theme = %r", theme_manager.theme)
+
+    # Begin polling AFTER registration so the GUI sees a populated state
+    # on the first frame instead of empty defaults.
+    operational_state.start()
 
     # --- 4. Engine ------------------------------------------------------------
     engine = QQmlApplicationEngine()
@@ -113,6 +190,7 @@ def run_app() -> int:
             "run_app: QQmlApplicationEngine has no root objects after load -- "
             "Main.qml failed to initialize. Check QML errors above."
         )
+        operational_state.stop()
         return 1
 
     logger.info(
@@ -120,8 +198,9 @@ def run_app() -> int:
         len(engine.rootObjects()),
     )
 
-    # --- 8. Wire quit signal --------------------------------------------------
+    # --- 8. Wire quit + polling teardown -------------------------------------
     engine.quit.connect(app.quit)
+    app.aboutToQuit.connect(operational_state.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()

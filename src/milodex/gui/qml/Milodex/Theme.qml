@@ -232,10 +232,14 @@ QtObject {
             }
         }
 
+        // data.* was bumped in PR D.6 to mirror body.* spacing (each
+        // step 1px apart) — prior to the bump, the post-D.5 12px floor
+        // had data.sm and data.xs both at 12px, distinguishable only by
+        // line-height (invisible in single-line table cells).
         readonly property var data: QtObject {
             readonly property var md: QtObject {
                 readonly property string family: "JetBrains Mono"
-                readonly property int size: 13
+                readonly property int size: 14
                 readonly property real lineHeight: 1.60
                 readonly property int weight: Font.Normal
                 readonly property var features: ["tnum"]
@@ -243,7 +247,7 @@ QtObject {
             }
             readonly property var sm: QtObject {
                 readonly property string family: "JetBrains Mono"
-                readonly property int size: 12
+                readonly property int size: 13
                 readonly property real lineHeight: 1.60
                 readonly property int weight: Font.Normal
                 readonly property var features: ["tnum"]

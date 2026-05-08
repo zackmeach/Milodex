@@ -164,15 +164,21 @@ def test_main_qml_loads_without_errors_via_subprocess():
     qml_path = str(QML_IMPORT_PATH / "Milodex" / "Main.qml")
     import_path = str(QML_IMPORT_PATH)
 
+    # Main.qml's default surface is AnchorSurface which binds to the
+    # OperationalState singleton; register a stub OperationalState with
+    # a failing broker factory so the surface renders in its
+    # broker-error branch (still a clean load — no QML warnings).
     script = f"""\
 import os
 import sys
+from unittest.mock import MagicMock
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
+from milodex.gui.operational_state import OperationalState
 
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
@@ -181,7 +187,22 @@ from PySide6.QtCore import QUrl
 app = QGuiApplication(sys.argv)
 load_fonts()
 tm = ThemeManager()
-register_qml_types(tm)
+
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(
+    active=False, reason=None, last_triggered_at=None
+)
+def failing_factory():
+    raise RuntimeError('test: no broker available')
+
+op_state = OperationalState(
+    broker_client_factory=failing_factory,
+    kill_switch_store=ks_store,
+    trading_mode='paper',
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+register_qml_types(tm, op_state)
 
 warnings_seen = []
 
@@ -309,4 +330,104 @@ sys.exit(0)
     )
     assert result.stderr == "", (
         f"DesignSystemShowcase subprocess produced stderr output (QML warnings):\n{result.stderr}"
+    )
+
+
+def test_anchor_surface_loads_without_errors_via_subprocess():
+    """AnchorSurface.qml loads in a fresh process with a mock OperationalState.
+
+    Same subprocess pattern as the showcase test.  The mock broker factory
+    raises on first call (no API keys in CI/headless), so OperationalState
+    enters its broker_status="error" path — the test asserts AnchorSurface
+    still loads cleanly under that degraded mode (which is the operationally
+    relevant path: a GUI launched without broker credentials must still
+    render the kill-switch surface so the operator can read state).
+    """
+    from milodex.gui.app import QML_IMPORT_PATH
+
+    import_path = str(QML_IMPORT_PATH)
+    anchor_path = str(QML_IMPORT_PATH / "Milodex" / "surfaces" / "AnchorSurface.qml")
+
+    script = f"""\
+import os
+import sys
+from unittest.mock import MagicMock
+
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui.operational_state import OperationalState
+
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine
+from PySide6.QtCore import QUrl
+
+app = QGuiApplication(sys.argv)
+load_fonts()
+tm = ThemeManager()
+
+# Mock kill-switch store -- always inactive
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(
+    active=False, reason=None, last_triggered_at=None
+)
+# Mock broker factory -- raise so OperationalState enters error path,
+# AnchorSurface must still render under that branch.
+def failing_factory():
+    raise RuntimeError("test: no broker available")
+
+op_state = OperationalState(
+    broker_client_factory=failing_factory,
+    kill_switch_store=ks_store,
+    trading_mode='paper',
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+register_qml_types(tm, op_state)
+
+warnings_seen = []
+
+engine = QQmlApplicationEngine()
+engine.warnings.connect(lambda msgs: warnings_seen.extend(msgs))
+engine.addImportPath({import_path!r})
+
+wrapper = (
+    "import QtQuick 2.15\\n"
+    "import QtQuick.Window 2.15\\n"
+    "Window {{\\n"
+    "    width: 1280; height: 800; visible: false\\n"
+    "    Loader {{ anchors.fill: parent; source: {anchor_path!r} }}\\n"
+    "}}\\n"
+).encode()
+
+engine.loadData(wrapper, QUrl.fromLocalFile({import_path!r} + '/wrapper.qml'))
+
+if not engine.rootObjects():
+    print('ERROR: no root objects -- AnchorSurface wrapper failed to load', file=sys.stderr)
+    sys.exit(1)
+
+if warnings_seen:
+    for w in warnings_seen:
+        print(str(w), file=sys.stderr)
+    sys.exit(2)
+
+sys.exit(0)
+"""
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, (
+        f"AnchorSurface subprocess exited {result.returncode}.\n"
+        f"stdout: {result.stdout!r}\n"
+        f"stderr: {result.stderr!r}"
+    )
+    assert result.stderr == "", (
+        f"AnchorSurface subprocess produced stderr output (QML warnings):\n{result.stderr}"
     )

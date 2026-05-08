@@ -249,9 +249,63 @@ def test_button_secondary_uses_text_primary_color(engine):
 
     assert obj.property("textPrimary").lower() == "#d8c5a3"  # secondary label
     assert obj.property("borderRegular").lower() == "#2a2218"  # secondary border
-    assert obj.property("textSecondary").lower() == "#a89070"  # ghost label
+    # Ghost label uses text.secondary; brightened in PR D.6 to keep it
+    # legible above the brightened text.muted on dark surfaces.
+    assert obj.property("textSecondary").lower() == "#b89e7a"  # ghost label
     assert obj.property("statusNeg").lower() == "#d97757"  # danger label + border
     assert obj.property("statusNegHov").lower() == "#e08b6b"  # danger hover border
+
+
+@_skip_no_qt
+def test_button_critical_tokens_resolve(engine):
+    """Button critical variant: status.negative + onCritical + hover/pressed tokens resolve.
+
+    Tier 2 test — verifies the tokens Button._bgColor and Button._textColor
+    bind to for the `critical` variant under all three themes.  Critical is
+    the kill-switch-class variant; its visual hierarchy must survive every
+    theme swap with AA-passing contrast.
+    """
+    qml_engine, manager = engine
+
+    qml = """
+    import QtQuick
+    import Milodex 1.0
+
+    Item {
+        property string negative:        Theme.status.negative
+        property string negativeHover:   Theme.status.negativeHover
+        property string negativePressed: Theme.status.negativePressed
+        property string onCritical:      Theme.color.text.onCritical
+    }
+    """
+    component, obj = _load_qml(qml_engine, qml)
+    _ = component
+
+    # Editorial Dark
+    manager.set_theme("editorial-dark")
+    assert obj.property("negative").lower() == "#d97757"
+    assert obj.property("negativeHover").lower() == "#e08b6b"
+    assert obj.property("negativePressed").lower() == "#b86549"
+    # Dark theme onCritical: dark text on light rust
+    assert obj.property("onCritical").lower() == "#19170f"
+
+    # Editorial Light
+    manager.set_theme("editorial-light")
+    assert obj.property("negative").lower() == "#a04020"
+    assert obj.property("negativeHover").lower() == "#c04d28"
+    assert obj.property("negativePressed").lower() == "#88361b"
+    # Light theme onCritical: cream on deep rust
+    assert obj.property("onCritical").lower() == "#f5e6c4"
+
+    # Bronze
+    manager.set_theme("bronze")
+    assert obj.property("negative").lower() == "#cd6038"
+    assert obj.property("negativeHover").lower() == "#df7548"
+    assert obj.property("negativePressed").lower() == "#ae512f"
+    # Bronze onCritical: dark "stamped" text
+    assert obj.property("onCritical").lower() == "#19170f"
+
+    manager.set_theme("editorial-dark")
 
 
 @_skip_no_qt
@@ -280,12 +334,14 @@ def test_button_token_binding_survives_theme_swap(engine):
     assert obj.property("accentPressed").lower() == "#5d262d"
     assert obj.property("onBrand").lower() == "#f5e6c4"
 
-    # Switch to bronze — verdigris accent, warm near-white onBrand
+    # Switch to bronze — verdigris accent, dark canvas-near onBrand
+    # (PR D.6 inverted onBrand on Bronze: dark text on verdigris hits 5.09:1
+    # vs. the prior warm-near-white at 3.29:1).
     manager.set_theme("bronze")
     assert obj.property("accent").lower() == "#5e8b7e"
     assert obj.property("accentHover").lower() == "#72a89a"
     assert obj.property("accentPressed").lower() == "#4d7268"
-    assert obj.property("onBrand").lower() == "#f0ede8"
+    assert obj.property("onBrand").lower() == "#0d0c0a"
 
     # Restore
     manager.set_theme("editorial-dark")
@@ -404,9 +460,10 @@ def test_status_pill_killed_token_and_theme_tinting(engine):
     # Editorial Dark status.negative is rust #d97757
     assert obj.property("negative").lower() == "#d97757"
 
-    # Bronze status.negative theme-tints to deep rust #a04020
+    # Bronze status.negative was bumped in PR D.6 from #a04020 (2.77:1 — failed AA)
+    # to #cd6038 (4.55:1) to clear the contrast audit on surface.base.
     manager.set_theme("bronze")
-    assert obj.property("negative").lower() == "#a04020"
+    assert obj.property("negative").lower() == "#cd6038"
 
     manager.set_theme("editorial-dark")
 

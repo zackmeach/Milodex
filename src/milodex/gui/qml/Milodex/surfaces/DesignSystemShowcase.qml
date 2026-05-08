@@ -137,26 +137,81 @@ Item {
                     font.weight:    Theme.typography.display.md.weight
                 }
 
+                // Theme switcher reads as a tab-bar — active theme has a
+                // subtle filled background + 2px left accent bar, inactive
+                // themes are ghost text.  Three side-by-side primary buttons
+                // would scream "destructive action" rather than "current
+                // view," so we use the tab idiom instead.  Per ADR 0035 the
+                // theme swap itself isn't animated; only hover/active state
+                // changes use motion.fast (state changes are honest signal).
                 Row {
-                    spacing: Theme.space[3]
+                    spacing: Theme.space[2]
 
-                    Button {
-                        text: "Editorial Dark"
-                        variant: ThemeManager.theme === "editorial-dark" ? "primary" : "ghost"
-                        onClicked: ThemeManager.set_theme("editorial-dark")
+                    component ThemeTab: Item {
+                        id: tabRoot
+                        property string label: ""
+                        property string themeId: ""
+                        readonly property bool _active: ThemeManager.theme === tabRoot.themeId
+
+                        implicitWidth:  tabText.implicitWidth + Theme.space[5] * 2 + 2
+                        implicitHeight: tabText.implicitHeight + Theme.space[3] * 2
+
+                        Rectangle {
+                            id: tabBg
+                            anchors.fill: parent
+                            color: tabRoot._active
+                                    ? Theme.color.surface.raised
+                                    : (tabMouse.containsMouse
+                                        ? Theme.color.surface.base
+                                        : "transparent")
+                            radius: Theme.radius.md
+                            Behavior on color {
+                                ColorAnimation { duration: Theme.motion.fast }
+                            }
+                        }
+
+                        // 2px left accent bar — visible only when active
+                        Rectangle {
+                            anchors.left:   parent.left
+                            anchors.top:    parent.top
+                            anchors.bottom: parent.bottom
+                            width: 2
+                            color: tabRoot._active
+                                    ? Theme.color.brand.accent
+                                    : "transparent"
+                            Behavior on color {
+                                ColorAnimation { duration: Theme.motion.fast }
+                            }
+                        }
+
+                        Text {
+                            id: tabText
+                            anchors.centerIn: parent
+                            text: tabRoot.label
+                            color: tabRoot._active
+                                    ? Theme.color.text.primary
+                                    : (tabMouse.containsMouse
+                                        ? Theme.color.text.primary
+                                        : Theme.color.text.secondary)
+                            font.family:    Theme.typography.body.md.family
+                            font.pixelSize: Theme.typography.body.md.size
+                            font.weight:    Font.Medium
+                            Behavior on color {
+                                ColorAnimation { duration: Theme.motion.fast }
+                            }
+                        }
+
+                        MouseArea {
+                            id: tabMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            onClicked: ThemeManager.set_theme(tabRoot.themeId)
+                        }
                     }
 
-                    Button {
-                        text: "Editorial Light"
-                        variant: ThemeManager.theme === "editorial-light" ? "primary" : "ghost"
-                        onClicked: ThemeManager.set_theme("editorial-light")
-                    }
-
-                    Button {
-                        text: "Bronze"
-                        variant: ThemeManager.theme === "bronze" ? "primary" : "ghost"
-                        onClicked: ThemeManager.set_theme("bronze")
-                    }
+                    ThemeTab { label: "Editorial Dark";  themeId: "editorial-dark" }
+                    ThemeTab { label: "Editorial Light"; themeId: "editorial-light" }
+                    ThemeTab { label: "Bronze";          themeId: "bronze" }
                 }
             }
 
@@ -284,7 +339,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "body.lg -- Public Sans 14px"
+                        text: "body.lg -- Public Sans 15px"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -303,7 +358,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "body.md -- Public Sans 13px"
+                        text: "body.md -- Public Sans 14px"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -322,7 +377,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "body.sm -- Public Sans 12px"
+                        text: "body.sm -- Public Sans 13px"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -341,7 +396,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "label.xs -- Public Sans 10px uppercase"
+                        text: "label.xs -- Public Sans 12px uppercase"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -362,7 +417,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "data.md -- JetBrains Mono 13px"
+                        text: "data.md -- JetBrains Mono 14px"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -381,7 +436,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "data.sm -- JetBrains Mono 11px"
+                        text: "data.sm -- JetBrains Mono 13px"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -400,7 +455,7 @@ Item {
                     width: parent.width
                     spacing: Theme.space[1]
                     Text {
-                        text: "data.xs -- JetBrains Mono 10px"
+                        text: "data.xs -- JetBrains Mono 12px"
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
@@ -547,6 +602,10 @@ Item {
                         spacing: Theme.space[3]
 
                         Button {
+                            variant: "critical"
+                            text: "Trigger Kill Switch"
+                        }
+                        Button {
                             variant: "primary"
                             text: "Run Backtest"
                         }
@@ -560,7 +619,7 @@ Item {
                         }
                         Button {
                             variant: "danger"
-                            text: "Trigger Kill Switch"
+                            text: "Delete Row"
                         }
                     }
                 }
