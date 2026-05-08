@@ -420,6 +420,50 @@ def test_status_pill_killed_token_and_theme_tinting(engine):
 
 
 @_skip_no_qt
+@pytest.mark.xfail(
+    reason=(
+        "StrategyRow's transitive QtQuick.Layouts dependency interacts with the "
+        "process-global Qt type cache the same way PR C's Button danger / "
+        "StatusPill instantiation tests do — passes in isolation, fails when "
+        "the cache has already compiled the Milodex module from a prior test "
+        "without Layouts resolved.  If this passes, remove the xfail marker."
+    ),
+    strict=False,
+)
+def test_strategy_row_instantiates_and_exposes_properties(engine):
+    """StrategyRow Tier 1: component instantiates, RowLayout import resolves.
+
+    Surfaces breakage if QtQuick.Layouts ever fails to resolve under the
+    project's Qt configuration (the only component that imports Layouts;
+    the other Tier 1 tests don't exercise it).  Reads the four properties
+    StrategyRow exposes (strategyId, stage, metricValue, tradeCount)
+    through QML — confirms the public API is intact and the layout
+    composition (RowLayout + StatusPill in an Item wrapper) loads cleanly.
+    """
+    qml_engine, manager = engine
+    manager.set_theme("editorial-dark")
+
+    qml = """
+    import QtQuick
+    import Milodex 1.0
+
+    StrategyRow {
+        strategyId:  "regime.daily.sma200_rotation.spy_shy.v1"
+        stage:       "paper"
+        metricValue: "+1.19"
+        tradeCount:  27
+    }
+    """
+    component, obj = _load_qml(qml_engine, qml)
+    _ = component
+
+    assert obj.property("strategyId") == "regime.daily.sma200_rotation.spy_shy.v1"
+    assert obj.property("stage") == "paper"
+    assert obj.property("metricValue") == "+1.19"
+    assert obj.property("tradeCount") == 27
+
+
+@_skip_no_qt
 def test_strategy_row_token_references_resolve(engine):
     """StrategyRow token bindings: surface, pill, data, and spacing tokens resolve.
 
