@@ -3,3 +3,7 @@ singleton Theme 1.0 Theme.qml
 EditorialDark 1.0 themes/EditorialDark.qml
 EditorialLight 1.0 themes/EditorialLight.qml
 Bronze 1.0 themes/Bronze.qml
+Button 1.0 components/Button.qml
+StatusPill 1.0 components/StatusPill.qml
+StrategyRow 1.0 components/StrategyRow.qml
+Surface 1.0 components/Surface.qml

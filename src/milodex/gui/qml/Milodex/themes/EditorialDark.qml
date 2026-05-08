@@ -37,12 +37,20 @@ QtObject {
         readonly property var brand: QtObject {
             readonly property string primary: "#e6cf99"
             readonly property string accent: "#722f37"
+            // Pre-computed hover/pressed states for color.brand.accent (oxblood).
+            // accentHover: accent lightened ~20% for primary button hover.
+            // accentPressed: accent darkened ~15% for primary button pressed.
+            readonly property string accentHover: "#8a3a45"
+            readonly property string accentPressed: "#5d262d"
         }
         readonly property var text: QtObject {
             readonly property string primary: "#d8c5a3"
             readonly property string secondary: "#a89070"
             readonly property string muted: "#6b5d44"
             readonly property string disabled: "#3d342a"
+            // onBrand: high-contrast cream for text rendered on top of
+            // color.brand.accent (oxblood).  Per DESIGN_SYSTEM.md §3.1.
+            readonly property string onBrand: "#f5e6c4"
         }
     }
 
@@ -50,6 +58,8 @@ QtObject {
         readonly property string positive: "#9bb89e"
         readonly property string warning: "#c4965a"
         readonly property string negative: "#d97757"
+        // negativeHover: status.negative lightened for danger button hover/pressed border.
+        readonly property string negativeHover: "#e08b6b"
         readonly property string info: "#6c89a3"
     }
 }

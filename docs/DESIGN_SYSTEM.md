@@ -109,10 +109,13 @@ Color tokens are defined as *semantic roles*. Each theme provides concrete value
 |---|---|---|
 | `color.brand.primary` | `#e6cf99` | Surface titles, primary brand accent (parchment) |
 | `color.brand.accent` | `#722f37` | Primary buttons, selection rings, key links (oxblood) |
+| `color.brand.accentHover` | `#8a3a45` | Primary button background on hover |
+| `color.brand.accentPressed` | `#5d262d` | Primary button background on pressed |
 | `color.text.primary` | `#d8c5a3` | Default body text, table content |
 | `color.text.secondary` | `#a89070` | Secondary text, italics, metadata |
 | `color.text.muted` | `#6b5d44` | Captions, disabled context, placeholder |
 | `color.text.disabled` | `#3d342a` | Truly disabled UI |
+| `color.text.onBrand` | `#f5e6c4` | Text rendered on top of `color.brand.accent` (primary button label) |
 
 #### Texture (optional)
 
@@ -138,6 +141,7 @@ Same semantic roles, inverted contrast.
 | `color.text.secondary` | `#6b5d44` | |
 | `color.text.muted` | `#8a7c5e` | |
 | `color.text.disabled` | `#bbae8c` | |
+| `color.text.onBrand` | `#f5e6c4` | Same cream as Editorial Dark — oxblood accent is shared |
 
 ### 3.3 Bronze
 
@@ -157,6 +161,7 @@ Workshop / craft-tool / patinated-metal aesthetic.
 | `color.text.secondary` | `#a89070` | |
 | `color.text.muted` | `#7e7565` | |
 | `color.text.disabled` | `#3d3525` | |
+| `color.text.onBrand` | `#f0ede8` | Warm near-white; verdigris accent needs lighter contrast than oxblood |
 
 ---
 
@@ -233,6 +238,7 @@ Status colors are the load-bearing semantic dimension of a trading-platform GUI:
 | `status.positive` | `#9bb89e` muted sage | `#4a7a4d` deep moss | `#5e8b7e` verdigris | Positive P&amp;L, gate passing, paper-active |
 | `status.warning` | `#c4965a` mustard | `#8b6510` deep mustard | `#c4965a` mustard | Marginal, gate-narrow, attention-required |
 | `status.negative` | `#d97757` rust | `#a04020` deep rust | `#a04020` deep rust | Negative P&amp;L, gate failing, kill-switch fired |
+| `status.negativeHover` | `#e08b6b` | `#c04d28` | `#c04d28` | Danger button border on hover/pressed |
 | `status.info` | `#6c89a3` ink | `#3a5474` deep ink | `#6c89a3` ink | Neutral information, backtest stage |
 
 ### 6.2 Why not raw red / green / amber
@@ -269,9 +275,9 @@ Four variants. All use `typography.body.md` weight 500, `space.2` x `space.3` pa
 | `button.primary` | `color.brand.accent` | `#f5e6c4` (high-contrast cream) | none |
 | `button.secondary` | transparent | `color.text.primary` | `1px color.border.regular` |
 | `button.ghost` | transparent | `color.text.secondary` | none |
-| `button.danger` | transparent | `color.status.negative` | `1px` (deep rust) |
+| `button.danger` | transparent | `status.negative` | `1px status.negativeHover` |
 
-Hover state lightens primary background, brightens secondary border, intensifies ghost color, intensifies danger border. Pressed state darkens by `motion.fast`.
+Hover state: primary uses `color.brand.accentHover`; secondary border uses `color.border.emphasis`; ghost text uses `color.text.primary`; danger border uses `status.negativeHover`. Pressed state: primary uses `color.brand.accentPressed`. All transitions use `motion.fast`.
 
 ### 7.2 Status pills
 
