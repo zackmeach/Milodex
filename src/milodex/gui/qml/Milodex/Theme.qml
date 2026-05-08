@@ -288,6 +288,8 @@ QtObject {
     readonly property var column: ({
         pill: 96,         // accommodates "blocked" pill + padding
         metric: 64,       // "+1.19" or "-0.27" right-aligned
+        chips: 200,       // gate chips + optional "— flagged, not retired" marginalia
+                          //   (max case: 2 chips + flagged marginalia ~185px; 200 leaves headroom)
         tradeCount: 88    // "433 trades" or "27 trades" right-aligned
     })
 }

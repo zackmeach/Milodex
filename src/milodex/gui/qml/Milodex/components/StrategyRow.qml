@@ -13,6 +13,7 @@
 //   typography.data.sm        — trade count text
 //   typography.data.xs        — gate-failure chip text + audit asterisk
 //   typography.deck           — inline editorial marginalia (note, flagged-not-retired)
+//   column.chips             — fixed-width slot for gate chips + marginalia
 //   space[1], space[2], space[3], space[5] — padding + inter-column gap
 //   radius.md                 — row corner radius
 //   radius.sm                 — gate-failure chip radius
@@ -272,13 +273,20 @@ Item {
             id: chipsRow
             visible: root.gateFailures.length > 0 || root.flagFailingNotRetired
             spacing: Theme.space[1]
-            Layout.preferredWidth: visible ? implicitWidth : 0
+            // Fixed-width column reservation — even rows with fewer gate chips
+            // reserve the same slot width so the metric/pill/tradeCount columns
+            // stay aligned across the section.  Smaller cases fill less of the
+            // slot; the slot itself doesn't shrink.  Paper rows (chipsRow not
+            // visible) collapse to 0 — paper section will still align internally
+            // because every paper row has 0 chips.
+            Layout.preferredWidth: visible ? Theme.column.chips : 0
             // Vertical centering inside RowLayout uses Layout.alignment, NOT
             // a verticalAlignment property — Row has no such property and
             // assigning it errors at QML load (silent: chipsRow's parent
             // StrategyRow becomes "Type unavailable", invalidating every
             // surface that imports it).
             Layout.alignment: Qt.AlignVCenter
+            clip: true   // backstop — content within Theme.column.chips slot
 
             Repeater {
                 model: root.gateFailures
