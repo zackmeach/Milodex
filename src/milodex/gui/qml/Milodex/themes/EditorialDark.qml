@@ -45,12 +45,18 @@ QtObject {
         }
         readonly property var text: QtObject {
             readonly property string primary: "#d8c5a3"
-            readonly property string secondary: "#a89070"
-            readonly property string muted: "#6b5d44"
+            readonly property string secondary: "#b89e7a"
+            readonly property string muted: "#8a7c5e"
             readonly property string disabled: "#3d342a"
             // onBrand: high-contrast cream for text rendered on top of
             // color.brand.accent (oxblood).  Per DESIGN_SYSTEM.md §3.1.
             readonly property string onBrand: "#f5e6c4"
+            // onCritical: high-contrast text rendered on top of
+            // status.negative (rust) for the `critical` Button variant.
+            // Editorial Dark's rust #d97757 is light enough that DARK
+            // text gives clean AA contrast (5.75:1) — cream lands at
+            // 2.53:1, well below AA.
+            readonly property string onCritical: "#19170f"
         }
     }
 
@@ -58,8 +64,11 @@ QtObject {
         readonly property string positive: "#9bb89e"
         readonly property string warning: "#c4965a"
         readonly property string negative: "#d97757"
-        // negativeHover: status.negative lightened for danger button hover/pressed border.
+        // negativeHover: status.negative lightened for danger button hover/pressed border
+        // and for the `critical` button variant filled-background hover.
         readonly property string negativeHover: "#e08b6b"
+        // negativePressed: status.negative darkened for `critical` filled-background pressed.
+        readonly property string negativePressed: "#b86549"
         readonly property string info: "#6c89a3"
     }
 }

@@ -5,25 +5,37 @@
 //   color.brand.accentHover   — primary background on hover
 //   color.brand.accentPressed — primary background on pressed
 //   color.text.onBrand        — primary label (high-contrast cream on oxblood/verdigris)
+//   color.text.onCritical     — critical label (theme-specific contrast on status.negative)
 //   color.text.primary        — secondary label
 //   color.text.secondary      — ghost label
 //   color.text.disabled       — disabled label
 //   color.border.regular      — secondary border
 //   color.border.emphasis     — secondary/danger border on hover
 //   color.border.subtle       — disabled border
-//   status.negative           — danger label + border
-//   status.negativeHover      — danger border on hover/pressed
+//   status.negative           — danger label + border / critical filled background
+//   status.negativeHover      — danger border on hover/pressed / critical hover background
+//   status.negativePressed    — critical pressed background
 //   typography.body.md        — label font (weight overridden to 500 = Medium)
 //   space[2], space[3]        — vertical / horizontal padding
 //   radius.md                 — corner radius
 //   motion.fast               — hover / pressed transition duration
 //
 // Data expected:
-//   variant  : string  — "primary" | "secondary" | "ghost" | "danger"
+//   variant  : string  — "primary" | "secondary" | "ghost" | "danger" | "critical"
 //                        (default: "primary")
 //   text     : string  — button label
 //   enabled  : bool    — disables interaction when false
 //   signal clicked()
+//
+// Variant hierarchy (DESIGN_SYSTEM.md §7.1):
+//   critical  — stop-the-world, requires deliberate operator action
+//               (kill switch, kill-switch reset, manual force-close).
+//               Filled rust background, highest visual emphasis.
+//   primary   — main happy-path action.  Filled accent background.
+//   danger    — destructive but bounded (delete row, cancel order).
+//               Outlined rust, no fill.
+//   secondary — alternative.  Outlined neutral.
+//   ghost     — dismissive.  No chrome, just text.
 //
 import QtQuick
 import Milodex 1.0
@@ -74,6 +86,11 @@ Item {
             if (root._hovered) return Theme.color.brand.accentHover
             return Theme.color.brand.accent
         }
+        if (root.variant === "critical") {
+            if (root._pressed) return Theme.status.negativePressed
+            if (root._hovered) return Theme.status.negativeHover
+            return Theme.status.negative
+        }
         return "transparent"
     }
 
@@ -98,6 +115,7 @@ Item {
     readonly property color _textColor: {
         if (!root.enabled) return Theme.color.text.disabled
         if (root.variant === "primary") return Theme.color.text.onBrand
+        if (root.variant === "critical") return Theme.color.text.onCritical
         if (root.variant === "secondary") return Theme.color.text.primary
         if (root.variant === "ghost") {
             return (root._hovered || root._pressed) ? Theme.color.text.primary

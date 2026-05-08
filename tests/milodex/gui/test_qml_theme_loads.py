@@ -276,8 +276,12 @@ def test_status_colors_theme_tint_correctly(engine):
     _ = component  # keep alive for the test's lifetime
     assert obj.property("positive").lower() == "#9bb89e"
 
+    # Bronze status.positive changed in PR D.6 from verdigris #5e8b7e (which
+    # collided with brand.accent — same hue on selection bar AND status pill)
+    # to sage #9bb89e (Editorial Dark's positive value, distinct from
+    # brand.accent and still inside the Bronze palette story).
     manager.set_theme("bronze")
-    assert obj.property("positive").lower() == "#5e8b7e"
+    assert obj.property("positive").lower() == "#9bb89e"
 
 
 @_skip_no_qt
@@ -315,6 +319,42 @@ def test_invariant_tokens_stable_across_themes(engine):
     assert obj.property("spaceFour") == space_dark
     assert obj.property("motionStandard") == motion_dark
     assert obj.property("radiusMd") == radius_dark
+
+
+@_skip_no_qt
+def test_brand_primary_is_distinct_from_text_primary(engine):
+    """``Theme.color.brand.primary`` must differ from ``Theme.color.text.primary``
+    in every theme.
+
+    Catches the Editorial Light collision (brand.primary == text.primary
+    == ``#2a2218``) caught in PR D.6 review.  When both tokens collapse
+    to the same value, display-rank surface titles render in the same
+    colour as body text — the brand identity disappears and there is no
+    visual difference between a section heading and its caption.
+    """
+    qml_engine, manager = engine
+
+    qml = """
+    import QtQuick
+    import Milodex 1.0
+
+    Item {
+        property string brandPrimary: Theme.color.brand.primary
+        property string textPrimary:  Theme.color.text.primary
+    }
+    """
+    component, obj = _load_qml(qml_engine, qml)
+    _ = component
+
+    failures: list[str] = []
+    for name in ("editorial-dark", "editorial-light", "bronze"):
+        manager.set_theme(name)
+        brand = obj.property("brandPrimary").lower()
+        text = obj.property("textPrimary").lower()
+        if brand == text:
+            failures.append(f"  {name}: brand.primary == text.primary == {brand}")
+    manager.set_theme("editorial-dark")
+    assert not failures, "brand/text token collisions:\n" + "\n".join(failures)
 
 
 @_skip_no_qt

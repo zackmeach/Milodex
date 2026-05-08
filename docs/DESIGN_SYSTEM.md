@@ -76,8 +76,8 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 | `typography.body.md` | Public Sans | 14 / 1.50 | 400 | Default UI text, dense forms |
 | `typography.body.sm` | Public Sans | 13 / 1.45 | 400 | Captions, secondary metadata |
 | `typography.label.xs` | Public Sans | 12 / 1.40 | 500 + `0.12em` letter-spacing + uppercase | Section labels ("STRATEGY BANK") |
-| `typography.data.md` | JetBrains Mono | 13 / 1.60 | 400 + `tnum` | Default tabular data |
-| `typography.data.sm` | JetBrains Mono | 12 / 1.60 | 400 + `tnum` | Compact tables |
+| `typography.data.md` | JetBrains Mono | 14 / 1.60 | 400 + `tnum` | Default tabular data |
+| `typography.data.sm` | JetBrains Mono | 13 / 1.60 | 400 + `tnum` | Compact tables |
 | `typography.data.xs` | JetBrains Mono | 12 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
 
 **Tabular figures (`tnum`) are mandatory** for any data role. Strategy Bank rows, Sharpe ratios, trade counts, P&amp;L &mdash; all must align numerically. Set via `font.features: ["tnum"]` in QML. Without this, monospaced numbers still drift across rows in proportional-figure mode.
@@ -112,8 +112,8 @@ Color tokens are defined as *semantic roles*. Each theme provides concrete value
 | `color.brand.accentHover` | `#8a3a45` | Primary button background on hover |
 | `color.brand.accentPressed` | `#5d262d` | Primary button background on pressed |
 | `color.text.primary` | `#d8c5a3` | Default body text, table content |
-| `color.text.secondary` | `#a89070` | Secondary text, italics, metadata |
-| `color.text.muted` | `#6b5d44` | Captions, disabled context, placeholder |
+| `color.text.secondary` | `#b89e7a` | Secondary text, italics, metadata |
+| `color.text.muted` | `#8a7c5e` | Captions, disabled context, placeholder |
 | `color.text.disabled` | `#3d342a` | Truly disabled UI |
 | `color.text.onBrand` | `#f5e6c4` | Text rendered on top of `color.brand.accent` (primary button label) |
 
@@ -130,16 +130,16 @@ Same semantic roles, inverted contrast.
 | Token | Hex | Notes |
 |---|---|---|
 | `color.surface.canvas` | `#f5efe1` | Cream-beige paper |
-| `color.surface.base` | `#ede5d4` | Tinted surface |
-| `color.surface.raised` | `#e2d8c2` | Elevated |
+| `color.surface.base` | `#ebe2cc` | Tinted surface (deepened in v0.2 so cards lift visibly) |
+| `color.surface.raised` | `#dccfb0` | Elevated (deepened so popovers/dialogs lift visibly off cards) |
 | `color.border.subtle` | `#ddd2bc` | |
 | `color.border.regular` | `#c2b596` | |
 | `color.border.emphasis` | `#9a8967` | |
-| `color.brand.primary` | `#2a2218` | Deep brown (text-on-paper) |
+| `color.brand.primary` | `#5d2a30` | Deep oxblood-tobacco — distinct from `text.primary` and `brand.accent` |
 | `color.brand.accent` | `#722f37` | Same oxblood &mdash; works on cream |
 | `color.text.primary` | `#2a2218` | |
-| `color.text.secondary` | `#6b5d44` | |
-| `color.text.muted` | `#8a7c5e` | |
+| `color.text.secondary` | `#5e5238` | More emphasis than muted; AA-passing on the deepened `surface.base` |
+| `color.text.muted` | `#6e5f3f` | Lighter than secondary; minimum AA-passing on `surface.base` |
 | `color.text.disabled` | `#bbae8c` | |
 | `color.text.onBrand` | `#f5e6c4` | Same cream as Editorial Dark — oxblood accent is shared |
 
@@ -159,9 +159,9 @@ Workshop / craft-tool / patinated-metal aesthetic.
 | `color.brand.accent` | `#5e8b7e` | Verdigris (oxidized-copper green) |
 | `color.text.primary` | `#e0d4bd` | |
 | `color.text.secondary` | `#a89070` | |
-| `color.text.muted` | `#7e7565` | |
+| `color.text.muted` | `#948a76` | Bumped from `#7e7565` (3.95:1) so muted text on `surface.base` clears AA |
 | `color.text.disabled` | `#3d3525` | |
-| `color.text.onBrand` | `#f0ede8` | Warm near-white; verdigris accent needs lighter contrast than oxblood |
+| `color.text.onBrand` | `#0d0c0a` | Dark text on verdigris (5.09:1). Verdigris is light; warm-near-white only hit 3.29:1 — dark "stamped" text reads as workshop nameplate. |
 
 ---
 
@@ -250,11 +250,13 @@ Status colors are the load-bearing semantic dimension of a trading-platform GUI:
 
 | Role | Editorial Dark | Editorial Light | Bronze | Meaning |
 |---|---|---|---|---|
-| `status.positive` | `#9bb89e` muted sage | `#4a7a4d` deep moss | `#5e8b7e` verdigris | Positive P&amp;L, gate passing, paper-active |
-| `status.warning` | `#c4965a` mustard | `#8b6510` deep mustard | `#c4965a` mustard | Marginal, gate-narrow, attention-required |
-| `status.negative` | `#d97757` rust | `#a04020` deep rust | `#a04020` deep rust | Negative P&amp;L, gate failing, kill-switch fired |
-| `status.negativeHover` | `#e08b6b` | `#c04d28` | `#c04d28` | Danger button border on hover/pressed |
+| `status.positive` | `#9bb89e` muted sage | `#3d6b40` deep moss | `#9bb89e` muted sage | Positive P&amp;L, gate passing, paper-active |
+| `status.warning` | `#c4965a` mustard | `#7a560d` deep mustard | `#c4965a` mustard | Marginal, gate-narrow, attention-required |
+| `status.negative` | `#d97757` rust | `#a04020` deep rust | `#cd6038` rust | Negative P&amp;L, gate failing, kill-switch fired |
+| `status.negativeHover` | `#e08b6b` | `#c04d28` | `#df7548` | Danger button border on hover/pressed |
 | `status.info` | `#6c89a3` ink | `#3a5474` deep ink | `#6c89a3` ink | Neutral information, backtest stage |
+
+Bronze's `status.positive` deliberately matches Editorial Dark's sage rather than tinting toward verdigris: the brand accent (`#5e8b7e` verdigris) and a verdigris positive on the same row would collide visually. Sage stays inside the palette story while staying distinct from the accent.
 
 ### 6.2 Why not raw red / green / amber
 
@@ -283,16 +285,27 @@ These four foundational components ship in the first design-system PR. Subsequen
 
 ### 7.1 Buttons
 
-Four variants. All use `typography.body.md` weight 500, `space.2` x `space.3` padding, `radius.md`, `motion.fast` hover transitions.
+Five variants. All use `typography.body.md` weight 500, `space.2` x `space.3` padding, `radius.md`, `motion.fast` hover transitions.
 
 | Variant | Background | Color | Border |
 |---|---|---|---|
-| `button.primary` | `color.brand.accent` | `#f5e6c4` (high-contrast cream) | none |
+| `button.critical` | `status.negative` | `color.text.onCritical` (theme-specific high-contrast) | none |
+| `button.primary` | `color.brand.accent` | `color.text.onBrand` (theme-specific high-contrast) | none |
 | `button.secondary` | transparent | `color.text.primary` | `1px color.border.regular` |
 | `button.ghost` | transparent | `color.text.secondary` | none |
-| `button.danger` | transparent | `status.negative` | `1px status.negativeHover` |
+| `button.danger` | transparent | `status.negative` | `1px status.negative` |
 
-Hover state: primary uses `color.brand.accentHover`; secondary border uses `color.border.emphasis`; ghost text uses `color.text.primary`; danger border uses `status.negativeHover`. Pressed state: primary uses `color.brand.accentPressed`. All transitions use `motion.fast`.
+Hover state: critical uses `status.negativeHover` background; primary uses `color.brand.accentHover`; secondary border uses `color.border.emphasis`; ghost text uses `color.text.primary`; danger border uses `status.negativeHover`. Pressed state: critical uses `status.negativePressed`; primary uses `color.brand.accentPressed`. All transitions use `motion.fast`.
+
+**Variant hierarchy.** The five variants form an emphasis ladder rather than a flat set:
+
+- `critical` — stop-the-world action requiring deliberate operator confirmation. Kill-switch arming, kill-switch reset, manual force-close of a position. Filled rust, the highest visual emphasis in the system. Use sparingly — anything more frequent than a kill-switch operation belongs in `primary` or `danger`. Per [ADR 0005](adr/0005-kill-switch-manual-reset.md), `critical` actions never auto-execute on click; they open a confirmation dialog.
+- `primary` — main happy-path action on the current surface ("Run backtest", "Promote to paper"). Filled brand accent.
+- `danger` — destructive but bounded action (delete a row, cancel an order). Outlined rust, no fill — communicates "destructive" without screaming "stop-the-world."
+- `secondary` — alternative action ("View details"). Outlined neutral.
+- `ghost` — dismissive action ("Cancel"). No chrome, text only.
+
+The split between `danger` and `critical` is the key distinction: `danger` is for actions whose worst-case is "you have to recreate a row"; `critical` is for actions whose worst-case is "the platform was protecting you from a real-money loss and you just disabled the protection."
 
 ### 7.2 Status pills
 

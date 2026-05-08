@@ -32,22 +32,40 @@ QtObject {
         readonly property var text: QtObject {
             readonly property string primary: "#e0d4bd"
             readonly property string secondary: "#a89070"
-            readonly property string muted: "#7e7565"
+            // Bumped from #7e7565 (3.95:1 — failed AA) to #948a76 (5.26:1)
+            // so muted body text on surface.base is legible.
+            readonly property string muted: "#948a76"
             readonly property string disabled: "#3d3525"
-            // onBrand: high-contrast warm white for text rendered on top of
-            // color.brand.accent (verdigris #5e8b7e).  Uses a warm near-white
-            // rather than the parchment cream — verdigris reads lighter than
-            // oxblood, so a slightly cooler contrast holds WCAG AA.
-            readonly property string onBrand: "#f0ede8"
+            // onBrand: high-contrast dark text on top of color.brand.accent
+            // (verdigris #5e8b7e).  Verdigris is light enough that DARK text
+            // gives the cleanest contrast (5.09:1) — the prior warm-near-white
+            // landed at 3.29:1, below AA.  A near-canvas value reads as
+            // "stamped into the metal," which fits the Bronze workshop story.
+            readonly property string onBrand: "#0d0c0a"
+            // onCritical: high-contrast text rendered on top of
+            // status.negative (rust #cd6038) for the `critical` Button
+            // variant.  Bronze rust is light enough that DARK text gives
+            // 4.55:1 (AA-passing), matching the workshop-nameplate
+            // approach used for onBrand.
+            readonly property string onCritical: "#19170f"
         }
     }
 
     readonly property var status: QtObject {
-        readonly property string positive: "#5e8b7e"
+        // Bronze status.positive must NOT equal brand.accent (#5e8b7e
+        // verdigris) — a paper-row's accent bar would otherwise be the
+        // same hue as its own status pill.  Sage borrowed from Editorial
+        // Dark stays inside the palette, hits 8.32:1 on surface.base, and
+        // is clearly distinct from verdigris.
+        readonly property string positive: "#9bb89e"
         readonly property string warning: "#c4965a"
-        readonly property string negative: "#a04020"
-        // negativeHover: status.negative lightened for danger button hover/pressed border.
-        readonly property string negativeHover: "#c04d28"
+        // Bumped from #a04020 (2.77:1 — failed AA) to #cd6038 (4.55:1).
+        readonly property string negative: "#cd6038"
+        // negativeHover: status.negative lightened for danger button hover/pressed border
+        // and for the `critical` button variant filled-background hover.
+        readonly property string negativeHover: "#df7548"
+        // negativePressed: status.negative darkened for `critical` filled-background pressed.
+        readonly property string negativePressed: "#ae512f"
         readonly property string info: "#6c89a3"
     }
 }
