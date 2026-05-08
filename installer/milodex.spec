@@ -27,8 +27,12 @@ from pathlib import Path
 block_cipher = None
 
 # Resolve paths relative to the repo root (one level above installer/).
-# Using Path(__spec__.origin).parent keeps the spec relocatable.
-_spec_dir = Path(__spec__.origin).parent
+# `SPECPATH` is the directory containing this spec file — a global that
+# PyInstaller injects into the spec's namespace when it evaluates the file.
+# This is the documented and robust pattern; an earlier Path(__spec__.origin)
+# pattern was fragile because PyInstaller's evaluation context does not set
+# __spec__ consistently across versions.
+_spec_dir = Path(SPECPATH)
 _repo_root = _spec_dir.parent
 
 # ---------------------------------------------------------------------------
