@@ -67,18 +67,18 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 
 | Token | Family | Size / line-height | Weight | Use |
 |---|---|---|---|---|
-| `type.display.xl` | Newsreader | 64 / 1.05 | 500 | Hero / feature surfaces (rare) |
-| `type.display.lg` | Newsreader | 36 / 1.10 | 500 | Page titles |
-| `type.display.md` | Newsreader | 24 / 1.20 | 500 | Section titles ("Strategy Bank") |
-| `type.display.sm` | Newsreader | 18 / 1.30 | 500 | Subsection titles |
-| `type.display.sm.italic` | Newsreader | 18 / 1.30 | 400 italic | Editorial accents ("No. 6 in paper") |
-| `type.body.lg` | Public Sans | 14 / 1.50 | 400 | Primary body text |
-| `type.body.md` | Public Sans | 13 / 1.50 | 400 | Default UI text, dense forms |
-| `type.body.sm` | Public Sans | 12 / 1.45 | 400 | Captions, secondary metadata |
-| `type.label.xs` | Public Sans | 10 / 1.40 | 500 + `0.12em` letter-spacing + uppercase | Section labels ("STRATEGY BANK") |
-| `type.data.md` | JetBrains Mono | 13 / 1.60 | 400 + `tnum` | Default tabular data |
-| `type.data.sm` | JetBrains Mono | 11 / 1.60 | 400 + `tnum` | Compact tables |
-| `type.data.xs` | JetBrains Mono | 10 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
+| `typography.display.xl` | Newsreader | 64 / 1.05 | 500 | Hero / feature surfaces (rare) |
+| `typography.display.lg` | Newsreader | 36 / 1.10 | 500 | Page titles |
+| `typography.display.md` | Newsreader | 24 / 1.20 | 500 | Section titles ("Strategy Bank") |
+| `typography.display.sm` | Newsreader | 18 / 1.30 | 500 | Subsection titles |
+| `typography.display.sm.italic` | Newsreader | 18 / 1.30 | 400 italic | Editorial accents ("No. 6 in paper") |
+| `typography.body.lg` | Public Sans | 14 / 1.50 | 400 | Primary body text |
+| `typography.body.md` | Public Sans | 13 / 1.50 | 400 | Default UI text, dense forms |
+| `typography.body.sm` | Public Sans | 12 / 1.45 | 400 | Captions, secondary metadata |
+| `typography.label.xs` | Public Sans | 10 / 1.40 | 500 + `0.12em` letter-spacing + uppercase | Section labels ("STRATEGY BANK") |
+| `typography.data.md` | JetBrains Mono | 13 / 1.60 | 400 + `tnum` | Default tabular data |
+| `typography.data.sm` | JetBrains Mono | 11 / 1.60 | 400 + `tnum` | Compact tables |
+| `typography.data.xs` | JetBrains Mono | 10 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
 
 **Tabular figures (`tnum`) are mandatory** for any data role. Strategy Bank rows, Sharpe ratios, trade counts, P&amp;L &mdash; all must align numerically. Set via `font.features: ["tnum"]` in QML. Without this, monospaced numbers still drift across rows in proportional-figure mode.
 
@@ -100,7 +100,7 @@ Color tokens are defined as *semantic roles*. Each theme provides concrete value
 | `color.surface.base` | `#100d09` | Cards, panels, content surfaces |
 | `color.surface.raised` | `#14110d` | Elevated surfaces (dialogs, popovers, hovered rows) |
 | `color.border.subtle` | `#1f1a12` | Hairline dividers, low-emphasis borders |
-| `color.border.default` | `#2a2218` | Default panel borders, button outlines |
+| `color.border.regular` | `#2a2218` | Default panel borders, button outlines |
 | `color.border.emphasis` | `#4a3d28` | Hover/focus borders, emphasized cards |
 
 #### Text &amp; brand
@@ -130,7 +130,7 @@ Same semantic roles, inverted contrast.
 | `color.surface.base` | `#ede5d4` | Tinted surface |
 | `color.surface.raised` | `#e2d8c2` | Elevated |
 | `color.border.subtle` | `#ddd2bc` | |
-| `color.border.default` | `#c2b596` | |
+| `color.border.regular` | `#c2b596` | |
 | `color.border.emphasis` | `#9a8967` | |
 | `color.brand.primary` | `#2a2218` | Deep brown (text-on-paper) |
 | `color.brand.accent` | `#722f37` | Same oxblood &mdash; works on cream |
@@ -149,7 +149,7 @@ Workshop / craft-tool / patinated-metal aesthetic.
 | `color.surface.base` | `#19170f` | |
 | `color.surface.raised` | `#22201a` | |
 | `color.border.subtle` | `#28241b` | |
-| `color.border.default` | `#3d3625` | |
+| `color.border.regular` | `#3d3625` | |
 | `color.border.emphasis` | `#5a5036` | |
 | `color.brand.primary` | `#a68063` | Bronze |
 | `color.brand.accent` | `#5e8b7e` | Verdigris (oxidized-copper green) |
@@ -166,17 +166,17 @@ Base unit 4px. Eight steps. Tight enough for dense data tables, generous enough 
 
 | Token | Value | Typical use |
 |---|---|---|
-| `space.0` | `0px` | Reset, no gap |
-| `space.1` | `4px` | Tight intra-component padding |
-| `space.2` | `8px` | Default inline gap, button padding |
-| `space.3` | `12px` | Component padding, list item rhythm |
-| `space.4` | `16px` | Default panel padding, section padding |
-| `space.5` | `24px` | Large panel padding, section separation |
-| `space.6` | `32px` | Major section breaks |
-| `space.7` | `48px` | Hero spacing, feature surface padding |
-| `space.8` | `64px` | Page-margin scale, atmospheric whitespace |
+| `space[0]` | `0px` | Reset, no gap |
+| `space[1]` | `4px` | Tight intra-component padding |
+| `space[2]` | `8px` | Default inline gap, button padding |
+| `space[3]` | `12px` | Component padding, list item rhythm |
+| `space[4]` | `16px` | Default panel padding, section padding |
+| `space[5]` | `24px` | Large panel padding, section separation |
+| `space[6]` | `32px` | Major section breaks |
+| `space[7]` | `48px` | Hero spacing, feature surface padding |
+| `space[8]` | `64px` | Page-margin scale, atmospheric whitespace |
 
-Spacing tokens apply to padding, margin, and gap. Never use literal pixel values in QML &mdash; always reference a token. If a value is needed that doesn't exist in the scale, the answer is to add a token (with PR-level discussion), not to drop in a one-off literal.
+Spacing tokens are accessed via bracket syntax (`Theme.space[4]`) because numeric dot-access (`Theme.space.4`) is invalid JS syntax in QML expressions. Spacing applies to padding, margin, and gap. Never use literal pixel values in QML &mdash; always reference a token. If a value is needed that doesn't exist in the scale, the answer is to add a token (with PR-level discussion), not to drop in a one-off literal.
 
 **Border radius** uses a separate, smaller scale:
 
@@ -262,12 +262,12 @@ These four foundational components ship in the first design-system PR. Subsequen
 
 ### 7.1 Buttons
 
-Four variants. All use `type.body.md` weight 500, `space.2` x `space.3` padding, `radius.md`, `motion.fast` hover transitions.
+Four variants. All use `typography.body.md` weight 500, `space.2` x `space.3` padding, `radius.md`, `motion.fast` hover transitions.
 
 | Variant | Background | Color | Border |
 |---|---|---|---|
 | `button.primary` | `color.brand.accent` | `#f5e6c4` (high-contrast cream) | none |
-| `button.secondary` | transparent | `color.text.primary` | `1px color.border.default` |
+| `button.secondary` | transparent | `color.text.primary` | `1px color.border.regular` |
 | `button.ghost` | transparent | `color.text.secondary` | none |
 | `button.danger` | transparent | `color.status.negative` | `1px` (deep rust) |
 
@@ -285,13 +285,13 @@ The load-bearing component for the Strategy Bank surface. Anatomy:
 [strategy-id mono]    [stage-pill]   [primary-metric mono]   [trade-count mono muted]
 ```
 
-Tokens: `type.data.md` for IDs and metrics, `type.data.sm` muted for trade count, `space.5` (24px) inter-column gap, `space.3` horizontal padding, `space.2` vertical, `radius.md`, `color.surface.base` background, `color.border.subtle` border, hover -> `color.surface.raised` + `color.border.default`.
+Tokens: `typography.data.md` for IDs and metrics, `typography.data.sm` muted for trade count, `space.5` (24px) inter-column gap, `space.3` horizontal padding, `space.2` vertical, `radius.md`, `color.surface.base` background, `color.border.subtle` border, hover -> `color.surface.raised` + `color.border.regular`.
 
 Selected/active state: `2px` left border in `color.brand.accent`, otherwise unchanged.
 
 ### 7.4 Surface containers
 
-The default panel/card. Background `color.surface.base`, border `1px color.border.subtle`, `radius.lg`, `space.5` padding. Hover (when interactive) -> `color.border.default`.
+The default panel/card. Background `color.surface.base`, border `1px color.border.subtle`, `radius.lg`, `space.5` padding. Hover (when interactive) -> `color.border.regular`.
 
 ---
 
@@ -307,23 +307,39 @@ The default panel/card. Background `color.surface.base`, border `1px color.borde
 
 ### 9.1 Theme singleton pattern
 
-A single `Theme` QML singleton exposes every token as a property. Components reference tokens via `Theme.color.brand.accent`, `Theme.type.body.md`, etc. The singleton's properties are themselves bindings that read from the *active* theme file.
+A single `Theme` QML singleton exposes every token as a property. Components reference tokens via `Theme.color.brand.accent`, `Theme.typography.body.md`, etc. The singleton's properties are themselves bindings that read from the *active* theme file.
 
 ```qml
-// QML/Theme.qml (singleton, registered via qmldir)
+// QML/Milodex/Theme.qml (singleton, registered via qmldir)
 pragma Singleton
 import QtQuick
 
 QtObject {
-    property QtObject color: activeTheme.color
-    property QtObject type: typeRoles  // shared across themes
-    property QtObject space: spaceScale  // shared
-    property QtObject motion: motionTokens  // shared
+    // Theme-variable: delegate to active theme.
+    readonly property var color: activeTheme.color
+    readonly property var status: activeTheme.status
 
-    property QtObject activeTheme: ThemeManager.theme
-    // ... theme switching logic in ThemeManager.qml
+    // Theme-invariant: declared inline; constant across themes.
+    readonly property var typography: typographyRoles
+    readonly property var space: spaceScale
+    readonly property var motion: motionTokens
+    readonly property var radius: radiusScale
+
+    readonly property var activeTheme: {
+        switch (Milodex.ThemeManager.theme) {
+            case "editorial-light": return editorialLight
+            case "bronze": return bronze
+            default: return editorialDark
+        }
+    }
+    // ... theme files imported as nested objects
 }
 ```
+
+**Naming notes.** Three tokens are named differently in code than the conceptual labels you might expect from prose:
+- The display + body + data type-role bag is named `typography` (not `type`) because `type` is reserved in QML/JS expression contexts.
+- `color.border.regular` (not `color.border.default`) because `default` is a JS reserved word.
+- Spacing tokens `space.0` through `space.8` are accessed via bracket syntax: `Theme.space[4]` (numeric dot-access like `Theme.space.4` is invalid JS syntax).
 
 ### 9.2 Token binding contract
 
