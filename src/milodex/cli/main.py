@@ -33,6 +33,7 @@ from milodex.cli.commands import (
 from milodex.cli.commands import (
     config as config_cmd,
 )
+from milodex.cli.commands import gui as gui_cmd
 from milodex.cli.commands.status import _build_status_result  # noqa: F401  (test monkeypatch seam)
 from milodex.cli.formatter import get_formatter
 from milodex.config import get_data_dir, get_locks_dir, get_logs_dir, get_trading_mode
@@ -57,6 +58,7 @@ _COMMAND_MODULES = (
     report,
     reconcile,
     research,
+    gui_cmd,
 )
 
 _DISPATCH = {
@@ -178,6 +180,10 @@ def main(
         locks_dir=_locks_dir,
         stdout=stdout,
     )
+
+    # gui bypasses the standard CommandResult dispatch — it owns the event loop.
+    if args.command == "gui":
+        return gui_cmd.run(args, ctx)
 
     module = _DISPATCH.get(args.command)
     if module is None:
