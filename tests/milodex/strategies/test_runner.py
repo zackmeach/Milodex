@@ -1710,3 +1710,389 @@ def test_runner_startup_reconciles_orphan_strategy_runs_for_same_strategy(
     assert fresh.exit_reason is None
 
     runner.shutdown(mode="controlled")
+
+
+# ---------------------------------------------------------------------------
+# PR #54 (2026-05-07 audit): runner lifecycle hardening
+#   Spec A — graceful shutdown (orphan-session prevention)
+#   Spec B — market-hours gate before fetch
+#   Spec C — poll_interval_seconds default + config plumbing
+# ---------------------------------------------------------------------------
+
+
+def _build_crash_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    market_open: bool = True,
+):
+    """Build a minimal runner wired for lifecycle-hardening tests."""
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=market_open,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        poll_interval_seconds=0.0,
+    )
+    return runner, broker, provider, event_store
+
+
+# --- Spec A: graceful shutdown ---
+
+
+def test_runner_run_writes_crashed_exit_reason_on_unhandled_exception(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Unhandled exception in run_cycle must leave exit_reason starting with 'crashed:'.
+
+    Before this fix the finally block in run() did not call shutdown(), so
+    strategy_runs rows were left with ended_at=NULL and exit_reason=NULL when
+    the runner died on an uncaught exception.
+    """
+    runner, _, _, event_store = _build_crash_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    boom = RuntimeError("simulated provider crash")
+
+    from milodex.strategies import runner as runner_module
+
+    def _exploding_fetch():
+        raise boom
+
+    monkeypatch.setattr(runner, "_fetch_bars_by_symbol", _exploding_fetch)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="simulated provider crash"):
+        runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.ended_at is not None, "ended_at must be set even when runner crashes"
+    assert run.exit_reason is not None and run.exit_reason.startswith("crashed:"), (
+        f"exit_reason should start with 'crashed:'; got {run.exit_reason!r}"
+    )
+
+
+def test_runner_run_writes_interrupted_exit_reason_on_keyboard_interrupt(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """KeyboardInterrupt in run() must leave exit_reason='interrupted'.
+
+    Simulates a raw KeyboardInterrupt that bypasses _handle_sigint (e.g.
+    the interrupt arrives while the loop is in time.sleep() before the signal
+    handler has been installed, or in some other pre-handler window).
+    """
+    runner, _, _, event_store = _build_crash_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    def _ki_fetch():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(runner, "_fetch_bars_by_symbol", _ki_fetch)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _: None)
+
+    # KeyboardInterrupt is caught internally; run() returns normally.
+    runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    run = runs[0]
+    assert run.ended_at is not None, "ended_at must be set on KeyboardInterrupt exit"
+    assert run.exit_reason == "interrupted", (
+        f"exit_reason should be 'interrupted'; got {run.exit_reason!r}"
+    )
+
+
+# --- Spec B: market-hours gate before fetch ---
+
+
+def test_runner_market_gate_skips_fetch_when_closed_and_watermark_set(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """No fetch when market is closed AND watermark is already advanced.
+
+    Post-close idle polling (weekends, holidays, after lockin) must not
+    call _fetch_bars_by_symbol at all.
+    """
+    runner, _, provider, _ = _build_crash_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+
+    # Manually advance the watermark to simulate the lockin having completed.
+    runner._last_processed_bar_at = datetime(2026, 5, 7, 21, 0, 0, tzinfo=UTC)
+
+    initial_fetch_count = len(provider.get_bars_calls)
+    result = runner.run_cycle()
+
+    assert result == []
+    assert len(provider.get_bars_calls) == initial_fetch_count, (
+        "_fetch_bars_by_symbol must not be called when market is closed and watermark is set"
+    )
+
+
+def test_runner_market_gate_allows_fetch_when_market_open(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Fetch IS called when the market is open, regardless of watermark state."""
+    runner, _, provider, _ = _build_crash_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=True,
+    )
+
+    # Even with a watermark set (unusual but possible), open market should fetch.
+    runner._last_processed_bar_at = datetime(2026, 5, 7, 21, 0, 0, tzinfo=UTC)
+
+    initial_fetch_count = len(provider.get_bars_calls)
+    runner.run_cycle()
+
+    assert len(provider.get_bars_calls) == initial_fetch_count + 1, (
+        "_fetch_bars_by_symbol must be called when the market is open"
+    )
+
+
+def test_runner_market_gate_allows_fetch_when_closed_but_no_watermark(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Fetch IS called when market is closed but watermark has not been set.
+
+    Cold-start scenario: first post-close cycle before lockin completes.
+    The gate must not suppress the fetch because the lockin needs to observe
+    the bar in order to advance the watermark.
+    """
+    runner, _, provider, _ = _build_crash_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+
+    assert runner._last_processed_bar_at is None
+
+    initial_fetch_count = len(provider.get_bars_calls)
+    runner.run_cycle()
+
+    assert len(provider.get_bars_calls) == initial_fetch_count + 1, (
+        "_fetch_bars_by_symbol must be called when market is closed but watermark not yet set"
+    )
+
+
+# --- Spec C: poll_interval_seconds default + config plumbing ---
+
+
+def test_runner_poll_interval_defaults_to_60_for_1d_bar_size(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A 1D strategy with no explicit poll_interval_seconds defaults to 60s."""
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    # strategy_config_dir has a 1D bar_size config; no poll_interval_seconds in YAML.
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        # No poll_interval_seconds arg → should derive from bar_size.
+    )
+
+    assert runner._poll_interval_seconds == 60.0, (
+        f"1D bar_size should default to 60s poll interval; got {runner._poll_interval_seconds}"
+    )
+
+
+def test_runner_poll_interval_explicit_arg_overrides_bar_size_default(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Explicit poll_interval_seconds arg overrides the bar_size-derived default."""
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        poll_interval_seconds=10.0,
+    )
+
+    assert runner._poll_interval_seconds == 10.0, (
+        f"explicit poll_interval_seconds=10.0 should win over bar_size default; "
+        f"got {runner._poll_interval_seconds}"
+    )
+
+
+def test_runner_poll_interval_yaml_override_wins_over_bar_size_default(
+    tmp_path: Path,
+    risk_defaults_file: Path,
+):
+    """YAML tempo.poll_interval_seconds overrides the bar_size-derived default."""
+    config_dir = tmp_path / "configs_poll"
+    config_dir.mkdir()
+    (config_dir / "poll_override.yaml").write_text(
+        """
+strategy:
+  id: "regime.daily.sma200_rotation.poll_test.v1"
+  family: "regime"
+  template: "daily.sma200_rotation"
+  variant: "poll_test"
+  version: 1
+  description: "poll_interval YAML override test"
+  enabled: true
+  universe:
+    - "SPY"
+    - "SHY"
+  parameters:
+    ma_filter_length: 3
+    risk_on_symbol: "SPY"
+    risk_off_symbol: "SHY"
+    allocation_pct: 1.0
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+    poll_interval_seconds: 42.0
+  risk:
+    max_position_pct: 1.0
+    max_positions: 1
+    daily_loss_cap_pct: 0.05
+    stop_loss_pct: 0.10
+  stage: "paper"
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.0
+    min_trades_required: 30
+  disable_conditions_additional: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.poll_test.v1",
+        config_dir=config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        # No explicit arg → YAML override should win.
+    )
+
+    assert runner._poll_interval_seconds == 42.0, (
+        f"tempo.poll_interval_seconds=42.0 in YAML should override bar_size default; "
+        f"got {runner._poll_interval_seconds}"
+    )

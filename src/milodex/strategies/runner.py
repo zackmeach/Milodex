@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import signal
 import time
 from collections.abc import Callable
@@ -21,6 +22,19 @@ from milodex.execution.service import ExecutionService
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
 
+logger = logging.getLogger(__name__)
+
+# Default poll interval per bar size. Strategies that finalize once a day at
+# close have no reason to poll every 5 seconds — the 5.0 s default from Phase 1
+# was fine for integration testing but wasteful in real sessions.
+_POLL_INTERVAL_BY_BAR_SIZE: dict[str, float] = {
+    "1D": 60.0,
+    "1H": 30.0,
+    "15Min": 15.0,
+    "5Min": 10.0,
+    "1Min": 5.0,
+}
+
 
 class StrategyRunner:
     """Manually-invoked foreground runtime for a single strategy."""
@@ -34,7 +48,7 @@ class StrategyRunner:
         data_provider: DataProvider,
         execution_service: ExecutionService,
         event_store: EventStore,
-        poll_interval_seconds: float = 5.0,
+        poll_interval_seconds: float | None = None,
         prompt_fn: Callable[[], str] | None = None,
         on_cycle_result: Callable[[list[ExecutionResult]], None] | None = None,
         close_lockin_min_interval_seconds: float = 30.0,
@@ -46,12 +60,16 @@ class StrategyRunner:
         self._data_provider = data_provider
         self._execution_service = execution_service
         self._event_store = event_store
-        self._poll_interval_seconds = poll_interval_seconds
+        # poll_interval_seconds priority: explicit arg > YAML tempo field > bar_size default.
+        # Resolved after _loaded is set below.
         self._prompt_fn = prompt_fn or self._prompt_shutdown_choice
         self._on_cycle_result = on_cycle_result
         self._close_lockin_min_interval_seconds = close_lockin_min_interval_seconds
         self._close_lockin_max_wait_seconds = close_lockin_max_wait_seconds
         self._loaded = StrategyLoader().load(self._resolve_config_path())
+        self._poll_interval_seconds = _resolve_poll_interval(
+            self._loaded.config.tempo, poll_interval_seconds
+        )
         # Snapshot the strategy's risk envelope at startup. Every TradeIntent
         # this runner emits carries these bound values; the risk evaluator
         # routes its policy decisions through them, closing the TOCTOU class
@@ -105,21 +123,38 @@ class StrategyRunner:
         self._on_cycle_result = callback
 
     def run(self) -> None:
-        """Run the strategy loop until the operator stops it."""
+        """Run the strategy loop until the operator stops it.
+
+        Guarantees ``shutdown()`` is called on every exit path — normal
+        completion, uncaught exception, and KeyboardInterrupt — so that the
+        ``strategy_runs`` row is always closed with a non-NULL ``ended_at``
+        and an appropriate ``exit_reason``.  The only exit that can leave the
+        row open is SIGKILL, which has no Python hook.
+        """
         previous_handler = signal.getsignal(signal.SIGINT)
         signal.signal(signal.SIGINT, self._handle_sigint)
+        _exit_mode = "controlled"
         try:
             while True:
                 if self._requested_shutdown is not None:
+                    _exit_mode = self._requested_shutdown
                     break
                 self.run_cycle()
                 if self._requested_shutdown is not None:
+                    _exit_mode = self._requested_shutdown
                     break
                 time.sleep(self._poll_interval_seconds)
+        except KeyboardInterrupt:
+            # Raw KeyboardInterrupt (not routed through _handle_sigint) — treat
+            # as operator-requested interruption rather than a crash.
+            _exit_mode = "interrupted"
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("Unhandled exception in strategy runner loop")
+            _exit_mode = f"crashed:{exc!r}"
+            raise
         finally:
             signal.signal(signal.SIGINT, previous_handler)
-
-        self.shutdown(mode=self._requested_shutdown or "controlled")
+            self.shutdown(mode=_exit_mode)
 
     def run_cycle(self) -> list[ExecutionResult]:
         """Process one new daily close when available.
@@ -129,7 +164,19 @@ class StrategyRunner:
         shares its timestamp with the post-close finalized bar, so advancing
         the watermark mid-session would suppress the authoritative close
         evaluation via the same-timestamp ``already_seen`` check.
+
+        Market-hours gate (Spec B): if the market is closed AND the lockin
+        watermark has advanced (i.e. today's close bar is confirmed final),
+        skip the API fetch entirely.  Weekends, holidays, and post-close idle
+        polling all benefit — no Alpaca call is made until the next session
+        opens.  The gate checks ``is_market_open()`` FIRST, before any network
+        I/O, so closed-market cycles are cheap regardless of fetch cost.
         """
+        if not self._broker.is_market_open() and self._last_processed_bar_at is not None:
+            # Market is closed and today's close has been confirmed via the
+            # lockin stability window.  Nothing new to process until open.
+            return []
+
         bars_by_symbol = self._fetch_bars_by_symbol()
         primary_bars = bars_by_symbol[self._evaluation_symbol()]
         latest_bar = primary_bars.latest()
@@ -175,15 +222,34 @@ class StrategyRunner:
         return results
 
     def shutdown(self, *, mode: str) -> None:
-        """Shut down the current strategy session."""
+        """Shut down the current strategy session.
+
+        Maps ``mode`` to the canonical ``exit_reason`` written to the
+        ``strategy_runs`` row.  Idempotent — safe to call from multiple exit
+        paths; subsequent calls after the first are no-ops.
+
+        Recognised modes (callers may pass any string; unknown values are
+        stored verbatim for forensics):
+        - ``"controlled"`` / ``"controlled_stop"`` → ``"controlled_stop"``
+        - ``"kill_switch"``                         → ``"kill_switch"``
+        - ``"interrupted"``                         → ``"interrupted"``
+        - ``"crashed:<repr>"``                      → stored verbatim (first
+          100 chars) so the exception type is visible in the run record.
+        """
         if self._closed:
             return
 
-        exit_reason = "controlled_stop"
-        if mode == "kill_switch":
+        if mode in ("controlled", "controlled_stop"):
+            exit_reason = "controlled_stop"
+        elif mode == "kill_switch":
             self._broker.cancel_all_orders()
             self._execution_service.trigger_kill_switch("Operator requested kill switch.")
             exit_reason = "kill_switch"
+        elif mode == "interrupted":
+            exit_reason = "interrupted"
+        else:
+            # Includes "crashed:<repr>" and any future extension strings.
+            exit_reason = mode[:100]
 
         # Best-effort session-end snapshot. Forensic; a broker failure here must
         # not block the strategy_run row, which is the canonical session record.
@@ -405,3 +471,22 @@ def _timeframe_from_bar_size(value: str) -> Timeframe:
         "1Min": Timeframe.MINUTE_1,
     }
     return mapping[value]
+
+
+def _resolve_poll_interval(tempo: dict[str, Any], explicit: float | None) -> float:
+    """Return the poll interval to use for a strategy.
+
+    Priority (highest to lowest):
+    1. ``explicit`` — caller-supplied value (e.g. from CLI flag or test fixture)
+    2. ``tempo["poll_interval_seconds"]`` — optional per-strategy YAML override
+    3. ``_POLL_INTERVAL_BY_BAR_SIZE[tempo["bar_size"]]`` — bar-size default
+    4. 60.0 — absolute fallback if bar_size is unrecognised (shouldn't happen
+       given loader validation, but defensive)
+    """
+    if explicit is not None:
+        return explicit
+    yaml_override = tempo.get("poll_interval_seconds")
+    if yaml_override is not None:
+        return float(yaml_override)
+    bar_size = tempo.get("bar_size", "")
+    return _POLL_INTERVAL_BY_BAR_SIZE.get(bar_size, 60.0)
