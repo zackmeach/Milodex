@@ -36,17 +36,25 @@ _repo_root = _spec_dir.parent
 # ---------------------------------------------------------------------------
 
 _datas = [
-    # Strategy configs and universe manifests
-    (str(_repo_root / "configs" / "*.yaml"), "configs"),
+    # Strategy configs and universe manifests.
+    # Directory copy (not glob) — PyInstaller's glob handling in Analysis.datas
+    # has been version-inconsistent; the directory form is the documented and
+    # well-tested path. Destination matches `get_bundled_resource_dir() / "configs"`
+    # which resolves to `<MEIPASS>/configs/` in a frozen bundle.
+    (str(_repo_root / "configs"), "configs"),
 
-    # QML module tree — the entire Milodex/ subdirectory including qmldir,
-    # Theme.qml, components, and surfaces.  Destination mirrors the source
-    # layout so QML_IMPORT_PATH + "import Milodex 1.0" resolves correctly.
-    (str(_repo_root / "src" / "milodex" / "gui" / "qml" / "Milodex"), "qml/Milodex"),
+    # QML module tree.  Destination MUST mirror the package layout so the
+    # production resolution
+    #   QML_IMPORT_PATH = importlib.resources.files("milodex.gui").joinpath("qml")
+    # in src/milodex/gui/app.py resolves to <MEIPASS>/milodex/gui/qml/ at
+    # runtime.  Copying the whole `qml/` directory (rather than just the
+    # `Milodex/` submodule) future-proofs against a second QML module being
+    # added under the same parent.
+    (str(_repo_root / "src" / "milodex" / "gui" / "qml"), "milodex/gui/qml"),
 
-    # Bundled font families.  importlib.resources handles these in editable
-    # installs; the explicit inclusion here ensures they land under MEIPASS in
-    # the frozen bundle.
+    # Bundled font families.  Destination matches
+    #   importlib.resources.files("milodex.gui").joinpath("assets/fonts")
+    # in src/milodex/gui/fonts.py — the same package-relative pattern as QML.
     (str(_repo_root / "src" / "milodex" / "gui" / "assets" / "fonts"), "milodex/gui/assets/fonts"),
 ]
 
