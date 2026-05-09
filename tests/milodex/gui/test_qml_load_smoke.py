@@ -41,6 +41,10 @@ _QML_TARGETS = [
     "surfaces/AnchorSurface.qml",
     "surfaces/StrategyBankSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
+    "surfaces/FrontSurface.qml",
+    "surfaces/BenchSurface.qml",
+    "surfaces/LedgerSurface.qml",
+    "surfaces/DeskSurface.qml",
 ]
 
 # Main.qml is the application root; it is tested separately because it wraps
@@ -83,6 +87,7 @@ from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.strategy_bank_state import StrategyBankState
+from milodex.gui.read_models import FrontPageState, BenchState, LedgerState, DeskState
 
 app = QGuiApplication.instance() or QGuiApplication(sys.argv)
 load_fonts()
@@ -109,11 +114,19 @@ op = OperationalState(
 # StrategyBankState with nonexistent db_path: surface renders to "error"
 # state but loads cleanly — exactly the no-data path we must validate.
 sb = StrategyBankState(db_path=Path("/__nonexistent_smoke_test__"))
+front = FrontPageState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
+bench = BenchState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
+ledger = LedgerState(db_path=Path("/__nonexistent_smoke_test__"))
+desk = DeskState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 
 register_qml_types(
     theme_manager=tm,
     operational_state=op,
     strategy_bank_state=sb,
+    front_page_state=front,
+    bench_state=bench,
+    ledger_state=ledger,
+    desk_state=desk,
 )
 
 _warnings: list[str] = []

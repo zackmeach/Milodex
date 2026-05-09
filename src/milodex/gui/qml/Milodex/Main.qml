@@ -18,7 +18,10 @@
 //   - Component.onCompleted logs Qt+QML+ThemeManager connectivity
 //   - engine.quit is connected to app.quit by the Python shell
 //
-// Strategy Bank tab (PR E): enabled; loads StrategyBankSurface.qml.
+// Strategy Bank tab (PR E): enabled; loads StrategyBankSurface.qml
+// (live observability surface).
+// Bench tab (PR F-bench): enabled; loads BenchSurface.qml (active
+// management surface, mock data — drag mechanics deferred to PR2).
 // Attribution tab remains stubbed; PR F will enable it.
 //
 // Uses QtQuick.Window (plain Window) rather than QtQuick.Controls
@@ -51,11 +54,14 @@ Window {
     // ------------------------------------------------------------------
     // Active surface state
     //
-    // String enum: "anchor" | "strategy-bank" | "design-system" |
+    // String enum: "anchor" | "strategy-bank" | "bench" | "design-system" |
     // "attribution-stub".  Stubs render a "(coming soon)" placeholder.
     // ------------------------------------------------------------------
 
-    property string activeSurface: "anchor"
+    property string activeSurface: "front"
+    property real screenshotContentHeight: surfaceLoader.item && surfaceLoader.item.captureContentHeight
+                                        ? topBar.height + surfaceLoader.item.captureContentHeight
+                                        : height
 
     // ------------------------------------------------------------------
     // Inline component: tab control (mirrors theme switcher in
@@ -101,7 +107,7 @@ Window {
         Text {
             id: tabText
             anchors.centerIn: parent
-            text: tabRoot.label + (tabRoot.tabEnabled ? "" : "  (coming soon)")
+            text: tabRoot.label + (tabRoot.tabEnabled ? "" : "  (soon)")
             color: !tabRoot.tabEnabled
                     ? Theme.color.text.muted
                     : (tabRoot._active
@@ -109,9 +115,11 @@ Window {
                         : (tabMouse.containsMouse
                             ? Theme.color.text.primary
                             : Theme.color.text.secondary))
-            font.family:    Theme.typography.body.md.family
-            font.pixelSize: Theme.typography.body.md.size
-            font.weight:    Font.Medium
+            font.family:        Theme.typography.label.xs.family
+            font.pixelSize:     Theme.typography.label.xs.size + 1
+            font.weight:        Font.DemiBold
+            font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.6
+            font.capitalization: Font.AllUppercase
             Behavior on color {
                 ColorAnimation { duration: Theme.motion.fast }
             }
@@ -150,10 +158,29 @@ Window {
             }
             spacing: Theme.space[2]
 
-            NavTab { label: "Operations";     surfaceId: "anchor" }
-            NavTab { label: "Strategy Bank";  surfaceId: "strategy-bank" }
-            NavTab { label: "Attribution";    surfaceId: "attribution-stub";    tabEnabled: false }
-            NavTab { label: "Design System";  surfaceId: "design-system" }
+            // Primary nav: four surfaces of the editorial-print product.
+            //   FRONT   = the front page (calm digest / front-porch view)
+            //   BENCH   = the strategy bench (active management)
+            //   LEDGER  = paper of record (chronological log)
+            //   DESK    = the trading desk (dense cockpit)
+            NavTab { label: "FRONT";  surfaceId: "front" }
+            NavTab { label: "BENCH";  surfaceId: "bench" }
+            NavTab { label: "LEDGER"; surfaceId: "ledger" }
+            NavTab { label: "DESK";   surfaceId: "desk" }
+        }
+
+        RiskStrip {
+            id: statusChrome
+            anchors {
+                right: parent.right
+                rightMargin: Theme.space[6]
+                verticalCenter: parent.verticalCenter
+            }
+            killSwitchActive: OperationalState.killSwitchActive
+            brokerStatus: OperationalState.brokerStatus
+            marketOpen: OperationalState.marketOpen
+            tradingMode: OperationalState.tradingMode
+            lastRefreshedAt: OperationalState.lastRefreshedAt
         }
 
         // 1px hairline divider below the bar
@@ -178,11 +205,21 @@ Window {
             right:  parent.right
             bottom: parent.bottom
         }
+        // Surface routing.  The four primary surfaces are FRONT / BENCH /
+        // LEDGER / DESK.  The earlier surfaces (anchor, strategy-bank,
+        // design-system) remain in the codebase and are reachable by
+        // setting `activeSurface` to their ID programmatically — they're
+        // simply not exposed in the primary nav anymore.
         source: {
-            if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
+            if (root.activeSurface === "front")          return "surfaces/FrontSurface.qml"
+            if (root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"
+            if (root.activeSurface === "ledger")         return "surfaces/LedgerSurface.qml"
+            if (root.activeSurface === "desk")           return "surfaces/DeskSurface.qml"
+            // Hidden surfaces (kept in codebase for reference):
             if (root.activeSurface === "anchor")         return "surfaces/AnchorSurface.qml"
             if (root.activeSurface === "strategy-bank")  return "surfaces/StrategyBankSurface.qml"
-            return ""  // stub tabs render the placeholder Item below
+            if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
+            return ""  // unknown id renders the placeholder
         }
 
         // Stub placeholder when no source is set (Strategy Bank / Attribution).

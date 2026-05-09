@@ -32,6 +32,8 @@ All tests skip when PySide6 is not importable.
 
 from __future__ import annotations
 
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -135,6 +137,133 @@ def _load_qml(engine, qml_source: str):
 
 
 # ---------------------------------------------------------------------------
+# QuietAction tests — Tier 1 (component instantiation)
+# ---------------------------------------------------------------------------
+
+
+@_skip_no_qt
+def test_quiet_action_instantiates_with_text():
+    """QuietAction exposes text and enabled state for low-risk affordances."""
+    script = f"""
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+tm = ThemeManager()
+register_qml_types(tm)
+
+engine = QQmlApplicationEngine()
+warnings = []
+engine.warnings.connect(lambda ws: warnings.extend(str(w.toString()) for w in ws))
+engine.addImportPath({str(_QML_IMPORT_ROOT)!r})
+
+component = QQmlComponent(engine)
+component.setData(b'''
+import QtQuick
+import Milodex 1.0
+
+QuietAction {{
+    text: "Open record"
+    enabled: true
+}}
+''', QUrl())
+if component.status() == QQmlComponent.Error:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(2)
+obj = component.create(engine.rootContext())
+if obj is None:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(3)
+if obj.property("text") != "Open record":
+    print("text property did not bind", file=sys.stderr)
+    sys.exit(4)
+if obj.property("enabled") is not True:
+    print("enabled property did not bind true", file=sys.stderr)
+    sys.exit(5)
+if warnings:
+    print("\\n".join(warnings), file=sys.stderr)
+    sys.exit(6)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+@_skip_no_qt
+def test_risk_strip_tokens_resolve():
+    """RiskStrip token contract resolves without instantiating the component."""
+    script = f"""
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+tm = ThemeManager()
+register_qml_types(tm)
+
+engine = QQmlApplicationEngine()
+engine.addImportPath({str(_QML_IMPORT_ROOT)!r})
+component = QQmlComponent(engine)
+component.setData(b'''
+import QtQuick
+import Milodex 1.0
+
+Item {{
+    property string surfaceBase:   Theme.color.surface.base
+    property string borderRegular: Theme.color.border.regular
+    property string textPrimary:   Theme.color.text.primary
+    property string textSecondary: Theme.color.text.secondary
+    property string positive:      Theme.status.positive
+    property string negative:      Theme.status.negative
+}}
+''', QUrl())
+if component.status() == QQmlComponent.Error:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(2)
+obj = component.create(engine.rootContext())
+if obj is None:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(3)
+expected = {{
+    "surfaceBase": "#13100a",
+    "borderRegular": "#33291c",
+    "textPrimary": "#e4d2a8",
+    "textSecondary": "#c4a880",
+    "positive": "#a8c4ab",
+    "negative": "#df805e",
+}}
+for prop, value in expected.items():
+    if obj.property(prop).lower() != value:
+        print(f"{{prop}} was {{obj.property(prop)}}", file=sys.stderr)
+        sys.exit(4)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+# ---------------------------------------------------------------------------
 # Button tests — Tier 1 (component instantiation)
 # ---------------------------------------------------------------------------
 
@@ -164,6 +293,65 @@ def test_button_primary_instantiates_with_correct_variant(engine):
 
     assert obj.property("variant") == "primary"
     assert obj.property("text") == "Confirm"
+
+
+@_skip_no_qt
+def test_button_disabled_uses_inherited_enabled_property(engine):
+    """Button disabled state binds to Item.enabled without QML override warnings."""
+    _ = engine
+    script = f"""
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from pathlib import Path
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+tm = ThemeManager()
+register_qml_types(tm)
+
+engine = QQmlApplicationEngine()
+warnings = []
+engine.warnings.connect(lambda ws: warnings.extend(str(w.toString()) for w in ws))
+engine.addImportPath({str(_QML_IMPORT_ROOT)!r})
+
+component = QQmlComponent(engine)
+component.setData(b'''
+import QtQuick
+import Milodex 1.0
+
+Button {{
+    variant: "secondary"
+    text: "Disabled"
+    enabled: false
+}}
+''', QUrl())
+if component.status() == QQmlComponent.Error:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(2)
+obj = component.create(engine.rootContext())
+if obj is None:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(3)
+if obj.property("enabled") is not False:
+    print("enabled property did not bind false", file=sys.stderr)
+    sys.exit(4)
+if warnings:
+    print("\\n".join(warnings), file=sys.stderr)
+    sys.exit(5)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 @_skip_no_qt
@@ -220,9 +408,9 @@ def test_button_primary_token_accent_resolves(engine):
     component, obj = _load_qml(qml_engine, qml)
     _ = component
 
-    assert obj.property("accent").lower() == "#722f37"
-    assert obj.property("accentHover").lower() == "#8a3a45"
-    assert obj.property("accentPressed").lower() == "#5d262d"
+    assert obj.property("accent").lower() == "#7d3540"
+    assert obj.property("accentHover").lower() == "#9a4350"
+    assert obj.property("accentPressed").lower() == "#622b34"
     assert obj.property("onBrandToken").lower() == "#f5e6c4"
 
 
@@ -247,13 +435,13 @@ def test_button_secondary_uses_text_primary_color(engine):
     component, obj = _load_qml(qml_engine, qml)
     _ = component
 
-    assert obj.property("textPrimary").lower() == "#d8c5a3"  # secondary label
-    assert obj.property("borderRegular").lower() == "#2a2218"  # secondary border
+    assert obj.property("textPrimary").lower() == "#e4d2a8"  # secondary label
+    assert obj.property("borderRegular").lower() == "#33291c"  # secondary border
     # Ghost label uses text.secondary; brightened in PR D.6 to keep it
     # legible above the brightened text.muted on dark surfaces.
-    assert obj.property("textSecondary").lower() == "#b89e7a"  # ghost label
-    assert obj.property("statusNeg").lower() == "#d97757"  # danger label + border
-    assert obj.property("statusNegHov").lower() == "#e08b6b"  # danger hover border
+    assert obj.property("textSecondary").lower() == "#c4a880"  # ghost label
+    assert obj.property("statusNeg").lower() == "#df805e"  # danger label + border
+    assert obj.property("statusNegHov").lower() == "#e89472"  # danger hover border
 
 
 @_skip_no_qt
@@ -283,9 +471,9 @@ def test_button_critical_tokens_resolve(engine):
 
     # Editorial Dark
     manager.set_theme("editorial-dark")
-    assert obj.property("negative").lower() == "#d97757"
-    assert obj.property("negativeHover").lower() == "#e08b6b"
-    assert obj.property("negativePressed").lower() == "#b86549"
+    assert obj.property("negative").lower() == "#df805e"
+    assert obj.property("negativeHover").lower() == "#e89472"
+    assert obj.property("negativePressed").lower() == "#bd6c4f"
     # Dark theme onCritical: dark text on light rust
     assert obj.property("onCritical").lower() == "#19170f"
 
@@ -299,9 +487,9 @@ def test_button_critical_tokens_resolve(engine):
 
     # Bronze
     manager.set_theme("bronze")
-    assert obj.property("negative").lower() == "#cd6038"
-    assert obj.property("negativeHover").lower() == "#df7548"
-    assert obj.property("negativePressed").lower() == "#ae512f"
+    assert obj.property("negative").lower() == "#d97550"
+    assert obj.property("negativeHover").lower() == "#e88862"
+    assert obj.property("negativePressed").lower() == "#b85e3d"
     # Bronze onCritical: dark "stamped" text
     assert obj.property("onCritical").lower() == "#19170f"
 
@@ -329,18 +517,18 @@ def test_button_token_binding_survives_theme_swap(engine):
     _ = component
 
     # Editorial Dark
-    assert obj.property("accent").lower() == "#722f37"
-    assert obj.property("accentHover").lower() == "#8a3a45"
-    assert obj.property("accentPressed").lower() == "#5d262d"
+    assert obj.property("accent").lower() == "#7d3540"
+    assert obj.property("accentHover").lower() == "#9a4350"
+    assert obj.property("accentPressed").lower() == "#622b34"
     assert obj.property("onBrand").lower() == "#f5e6c4"
 
     # Switch to bronze — verdigris accent, dark canvas-near onBrand
     # (PR D.6 inverted onBrand on Bronze: dark text on verdigris hits 5.09:1
     # vs. the prior warm-near-white at 3.29:1).
     manager.set_theme("bronze")
-    assert obj.property("accent").lower() == "#5e8b7e"
-    assert obj.property("accentHover").lower() == "#72a89a"
-    assert obj.property("accentPressed").lower() == "#4d7268"
+    assert obj.property("accent").lower() == "#6a9a8c"
+    assert obj.property("accentHover").lower() == "#82b5a5"
+    assert obj.property("accentPressed").lower() == "#578073"
     assert obj.property("onBrand").lower() == "#0d0c0a"
 
     # Restore
@@ -435,9 +623,9 @@ def test_status_pill_paper_token_resolves_to_status_positive(engine):
     _ = component
 
     # Editorial Dark status colors
-    assert obj.property("positive").lower() == "#9bb89e"  # paper — muted sage
-    assert obj.property("info").lower() == "#6c89a3"  # backtest — ink
-    assert obj.property("warning").lower() == "#c4965a"  # blocked — mustard
+    assert obj.property("positive").lower() == "#a8c4ab"  # paper — muted sage
+    assert obj.property("info").lower() == "#7a98b2"  # backtest — ink
+    assert obj.property("warning").lower() == "#d5a566"  # blocked — mustard
 
 
 @_skip_no_qt
@@ -457,13 +645,13 @@ def test_status_pill_killed_token_and_theme_tinting(engine):
     component, obj = _load_qml(qml_engine, qml)
     _ = component
 
-    # Editorial Dark status.negative is rust #d97757
-    assert obj.property("negative").lower() == "#d97757"
+    # Editorial Dark status.negative is rust #df805e
+    assert obj.property("negative").lower() == "#df805e"
 
     # Bronze status.negative was bumped in PR D.6 from #a04020 (2.77:1 — failed AA)
-    # to #cd6038 (4.55:1) to clear the contrast audit on surface.base.
+    # to #d97550 (4.55:1) to clear the contrast audit on surface.base.
     manager.set_theme("bronze")
-    assert obj.property("negative").lower() == "#cd6038"
+    assert obj.property("negative").lower() == "#d97550"
 
     manager.set_theme("editorial-dark")
 
@@ -562,16 +750,16 @@ def test_strategy_row_token_references_resolve(engine):
     _ = component
 
     # Row surface tokens (Editorial Dark)
-    assert obj.property("surfaceBase").lower() == "#100d09"
-    assert obj.property("surfaceRaised").lower() == "#14110d"
-    assert obj.property("borderSubtle").lower() == "#1f1a12"
-    assert obj.property("borderRegular").lower() == "#2a2218"
-    assert obj.property("brandAccent").lower() == "#722f37"  # selected accent bar
+    assert obj.property("surfaceBase").lower() == "#13100a"
+    assert obj.property("surfaceRaised").lower() == "#1a1611"
+    assert obj.property("borderSubtle").lower() == "#241f15"
+    assert obj.property("borderRegular").lower() == "#33291c"
+    assert obj.property("brandAccent").lower() == "#7d3540"  # selected accent bar
     # Pill status tokens (resolved via StatusPill composition)
-    assert obj.property("statusPositive").lower() == "#9bb89e"  # paper
-    assert obj.property("statusInfo").lower() == "#6c89a3"  # backtest
-    assert obj.property("statusWarning").lower() == "#c4965a"  # blocked
-    assert obj.property("statusNegative").lower() == "#d97757"  # killed
+    assert obj.property("statusPositive").lower() == "#a8c4ab"  # paper
+    assert obj.property("statusInfo").lower() == "#7a98b2"  # backtest
+    assert obj.property("statusWarning").lower() == "#d5a566"  # blocked
+    assert obj.property("statusNegative").lower() == "#df805e"  # killed
     # Type families
     assert obj.property("dataMdFamily") == "JetBrains Mono"
     assert obj.property("dataSmFamily") == "JetBrains Mono"
@@ -601,11 +789,11 @@ def test_strategy_row_brand_accent_token_rebinds_on_theme_swap(engine):
     component, obj = _load_qml(qml_engine, qml)
     _ = component
 
-    assert obj.property("brandAccent").lower() == "#722f37"
+    assert obj.property("brandAccent").lower() == "#7d3540"
 
     # Rebinds on theme swap (theme-binding contract)
     manager.set_theme("bronze")
-    assert obj.property("brandAccent").lower() == "#5e8b7e"
+    assert obj.property("brandAccent").lower() == "#6a9a8c"
 
     manager.set_theme("editorial-dark")
 
@@ -642,8 +830,8 @@ def test_surface_background_and_radius_tokens_resolve(engine):
     component, obj = _load_qml(qml_engine, qml)
     _ = component
 
-    assert obj.property("surfaceBase").lower() == "#100d09"
-    assert obj.property("borderSubtle").lower() == "#1f1a12"
+    assert obj.property("surfaceBase").lower() == "#13100a"
+    assert obj.property("borderSubtle").lower() == "#241f15"
     assert obj.property("radiusLg") == 6  # radius.lg
     assert obj.property("space5") == 24  # space[5] padding
 
@@ -669,7 +857,7 @@ def test_surface_hover_border_tokens_are_distinct(engine):
     component, obj = _load_qml(qml_engine, qml)
     _ = component
 
-    assert obj.property("borderSubtle").lower() == "#1f1a12"
-    assert obj.property("borderRegular").lower() == "#2a2218"
+    assert obj.property("borderSubtle").lower() == "#241f15"
+    assert obj.property("borderRegular").lower() == "#33291c"
     # Tokens are distinct — hovering changes something meaningful
     assert obj.property("borderRegular") != obj.property("borderSubtle")

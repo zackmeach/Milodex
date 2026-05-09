@@ -233,7 +233,7 @@ def test_theme_color_resolves_to_editorial_dark_default(engine):
     _ = component  # keep alive for the test's lifetime
     # Qt normalizes hex colors to #aarrggbb / #rrggbb form.  Compare
     # case-insensitively against the spec value.
-    assert obj.property("brandPrimary").lower() == "#e6cf99"
+    assert obj.property("brandPrimary").lower() == "#ecd6a5"
 
 
 @_skip_no_qt
@@ -252,10 +252,10 @@ def test_theme_switches_when_thememanager_changes(engine):
     """
     component, obj = _load_qml(qml_engine, qml)
     _ = component  # keep alive for the test's lifetime
-    assert obj.property("brandPrimary").lower() == "#e6cf99"
+    assert obj.property("brandPrimary").lower() == "#ecd6a5"
 
     manager.set_theme("bronze")
-    assert obj.property("brandPrimary").lower() == "#a68063"
+    assert obj.property("brandPrimary").lower() == "#b58c6e"
 
 
 @_skip_no_qt
@@ -274,14 +274,14 @@ def test_status_colors_theme_tint_correctly(engine):
     """
     component, obj = _load_qml(qml_engine, qml)
     _ = component  # keep alive for the test's lifetime
-    assert obj.property("positive").lower() == "#9bb89e"
+    assert obj.property("positive").lower() == "#a8c4ab"
 
-    # Bronze status.positive changed in PR D.6 from verdigris #5e8b7e (which
+    # Bronze status.positive changed in PR D.6 from verdigris #6a9a8c (which
     # collided with brand.accent — same hue on selection bar AND status pill)
-    # to sage #9bb89e (Editorial Dark's positive value, distinct from
+    # to sage #a8c4ab (Editorial Dark's positive value, distinct from
     # brand.accent and still inside the Bronze palette story).
     manager.set_theme("bronze")
-    assert obj.property("positive").lower() == "#9bb89e"
+    assert obj.property("positive").lower() == "#a8c4ab"
 
 
 @_skip_no_qt
@@ -327,7 +327,7 @@ def test_brand_primary_is_distinct_from_text_primary(engine):
     in every theme.
 
     Catches the Editorial Light collision (brand.primary == text.primary
-    == ``#2a2218``) caught in PR D.6 review.  When both tokens collapse
+    == ``#33291c``) caught in PR D.6 review.  When both tokens collapse
     to the same value, display-rank surface titles render in the same
     colour as body text — the brand identity disappears and there is no
     visual difference between a section heading and its caption.
