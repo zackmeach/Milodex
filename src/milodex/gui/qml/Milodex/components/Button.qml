@@ -24,7 +24,7 @@
 //   variant  : string  — "primary" | "secondary" | "ghost" | "danger" | "critical"
 //                        (default: "primary")
 //   text     : string  — button label
-//   enabled  : bool    — disables interaction when false
+//   enabled  : bool    — inherited from Item; disables interaction when false
 //   signal clicked()
 //
 // Variant hierarchy (DESIGN_SYSTEM.md §7.1):
@@ -49,7 +49,6 @@ Item {
 
     property string variant: "primary"
     property string text: ""
-    property bool   enabled: true
 
     signal clicked()
 
@@ -72,7 +71,10 @@ Item {
     // Sizing
     // ------------------------------------------------------------------
 
-    implicitWidth:  contentText.implicitWidth + Theme.space[3] * 2
+    // Critical buttons get extra horizontal padding so the letter-spaced
+    // uppercase label has breathing room (matches the brief's typographic
+    // weighting — the kill-switch-class action should feel substantial).
+    implicitWidth:  contentText.implicitWidth + (root._isCritical ? Theme.space[4] : Theme.space[3]) * 2
     implicitHeight: contentText.implicitHeight + Theme.space[2] * 2
 
     // ------------------------------------------------------------------
@@ -149,6 +151,14 @@ Item {
     // Label
     // ------------------------------------------------------------------
 
+    // Critical-variant typography distinguishers (per DESIGN_SYSTEM.md §7.1
+    // and the Bench brief): the `critical` variant alone among the five
+    // renders uppercase with widened letter-spacing.  This is the visual
+    // signature of "this action is structurally different from every other
+    // action on the surface" — paired with filled rust + DemiBold weight,
+    // it announces stop-the-world intent without iconography.
+    readonly property bool _isCritical: root.variant === "critical"
+
     Text {
         id: contentText
         anchors.centerIn: parent
@@ -156,7 +166,9 @@ Item {
         color: root._textColor
         font.family:    Theme.typography.body.md.family
         font.pixelSize: Theme.typography.body.md.size
-        font.weight:    Font.Medium  // 500 per §7.1
+        font.weight:    root._isCritical ? Font.DemiBold : Font.Medium
+        font.letterSpacing:  root._isCritical ? 1.4 : 0
+        font.capitalization: root._isCritical ? Font.AllUppercase : Font.MixedCase
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment:   Text.AlignVCenter
 
