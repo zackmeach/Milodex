@@ -458,7 +458,7 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
         sharpe = _float_or_none(promotion.get("sharpe_ratio"), metrics.get("sharpe"))
         max_dd = _float_or_none(promotion.get("max_drawdown_pct"), metrics.get("max_drawdown_pct"))
         trade_count = _int_or_none(promotion.get("trade_count"), metrics.get("trade_count"))
-        failures = tuple(_gate_failures(sharpe, max_dd, trade_count))
+        failures = tuple(_gate_failures(sharpe, max_dd, trade_count, config.family))
         status_kind, status_word, status_tail = _status_copy(
             config.stage, failures, sharpe, max_dd, trade_count
         )
@@ -563,6 +563,7 @@ def _latest_promotions(db_path: Path) -> dict[str, dict[str, Any]]:
             INNER JOIN (
                 SELECT strategy_id, MAX(id) AS max_id
                 FROM promotions
+                WHERE promotion_type != 'demotion'
                 GROUP BY strategy_id
             ) latest ON latest.strategy_id = p.strategy_id AND latest.max_id = p.id
             """
@@ -820,7 +821,12 @@ def _gate_failures(
     sharpe: float | None,
     max_dd: float | None,
     trade_count: int | None,
+    family: str = "",
 ) -> list[str]:
+    # Regime strategies are lifecycle-proof and exempt from statistical gate thresholds
+    # (CLAUDE.md "Strategy bank, two roles"; SRS R-PRM-004).
+    if family == "regime":
+        return []
     failures: list[str] = []
     if sharpe is None or sharpe <= MIN_SHARPE:
         failures.append("S")

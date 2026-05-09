@@ -231,3 +231,112 @@ def test_desk_events_expose_structured_event_fields(tmp_path: Path) -> None:
     assert event["subject"] == "Rsi2Pullback"
     assert event["transition"] == "backtest -> paper"
     assert event["reason"] == "gate pass"
+
+
+def _write_regime_config(configs_dir: Path, strategy_id: str, stage: str = "paper") -> Path:
+    path = configs_dir / f"{strategy_id.replace('.', '_')}.yaml"
+    path.write_text(
+        f"""
+strategy:
+  id: {strategy_id}
+  family: regime
+  template: daily.sma200_rotation
+  variant: spy_shy
+  version: 1
+  description: SPY/SHY 200-DMA Regime
+  enabled: true
+  universe: [SPY, SHY]
+  parameters:
+    ma_filter_length: 200
+    risk_on_symbol: SPY
+    risk_off_symbol: SHY
+    allocation_pct: 0.09
+  tempo:
+    bar_size: 1D
+    min_hold_days: 1
+    max_hold_days: null
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.05
+    stop_loss_pct: null
+  stage: {stage}
+  backtest:
+    commission_per_trade: 0
+    min_trades_required: null
+  disable_conditions_additional: []
+""".strip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_regime_strategy_has_empty_gate_failures(tmp_path: Path) -> None:
+    """Regime strategies are exempt from statistical gate thresholds (CLAUDE.md, SRS R-PRM-004)."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+    _write_regime_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    # No backtest or promotion records — metrics are all None, which would normally
+    # trigger all three gate failures (S, D, N) for a non-regime strategy.
+
+    snapshot = build_bench_snapshot(db, configs)
+    paper = next(section for section in snapshot["sections"] if section["stage"] == "paper")
+    assert len(paper["strategies"]) == 1
+    row = paper["strategies"][0]
+
+    assert row["gateFailures"] == [], "Regime strategy must be exempt from gate thresholds"
+    assert row["statusKind"] == "info", "Regime strategy with no evidence should be info-kind"
+
+
+def test_demotion_records_do_not_pollute_latest_promotions(tmp_path: Path) -> None:
+    """_latest_promotions must ignore demotion rows so NULL metrics don't create false failures."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+
+    conn = sqlite3.connect(str(db))
+    # First record: a valid statistical promotion with passing metrics.
+    conn.execute(
+        """
+        INSERT INTO promotions
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type, approved_by,
+             backtest_run_id, sharpe_ratio, max_drawdown_pct, trade_count, notes)
+        VALUES ('2026-05-01T10:00:00+00:00', ?, 'backtest', 'paper', 'statistical',
+                'test', 'run-1', 0.80, 7.0, 150, 'gate pass')
+        """,
+        (strategy_id,),
+    )
+    # Second record: a demotion with NULL metrics (higher id → previously selected by MAX(id)).
+    conn.execute(
+        """
+        INSERT INTO promotions
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type, approved_by,
+             backtest_run_id, sharpe_ratio, max_drawdown_pct, trade_count, notes)
+        VALUES ('2026-05-05T09:00:00+00:00', ?, 'paper', 'backtest', 'demotion',
+                'test', NULL, NULL, NULL, NULL, 'demoted')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest_section = next(
+        section for section in snapshot["sections"] if section["stage"] == "backtest"
+    )
+    assert len(backtest_section["strategies"]) == 1
+    row = backtest_section["strategies"][0]
+
+    # The promotion row (sharpe=0.80, dd=7.0, trades=150) should win, not the demotion NULL row.
+    assert row["sharpe"] == 0.80, "Promotion metrics must not be masked by demotion NULL row"
+    assert row["gateFailures"] == [], "Valid promotion metrics must pass all gates"
