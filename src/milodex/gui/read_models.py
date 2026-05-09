@@ -646,7 +646,7 @@ def _runner_rows(db_path: Path) -> list[dict[str, Any]]:
         conn.close()
     return [
         {
-            "pid": row["id"] if "id" in row.keys() else row["session_id"],
+            "pid": row["session_id"],  # session_id is more meaningful than autoincrement rowid
             "sessionId": row["session_id"],
             "strategyId": row["strategy_id"],
             "name": _short_strategy_name(row["strategy_id"]),
@@ -771,7 +771,7 @@ def _next_stage(stage: str) -> str:
     if stage == "backtest":
         return "paper"
     if stage == "paper":
-        return "micro"
+        return "micro_live"
     if stage == "micro_live":
         return "live"
     return stage
@@ -822,7 +822,7 @@ def _gate_failures(
     trade_count: int | None,
 ) -> list[str]:
     failures: list[str] = []
-    if sharpe is None or sharpe < MIN_SHARPE:
+    if sharpe is None or sharpe <= MIN_SHARPE:
         failures.append("S")
     if max_dd is None or max_dd >= MAX_DRAWDOWN_PCT:
         failures.append("D")
