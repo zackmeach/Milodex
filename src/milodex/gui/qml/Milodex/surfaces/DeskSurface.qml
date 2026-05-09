@@ -854,7 +854,7 @@ Item {
 
                                 RowLayout {
                                     width: parent.width
-                                    height: Math.max(queueText.implicitHeight, transitionText.implicitHeight, readyText.implicitHeight) + Theme.space[4]
+                                    height: Math.max(queueText.implicitHeight, transitionRow.implicitHeight, readyText.implicitHeight) + Theme.space[4]
                                     spacing: Theme.space[3]
 
                                     Column {
@@ -884,32 +884,7 @@ Item {
                                     }
 
                                     Row {
-                                        id: transitionText
-                                        visible: false
-                                        Layout.preferredWidth: 120
-                                        Layout.alignment: Qt.AlignVCenter
-                                        spacing: Theme.space[1]
-                                        Text {
-                                            text: modelData.from
-                                            color: Theme.color.text.secondary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                        }
-                                        Text {
-                                            text: "â†’"
-                                            color: Theme.color.text.muted
-                                        }
-                                        Text {
-                                            text: modelData.to
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                        }
-                                    }
-
-                                    Row {
+                                        id: transitionRow
                                         Layout.preferredWidth: 120
                                         Layout.alignment: Qt.AlignVCenter
                                         spacing: Theme.space[1]
@@ -1367,9 +1342,13 @@ Item {
                             Layout.preferredHeight: kindLabelFull.implicitHeight + 2
                             Layout.alignment: Qt.AlignVCenter
                             color: "transparent"
-                            border.color: modelData.kind === "WARN" ? Theme.status.warning
-                                        : modelData.kind === "TRADE" ? Theme.color.brand.accent
-                                        : modelData.kind === "RUN" ? Theme.status.info
+                            border.color: modelData.kind === "WARN"      ? Theme.status.warning
+                                        : modelData.kind === "TRADE"     ? Theme.color.brand.accent
+                                        : modelData.kind === "RUN"       ? Theme.status.info
+                                        : modelData.kind === "PROMOTED"  ? Theme.status.positive
+                                        : modelData.kind === "DEMOTED"   ? Theme.status.negative
+                                        : modelData.kind === "TRIGGERED" ? Theme.status.negative
+                                        : modelData.kind === "RESET"     ? Theme.status.info
                                         : Theme.color.border.regular
                             border.width: 1
                             radius: Theme.radius.sm
@@ -1378,9 +1357,13 @@ Item {
                                 id: kindLabelFull
                                 anchors.centerIn: parent
                                 text: modelData.kind
-                                color: modelData.kind === "WARN" ? Theme.status.warning
-                                     : modelData.kind === "TRADE" ? Theme.color.brand.accent
-                                     : modelData.kind === "RUN" ? Theme.status.info
+                                color: modelData.kind === "WARN"      ? Theme.status.warning
+                                     : modelData.kind === "TRADE"     ? Theme.color.brand.accent
+                                     : modelData.kind === "RUN"       ? Theme.status.info
+                                     : modelData.kind === "PROMOTED"  ? Theme.status.positive
+                                     : modelData.kind === "DEMOTED"   ? Theme.status.negative
+                                     : modelData.kind === "TRIGGERED" ? Theme.status.negative
+                                     : modelData.kind === "RESET"     ? Theme.status.info
                                      : Theme.color.text.muted
                                 font.family:        Theme.typography.label.xs.family
                                 font.pixelSize:     Theme.typography.label.xs.size - 1
