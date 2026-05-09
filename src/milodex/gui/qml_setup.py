@@ -26,6 +26,7 @@ from __future__ import annotations
 from PySide6.QtQml import qmlRegisterSingletonInstance
 
 from milodex.gui.operational_state import OperationalState
+from milodex.gui.read_models import BenchState, DeskState, FrontPageState, LedgerState
 from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
@@ -42,12 +43,20 @@ QML_IMPORT_VERSION: tuple[int, int] = (1, 0)
 _singleton_instance: ThemeManager | None = None
 _operational_state_instance: OperationalState | None = None
 _strategy_bank_state_instance: StrategyBankState | None = None
+_front_page_state_instance: FrontPageState | None = None
+_bench_state_instance: BenchState | None = None
+_ledger_state_instance: LedgerState | None = None
+_desk_state_instance: DeskState | None = None
 
 
 def register_qml_types(
     theme_manager: ThemeManager | None = None,
     operational_state: OperationalState | None = None,
     strategy_bank_state: StrategyBankState | None = None,
+    front_page_state: FrontPageState | None = None,
+    bench_state: BenchState | None = None,
+    ledger_state: LedgerState | None = None,
+    desk_state: DeskState | None = None,
 ) -> ThemeManager:
     """Register Python QML types and return the :class:`ThemeManager` singleton.
 
@@ -91,6 +100,8 @@ def register_qml_types(
         one to defend against premature garbage collection.
     """
     global _singleton_instance, _operational_state_instance, _strategy_bank_state_instance
+    global _front_page_state_instance, _bench_state_instance
+    global _ledger_state_instance, _desk_state_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
     qmlRegisterSingletonInstance(
@@ -124,5 +135,49 @@ def register_qml_types(
             strategy_bank_state,
         )
         _strategy_bank_state_instance = strategy_bank_state
+
+    if front_page_state is not None:
+        qmlRegisterSingletonInstance(
+            FrontPageState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "FrontPageState",
+            front_page_state,
+        )
+        _front_page_state_instance = front_page_state
+
+    if bench_state is not None:
+        qmlRegisterSingletonInstance(
+            BenchState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "BenchState",
+            bench_state,
+        )
+        _bench_state_instance = bench_state
+
+    if ledger_state is not None:
+        qmlRegisterSingletonInstance(
+            LedgerState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "LedgerState",
+            ledger_state,
+        )
+        _ledger_state_instance = ledger_state
+
+    if desk_state is not None:
+        qmlRegisterSingletonInstance(
+            DeskState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "DeskState",
+            desk_state,
+        )
+        _desk_state_instance = desk_state
 
     return instance
