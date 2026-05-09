@@ -227,8 +227,8 @@ Item {
                         Text {
                             text:  root.pnlIsFlat ? "" : root.pnlParts.sign
                             color: root.pnlSignalColor
-                            font.family:    Theme.typography.display.xl.family
-                            font.pixelSize: 96
+                            font.family:    Theme.typography.display.heroNum.family
+                            font.pixelSize: Theme.typography.display.heroNum.size
                             font.weight:    Font.Normal
                             anchors.verticalCenter: parent.verticalCenter
                         }
@@ -236,18 +236,18 @@ Item {
                             text:  "$"
                             visible: !root.pnlIsFlat
                             color: Theme.color.brand.primary
-                            font.family:    Theme.typography.display.xl.family
-                            font.pixelSize: 50
-                            font.weight:    Font.Normal
+                            font.family:    Theme.typography.display.heroAccent.family
+                            font.pixelSize: Theme.typography.display.heroAccent.size
+                            font.weight:    Theme.typography.display.heroAccent.weight
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: 18
                         }
                         Text {
                             text:  root.pnlIsFlat ? "$0.00" : root.pnlParts.whole
                             color: Theme.color.brand.primary
-                            font.family:    Theme.typography.display.xl.family
-                            font.pixelSize: 96
-                            font.weight:    Font.Medium
+                            font.family:    Theme.typography.display.heroNum.family
+                            font.pixelSize: Theme.typography.display.heroNum.size
+                            font.weight:    Theme.typography.display.heroNum.weight
                             font.letterSpacing: -2
                             anchors.verticalCenter: parent.verticalCenter
                         }
@@ -255,9 +255,9 @@ Item {
                             text:  root.pnlParts.cents
                             visible: !root.pnlIsFlat
                             color: Theme.color.text.secondary
-                            font.family:    Theme.typography.display.xl.family
-                            font.pixelSize: 28
-                            font.italic:    true
+                            font.family:    Theme.typography.display.heroCents.family
+                            font.pixelSize: Theme.typography.display.heroCents.size
+                            font.italic:    Theme.typography.display.heroCents.italic
                             anchors.bottom: parent.bottom
                             anchors.bottomMargin: 18
                         }
@@ -335,23 +335,86 @@ Item {
                         }
                     }
 
-                    // Larger conversational prose with accent numbers
-                    Text {
-                        width:    parent.width
-                        wrapMode: Text.WordWrap
-                        textFormat: Text.RichText
-                        color:    Theme.color.text.secondary
-                        font.family:    Theme.typography.body.md.family
-                        font.pixelSize: 19
-                        font.italic:    true
-                        lineHeight:     1.5
-                        text: "<span style='color:" + Theme.color.text.primary + "; font-style:normal; font-weight:500'>"
-                              + root.runningCount + "</span> of your "
-                              + "<span style='color:" + Theme.color.text.primary + "; font-style:normal; font-weight:500'>"
-                              + root.totalConfigs + "</span> strategies are working right now. "
-                              + "Most are still on paper, collecting live-feed evidence with simulated capital. Only "
-                              + "<span style='color:" + Theme.color.text.primary + "; font-style:normal; font-weight:500'>"
-                              + root.liveCount + "</span> have any real capital, and even those are capped small."
+                    // Larger conversational prose — numbers rendered in data mono (DESIGN.md §5.3)
+                    // Restructured into three Row-segments so numeric tokens use JetBrains Mono
+                    // rather than the body-sans family.
+                    Column {
+                        width: parent.width
+                        spacing: 0
+
+                        // Line 1: "<N> of your <N> strategies are working right now."
+                        Flow {
+                            width: parent.width
+                            spacing: 0
+
+                            Text {
+                                text: root.runningCount
+                                color: Theme.color.text.primary
+                                font.family:   Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.body.lgPlus.size
+                                font.features: Theme.typography.data.md.features
+                                font.weight:   Font.Medium
+                            }
+                            Text {
+                                text: " of your "
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.lgPlus.family
+                                font.pixelSize: Theme.typography.body.lgPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.lgPlus.lineHeight
+                            }
+                            Text {
+                                text: root.totalConfigs
+                                color: Theme.color.text.primary
+                                font.family:   Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.body.lgPlus.size
+                                font.features: Theme.typography.data.md.features
+                                font.weight:   Font.Medium
+                            }
+                            Text {
+                                text: " strategies are working right now."
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.lgPlus.family
+                                font.pixelSize: Theme.typography.body.lgPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.lgPlus.lineHeight
+                            }
+                        }
+
+                        // Line 2: pure prose
+                        Text {
+                            width: parent.width
+                            wrapMode: Text.WordWrap
+                            text: "Most are still on paper, collecting live-feed evidence with simulated capital. Only"
+                            color: Theme.color.text.secondary
+                            font.family:   Theme.typography.body.lgPlus.family
+                            font.pixelSize: Theme.typography.body.lgPlus.size
+                            font.italic:   true
+                            lineHeight:    Theme.typography.body.lgPlus.lineHeight
+                        }
+
+                        // Line 3: "<N> have any real capital, and even those are capped small."
+                        Flow {
+                            width: parent.width
+                            spacing: 0
+
+                            Text {
+                                text: root.liveCount
+                                color: Theme.color.text.primary
+                                font.family:   Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.body.lgPlus.size
+                                font.features: Theme.typography.data.md.features
+                                font.weight:   Font.Medium
+                            }
+                            Text {
+                                text: " have any real capital, and even those are capped small."
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.lgPlus.family
+                                font.pixelSize: Theme.typography.body.lgPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.lgPlus.lineHeight
+                            }
+                        }
                     }
 
                     // Hairline rule
@@ -380,9 +443,9 @@ Item {
                                 Text {
                                     text: modelData.num
                                     color: Theme.color.brand.primary
-                                    font.family:    Theme.typography.display.lg.family
-                                    font.pixelSize: 30
-                                    font.weight:    Theme.typography.display.lg.weight
+                                    font.family:    Theme.typography.display.tally.family
+                                    font.pixelSize: Theme.typography.display.tally.size
+                                    font.weight:    Theme.typography.display.tally.weight
                                 }
                                 Text {
                                     text:  modelData.label
@@ -553,9 +616,10 @@ Item {
                                     }
                                 }
 
-                                // Gates for live: passing
+                                // Gates for next stage — derived from feature.stage via JS map
+                                // (_StrategyRow.as_qml() exports `stage`, not `gatesFor`)
                                 Text {
-                                    text: "Gates for " + root.feature.gatesFor
+                                    text: "Gates for " + ({"backtest": "paper", "paper": "micro_live", "micro_live": "live"}[root.feature.stage] || root.feature.stage || "next")
                                     color: Theme.color.text.muted
                                     font.family:        Theme.typography.label.xs.family
                                     font.pixelSize:     Theme.typography.label.xs.size
@@ -615,20 +679,88 @@ Item {
                         font.capitalization: Font.AllUppercase
                     }
 
-                    Text {
-                        width:    parent.width
-                        wrapMode: Text.WordWrap
-                        textFormat: Text.RichText
-                        color:    Theme.color.text.secondary
-                        font.family:    Theme.typography.body.md.family
-                        font.pixelSize: 16
-                        font.italic:    true
-                        lineHeight:     1.5
-                        text: root.marketKnown
-                              ? ("S&P " + Number(root.market.spyPct || 0).toFixed(2) + "%, Nasdaq "
-                                 + Number(root.market.qqqPct || 0).toFixed(2) + "%, small-caps "
-                                 + Number(root.market.iwmPct || 0).toFixed(2) + "%. " + root.marketSummaryText)
-                              : root.marketSummaryText
+                    // Market percentages rendered in data mono (DESIGN.md §5.3); prose in body sans.
+                    // When market is unknown, falls back to a single prose Text.
+                    Loader {
+                        width: parent.width
+                        sourceComponent: root.marketKnown ? marketKnownRow : marketUnknownText
+                    }
+
+                    Component {
+                        id: marketKnownRow
+                        Flow {
+                            width: parent.width
+                            spacing: 0
+
+                            Text {
+                                text: "S&P "
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.mdPlus.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.mdPlus.lineHeight
+                            }
+                            Text {
+                                text: Number(root.market.spyPct || 0).toFixed(2) + "%"
+                                color: Theme.color.text.primary
+                                font.family:   Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.features: Theme.typography.data.md.features
+                            }
+                            Text {
+                                text: ", Nasdaq "
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.mdPlus.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.mdPlus.lineHeight
+                            }
+                            Text {
+                                text: Number(root.market.qqqPct || 0).toFixed(2) + "%"
+                                color: Theme.color.text.primary
+                                font.family:   Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.features: Theme.typography.data.md.features
+                            }
+                            Text {
+                                text: ", small-caps "
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.mdPlus.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.mdPlus.lineHeight
+                            }
+                            Text {
+                                text: Number(root.market.iwmPct || 0).toFixed(2) + "%"
+                                color: Theme.color.text.primary
+                                font.family:   Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.features: Theme.typography.data.md.features
+                            }
+                            Text {
+                                text: ". " + root.marketSummaryText
+                                color: Theme.color.text.secondary
+                                font.family:   Theme.typography.body.mdPlus.family
+                                font.pixelSize: Theme.typography.body.mdPlus.size
+                                font.italic:   true
+                                lineHeight:    Theme.typography.body.mdPlus.lineHeight
+                                wrapMode:      Text.WordWrap
+                            }
+                        }
+                    }
+
+                    Component {
+                        id: marketUnknownText
+                        Text {
+                            width:    parent.width
+                            wrapMode: Text.WordWrap
+                            text:     root.marketSummaryText
+                            color:    Theme.color.text.secondary
+                            font.family:    Theme.typography.body.mdPlus.family
+                            font.pixelSize: Theme.typography.body.mdPlus.size
+                            font.italic:    true
+                            lineHeight:     Theme.typography.body.mdPlus.lineHeight
+                        }
                     }
                 }
 
