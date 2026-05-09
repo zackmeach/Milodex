@@ -75,3 +75,6 @@ html/
 /build/
 /dist/
 *.spec.bak
+
+# Generated screenshot artifacts (headless capture tooling, see scripts/capture_gui_screenshots.py)
+artifacts/
