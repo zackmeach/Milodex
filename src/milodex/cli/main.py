@@ -36,7 +36,13 @@ from milodex.cli.commands import (
 from milodex.cli.commands import gui as gui_cmd
 from milodex.cli.commands.status import _build_status_result  # noqa: F401  (test monkeypatch seam)
 from milodex.cli.formatter import get_formatter
-from milodex.config import get_data_dir, get_locks_dir, get_logs_dir, get_trading_mode
+from milodex.config import (
+    get_bundled_resource_dir,
+    get_data_dir,
+    get_locks_dir,
+    get_logs_dir,
+    get_trading_mode,
+)
 from milodex.core.advisory_lock import AdvisoryLockError
 from milodex.core.event_store import EventStore
 from milodex.data.alpaca_provider import AlpacaDataProvider
@@ -98,7 +104,7 @@ def main(
     strategy_runner_factory=None,
     backtest_engine_factory=None,
     event_store_factory=None,
-    config_dir: Path = Path("configs"),
+    config_dir: Path | None = None,
     locks_dir: Path | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
@@ -106,6 +112,11 @@ def main(
     """Run the CLI and return a process exit code."""
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
+    # Resolve config_dir lazily so frozen-bundle detection in
+    # get_bundled_resource_dir() runs at call time, not at import time.
+    # Callers (e.g. tests) can still pass an explicit Path to override.
+    if config_dir is None:
+        config_dir = get_bundled_resource_dir() / "configs"
     install_file_handler(get_logs_dir())
     _locks_dir = locks_dir if locks_dir is not None else get_locks_dir()
     parser = build_parser()
@@ -146,7 +157,7 @@ def main(
         )
         return StrategyRunner(
             strategy_id=strategy_id,
-            config_dir=Path("configs"),
+            config_dir=config_dir,
             broker_client=broker,
             data_provider=data_provider,
             execution_service=execution_service,
