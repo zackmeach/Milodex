@@ -17,3 +17,4 @@ Main 1.0 Main.qml
 AnchorSurface 1.0 surfaces/AnchorSurface.qml
 FrontSurface 1.0 surfaces/FrontSurface.qml
 BenchSurface 1.0 surfaces/BenchSurface.qml
+LedgerSurface 1.0 surfaces/LedgerSurface.qml
