@@ -294,6 +294,7 @@ Item {
                                         if (modelData.outcomeKind === "promoted") return Theme.status.positive
                                         if (modelData.outcomeKind === "refused")  return Theme.status.negative
                                         if (modelData.outcomeKind === "fired")    return Theme.status.negative
+                                        if (modelData.outcomeKind === "demoted")  return Theme.status.negative
                                         if (modelData.outcomeKind === "info")     return Theme.status.info
                                         if (modelData.outcomeKind === "pending")  return Theme.status.warning
                                         return Theme.color.text.muted
