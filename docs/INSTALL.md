@@ -2,7 +2,7 @@
 
 ## What is this?
 
-Milodex is a personal autonomous trading system distributed as a Windows desktop application. The latest installer is available on the [GitHub Releases page](https://github.com/zdm80/milodex/releases). For Phase 5, releases are published manually — check the Releases page for the most recent `Milodex-Setup-vX.Y.Z.exe`.
+Milodex is a personal autonomous trading system distributed as a Windows desktop application. The latest installer is available on the [GitHub Releases page](https://github.com/zackmeach/Milodex/releases). For Phase 5, releases are published manually — check the Releases page for the most recent `Milodex-Setup-vX.Y.Z.exe`.
 
 ---
 
