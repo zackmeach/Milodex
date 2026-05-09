@@ -457,7 +457,7 @@ Item {
                             Text {
                                 text: "·"
                                 color: Theme.color.text.muted
-                                font.pixelSize: 14
+                                font.pixelSize: Theme.typography.body.md.size
                             }
                             // Stage count (zero-padded)
                             Text {
