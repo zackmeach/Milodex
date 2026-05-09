@@ -145,7 +145,9 @@ Item {
 
             // -- Axis tick labels --
             if (root.showAxis) {
-                ctx.font = "10px 'JetBrains Mono'"
+                // Canvas 2D requires an inline font string; size pegged to
+                // Theme.typography.label.xs.size (12px) for token discipline.
+                ctx.font = Theme.typography.label.xs.size + "px 'JetBrains Mono'"
                 ctx.fillStyle = Theme.color.text.muted
                 ctx.textBaseline = "alphabetic"
                 ctx.fillText("09:30", padL, H - 2)
