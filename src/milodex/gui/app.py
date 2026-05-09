@@ -113,10 +113,11 @@ def run_app() -> int:
         )
         return 1
 
-    from milodex.config import get_data_dir, get_trading_mode
+    from milodex.config import get_bundled_resource_dir, get_data_dir, get_trading_mode
     from milodex.gui.fonts import load_fonts
     from milodex.gui.operational_state import OperationalState
     from milodex.gui.qml_setup import register_qml_types
+    from milodex.gui.read_models import BenchState, DeskState, FrontPageState, LedgerState
     from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
 
@@ -172,15 +173,35 @@ def run_app() -> int:
     # strategy bank state.  Uses the same get_data_dir() resolution as the
     # CLI and the kill-switch store above.  Graceful if the DB is absent on
     # a fresh checkout — the surface renders the loading-then-error state.
-    strategy_bank_state = StrategyBankState(db_path=get_data_dir() / "milodex.db")
+    data_dir = get_data_dir()
+    db_path = data_dir / "milodex.db"
+    configs_dir = get_bundled_resource_dir() / "configs"
 
-    register_qml_types(theme_manager, operational_state, strategy_bank_state)
+    strategy_bank_state = StrategyBankState(db_path=db_path)
+    front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
+    bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
+    ledger_state = LedgerState(db_path=db_path)
+    desk_state = DeskState(db_path=db_path, configs_dir=configs_dir)
+
+    register_qml_types(
+        theme_manager=theme_manager,
+        operational_state=operational_state,
+        strategy_bank_state=strategy_bank_state,
+        front_page_state=front_page_state,
+        bench_state=bench_state,
+        ledger_state=ledger_state,
+        desk_state=desk_state,
+    )
     logger.info("run_app: active theme = %r", theme_manager.theme)
 
     # Begin polling AFTER registration so the GUI sees a populated state
     # on the first frame instead of empty defaults.
     operational_state.start()
     strategy_bank_state.start()
+    front_page_state.start()
+    bench_state.start()
+    ledger_state.start()
+    desk_state.start()
 
     # --- 4. Engine ------------------------------------------------------------
     engine = QQmlApplicationEngine()
@@ -201,6 +222,10 @@ def run_app() -> int:
         )
         operational_state.stop()
         strategy_bank_state.stop()
+        front_page_state.stop()
+        bench_state.stop()
+        ledger_state.stop()
+        desk_state.stop()
         return 1
 
     logger.info(
@@ -212,6 +237,10 @@ def run_app() -> int:
     engine.quit.connect(app.quit)
     app.aboutToQuit.connect(operational_state.stop)
     app.aboutToQuit.connect(strategy_bank_state.stop)
+    app.aboutToQuit.connect(front_page_state.stop)
+    app.aboutToQuit.connect(bench_state.stop)
+    app.aboutToQuit.connect(ledger_state.stop)
+    app.aboutToQuit.connect(desk_state.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()
