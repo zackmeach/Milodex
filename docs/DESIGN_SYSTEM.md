@@ -91,6 +91,19 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 
 Color tokens are defined as *semantic roles*. Each theme provides concrete values for every role; component code references roles, never raw hex values. Status colors are a constrained exception &mdash; see &sect;6.
 
+### 3.0 Operational text hierarchy
+
+The text ladder is a readability contract, not a decoration scale:
+
+| Token | Use |
+|---|---|
+| `color.text.primary` | Operational facts, selected rows, readable body, table values, and values the operator must scan quickly. |
+| `color.text.secondary` | Row names, timestamps, section captions, table headers, evidence metadata, and important supporting context. |
+| `color.text.muted` | Helper text, empty states, quiet commentary, and non-critical explanatory copy. |
+| `color.text.disabled` | Disabled controls and unavailable UI only. Do not use for timestamps, evidence IDs, table headers, market values, event text, or permanent records. |
+
+Serious does not mean faint. If a value is evidence, state, or an operator decision aid, it must not be rendered as disabled texture.
+
 ### 3.1 Editorial Dark (default)
 
 #### Surface &amp; structure
