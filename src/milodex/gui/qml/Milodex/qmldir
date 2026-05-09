@@ -15,3 +15,4 @@ BenchRow 1.0 components/BenchRow.qml
 BenchModal 1.0 components/BenchModal.qml
 Main 1.0 Main.qml
 AnchorSurface 1.0 surfaces/AnchorSurface.qml
+FrontSurface 1.0 surfaces/FrontSurface.qml
