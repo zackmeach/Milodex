@@ -166,6 +166,14 @@ QtObject {
                 readonly property real lineHeight: 1.05
                 readonly property int weight: Font.Medium
             }
+            // F.7-introduced: desk cockpit hero P/L — denser than heroNum (96px),
+            // sits in a 3-cell hero band alongside System and Market cells.
+            readonly property var deskNum: QtObject {
+                readonly property string family: "Newsreader"
+                readonly property int size: 56
+                readonly property real lineHeight: 1.05
+                readonly property int weight: Font.Medium
+            }
             // F.4-introduced: sign/dollar accent beside heroNum
             readonly property var heroAccent: QtObject {
                 readonly property string family: "Newsreader"
