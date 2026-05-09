@@ -159,6 +159,35 @@ QtObject {
     readonly property var typography: QtObject {
 
         readonly property var display: QtObject {
+            // F.4-introduced: hero P&L number — largest numeric on the page
+            readonly property var heroNum: QtObject {
+                readonly property string family: "Newsreader"
+                readonly property int size: 96
+                readonly property real lineHeight: 1.05
+                readonly property int weight: Font.Medium
+            }
+            // F.4-introduced: sign/dollar accent beside heroNum
+            readonly property var heroAccent: QtObject {
+                readonly property string family: "Newsreader"
+                readonly property int size: 50
+                readonly property real lineHeight: 1.05
+                readonly property int weight: Font.Normal
+            }
+            // F.4-introduced: cents fragment (.XX) beside heroNum
+            readonly property var heroCents: QtObject {
+                readonly property string family: "Newsreader"
+                readonly property int size: 28
+                readonly property real lineHeight: 1.05
+                readonly property int weight: Font.Normal
+                readonly property bool italic: true
+            }
+            // F.4-introduced: stage-tally numbers (backtest/paper/micro-live/live counts)
+            readonly property var tally: QtObject {
+                readonly property string family: "Newsreader"
+                readonly property int size: 30
+                readonly property real lineHeight: 1.10
+                readonly property int weight: Font.Normal
+            }
             readonly property var xl: QtObject {
                 readonly property string family: "Newsreader"
                 readonly property int size: 64
@@ -233,6 +262,22 @@ QtObject {
                 readonly property string family: "Public Sans"
                 readonly property int size: 13
                 readonly property real lineHeight: 1.45
+                readonly property int weight: Font.Normal
+                readonly property bool italic: false
+            }
+            // F.4-introduced: large narrative prose (Your Strategies section)
+            readonly property var lgPlus: QtObject {
+                readonly property string family: "Public Sans"
+                readonly property int size: 19
+                readonly property real lineHeight: 1.50
+                readonly property int weight: Font.Normal
+                readonly property bool italic: false
+            }
+            // F.4-introduced: narrative prose (Wider Market section)
+            readonly property var mdPlus: QtObject {
+                readonly property string family: "Public Sans"
+                readonly property int size: 16
+                readonly property real lineHeight: 1.50
                 readonly property int weight: Font.Normal
                 readonly property bool italic: false
             }
