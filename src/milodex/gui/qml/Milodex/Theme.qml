@@ -290,6 +290,15 @@ QtObject {
         metric: 64,       // "+1.19" or "-0.27" right-aligned
         chips: 200,       // gate chips + optional "— flagged, not retired" marginalia
                           //   (max case: 2 chips + flagged marginalia ~185px; 200 leaves headroom)
-        tradeCount: 88    // "433 trades" or "27 trades" right-aligned
+        tradeCount: 88,   // "433 trades" or "27 trades" right-aligned
+        benchMetric: 64,
+        benchConfigKey: 380,
+        benchStage: 90,
+        benchEvidence: 260,
+        benchAction: 152,
+        ledgerTimestamp: 148,
+        ledgerSubject: 224,
+        ledgerTransition: 220,
+        ledgerOutcome: 120
     })
 }
