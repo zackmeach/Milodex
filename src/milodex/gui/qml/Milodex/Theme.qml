@@ -298,6 +298,12 @@ QtObject {
                 readonly property real lineHeight: 1.40
                 readonly property int weight: Font.Medium
                 readonly property real letterSpacing: 0.12
+                // criticalTrack: heavier letter-spacing for the destructive Button
+                // variant's uppercase label.  Distinct from `letterSpacing` (0.12)
+                // because the critical button uses a wider track to read as a
+                // pressed-into-metal stamp rather than a section header.
+                // F.8-introduced (replaces inline `1.4` in Button.qml).
+                readonly property real criticalTrack: 1.4
                 readonly property bool uppercase: true
                 readonly property bool italic: false
             }

@@ -167,7 +167,7 @@ Item {
         font.family:    Theme.typography.body.md.family
         font.pixelSize: Theme.typography.body.md.size
         font.weight:    root._isCritical ? Font.DemiBold : Font.Medium
-        font.letterSpacing:  root._isCritical ? 1.4 : 0
+        font.letterSpacing:  root._isCritical ? Theme.typography.label.xs.criticalTrack : 0
         font.capitalization: root._isCritical ? Font.AllUppercase : Font.MixedCase
         horizontalAlignment: Text.AlignHCenter
         verticalAlignment:   Text.AlignVCenter
