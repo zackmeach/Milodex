@@ -1,0 +1,935 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Milodex — The Bench (mockup)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,400;1,6..72,500&family=Public+Sans:ital,wght@0,300..700;1,400..600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    /* Editorial Dark tokens — synced with src/milodex/gui/qml/Milodex/themes/EditorialDark.qml
+       (post 2026-05-08 brightness pass) */
+    --canvas: #0a0907;
+    --base: #13100a;
+    --raised: #1a1611;
+    --border-subtle: #241f15;
+    --border: #33291c;
+    --border-emphasis: #544532;
+    --text-primary: #e4d2a8;
+    --text-secondary: #c4a880;
+    --text-muted: #9c8c6c;
+    --text-disabled: #43392c;
+    --brand-primary: #ecd6a5;
+    --brand-accent: #7d3540;
+    --brand-accent-hover: #9a4350;
+    --on-brand: #f5e6c4;
+    --on-critical: #19170f;
+    --positive: #a8c4ab;
+    --warning: #d5a566;
+    --negative: #df805e;
+    --info: #7a98b2;
+
+    --font-display: 'Newsreader', Georgia, 'Times New Roman', serif;
+    --font-body: 'Public Sans', -apple-system, system-ui, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    background: var(--canvas);
+    color: var(--text-primary);
+    font-family: var(--font-body);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    font-feature-settings: 'kern' 1;
+  }
+
+  .page {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 56px 64px 96px;
+  }
+
+  /* ============= HEADER ============= */
+  .header {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr;
+    gap: 40px;
+    align-items: start;
+    margin-bottom: 36px;
+  }
+
+  .eyebrow {
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 14px;
+  }
+
+  .headline {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 52px;
+    line-height: 1.0;
+    color: var(--text-primary);
+    letter-spacing: -0.015em;
+  }
+
+  .headline .ornament {
+    color: var(--brand-accent);
+  }
+
+  .standfirst {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 17px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    padding-top: 22px;
+    max-width: 36ch;
+  }
+
+  .header-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 18px;
+    padding-top: 22px;
+  }
+
+  .nav {
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+    display: flex;
+    gap: 28px;
+  }
+  .nav a { color: var(--text-secondary); text-decoration: none; padding-bottom: 6px; border-bottom: 1px solid transparent; }
+  .nav a.active {
+    color: var(--text-primary);
+    border-bottom-color: var(--brand-accent);
+  }
+
+  .session-meta {
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+    font-size: 11px;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+  }
+  .session-meta .live-dot {
+    display: inline-block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--positive);
+    margin-right: 8px;
+    transform: translateY(-1px);
+  }
+
+  .hairline-top {
+    border-top: 1px solid var(--border);
+    margin-bottom: 44px;
+  }
+
+  /* ============= SECTION ============= */
+  .section {
+    margin-bottom: 56px;
+  }
+
+  .section-head {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 32px;
+    align-items: baseline;
+    margin-bottom: 14px;
+  }
+  .section-title {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+  }
+  .roman {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-weight: 400;
+    font-size: 19px;
+    color: var(--text-muted);
+    min-width: 16px;
+  }
+  .stage-name {
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.20em;
+    text-transform: uppercase;
+    color: var(--text-primary);
+  }
+  .stage-dot {
+    color: var(--text-muted);
+    margin: 0 6px;
+  }
+  .stage-count {
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+    font-size: 12px;
+    color: var(--text-muted);
+    letter-spacing: 0.06em;
+  }
+  .section-caption {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--text-secondary);
+    text-align: right;
+  }
+  .section-rule {
+    border-top: 1px solid var(--border);
+    margin-bottom: 0;
+  }
+  .section.live-section .section-rule {
+    border-top-color: var(--brand-accent);
+    border-top-width: 1px;
+  }
+
+  /* ============= ROW ============= */
+  .row {
+    display: grid;
+    grid-template-columns: 2.4fr 0.55fr 0.55fr 0.55fr 1.7fr 1.4fr;
+    gap: 24px;
+    align-items: center;
+    padding: 22px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    transition: background-color 220ms ease;
+    position: relative;
+  }
+  .row:hover {
+    background-color: rgba(255, 255, 255, 0.012);
+  }
+  /* Drag handle — 6-dot grip, only fully visible on hover (always faintly visible
+     in the mockup so the affordance is documented; in the production UI it would
+     fade in on row hover). */
+  .row:not(.column-header)::before {
+    content: '⋮⋮';
+    position: absolute;
+    left: -28px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--font-mono);
+    font-size: 14px;
+    letter-spacing: 2px;
+    color: var(--text-muted);
+    opacity: 0.30;
+    cursor: grab;
+    user-select: none;
+    transition: opacity 120ms ease;
+  }
+  .row:not(.column-header):hover::before {
+    opacity: 0.65;
+  }
+  .row.live-row {
+    background-color: rgba(114, 47, 55, 0.05);
+    padding-left: 18px;
+    padding-right: 18px;
+    margin-left: -20px;
+    margin-right: -20px;
+    border-left: 2px solid var(--brand-accent);
+  }
+  .row.column-header {
+    padding: 6px 0 10px;
+    border-bottom: 1px solid var(--border-subtle);
+  }
+
+  .row-name-block .name {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 20px;
+    color: var(--text-primary);
+    line-height: 1.15;
+    letter-spacing: -0.005em;
+  }
+  .row-name-block .id {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 5px;
+    letter-spacing: 0.01em;
+  }
+  .row.idle-row .row-name-block .name { color: var(--text-secondary); }
+  .row.idle-row .num { color: var(--text-disabled); }
+
+  .num {
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+    font-size: 13px;
+    text-align: right;
+    color: var(--text-primary);
+    letter-spacing: 0.01em;
+  }
+  .num-label {
+    font-family: var(--font-body);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  .row-status {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 14.5px;
+    line-height: 1.45;
+    color: var(--text-secondary);
+  }
+  .row-status .meta {
+    display: block;
+    font-family: var(--font-mono);
+    font-style: normal;
+    font-size: 11px;
+    color: var(--text-muted);
+    margin-top: 5px;
+    letter-spacing: 0.02em;
+  }
+  /* Inline signal words — colored within the italic sentence (a WSJ move) */
+  .signal-pos, .signal-warn, .signal-info, .signal-neg {
+    font-family: var(--font-body);
+    font-style: normal;
+    font-weight: 500;
+  }
+  .signal-pos  { color: var(--positive); }
+  .signal-warn { color: var(--warning); }
+  .signal-info { color: var(--info); }
+  .signal-neg  { color: var(--negative); }
+
+  .row-action { text-align: right; }
+
+  /* Buttons — escalating visual weight by stage */
+  .btn {
+    display: inline-block;
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.04em;
+    padding: 8px 14px;
+    border-radius: 4px;
+    text-decoration: none;
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-secondary);
+    user-select: none;
+  }
+  .btn.ghost { color: var(--text-muted); font-style: italic; }
+  .btn.outlined {
+    border-color: var(--border);
+    color: var(--text-primary);
+  }
+  .btn.outlined:hover { border-color: var(--border-emphasis); }
+  .btn.primary {
+    background: var(--brand-accent);
+    color: var(--on-brand);
+  }
+  .btn.primary:hover { background: var(--brand-accent-hover); }
+  .btn.critical {
+    background: var(--negative);
+    color: var(--on-critical);
+    font-weight: 600;
+    letter-spacing: 0.10em;
+    text-transform: uppercase;
+    padding: 8px 14px;
+  }
+
+  /* ============= FOOTER ============= */
+  .footer {
+    margin-top: 64px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 32px;
+    align-items: start;
+  }
+  .footer-note {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 13px;
+    color: var(--text-muted);
+    line-height: 1.6;
+    max-width: 78ch;
+  }
+  .footer-meta {
+    text-align: right;
+    font-family: var(--font-body);
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+  }
+
+  /* ============= BLOCKED-MODAL ============= */
+  /* Shown after a user drags a row to a section it can't move to without
+     remediation. The same modal surface is used for typed-confirm flows
+     (e.g. promotion to live) — only the body content differs. */
+  .modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 9, 7, 0.82);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 80px 32px;
+    z-index: 100;
+  }
+  .modal {
+    width: 100%;
+    max-width: 620px;
+    background: var(--base);
+    border: 1px solid var(--border);
+    border-top: 2px solid var(--negative);
+    border-radius: 6px;
+    padding: 36px 44px 32px;
+    font-family: var(--font-body);
+  }
+  .modal-eyebrow {
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--negative);
+    margin-bottom: 10px;
+  }
+  .modal-title {
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 30px;
+    color: var(--text-primary);
+    line-height: 1.12;
+    letter-spacing: -0.005em;
+    margin-bottom: 18px;
+  }
+  .modal-prose {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 15px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    margin-bottom: 26px;
+  }
+  .gate-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: var(--font-mono);
+    font-feature-settings: 'tnum';
+    font-size: 13px;
+    margin-bottom: 28px;
+  }
+  .gate-table th {
+    text-align: left;
+    font-family: var(--font-body);
+    font-size: 10px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    padding: 4px 0 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .gate-table th:nth-child(2),
+  .gate-table th:nth-child(3) { text-align: right; }
+  .gate-table th:nth-child(4) { text-align: right; }
+  .gate-table td {
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-subtle);
+    color: var(--text-primary);
+  }
+  .gate-table td:nth-child(1) {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 14px;
+    color: var(--text-secondary);
+  }
+  .gate-table td:nth-child(2),
+  .gate-table td:nth-child(3) { text-align: right; }
+  .gate-table td:nth-child(4) {
+    text-align: right;
+    font-family: var(--font-body);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .gate-fail td:nth-child(4) { color: var(--negative); font-weight: 600; }
+  .gate-pass td:nth-child(4) { color: var(--positive); font-weight: 500; }
+
+  .modal-options {
+    margin-bottom: 8px;
+  }
+  .modal-options-label {
+    font-family: var(--font-body);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    margin-bottom: 12px;
+  }
+  .modal-options ul {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .modal-options li {
+    font-family: var(--font-display);
+    font-style: italic;
+    font-size: 14.5px;
+    line-height: 1.5;
+    color: var(--text-secondary);
+    padding: 6px 0 6px 18px;
+    position: relative;
+  }
+  .modal-options li::before {
+    content: '·';
+    position: absolute;
+    left: 4px;
+    top: 4px;
+    color: var(--negative);
+    font-weight: bold;
+    font-size: 18px;
+  }
+  .modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 32px;
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <!-- ============= HEADER ============= -->
+  <div class="header">
+    <div>
+      <div class="eyebrow">Milodex · Strategy Bench</div>
+      <h1 class="headline">The Bench<span class="ornament">.</span></h1>
+    </div>
+    <div class="standfirst">
+      Every config on the ladder, top to bottom — what's working, what's stuck, and what's waiting at the next gate.
+    </div>
+    <div class="header-meta">
+      <nav class="nav">
+        <a href="#">Dashboard</a>
+        <a href="#" class="active">Bench</a>
+        <a href="#">Ledger</a>
+        <a href="#">Cockpit</a>
+      </nav>
+      <div class="session-meta">
+        <span class="live-dot"></span>session armed · 12 configs · 3 trading · 2026-05-09
+      </div>
+    </div>
+  </div>
+
+  <div class="hairline-top"></div>
+
+  <!-- ============= i. IDLE ============= -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">
+        <span class="roman">i.</span>
+        <span class="stage-name">Idle</span>
+        <span class="stage-dot">·</span>
+        <span class="stage-count">02</span>
+      </div>
+      <div class="section-caption">configured, not yet run</div>
+    </div>
+    <div class="section-rule"></div>
+
+    <div class="row idle-row">
+      <div class="row-name-block">
+        <div class="name">Internal Bar Strength</div>
+        <div class="id">meanrev.daily.ibs_lowclose.v1</div>
+      </div>
+      <div class="num">—</div>
+      <div class="num">—</div>
+      <div class="num">—</div>
+      <div class="row-status">
+        <span class="signal-info">Config valid</span> — ready to backtest.
+        <span class="meta">awaiting first run</span>
+      </div>
+      <div class="row-action">
+        <span class="btn outlined">Run backtest →</span>
+      </div>
+    </div>
+
+    <div class="row idle-row">
+      <div class="row-name-block">
+        <div class="name">Turn-of-Month SPY</div>
+        <div class="id">seasonality.daily.turn_of_month.spy.v1</div>
+      </div>
+      <div class="num">—</div>
+      <div class="num">—</div>
+      <div class="num">—</div>
+      <div class="row-status">
+        <span class="signal-info">Config valid</span> — ready to backtest.
+        <span class="meta">awaiting first run</span>
+      </div>
+      <div class="row-action">
+        <span class="btn outlined">Run backtest →</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============= ii. BACKTEST ============= -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">
+        <span class="roman">ii.</span>
+        <span class="stage-name">Backtest</span>
+        <span class="stage-dot">·</span>
+        <span class="stage-count">03</span>
+      </div>
+      <div class="section-caption">historical evidence in flight</div>
+    </div>
+    <div class="section-rule"></div>
+
+    <div class="row column-header">
+      <div></div>
+      <div class="num"><span class="num-label">Sharpe</span></div>
+      <div class="num"><span class="num-label">max-dd</span></div>
+      <div class="num"><span class="num-label">trades</span></div>
+      <div></div>
+      <div></div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">Donchian 20/10</div>
+        <div class="id">breakout.daily.donchian_20_10.sector_etfs.v1</div>
+      </div>
+      <div class="num">+0.87</div>
+      <div class="num">9.2%</div>
+      <div class="num">435</div>
+      <div class="row-status">
+        <span class="signal-pos">Walk-forward complete</span> — gates pass on every window.
+        <span class="meta">paper-ready · evidence locked 14d ago</span>
+      </div>
+      <div class="row-action">
+        <span class="btn primary">→ Promote to paper</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">52-Week High Proximity</div>
+        <div class="id">momentum.daily.52w_high_proximity.largecap.v1</div>
+      </div>
+      <div class="num">+0.41</div>
+      <div class="num">17.1%</div>
+      <div class="num">192</div>
+      <div class="row-status">
+        <span class="signal-warn">Max-dd 17.1% over 15% gate</span> — needs reparam.
+        <span class="meta">sharpe 0.41 also below 0.50 floor</span>
+      </div>
+      <div class="row-action">
+        <span class="btn outlined">View evidence →</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">Dual Absolute (GEM)</div>
+        <div class="id">momentum.daily.dual_absolute_gem.weekly.v1</div>
+      </div>
+      <div class="num">+0.55</div>
+      <div class="num">11.4%</div>
+      <div class="num">88</div>
+      <div class="row-status">
+        <span class="signal-info">Run incomplete</span> — 32% of walk-forward windows complete.
+        <span class="meta">eta ~1h 40m · started 11:42 ET</span>
+      </div>
+      <div class="row-action">
+        <span class="btn ghost">in progress…</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============= iii. PAPER ============= -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">
+        <span class="roman">iii.</span>
+        <span class="stage-name">Paper</span>
+        <span class="stage-dot">·</span>
+        <span class="stage-count">04</span>
+      </div>
+      <div class="section-caption">live feed, no capital</div>
+    </div>
+    <div class="section-rule"></div>
+
+    <div class="row column-header">
+      <div></div>
+      <div class="num"><span class="num-label">Sharpe</span></div>
+      <div class="num"><span class="num-label">max-dd</span></div>
+      <div class="num"><span class="num-label">trades</span></div>
+      <div></div>
+      <div></div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">ATR Channel Breakout</div>
+        <div class="id">breakout.daily.atr_channel.sector_etfs.v1</div>
+      </div>
+      <div class="num">+0.64</div>
+      <div class="num">11.2%</div>
+      <div class="num">433</div>
+      <div class="row-status">
+        <span class="signal-pos">Gates pass</span> — micro-eligible.
+        <span class="meta">day 88 · 3 open positions</span>
+      </div>
+      <div class="row-action">
+        <span class="btn primary">→ Promote to micro-live</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">BBands Lower-Band Mean Rev.</div>
+        <div class="id">meanrev.daily.bbands_lowerband.curated_largecap.v1</div>
+      </div>
+      <div class="num">+0.52</div>
+      <div class="num">13.7%</div>
+      <div class="num">361</div>
+      <div class="row-status">
+        <span class="signal-pos">Gates pass</span> — micro-eligible.
+        <span class="meta">day 71 · 2 open positions</span>
+      </div>
+      <div class="row-action">
+        <span class="btn primary">→ Promote to micro-live</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">Time-Series Momentum</div>
+        <div class="id">momentum.daily.tsmom.curated_largecap.v1</div>
+      </div>
+      <div class="num">+0.88</div>
+      <div class="num">8.9%</div>
+      <div class="num">458</div>
+      <div class="row-status">
+        <span class="signal-pos">Gates pass</span> — micro-eligible, strongest paper run.
+        <span class="meta">day 92 · 5 open positions</span>
+      </div>
+      <div class="row-action">
+        <span class="btn primary">→ Promote to micro-live</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">NR7 Inside-Day Breakout</div>
+        <div class="id">breakout.daily.nr7_inside.liquid_largecap.v1</div>
+      </div>
+      <div class="num">+0.31</div>
+      <div class="num">14.8%</div>
+      <div class="num">218</div>
+      <div class="row-status">
+        <span class="signal-warn">Sharpe 0.31 below 0.50</span> — gate failing.
+        <span class="meta">day 44 · 1 open position · candidate for reparam</span>
+      </div>
+      <div class="row-action">
+        <span class="btn outlined">View evidence →</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============= iv. MICRO LIVE ============= -->
+  <div class="section">
+    <div class="section-head">
+      <div class="section-title">
+        <span class="roman">iv.</span>
+        <span class="stage-name">Micro live</span>
+        <span class="stage-dot">·</span>
+        <span class="stage-count">02</span>
+      </div>
+      <div class="section-caption">live capital, capped sizing</div>
+    </div>
+    <div class="section-rule"></div>
+
+    <div class="row column-header">
+      <div></div>
+      <div class="num"><span class="num-label">Sharpe</span></div>
+      <div class="num"><span class="num-label">max-dd</span></div>
+      <div class="num"><span class="num-label">trades</span></div>
+      <div></div>
+      <div></div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">RSI-2 Pullback</div>
+        <div class="id">meanrev.daily.pullback_rsi2.curated_largecap.v1</div>
+      </div>
+      <div class="num">+0.73</div>
+      <div class="num">9.1%</div>
+      <div class="num">776</div>
+      <div class="row-status">
+        <span class="signal-pos">Sharpe holds</span> — live-eligibility window now open.
+        <span class="meta">day 5 of 5 · 4 open · $4.2k deployed</span>
+      </div>
+      <div class="row-action">
+        <span class="btn critical">type 'PROMOTE' →</span>
+      </div>
+    </div>
+
+    <div class="row">
+      <div class="row-name-block">
+        <div class="name">Cross-Sectional Sector Rotation</div>
+        <div class="id">momentum.daily.xsec_rotation.sector_etfs.v1</div>
+      </div>
+      <div class="num">+0.92</div>
+      <div class="num">7.8%</div>
+      <div class="num">144</div>
+      <div class="row-status">
+        <span class="signal-info">Cooking</span> — 16 days to live-eligibility window.
+        <span class="meta">day 5 of 21 · 2 open · $3.8k deployed</span>
+      </div>
+      <div class="row-action">
+        <span class="btn ghost">no action</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============= v. LIVE ============= -->
+  <div class="section live-section">
+    <div class="section-head">
+      <div class="section-title">
+        <span class="roman">v.</span>
+        <span class="stage-name">Live</span>
+        <span class="stage-dot">·</span>
+        <span class="stage-count">01</span>
+      </div>
+      <div class="section-caption">full attribution, real capital</div>
+    </div>
+    <div class="section-rule"></div>
+
+    <div class="row column-header">
+      <div></div>
+      <div class="num"><span class="num-label">Sharpe</span></div>
+      <div class="num"><span class="num-label">max-dd</span></div>
+      <div class="num"><span class="num-label">trades</span></div>
+      <div></div>
+      <div></div>
+    </div>
+
+    <div class="row live-row">
+      <div class="row-name-block">
+        <div class="name">SPY/SHY Regime Rotation</div>
+        <div class="id">regime.daily.sma200_rotation.spy_shy.v1</div>
+      </div>
+      <div class="num">+1.19</div>
+      <div class="num">6.4%</div>
+      <div class="num">27</div>
+      <div class="row-status">
+        <span class="signal-pos">Lifecycle exempt.</span> Currently holding SPY.
+        <span class="meta">1 open · $48k deployed · live since 2026-01-14</span>
+      </div>
+      <div class="row-action">
+        <span class="btn outlined">Open detail →</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============= FOOTER ============= -->
+  <div class="footer">
+    <div class="footer-note">
+      Promotion to paper requires walk-forward gate-pass on every window. Promotion to micro-live requires Sharpe ≥ 0.50, max-dd ≤ 15%, n ≥ 30. Promotion to live requires explicit typed confirmation and a recorded human decision per ADR 0005.
+    </div>
+    <div class="footer-meta">
+      Bench · v0.3
+    </div>
+  </div>
+
+</div>
+
+<!-- =================================================================
+     BLOCKED-MODAL (mocked open state)
+     Shown after the user dragged "NR7 Inside-Day Breakout" from PAPER
+     toward MICRO LIVE. The drop was rejected because Sharpe is below
+     the gate floor. Modal explains the failure and what unblocks it.
+     ================================================================= -->
+<div class="modal-overlay">
+  <div class="modal">
+    <div class="modal-eyebrow">Cannot promote yet</div>
+    <h2 class="modal-title">NR7 Inside-Day Breakout fails one gate.</h2>
+
+    <p class="modal-prose">
+      Promotion from paper to micro-live requires the strategy to clear three gates. This config clears two — but its Sharpe ratio sits below the floor.
+    </p>
+
+    <table class="gate-table">
+      <thead>
+        <tr>
+          <th>Gate</th>
+          <th>Current</th>
+          <th>Required</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="gate-fail">
+          <td>Sharpe ratio</td>
+          <td>0.31</td>
+          <td>≥ 0.50</td>
+          <td>fails</td>
+        </tr>
+        <tr class="gate-pass">
+          <td>Max drawdown</td>
+          <td>14.8%</td>
+          <td>≤ 15.0%</td>
+          <td>passes</td>
+        </tr>
+        <tr class="gate-pass">
+          <td>Trade count</td>
+          <td>218</td>
+          <td>≥ 30</td>
+          <td>passes</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <div class="modal-options">
+      <div class="modal-options-label">What unblocks this</div>
+      <ul>
+        <li>Reparam the config and re-run paper to target a higher Sharpe.</li>
+        <li>Continue paper longer if Sharpe is trending up — the current sample may not be stable.</li>
+        <li>Open the strategy detail to inspect Sharpe distribution per walk-forward window.</li>
+      </ul>
+    </div>
+
+    <div class="modal-actions">
+      <span class="btn outlined">Open evidence →</span>
+      <span class="btn ghost">Cancel</span>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>
