@@ -71,4 +71,12 @@ QtObject {
         readonly property string negativePressed: "#88361b"
         readonly property string info: "#3a5474"
     }
+
+    readonly property var stage: QtObject {
+        readonly property string idle: "#6f6a5c"
+        readonly property string backtest: "#7a98b2"
+        readonly property string paper: "#a8c4ab"
+        readonly property string microLive: "#d5a566"
+        readonly property string live: "#7d3540"
+    }
 }

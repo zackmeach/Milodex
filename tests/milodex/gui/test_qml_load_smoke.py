@@ -42,6 +42,7 @@ _QML_TARGETS = [
     "surfaces/StrategyBankSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
+    "surfaces/KanbanSurface.qml",
     "surfaces/BenchSurface.qml",
     "surfaces/LedgerSurface.qml",
     "surfaces/DeskSurface.qml",
@@ -87,7 +88,7 @@ from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, LedgerState, DeskState
+from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState, DeskState
 
 app = QGuiApplication.instance() or QGuiApplication(sys.argv)
 load_fonts()
@@ -116,6 +117,7 @@ op = OperationalState(
 sb = StrategyBankState(db_path=Path("/__nonexistent_smoke_test__"))
 front = FrontPageState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 bench = BenchState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
+kanban = KanbanState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 ledger = LedgerState(db_path=Path("/__nonexistent_smoke_test__"))
 desk = DeskState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 
@@ -125,6 +127,7 @@ register_qml_types(
     strategy_bank_state=sb,
     front_page_state=front,
     bench_state=bench,
+    kanban_state=kanban,
     ledger_state=ledger,
     desk_state=desk,
 )

@@ -212,12 +212,13 @@ Window {
         // simply not exposed in the primary nav anymore.
         source: {
             if (root.activeSurface === "front")          return "surfaces/FrontSurface.qml"
-            if (root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"
+            if (root.activeSurface === "bench")          return "surfaces/KanbanSurface.qml"
             if (root.activeSurface === "ledger")         return "surfaces/LedgerSurface.qml"
             if (root.activeSurface === "desk")           return "surfaces/DeskSurface.qml"
             // Hidden surfaces (kept in codebase for reference):
             if (root.activeSurface === "anchor")         return "surfaces/AnchorSurface.qml"
             if (root.activeSurface === "strategy-bank")  return "surfaces/StrategyBankSurface.qml"
+            if (root.activeSurface === "bench-legacy")   return "surfaces/BenchSurface.qml"
             if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
             return ""  // unknown id renders the placeholder
         }

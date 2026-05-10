@@ -39,6 +39,7 @@ _CONFIG_SKIP_NAMES = {"risk_defaults.yaml", "sample_strategy.yaml"}
 class _StrategyRow:
     strategy_id: str
     name: str
+    display_name_source: str
     stage: str
     description: str
     config_path: str
@@ -60,11 +61,20 @@ class _StrategyRow:
     meta_stage: str = ""
     meta_evidence_label: str = ""
     meta_evidence_at: str = ""
+    session_state: str = "not_running"
+    session_id: str = ""
+    session_detail: str = ""
+    job_id: str = ""
+    job_status: str = ""
+    job_action_type: str = ""
+    job_detail: str = ""
 
     def as_qml(self) -> dict[str, Any]:
         return {
             "strategyId": self.strategy_id,
             "name": self.name,
+            "displayName": self.name,
+            "displayNameSource": self.display_name_source,
             "stage": self.stage,
             "description": self.description,
             "configPath": self.config_path,
@@ -86,6 +96,13 @@ class _StrategyRow:
             "metaStage": self.meta_stage,
             "metaEvidenceLabel": self.meta_evidence_label,
             "metaEvidenceAt": self.meta_evidence_at,
+            "sessionState": self.session_state,
+            "sessionId": self.session_id,
+            "sessionDetail": self.session_detail,
+            "jobId": self.job_id,
+            "jobStatus": self.job_status,
+            "jobActionType": self.job_action_type,
+            "jobDetail": self.job_detail,
         }
 
 
@@ -259,6 +276,40 @@ class BenchState(_PollingReadModel):
     selectedStrategyId = Property(str, _get_selected_strategy_id, notify=selectedStrategyChanged)  # noqa: N815
 
 
+class KanbanState(_PollingReadModel):
+    """Read model for the Phase 6 read-only operator Kanban."""
+
+    lanesChanged = Signal()  # noqa: N815
+    summaryChanged = Signal()  # noqa: N815
+
+    def __init__(self, db_path: Path, configs_dir: Path, refresh_interval_ms: int = 30_000) -> None:
+        self._lanes: list[dict[str, Any]] = []
+        self._summary: dict[str, Any] = {}
+        super().__init__(
+            builder=lambda: build_kanban_snapshot(db_path, configs_dir),
+            refresh_interval_ms=refresh_interval_ms,
+        )
+
+    def _apply_result(self, result: dict[str, Any]) -> None:
+        lanes = list(result.get("lanes") or [])
+        summary = dict(result.get("summary") or {})
+        if lanes != self._lanes:
+            self._lanes = lanes
+            self.lanesChanged.emit()
+        if summary != self._summary:
+            self._summary = summary
+            self.summaryChanged.emit()
+
+    def _get_lanes(self) -> list:
+        return self._lanes
+
+    def _get_summary(self) -> dict:
+        return self._summary
+
+    lanes = Property("QVariantList", _get_lanes, notify=lanesChanged)
+    summary = Property("QVariantMap", _get_summary, notify=summaryChanged)
+
+
 class LedgerState(_PollingReadModel):
     """Read model for the filterable paper-of-record ledger."""
 
@@ -406,6 +457,53 @@ def build_bench_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
     return {"sections": sections, "lastRefreshedAt": _now_iso()}
 
 
+def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
+    rows = _strategy_rows(db_path, configs_dir)
+    labels = {
+        "idle": ("i.", "Idle", "configured, no action queued"),
+        "backtest": ("ii.", "Backtest", "historical evidence review"),
+        "paper": ("iii.", "Paper", "live feed, no capital"),
+        "micro_live": ("iv.", "Micro live", "locked by ADR 0004"),
+        "live": ("v.", "Live", "locked by ADR 0004"),
+    }
+    lanes: list[dict[str, Any]] = []
+    for lane in _VISIBLE_STAGES:
+        roman, name, caption = labels[lane]
+        cards = []
+        for row in rows:
+            kanban_lane = _kanban_lane(row)
+            if kanban_lane != lane:
+                continue
+            card = row.as_qml()
+            card.update(
+                {
+                    "promotionStage": row.stage,
+                    "kanbanLane": kanban_lane,
+                    "eligibilityVerdict": _eligibility_verdict(row),
+                    "eligibilityCopy": _eligibility_copy(row),
+                }
+            )
+            cards.append(card)
+        lanes.append(
+            {
+                "lane": lane,
+                "laneRoman": roman,
+                "laneName": name,
+                "laneCaption": caption,
+                "cards": cards,
+            }
+        )
+    return {
+        "lanes": lanes,
+        "summary": {
+            "totalConfigs": len(rows),
+            "lockedStages": ["micro_live", "live"],
+            "lastRefreshedAt": _now_iso(),
+        },
+        "lastRefreshedAt": _now_iso(),
+    }
+
+
 def build_ledger_snapshot(db_path: Path) -> dict[str, Any]:
     return {"entries": _ledger_entries(db_path), "lastRefreshedAt": _now_iso()}
 
@@ -451,10 +549,15 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
     configs = _load_strategy_configs(configs_dir)
     latest_runs = _latest_backtest_metrics(db_path)
     promotions = _latest_promotions(db_path)
+    sessions = _latest_session_states(db_path)
+    jobs = _latest_orchestration_jobs(db_path)
     rows: list[_StrategyRow] = []
     for config in configs:
         metrics = latest_runs.get(config.strategy_id, {})
         promotion = promotions.get(config.strategy_id, {})
+        session = sessions.get(config.strategy_id, {})
+        job = jobs.get(config.strategy_id, {})
+        activity = _card_activity(session, job)
         sharpe = _float_or_none(promotion.get("sharpe_ratio"), metrics.get("sharpe"))
         max_dd = _float_or_none(promotion.get("max_drawdown_pct"), metrics.get("max_drawdown_pct"))
         trade_count = _int_or_none(promotion.get("trade_count"), metrics.get("trade_count"))
@@ -464,10 +567,12 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
         )
         meta_config_key = f"{config.family}.{config.template}"
         meta_evidence_label, meta_evidence_at = _meta_evidence(promotion, metrics)
+        display_name, display_name_source = _display_name(config)
         rows.append(
             _StrategyRow(
                 strategy_id=config.strategy_id,
-                name=_display_name(config),
+                name=display_name,
+                display_name_source=display_name_source,
                 stage=config.stage if config.stage in _VISIBLE_STAGES else "backtest",
                 description=config.description,
                 config_path=str(config.path),
@@ -491,6 +596,13 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
                 meta_stage=config.stage,
                 meta_evidence_label=meta_evidence_label,
                 meta_evidence_at=meta_evidence_at,
+                session_state=activity["state"],
+                session_id=activity["session_id"],
+                session_detail=activity["detail"],
+                job_id=str(job.get("job_id") or ""),
+                job_status=str(job.get("status") or ""),
+                job_action_type=str(job.get("action_type") or ""),
+                job_detail=str(job.get("detail") or ""),
             )
         )
     return sorted(rows, key=lambda row: (_VISIBLE_STAGES.index(row.stage), row.name.lower()))
@@ -657,6 +769,82 @@ def _runner_rows(db_path: Path) -> list[dict[str, Any]]:
         }
         for row in rows
     ]
+
+
+def _latest_session_states(db_path: Path) -> dict[str, dict[str, str]]:
+    if not db_path.exists():
+        return {}
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT sr.*
+            FROM strategy_runs sr
+            INNER JOIN (
+                SELECT strategy_id, MAX(id) AS max_id
+                FROM strategy_runs
+                GROUP BY strategy_id
+            ) latest ON latest.strategy_id = sr.strategy_id AND latest.max_id = sr.id
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    result: dict[str, dict[str, str]] = {}
+    failure_reasons = {"crashed", "failed", "kill_switch", "orphan_recovered", "error"}
+    for row in rows:
+        exit_reason = str(row["exit_reason"] or "")
+        if row["ended_at"] in (None, ""):
+            state = "running"
+            detail = "session active"
+        elif exit_reason in failure_reasons:
+            state = "failed"
+            detail = exit_reason
+        else:
+            state = "stopped"
+            detail = exit_reason or "session ended"
+        result[row["strategy_id"]] = {
+            "state": state,
+            "session_id": str(row["session_id"]),
+            "detail": detail,
+        }
+    return result
+
+
+def _latest_orchestration_jobs(db_path: Path) -> dict[str, dict[str, str]]:
+    if not db_path.exists():
+        return {}
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT oj.*
+            FROM orchestration_jobs oj
+            INNER JOIN (
+                SELECT strategy_id, MAX(id) AS max_id
+                FROM orchestration_jobs
+                WHERE status IN ('queued', 'starting', 'running')
+                GROUP BY strategy_id
+            ) latest ON latest.strategy_id = oj.strategy_id AND latest.max_id = oj.id
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return {}
+    finally:
+        conn.close()
+    return {
+        row["strategy_id"]: {
+            "job_id": str(row["job_id"]),
+            "status": str(row["status"]),
+            "action_type": str(row["action_type"]),
+            "detail": str(row["progress_label"] or row["error_message"] or ""),
+            "cancel_requested_at": str(row["cancel_requested_at"] or ""),
+        }
+        for row in rows
+    }
 
 
 def _event_rows(db_path: Path) -> list[dict[str, Any]]:
@@ -837,11 +1025,68 @@ def _gate_failures(
     return failures
 
 
-def _display_name(config: StrategyConfig) -> str:
-    description = config.description.strip()
-    if description and len(description) <= 42:
-        return description
-    return _short_strategy_name(config.strategy_id)
+def _kanban_lane(row: _StrategyRow) -> str:
+    if row.job_status in {"queued", "starting", "running"}:
+        if row.job_action_type == "backtest_walk_forward":
+            return "backtest"
+        if row.job_action_type in {"paper_session_start", "micro_live_session_start"}:
+            return row.stage
+    if row.stage == "backtest" and not row.evidence_run_id:
+        return "idle"
+    return row.stage if row.stage in _VISIBLE_STAGES else "idle"
+
+
+def _card_activity(session: dict[str, str], job: dict[str, str]) -> dict[str, str]:
+    if job:
+        state = (
+            "canceling"
+            if job.get("cancel_requested_at")
+            else str(job.get("status") or "queued")
+        )
+        detail = str(job.get("detail") or job.get("action_type") or "orchestration job")
+        if state == "canceling":
+            detail = f"cancel requested | {detail}"
+        return {
+            "state": state,
+            "session_id": "",
+            "detail": detail,
+        }
+    return {
+        "state": str(session.get("state") or "not_running"),
+        "session_id": str(session.get("session_id") or ""),
+        "detail": str(session.get("detail") or ""),
+    }
+
+
+def _eligibility_verdict(row: _StrategyRow) -> str:
+    if row.stage in {"micro_live", "live"}:
+        return "locked"
+    if row.sharpe is None and row.max_drawdown_pct is None and row.trade_count is None:
+        return "not_evaluated"
+    if row.gate_failures:
+        return "blocked"
+    return "gate_passing"
+
+
+def _eligibility_copy(row: _StrategyRow) -> str:
+    if row.stage in {"micro_live", "live"}:
+        return "Capital-bearing stages remain locked by ADR 0004; evidence is review-only."
+    if row.sharpe is None and row.max_drawdown_pct is None and row.trade_count is None:
+        return "Awaiting walk-forward evidence; no promotion action is available here."
+    if row.gate_failures:
+        labels = {"S": "Sharpe", "D": "max drawdown", "N": "trade count"}
+        failed = ", ".join(labels[code] for code in row.gate_failures)
+        return f"{failed} gate failing; review evidence before any move."
+    if row.stage == "paper":
+        return "Paper evidence passing; micro-live and live remain locked by ADR 0004."
+    return "Backtest gates passing; promotion remains an explicit CLI/governance action."
+
+
+def _display_name(config: StrategyConfig) -> tuple[str, str]:
+    display_name = getattr(config, "display_name", None)
+    if display_name:
+        return str(display_name), "config"
+    return _short_strategy_name(config.strategy_id), "derived"
 
 
 def _short_strategy_name(strategy_id: str) -> str:

@@ -13,6 +13,8 @@ from milodex.core.event_store import (
     EventStore,
     ExplanationEvent,
     KillSwitchEvent,
+    OrchestrationBatchEvent,
+    OrchestrationJobEvent,
     PromotionEvent,
     StrategyManifestEvent,
     StrategyRunEvent,
@@ -39,7 +41,7 @@ def test_event_store_rejects_below_minimum_schema_version(tmp_path, monkeypatch)
 def test_event_store_min_compatible_matches_current_schema():
     """If MIN_COMPATIBLE_SCHEMA_VERSION ever exceeds the head migration, the
     guard would refuse a freshly-built store. Lock that contract."""
-    assert MIN_COMPATIBLE_SCHEMA_VERSION == 8
+    assert MIN_COMPATIBLE_SCHEMA_VERSION == 9
 
 
 def test_event_store_applies_initial_schema(tmp_path):
@@ -48,7 +50,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 8
+    assert store.schema_version == 9
     assert {
         "_schema_version",
         "explanations",
@@ -59,7 +61,68 @@ def test_event_store_applies_initial_schema(tmp_path):
         "promotions",
         "portfolio_snapshots",
         "strategy_manifests",
+        "orchestration_batches",
+        "orchestration_jobs",
     }.issubset(set(store.list_table_names()))
+
+
+def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+
+    assert store.schema_version == 9
+    with sqlite3.connect(db_path) as con:
+        batch_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")
+        }
+        job_columns = {
+            row[1] for row in con.execute("PRAGMA table_info(orchestration_jobs)")
+        }
+        index_names = {
+            row[1] for row in con.execute("PRAGMA index_list(orchestration_jobs)")
+        } | {
+            row[1] for row in con.execute("PRAGMA index_list(orchestration_batches)")
+        }
+
+    assert {
+        "id",
+        "batch_id",
+        "action_type",
+        "requested_by",
+        "requested_at",
+        "status",
+        "metadata_json",
+    }.issubset(batch_columns)
+    assert {
+        "id",
+        "job_id",
+        "batch_id",
+        "strategy_id",
+        "action_type",
+        "requested_stage",
+        "status",
+        "queued_at",
+        "started_at",
+        "ended_at",
+        "cancel_requested_at",
+        "execution_ref_type",
+        "execution_ref",
+        "progress_current",
+        "progress_total",
+        "progress_label",
+        "error_code",
+        "error_message",
+        "metadata_json",
+    }.issubset(job_columns)
+    assert {
+        "idx_orchestration_batches_status_requested_at",
+        "idx_orchestration_jobs_batch_id",
+        "idx_orchestration_jobs_status",
+        "idx_orchestration_jobs_execution_ref",
+        "idx_orchestration_jobs_strategy_status",
+    }.issubset(index_names)
 
 
 def test_event_store_round_trips_records(tmp_path):
@@ -159,6 +222,256 @@ def test_event_store_round_trips_records(tmp_path):
 
     assert len(strategy_runs) == 1
     assert strategy_runs[0].strategy_id == "regime_spy_shy_200dma_v1"
+
+
+def test_orchestration_batch_round_trips_metadata_and_status_update(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    requested_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
+
+    db_id = store.create_orchestration_batch(
+        OrchestrationBatchEvent(
+            batch_id="batch-1",
+            action_type="backtest_walk_forward",
+            requested_by="operator",
+            requested_at=requested_at,
+            status="queued",
+            metadata={"source": "kanban", "strategy_count": 2},
+        )
+    )
+    store.update_orchestration_batch_status(
+        "batch-1",
+        status="running",
+        metadata={"source": "kanban", "started_by": "worker-1"},
+    )
+
+    fetched = store.get_orchestration_batch("batch-1")
+    listed = store.list_orchestration_batches()
+
+    assert fetched is not None
+    assert fetched.id == db_id
+    assert fetched.batch_id == "batch-1"
+    assert fetched.action_type == "backtest_walk_forward"
+    assert fetched.requested_by == "operator"
+    assert fetched.requested_at == requested_at
+    assert fetched.status == "running"
+    assert fetched.metadata == {"source": "kanban", "started_by": "worker-1"}
+    assert listed == [fetched]
+
+
+def test_orchestration_job_round_trips_metadata_progress_and_execution_ref(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    requested_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
+    started_at = datetime(2026, 5, 10, 14, 1, tzinfo=UTC)
+
+    store.create_orchestration_batch(
+        OrchestrationBatchEvent(
+            batch_id="batch-1",
+            action_type="backtest_walk_forward",
+            requested_by="operator",
+            requested_at=requested_at,
+            status="queued",
+            metadata={},
+        )
+    )
+    job_db_id = store.create_orchestration_job(
+        OrchestrationJobEvent(
+            job_id="job-1",
+            batch_id="batch-1",
+            strategy_id="momentum.daily.tsmom.curated_largecap.v1",
+            action_type="backtest_walk_forward",
+            requested_stage="backtest",
+            status="queued",
+            queued_at=requested_at,
+            started_at=None,
+            ended_at=None,
+            cancel_requested_at=None,
+            execution_ref_type=None,
+            execution_ref=None,
+            progress_current=0,
+            progress_total=4,
+            progress_label="queued",
+            error_code=None,
+            error_message=None,
+            metadata={"symbols": ["SPY", "QQQ"], "window": {"years": 3}},
+        )
+    )
+
+    store.update_orchestration_job_status(
+        "job-1",
+        status="running",
+        started_at=started_at,
+        execution_ref_type="backtest_run",
+        execution_ref="run-abc",
+        progress_current=1,
+        progress_total=4,
+        progress_label="walk-forward 1/4",
+        metadata={"symbols": ["SPY", "QQQ"], "worker": "worker-1"},
+    )
+
+    fetched = store.get_orchestration_job("job-1")
+    jobs_for_batch = store.list_orchestration_jobs(batch_id="batch-1")
+
+    assert fetched is not None
+    assert fetched.id == job_db_id
+    assert fetched.job_id == "job-1"
+    assert fetched.batch_id == "batch-1"
+    assert fetched.strategy_id == "momentum.daily.tsmom.curated_largecap.v1"
+    assert fetched.status == "running"
+    assert fetched.started_at == started_at
+    assert fetched.execution_ref_type == "backtest_run"
+    assert fetched.execution_ref == "run-abc"
+    assert fetched.progress_current == 1
+    assert fetched.progress_total == 4
+    assert fetched.progress_label == "walk-forward 1/4"
+    assert fetched.metadata == {"symbols": ["SPY", "QQQ"], "worker": "worker-1"}
+    assert jobs_for_batch == [fetched]
+
+
+def test_request_orchestration_job_cancellation_sets_timestamp(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    queued_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
+    cancel_requested_at = datetime(2026, 5, 10, 14, 5, tzinfo=UTC)
+
+    store.create_orchestration_batch(
+        OrchestrationBatchEvent(
+            batch_id="batch-1",
+            action_type="paper_session_start",
+            requested_by="operator",
+            requested_at=queued_at,
+            status="queued",
+            metadata={},
+        )
+    )
+    store.create_orchestration_job(
+        OrchestrationJobEvent(
+            job_id="job-1",
+            batch_id="batch-1",
+            strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+            action_type="paper_session_start",
+            requested_stage="paper",
+            status="queued",
+            queued_at=queued_at,
+            started_at=None,
+            ended_at=None,
+            cancel_requested_at=None,
+            execution_ref_type=None,
+            execution_ref=None,
+            progress_current=0,
+            progress_total=None,
+            progress_label="queued",
+            error_code=None,
+            error_message=None,
+            metadata={},
+        )
+    )
+
+    store.request_orchestration_job_cancellation(
+        "job-1",
+        cancel_requested_at=cancel_requested_at,
+    )
+
+    job = store.get_orchestration_job("job-1")
+    assert job is not None
+    assert job.status == "queued"
+    assert job.cancel_requested_at == cancel_requested_at
+
+
+def test_list_non_terminal_orchestration_jobs_filters_completed_failed_cancelled(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    queued_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
+    store.create_orchestration_batch(
+        OrchestrationBatchEvent(
+            batch_id="batch-1",
+            action_type="backtest_walk_forward",
+            requested_by="operator",
+            requested_at=queued_at,
+            status="running",
+            metadata={},
+        )
+    )
+
+    for job_id, status in [
+        ("queued-job", "queued"),
+        ("running-job", "running"),
+        ("blocked-job", "blocked"),
+        ("orphan-recovered-job", "orphan_recovered"),
+        ("completed-job", "completed"),
+        ("failed-job", "failed"),
+        ("cancelled-job", "cancelled"),
+    ]:
+        store.create_orchestration_job(
+            OrchestrationJobEvent(
+                job_id=job_id,
+                batch_id="batch-1",
+                strategy_id=f"strategy.{job_id}",
+                action_type="backtest_walk_forward",
+                requested_stage="backtest",
+                status=status,
+                queued_at=queued_at,
+                started_at=None,
+                ended_at=queued_at if status in {"completed", "failed", "cancelled"} else None,
+                cancel_requested_at=None,
+                execution_ref_type=None,
+                execution_ref=None,
+                progress_current=0,
+                progress_total=4,
+                progress_label=status,
+                error_code="boom" if status == "failed" else None,
+                error_message="failed" if status == "failed" else None,
+                metadata={},
+            )
+        )
+
+    active = store.list_non_terminal_orchestration_jobs()
+
+    assert [job.job_id for job in active] == [
+        "queued-job",
+        "running-job",
+    ]
+
+
+def test_orchestration_ledger_writes_do_not_create_execution_rows(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    queued_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
+
+    store.create_orchestration_batch(
+        OrchestrationBatchEvent(
+            batch_id="batch-1",
+            action_type="backtest_walk_forward",
+            requested_by="operator",
+            requested_at=queued_at,
+            status="queued",
+            metadata={},
+        )
+    )
+    store.create_orchestration_job(
+        OrchestrationJobEvent(
+            job_id="job-1",
+            batch_id="batch-1",
+            strategy_id="momentum.daily.tsmom.curated_largecap.v1",
+            action_type="backtest_walk_forward",
+            requested_stage="backtest",
+            status="queued",
+            queued_at=queued_at,
+            started_at=None,
+            ended_at=None,
+            cancel_requested_at=None,
+            execution_ref_type="backtest_run",
+            execution_ref="not-created-by-ledger",
+            progress_current=0,
+            progress_total=4,
+            progress_label="queued",
+            error_code=None,
+            error_message=None,
+            metadata={},
+        )
+    )
+
+    assert store.list_backtest_runs() == []
+    assert store.list_strategy_runs() == []
+    assert store.list_promotions() == []
+    assert store.list_trades() == []
+    assert store.list_explanations() == []
 
 
 def test_event_store_records_backtest_run_and_links_trades(tmp_path):
@@ -731,7 +1044,7 @@ def test_migration_008_backfills_walk_forward_explanations(tmp_path):
 
     # Open with the live EventStore — this triggers migration 008.
     store = EventStore(db_path)
-    assert store.schema_version == 8
+    assert store.schema_version == 9
 
     rows = sorted(store.list_explanations(), key=lambda r: r.recorded_at)
     assert len(rows) == 4
@@ -843,9 +1156,9 @@ def test_migration_008_is_idempotent(tmp_path):
         )
     )
 
-    # Re-open. Migration 008 should not run again (already at v8).
+    # Re-open. Migrations should not run again (already at schema head).
     store2 = EventStore(tmp_path / "milodex.db")
     rows = store2.list_explanations()
     assert len(rows) == 1
     assert rows[0].backtest_run_id == db_run_id
-    assert store2.schema_version == 8
+    assert store2.schema_version == 9
