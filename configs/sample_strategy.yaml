@@ -4,6 +4,9 @@
 
 strategy:
   id: "sample.daily.example.curated.v1"
+  # Optional presentation label for GUI surfaces. Durable identity remains `id`.
+  # See ADR 0041.
+  display_name: "Example Momentum"
   family: "sample"
   template: "daily.example"
   variant: "curated"

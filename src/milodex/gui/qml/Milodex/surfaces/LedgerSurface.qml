@@ -47,10 +47,10 @@ Item {
     readonly property var entries: LedgerState.entries
     /* Legacy PR1 mock entries retained for reference only.
     [
-        { ts: "2026-05-08 09:14 ET", subject: "RSI-2 Pullback",      transition: "micro-live → live", outcome: "PENDING", outcomeKind: "pending",
-          reason: "live-eligibility window open — awaiting typed confirmation" },
+        { ts: "2026-05-08 09:14 ET", subject: "RSI-2 Pullback",      transition: "micro-live → live", outcome: "LOCKED", outcomeKind: "refused",
+          reason: "capital stages locked by ADR 0004" },
         { ts: "2026-05-06 14:22 ET", subject: "Time-Series Momentum", transition: "paper",            outcome: "GATES PASS", outcomeKind: "info",
-          reason: "Sharpe 0.88 · max-dd 8.9% · n=458 · micro-eligible" },
+          reason: "Sharpe 0.88 · max-dd 8.9% · n=458 · capital stages locked" },
         { ts: "2026-05-03 11:40 ET", subject: "NR7 Inside-Day Brk.",  transition: "paper",            outcome: "FLAGGED", outcomeKind: "refused",
           reason: "Sharpe 0.31 below 0.50 floor — candidate for reparam" },
         { ts: "2026-04-28 10:08 ET", subject: "BBands Lower-Band MR", transition: "backtest → paper", outcome: "PROMOTED", outcomeKind: "promoted",

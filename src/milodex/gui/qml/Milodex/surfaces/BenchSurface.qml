@@ -176,14 +176,14 @@ Item {
                     sharpe: "+0.64", maxDD: "11.2%", tradeCount: "433",
                     signalKind: "positive",
                     signalWord: "Gates pass",
-                    proseTail:  "— micro-eligible.",
+                    proseTail:  "— paper evidence passes; capital stages locked.",
                     metaLine:   "day 88 · 3 open positions",
-                    action: { variant: "primary", label: "→ Promote to micro-live" },
+                    action: { variant: "ghost", label: "locked" },
                     modalKind: "consequence",
-                    modalEyebrow: "Confirm promotion",
-                    modalTitle:   "Promote ATR Channel Breakout to micro-live.",
-                    modalProse:   "This will allocate small live capital (capped per risk envelope) and begin live order placement at micro sizing. The strategy enters a 21-day eligibility window before live promotion is possible.",
-                    consequenceActionLabel: "Move →"
+                    modalEyebrow: "Capital stages locked",
+                    modalTitle:   "Micro-live is not authorized.",
+                    modalProse:   "ADR 0004 remains in force. This evidence can be reviewed, but the GUI cannot allocate live capital or start live order placement.",
+                    consequenceActionLabel: "Locked"
                 },
                 {
                     strategyName: "BBands Lower-Band Mean Rev.",
@@ -191,14 +191,14 @@ Item {
                     sharpe: "+0.52", maxDD: "13.7%", tradeCount: "361",
                     signalKind: "positive",
                     signalWord: "Gates pass",
-                    proseTail:  "— micro-eligible.",
+                    proseTail:  "— paper evidence passes; capital stages locked.",
                     metaLine:   "day 71 · 2 open positions",
-                    action: { variant: "primary", label: "→ Promote to micro-live" },
+                    action: { variant: "ghost", label: "locked" },
                     modalKind: "consequence",
-                    modalEyebrow: "Confirm promotion",
-                    modalTitle:   "Promote BBands Lower-Band MR to micro-live.",
-                    modalProse:   "This will allocate small live capital (capped per risk envelope) and begin live order placement at micro sizing.",
-                    consequenceActionLabel: "Move →"
+                    modalEyebrow: "Capital stages locked",
+                    modalTitle:   "Micro-live is not authorized.",
+                    modalProse:   "ADR 0004 remains in force. This evidence can be reviewed, but the GUI cannot allocate live capital or start live order placement.",
+                    consequenceActionLabel: "Locked"
                 },
                 {
                     strategyName: "Time-Series Momentum",
@@ -206,14 +206,14 @@ Item {
                     sharpe: "+0.88", maxDD: "8.9%", tradeCount: "458",
                     signalKind: "positive",
                     signalWord: "Gates pass",
-                    proseTail:  "— micro-eligible, strongest paper run.",
+                    proseTail:  "— paper evidence passes; strongest run remains capital-locked.",
                     metaLine:   "day 92 · 5 open positions",
-                    action: { variant: "primary", label: "→ Promote to micro-live" },
+                    action: { variant: "ghost", label: "locked" },
                     modalKind: "consequence",
-                    modalEyebrow: "Confirm promotion",
-                    modalTitle:   "Promote Time-Series Momentum to micro-live.",
-                    modalProse:   "This will allocate small live capital (capped per risk envelope) and begin live order placement at micro sizing.",
-                    consequenceActionLabel: "Move →"
+                    modalEyebrow: "Capital stages locked",
+                    modalTitle:   "Micro-live is not authorized.",
+                    modalProse:   "ADR 0004 remains in force. This evidence can be reviewed, but the GUI cannot allocate live capital or start live order placement.",
+                    consequenceActionLabel: "Locked"
                 },
                 {
                     strategyName: "NR7 Inside-Day Breakout",
@@ -253,15 +253,15 @@ Item {
                     sharpe: "+0.73", maxDD: "9.1%", tradeCount: "776",
                     signalKind: "positive",
                     signalWord: "Sharpe holds",
-                    proseTail:  "— live-eligibility window now open.",
-                    metaLine:   "day 5 of 5 · 4 open · $4.2k deployed",
-                    action: { variant: "critical", label: "type 'PROMOTE' →" },
+                    proseTail:  "— capital stages remain locked by ADR 0004.",
+                    metaLine:   "paper evidence · 4 open · live locked",
+                    action: { variant: "ghost", label: "locked" },
                     modalKind: "typed",
-                    modalEyebrow: "Confirm promotion to live",
-                    modalTitle:   "Promote RSI-2 Pullback to live trading.",
-                    modalProse:   "This allocates live capital and begins live trading on the strategy. The decision is recorded permanently per ADR 0005. Live trading can only be halted via the kill switch or explicit retirement.",
-                    confirmPhrase: "PROMOTE",
-                    confirmActionLabel: "PROMOTE →"
+                    modalEyebrow: "Live boundary locked",
+                    modalTitle:   "Live trading is not authorized.",
+                    modalProse:   "ADR 0004 remains in force. A future ADR must explicitly open micro-live or live before any promotion control becomes actionable.",
+                    confirmPhrase: "",
+                    confirmActionLabel: "LOCKED"
                 },
                 {
                     strategyName: "Cross-Sectional Sector Rotation",
@@ -269,8 +269,8 @@ Item {
                     sharpe: "+0.92", maxDD: "7.8%", tradeCount: "144",
                     signalKind: "info",
                     signalWord: "Cooking",
-                    proseTail:  "— 16 days to live-eligibility window.",
-                    metaLine:   "day 5 of 21 · 2 open · $3.8k deployed",
+                    proseTail:  "— more paper evidence required; capital stages locked.",
+                    metaLine:   "paper evidence · 2 open · live locked",
                     action: { variant: "ghost", label: "no action" },
                     modalKind: ""
                 }
@@ -393,7 +393,7 @@ Item {
                     // Standfirst — italic Newsreader
                     Text {
                         width: parent.width * 0.7
-                        text: "Every config on the ladder, top to bottom — what's working, what's stuck, and what's waiting at the next gate. Drag a row to move it; the system enforces the gates."
+                        text: "Every config on the ladder, top to bottom — what's working, what's stuck, and what's waiting at the next gate. Phase 6 Kanban will add governed movement; this surface remains view-only."
                         color: Theme.color.text.secondary
                         font.family:    Theme.typography.body.md.family
                         font.pixelSize: Theme.typography.body.md.size + 1
