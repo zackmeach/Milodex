@@ -1,6 +1,8 @@
 # Phase 5 Planning
 
-**Status:** Opened 2026-05-07 as the prerequisite-mandated planning artifact per [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md). Filename `PHASE5_PLANNING.md` is chosen deliberately over `ROADMAP_PHASE5.md` because Phase 5's structural scope is decided at open ((b)+(c) observability-first per [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md)) but the surface-by-surface implementation ordering is not — same convention prior phases used. **§4 is partially open.** §4.1 is closed by [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md), §4.2 is closed (live remains locked), §4.6 is closed by [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md). §4.7 (distribution model) is the remaining open question.
+> **Phase 5 was formally closed on 2026-05-10 via [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md).** This document is now a historical record. Active planning belongs in Phase 6 artifacts, starting with [PHASE6_OPERATOR_KANBAN_PREP.md](PHASE6_OPERATOR_KANBAN_PREP.md) and any follow-up ADRs required by [ADR 0036](adr/0036-operator-kanban-surface-for-promotion-pipeline.md).
+
+**Status:** Closed 2026-05-10 via [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md). Originally opened 2026-05-07 as the prerequisite-mandated planning artifact per [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md). Filename `PHASE5_PLANNING.md` is chosen deliberately over `ROADMAP_PHASE5.md` because Phase 5's structural scope was decided at open ((b)+(c) observability-first per [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md)) but the surface-by-surface implementation ordering was not — same convention prior phases used. **§4 is closed.** §4.1 is closed by [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md), §4.2 is closed (live remains locked), §4.6 is closed by [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md), and §4.7 is closed by [ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md).
 
 **Predecessors:** [PHASE4_PLANNING.md](PHASE4_PLANNING.md) (closed historical record), [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md) (authorizes this doc), [ADR 0028](adr/0028-phase-4-scope-closes-as-cleanup-and-attribution.md) (the mechanics-before-UI principle that justifies the Phase 5 GUI work sitting where it does), [ADR 0029](adr/0029-per-strategy-position-attribution-at-risk-layer.md) (per-strategy attribution — the data the GUI renders), [ADR 0030](adr/0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest sandbox semantics), [VISION.md](VISION.md), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), [SRS.md](SRS.md).
 
@@ -49,7 +51,7 @@ Phase 5 goals:
 
 - **G4.** Resolve §4.7 (distribution model) when the installer PR opens, with a new ADR. PyInstaller is the default candidate per [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md); the §4.7 ADR confirms or supersedes.
 
-- **G5.** Friend-test the installer at least once on a non-developer machine before Phase 5 closes. The shareability priority is not met by "it works on my machine."
+- **G5.** Friend-test the installer at least once on a non-developer machine before release publication. [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md) closes the development phase against source-controlled installer implementation and moves friend-test evidence to release operations.
 
 - **G6.** Per-feature ADRs for any architectural seam crossed beyond the runtime decision. Distribution model (§4.7), Python ↔ QML bridge convention if it becomes load-bearing, charting library if its choice constrains future surfaces, kill-switch GUI affordance if it adds a new confirmation pattern.
 
@@ -155,7 +157,7 @@ Phase 5 has three exit criteria:
 
 - **C-1.** *(scope: (b) GUI)* Desktop GUI ships with the [VISION.md "Daily Operator Workflow"](VISION.md#daily-operator-workflow) eight steps surfaced. The operator can answer all of "what strategy or system is active / what Milodex is doing on their behalf / what data it is using / what the current state is / what actions it may take next / what safeguards or limits are in place" from the GUI without falling back to the CLI. Per-strategy attribution and P&L render correctly against `data/milodex.db` evidence. Kill-switch state and reset affordance preserve the [ADR 0005](adr/0005-kill-switch-manual-reset.md) manual-reset semantic with explicit confirmation. The Phase 5 design-system token set ([ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md)) is applied consistently across every GUI surface.
 
-- **C-2.** *(scope: (c) installer)* Distributable installer produces a working Milodex install on a clean machine. The §4.7 distribution-model ADR is landed and references this exit. Friend-tested at least once on a non-developer machine — installation, first launch, and observability-surface rendering all work without operator intervention. Code-signing posture is explicit and recorded (signed, or unsigned with documented SmartScreen workaround).
+- **C-2.** *(scope: (c) installer)* Distributable installer produces a working Milodex install path. The §4.7 distribution-model ADR is landed and references this exit. [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md) treats the source-controlled installer implementation and documentation as sufficient to close the development phase; friend-test and release-publication evidence are release-operations artifacts. Code-signing posture is explicit and recorded (signed, or unsigned with documented SmartScreen workaround).
 
 - **C-3.** *(always — preserves Phase 1+2+3+4 invariants)* All prior-phase invariants preserved end-to-end:
   - C-2 honest-signal regression tests still green ([ADR 0023](adr/0023-phase-1-is-closed-and-phase-2-may-open.md)).
@@ -185,7 +187,7 @@ Phase 5 ends when C-1, C-2, and C-3 are simultaneously true, an ADR closes Phase
 
 ## 6. What This Document Is *Not*
 
-- **Not a commitment beyond the (b)+(c) observability-first scope.** §4.7 (distribution model) is open until its ADR lands.
+- **Not a commitment beyond the (b)+(c) observability-first scope.** §4.7 is now closed by [ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md).
 - **Not a substitute for ADRs.** Any decision in Phase 5 that crosses an architectural seam (distribution model, Python↔QML bridge convention if it becomes load-bearing, charting library if its choice constrains future surfaces, kill-switch GUI affordance if it adds a new confirmation pattern) requires its own ADR.
 - **Not the final shape of Phase 5.** Prior phases evolved through their work; Phase 5's planning expects the same. The PR sequence within "observability before installer" is operator-owned.
 - **Not a reframe of profitability.** Per [FOUNDER_INTENT.md](FOUNDER_INTENT.md), profit is validation, not purpose. Phase 5's success is rendering the platform's existing trustworthy, engineering-capable mechanics on a Tier B desktop UI that a non-developer can install and use — not whether any strategy makes money during paper validation.
@@ -231,9 +233,9 @@ Same conventions as [PHASE2_PLANNING.md §8](PHASE2_PLANNING.md), [PHASE3_PLANNI
 
 ---
 
-## 9. Immediate Next Steps
+## 9. Historical Implementation Sequence
 
-§4.1, §4.2, §4.6 are decided at Phase 5 open via [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md) and [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md). §4.7 is the single remaining open question.
+§4.1, §4.2, §4.6 were decided at Phase 5 open via [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md) and [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md). §4.7 was later closed by [ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md). This section is preserved as historical sequencing, not active next steps.
 
 PR sequence within Phase 5, per [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md)'s observability-first ordering and [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md)'s design-system requirement:
 
@@ -243,8 +245,8 @@ PR sequence within Phase 5, per [ADR 0034](adr/0034-phase-5-scope-orders-observa
 4. **Strategy bank surface.** Six paper-stage strategies rendered with their evidence run IDs, walk-forward Sharpe / MaxDD / trade count, promotion type, watch-during-paper notes. Mirrors [STRATEGY_BANK.md](STRATEGY_BANK.md) on a screen.
 5. **Per-strategy attribution and P&L surface.** [ADR 0029](adr/0029-per-strategy-position-attribution-at-risk-layer.md)'s attribution data rendered per strategy: open positions, attributed P&L, dual-cap state. The "what have my strategies made or lost" answer the operator named in [ADR 0028](adr/0028-phase-4-scope-closes-as-cleanup-and-attribution.md).
 6. **Paper-session status + walk-forward labeling.** Active paper-runner state, last-tick time, strategy-runs and evaluations counts. Walk-forward report rendering with `(OOS)` per-metric labels per P-1. Backtest sandbox state ([ADR 0030](adr/0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md)) surfaced where relevant.
-7. **Distribution-model ADR (§4.7) + installer PR.** ADR resolves the model; installer PR builds against it. Friend-test on a clean non-developer machine before PR merge.
-8. **Phase 5 close-out ADR** when C-1, C-2, C-3 are simultaneously true. Pattern matches [ADR 0023](adr/0023-phase-1-is-closed-and-phase-2-may-open.md) / [ADR 0025](adr/0025-phase-2-is-closed-and-phase-3-may-open.md) / [ADR 0027](adr/0027-phase-3-is-closed-and-phase-4-may-open.md) / [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md).
+7. **Distribution-model ADR (§4.7) + installer PR.** Closed by [ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md) and the installer implementation referenced by [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md). Friend-test evidence remains a release-operations artifact.
+8. **Phase 5 close-out ADR.** Closed by [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md).
 
 The PR count above is indicative, not committed. Surface ordering within "observability before installer" is operator-owned. The binding constraint is the ordering ([ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md)) and the runtime ([ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md)), not the exact PR-by-PR breakdown.
 

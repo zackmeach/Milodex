@@ -118,11 +118,11 @@ Item {
     })
 
     readonly property var promotionQueue: [
-        { name: "ATR Channel Breakout",        from: "paper",    to: "micro", days: "3d", note: "gates passing — micro-live ready" },
-        { name: "Time-Series Momentum",        from: "paper",    to: "micro", days: "8d", note: "gates passing — micro-live ready" },
-        { name: "BBands Lower-Band Mean Rev.", from: "paper",    to: "micro", days: "1d", note: "gates passing — micro-live ready" },
+        { name: "ATR Channel Breakout",        from: "paper",    to: "micro", days: "3d", note: "gates passing — capital stages locked" },
+        { name: "Time-Series Momentum",        from: "paper",    to: "micro", days: "8d", note: "gates passing — capital stages locked" },
+        { name: "BBands Lower-Band Mean Rev.", from: "paper",    to: "micro", days: "1d", note: "gates passing — capital stages locked" },
         { name: "Donchian 20/10",              from: "backtest", to: "paper", days: "1d", note: "walk-forward complete" },
-        { name: "RSI-2 Pullback",              from: "micro",    to: "live",  days: "5d", note: "sharpe holds — promote to live?" }
+        { name: "RSI-2 Pullback",              from: "micro",    to: "live",  days: "5d", note: "locked by ADR 0004" }
     ]
 
     readonly property var runners: [

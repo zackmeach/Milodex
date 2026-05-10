@@ -290,6 +290,12 @@ Status colors are the load-bearing semantic dimension of a trading-platform GUI:
 
 **Decision:** Status colors are *theme-tinted* &mdash; each theme provides a hue that fits its palette &mdash; but the *role* (positive / warning / negative / info) is stable across themes. Components reference roles, never raw hex.
 
+**Stage hues:** Phase 6 Kanban stage colors are a separate ladder-location axis
+per [ADR 0046](adr/0046-kanban-stage-hues-extend-production-tokens.md). They will
+land as `stage.idle`, `stage.backtest`, `stage.paper`, `stage.microLive`, and
+`stage.live` tokens across all themes. Stage hue must not replace `status.*`
+for gate outcomes, refusals, P&amp;L, kill-switch state, or approvals.
+
 ### 6.1 Roles
 
 | Role | Editorial Dark | Editorial Light | Bronze | Meaning |

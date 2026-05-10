@@ -110,9 +110,9 @@ Examples:
 >
 > *"**Max-dd 17.1% over 15% gate** — needs reparam."* (with the gate-failure phrase in `status.warning`)
 >
-> *"**Sharpe holds** — live-eligibility window now open."* (with "Sharpe holds" in `status.positive`)
+> *"**Sharpe holds** — capital stages remain locked by ADR 0004."* (with "Sharpe holds" in `status.info`)
 >
-> *"**Cooking** — 16 days to live-eligibility window."* (with "Cooking" in `status.info`)
+> *"**Cooking** — more paper evidence required; capital stages locked."* (with "Cooking" in `status.info`)
 >
 > *"**Lifecycle exempt.** Currently holding SPY."* (with "Lifecycle exempt" in `status.positive`)
 
@@ -146,11 +146,11 @@ Each row has a single action button on the right edge. The button's variant comm
 |---|---|---|
 | IDLE | `outlined` "Run backtest →" | n/a |
 | BACKTEST | `primary` "→ Promote to paper" | `outlined` "View evidence →" or `ghost` "in progress…" |
-| PAPER | `primary` "→ Promote to micro-live" | `outlined` "View evidence →" |
-| MICRO LIVE | `critical` "type 'PROMOTE' →" (filled rust, uppercase, letter-spaced, 0.10em) | `ghost` "no action" |
+| PAPER | `ghost` "locked" while ADR 0004 remains in force; future ADR may reopen | `outlined` "View evidence →" |
+| MICRO LIVE | `ghost` "locked" while ADR 0004 remains in force; future ADR may reopen | `ghost` "no action" |
 | LIVE | `outlined` "Open detail →" | n/a |
 
-**The MICRO LIVE → LIVE button is the only filled-rust uppercase element on the entire surface.** It visually announces "this action is structurally different from every other action on the screen." Preserve that — do not unify it with `primary`.
+**Capital-bearing promotion controls stay locked while ADR 0004 remains in force.** A future ADR that opens micro-live or live may reintroduce typed-confirm critical controls, but this mockup is not authority to enable them.
 
 The per-row action button is the **click-equivalent** path for users who don't want to drag. Drag is the alternative fast path for users who want batch movement; both gestures should reach the same modal flows.
 
@@ -180,14 +180,14 @@ The dragged row visually snaps back to its origin if a drop is rejected.
 
 When a row is dropped on a section, evaluate based on direction and target:
 
-1. **Forward promotion** (e.g. PAPER → MICRO LIVE): check all gates for that transition. If any gate fails → blocked-modal. If all pass and target is **not LIVE** → drop directly. If all pass and target **is LIVE** → typed-confirm modal.
-2. **Backward demotion** (e.g. PAPER → BACKTEST): always allowed but always opens a consequence-confirmation modal naming what will happen (positions to close, sessions to halt, attribution archival).
+1. **Forward promotion** (e.g. BACKTEST → PAPER): check all gates for that transition. If any gate fails → blocked-modal. If the target is `micro_live` or `live` while ADR 0004 remains in force → locked-modal/no mutation.
+2. **Backward demotion** (e.g. PAPER → BACKTEST): always opens a consequence-confirmation modal naming what will happen. Drop alone never mutates durable state.
 3. **Re-test** (any stage → BACKTEST): treated as a backward demotion with copy specific to re-testing — *"this will not affect the active paper/live session; it re-runs evidence in parallel."*
 4. **Lateral / no-op** (drop in the same section the row originated from): no-op, no modal.
 
 ### Friction escalation per ADR 0005 / CLAUDE.md "Autonomy Boundary"
 
-These transitions **always require typed confirmation**, even when all gates pass and even via drag:
+These transitions remain locked while ADR 0004 is in force. If a future ADR opens them, they **always require typed confirmation**, even when all gates pass and even via drag:
 
 - Promotion to LIVE
 - Demotion from LIVE
@@ -227,9 +227,9 @@ Content structure:
 
 The gate table is a **reusable component** — it appears here, in the Strategy Detail drill-in, and (where applicable) in the consequence-confirm modal. Build it as a reusable element.
 
-### Pattern B — Typed-confirm modal (live boundary)
+### Pattern B — Typed-confirm modal (future live boundary)
 
-Shown when promoting to LIVE or demoting from LIVE. All gates may have passed; the typed phrase is the friction.
+Reserved for a future ADR that opens the live boundary. All gates may have passed; the typed phrase is the friction.
 
 Content structure:
 
@@ -237,7 +237,7 @@ Content structure:
 2. **Title** — Newsreader display, e.g. *"Promote RSI-2 Pullback to live trading."*
 3. **Prose paragraph** — italic Newsreader, names the consequences. For promotion: *"This will allocate live capital and begin live trading. The decision is recorded permanently per ADR 0005."* For demotion: *"This will halt live trading on regime.daily.* — close 1 open position at the next session boundary, drain over 5 sessions, and archive attribution."*
 4. **Typed-confirm field** — `TextField` requiring the operator to type the literal phrase `PROMOTE` (or `RETIRE`). The action button is `disabled` until the field's value matches exactly.
-5. **Action footer** — `critical` "PROMOTE →" (or `critical` "RETIRE →") + `ghost` "Cancel". The action button is uppercase letter-spaced even disabled, matching the MICRO LIVE → LIVE button on the row.
+5. **Action footer** — `critical` "PROMOTE →" (or `critical` "RETIRE →") + `ghost` "Cancel". The action button is uppercase letter-spaced even disabled.
 
 This modal's top border is `brand.accent` (oxblood), not rust — the live boundary is a brand-level commitment, not a system-decline event.
 
