@@ -26,7 +26,13 @@ from __future__ import annotations
 from PySide6.QtQml import qmlRegisterSingletonInstance
 
 from milodex.gui.operational_state import OperationalState
-from milodex.gui.read_models import BenchState, DeskState, FrontPageState, LedgerState
+from milodex.gui.read_models import (
+    BenchState,
+    DeskState,
+    FrontPageState,
+    KanbanState,
+    LedgerState,
+)
 from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
@@ -45,6 +51,7 @@ _operational_state_instance: OperationalState | None = None
 _strategy_bank_state_instance: StrategyBankState | None = None
 _front_page_state_instance: FrontPageState | None = None
 _bench_state_instance: BenchState | None = None
+_kanban_state_instance: KanbanState | None = None
 _ledger_state_instance: LedgerState | None = None
 _desk_state_instance: DeskState | None = None
 
@@ -55,6 +62,7 @@ def register_qml_types(
     strategy_bank_state: StrategyBankState | None = None,
     front_page_state: FrontPageState | None = None,
     bench_state: BenchState | None = None,
+    kanban_state: KanbanState | None = None,
     ledger_state: LedgerState | None = None,
     desk_state: DeskState | None = None,
 ) -> ThemeManager:
@@ -100,7 +108,7 @@ def register_qml_types(
         one to defend against premature garbage collection.
     """
     global _singleton_instance, _operational_state_instance, _strategy_bank_state_instance
-    global _front_page_state_instance, _bench_state_instance
+    global _front_page_state_instance, _bench_state_instance, _kanban_state_instance
     global _ledger_state_instance, _desk_state_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
@@ -157,6 +165,17 @@ def register_qml_types(
             bench_state,
         )
         _bench_state_instance = bench_state
+
+    if kanban_state is not None:
+        qmlRegisterSingletonInstance(
+            KanbanState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "KanbanState",
+            kanban_state,
+        )
+        _kanban_state_instance = kanban_state
 
     if ledger_state is not None:
         qmlRegisterSingletonInstance(

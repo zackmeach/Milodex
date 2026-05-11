@@ -26,13 +26,18 @@ def _write_config(
     family: str = "regime",
     template: str = "daily.sma200_rotation",
     variant: str = "demo",
+    display_name: str | None = None,
 ) -> Path:
     path = tmp_path / filename
+    display_name_line = (
+        f'              display_name: "{display_name}"\n' if display_name is not None else ""
+    )
     path.write_text(
         textwrap.dedent(
             f"""
             strategy:
               id: "{strategy_id}"
+{display_name_line.rstrip()}
               family: "{family}"
               template: "{template}"
               variant: "{variant}"
@@ -119,6 +124,17 @@ def test_freeze_manifest_stores_canonical_config_json(tmp_path):
     # Dict keys survive in canonical (sorted) order.
     keys = list(event.config_json["strategy"])
     assert keys == sorted(keys)
+
+
+def test_freeze_manifest_excludes_display_name_from_hashed_config_json(tmp_path):
+    """Presentation labels must not drift from the exact config material hashed."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, display_name="Demo Regime")
+
+    event = freeze_manifest(cfg_path, event_store=store)
+
+    assert event.config_hash == compute_config_hash(cfg_path)
+    assert "display_name" not in event.config_json["strategy"]
 
 
 def test_get_active_manifest_hash_returns_none_when_unfrozen(tmp_path):

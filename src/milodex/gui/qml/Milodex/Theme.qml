@@ -91,6 +91,7 @@ QtObject {
 
     readonly property var color: activeTheme.color
     readonly property var status: activeTheme.status
+    readonly property var stage: activeTheme.stage
 
     // ---------------------------------------------------------------
     // Theme-invariant tokens
@@ -358,6 +359,10 @@ QtObject {
         ledgerTimestamp: 148,
         ledgerSubject: 224,
         ledgerTransition: 220,
-        ledgerOutcome: 120
+        ledgerOutcome: 120,
+        kanbanLane: 320,
+        kanbanCard: 288,
+        kanbanCardMinHeight: 132,
+        kanbanMetric: 68
     })
 }

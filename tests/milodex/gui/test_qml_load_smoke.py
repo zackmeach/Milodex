@@ -25,6 +25,7 @@ compiled-type state. Mirrors the pattern in tests/milodex/gui/test_app.py.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +43,7 @@ _QML_TARGETS = [
     "surfaces/StrategyBankSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
+    "surfaces/KanbanSurface.qml",
     "surfaces/BenchSurface.qml",
     "surfaces/LedgerSurface.qml",
     "surfaces/DeskSurface.qml",
@@ -87,7 +89,7 @@ from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, LedgerState, DeskState
+from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState, DeskState
 
 app = QGuiApplication.instance() or QGuiApplication(sys.argv)
 load_fonts()
@@ -116,6 +118,7 @@ op = OperationalState(
 sb = StrategyBankState(db_path=Path("/__nonexistent_smoke_test__"))
 front = FrontPageState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 bench = BenchState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
+kanban = KanbanState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 ledger = LedgerState(db_path=Path("/__nonexistent_smoke_test__"))
 desk = DeskState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 
@@ -125,6 +128,7 @@ register_qml_types(
     strategy_bank_state=sb,
     front_page_state=front,
     bench_state=bench,
+    kanban_state=kanban,
     ledger_state=ledger,
     desk_state=desk,
 )
@@ -192,3 +196,24 @@ def test_main_qml_loads_clean() -> None:
     qml_path = _MILODEX_QML_DIR / _MAIN_QML
     assert qml_path.exists(), f"Main.qml missing: {qml_path}"
     _run_and_assert(_build_script(qml_path), _MAIN_QML)
+
+
+def test_bench_ledger_copy_and_drag_safety_contract() -> None:
+    """Bench remains a ledger-table prototype, not a cross-stage board."""
+    qml_path = _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
+    source = qml_path.read_text(encoding="utf-8")
+    main_source = (_MILODEX_QML_DIR / _MAIN_QML).read_text(encoding="utf-8")
+
+    assert "Operator Kanban" not in source
+    assert "Milodex · Strategy Bench" in source
+    assert (
+        'root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"'
+        in main_source
+    )
+    assert "DropArea" not in source
+    assert "Drag." not in source
+    assert "targetStage" not in source
+    assert re.search(r"\bstage\s=(?!=)", source) is None
+    assert "Action ->" in (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(
+        encoding="utf-8"
+    )

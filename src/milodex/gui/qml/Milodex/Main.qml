@@ -218,6 +218,7 @@ Window {
             // Hidden surfaces (kept in codebase for reference):
             if (root.activeSurface === "anchor")         return "surfaces/AnchorSurface.qml"
             if (root.activeSurface === "strategy-bank")  return "surfaces/StrategyBankSurface.qml"
+            if (root.activeSurface === "bench-legacy")   return "surfaces/KanbanSurface.qml"
             if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
             return ""  // unknown id renders the placeholder
         }

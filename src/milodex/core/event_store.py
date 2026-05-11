@@ -195,6 +195,44 @@ class PortfolioSnapshotEvent:
     id: int | None = None
 
 
+@dataclass(frozen=True)
+class OrchestrationBatchEvent:
+    """Operator-requested bulk orchestration batch from ADR 0040."""
+
+    batch_id: str
+    action_type: str
+    requested_by: str
+    requested_at: datetime
+    status: str
+    metadata: dict[str, Any]
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class OrchestrationJobEvent:
+    """One strategy/action item inside an orchestration batch."""
+
+    job_id: str
+    batch_id: str
+    strategy_id: str
+    action_type: str
+    requested_stage: str
+    status: str
+    queued_at: datetime
+    started_at: datetime | None
+    ended_at: datetime | None
+    cancel_requested_at: datetime | None
+    execution_ref_type: str | None
+    execution_ref: str | None
+    progress_current: int | None
+    progress_total: int | None
+    progress_label: str | None
+    error_code: str | None
+    error_message: str | None
+    metadata: dict[str, Any]
+    id: int | None = None
+
+
 _STRATEGY_RUN_SUBMITTERS: frozenset[str] = frozenset({"strategy_runner", "backtest_engine"})
 """Submitter labels whose explanation rows must carry a run ancestor.
 
@@ -205,7 +243,7 @@ have no run ancestry by design and pass through unchecked.
 """
 
 
-MIN_COMPATIBLE_SCHEMA_VERSION = 8
+MIN_COMPATIBLE_SCHEMA_VERSION = 9
 """Minimum event-store schema version this build can safely operate on.
 
 Bumped whenever a migration introduces a column or table that older code
@@ -527,6 +565,227 @@ class EventStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM strategy_runs ORDER BY id ASC").fetchall()
         return [_strategy_run_from_row(row) for row in rows]
+
+    def create_orchestration_batch(self, event: OrchestrationBatchEvent) -> int:
+        """Insert an ADR 0040 orchestration batch row and return its id."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO orchestration_batches (
+                    batch_id,
+                    action_type,
+                    requested_by,
+                    requested_at,
+                    status,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.batch_id,
+                    event.action_type,
+                    event.requested_by,
+                    _dt(event.requested_at),
+                    event.status,
+                    _dump_json(event.metadata),
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_orchestration_batches(self) -> list[OrchestrationBatchEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM orchestration_batches ORDER BY id ASC"
+            ).fetchall()
+        return [_orchestration_batch_from_row(row) for row in rows]
+
+    def get_orchestration_batch(self, batch_id: str) -> OrchestrationBatchEvent | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM orchestration_batches WHERE batch_id = ? LIMIT 1",
+                (batch_id,),
+            ).fetchone()
+        return None if row is None else _orchestration_batch_from_row(row)
+
+    def update_orchestration_batch_status(
+        self,
+        batch_id: str,
+        *,
+        status: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Update batch status, optionally replacing its metadata JSON."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE orchestration_batches
+                SET status = ?,
+                    metadata_json = COALESCE(?, metadata_json)
+                WHERE batch_id = ?
+                """,
+                (status, None if metadata is None else _dump_json(metadata), batch_id),
+            )
+            connection.commit()
+
+    def create_orchestration_job(self, event: OrchestrationJobEvent) -> int:
+        """Insert an ADR 0040 orchestration job row and return its id."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO orchestration_jobs (
+                    job_id,
+                    batch_id,
+                    strategy_id,
+                    action_type,
+                    requested_stage,
+                    status,
+                    queued_at,
+                    started_at,
+                    ended_at,
+                    cancel_requested_at,
+                    execution_ref_type,
+                    execution_ref,
+                    progress_current,
+                    progress_total,
+                    progress_label,
+                    error_code,
+                    error_message,
+                    metadata_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.job_id,
+                    event.batch_id,
+                    event.strategy_id,
+                    event.action_type,
+                    event.requested_stage,
+                    event.status,
+                    _dt(event.queued_at),
+                    _dt(event.started_at),
+                    _dt(event.ended_at),
+                    _dt(event.cancel_requested_at),
+                    event.execution_ref_type,
+                    event.execution_ref,
+                    event.progress_current,
+                    event.progress_total,
+                    event.progress_label,
+                    event.error_code,
+                    event.error_message,
+                    _dump_json(event.metadata),
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_orchestration_jobs(
+        self,
+        *,
+        batch_id: str | None = None,
+    ) -> list[OrchestrationJobEvent]:
+        query = "SELECT * FROM orchestration_jobs"
+        params: tuple[Any, ...] = ()
+        if batch_id is not None:
+            query += " WHERE batch_id = ?"
+            params = (batch_id,)
+        query += " ORDER BY id ASC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_orchestration_job_from_row(row) for row in rows]
+
+    def get_orchestration_job(self, job_id: str) -> OrchestrationJobEvent | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM orchestration_jobs WHERE job_id = ? LIMIT 1",
+                (job_id,),
+            ).fetchone()
+        return None if row is None else _orchestration_job_from_row(row)
+
+    def update_orchestration_job_status(
+        self,
+        job_id: str,
+        *,
+        status: str,
+        started_at: datetime | None = None,
+        ended_at: datetime | None = None,
+        execution_ref_type: str | None = None,
+        execution_ref: str | None = None,
+        progress_current: int | None = None,
+        progress_total: int | None = None,
+        progress_label: str | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Update job ledger fields without creating execution evidence rows."""
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE orchestration_jobs
+                SET status = ?,
+                    started_at = COALESCE(?, started_at),
+                    ended_at = COALESCE(?, ended_at),
+                    execution_ref_type = COALESCE(?, execution_ref_type),
+                    execution_ref = COALESCE(?, execution_ref),
+                    progress_current = COALESCE(?, progress_current),
+                    progress_total = COALESCE(?, progress_total),
+                    progress_label = COALESCE(?, progress_label),
+                    error_code = COALESCE(?, error_code),
+                    error_message = COALESCE(?, error_message),
+                    metadata_json = COALESCE(?, metadata_json)
+                WHERE job_id = ?
+                """,
+                (
+                    status,
+                    _dt(started_at),
+                    _dt(ended_at),
+                    execution_ref_type,
+                    execution_ref,
+                    progress_current,
+                    progress_total,
+                    progress_label,
+                    error_code,
+                    error_message,
+                    None if metadata is None else _dump_json(metadata),
+                    job_id,
+                ),
+            )
+            connection.commit()
+
+    def request_orchestration_job_cancellation(
+        self,
+        job_id: str,
+        *,
+        cancel_requested_at: datetime,
+    ) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE orchestration_jobs
+                SET cancel_requested_at = ?
+                WHERE job_id = ?
+                """,
+                (_dt(cancel_requested_at), job_id),
+            )
+            connection.commit()
+
+    def list_non_terminal_orchestration_jobs(self) -> list[OrchestrationJobEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM orchestration_jobs
+                WHERE status NOT IN (
+                    'completed',
+                    'failed',
+                    'cancelled',
+                    'blocked',
+                    'orphan_recovered'
+                )
+                ORDER BY id ASC
+                """
+            ).fetchall()
+        return [_orchestration_job_from_row(row) for row in rows]
 
     def append_backtest_run(self, event: BacktestRunEvent) -> int:
         """Insert a new backtest run row and return its autoincrement id."""
@@ -1049,6 +1308,44 @@ def _strategy_run_from_row(row: sqlite3.Row) -> StrategyRunEvent:
         started_at=_parse_datetime(row["started_at"]),
         ended_at=_parse_datetime(row["ended_at"]),
         exit_reason=row["exit_reason"],
+        metadata=dict(_load_json(row["metadata_json"])),
+    )
+
+
+def _orchestration_batch_from_row(row: sqlite3.Row) -> OrchestrationBatchEvent:
+    return OrchestrationBatchEvent(
+        id=int(row["id"]),
+        batch_id=str(row["batch_id"]),
+        action_type=str(row["action_type"]),
+        requested_by=str(row["requested_by"]),
+        requested_at=_parse_datetime(row["requested_at"]),
+        status=str(row["status"]),
+        metadata=dict(_load_json(row["metadata_json"])),
+    )
+
+
+def _orchestration_job_from_row(row: sqlite3.Row) -> OrchestrationJobEvent:
+    return OrchestrationJobEvent(
+        id=int(row["id"]),
+        job_id=str(row["job_id"]),
+        batch_id=str(row["batch_id"]),
+        strategy_id=str(row["strategy_id"]),
+        action_type=str(row["action_type"]),
+        requested_stage=str(row["requested_stage"]),
+        status=str(row["status"]),
+        queued_at=_parse_datetime(row["queued_at"]),
+        started_at=_parse_datetime(row["started_at"]),
+        ended_at=_parse_datetime(row["ended_at"]),
+        cancel_requested_at=_parse_datetime(row["cancel_requested_at"]),
+        execution_ref_type=row["execution_ref_type"],
+        execution_ref=row["execution_ref"],
+        progress_current=(
+            None if row["progress_current"] is None else int(row["progress_current"])
+        ),
+        progress_total=None if row["progress_total"] is None else int(row["progress_total"]),
+        progress_label=row["progress_label"],
+        error_code=row["error_code"],
+        error_message=row["error_message"],
         metadata=dict(_load_json(row["metadata_json"])),
     )
 

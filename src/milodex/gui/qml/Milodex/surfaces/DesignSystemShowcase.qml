@@ -559,6 +559,26 @@ Item {
                         tokenName: "status.info"
                         swatchColor: Theme.status.info
                     }
+                    ColorSwatchCell {
+                        tokenName: "stage.idle"
+                        swatchColor: Theme.stage.idle
+                    }
+                    ColorSwatchCell {
+                        tokenName: "stage.backtest"
+                        swatchColor: Theme.stage.backtest
+                    }
+                    ColorSwatchCell {
+                        tokenName: "stage.paper"
+                        swatchColor: Theme.stage.paper
+                    }
+                    ColorSwatchCell {
+                        tokenName: "stage.microLive"
+                        swatchColor: Theme.stage.microLive
+                    }
+                    ColorSwatchCell {
+                        tokenName: "stage.live"
+                        swatchColor: Theme.stage.live
+                    }
                 }
             }
 

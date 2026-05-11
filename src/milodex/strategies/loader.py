@@ -26,6 +26,7 @@ class StrategyConfig:
     template: str
     variant: str
     version: int
+    display_name: str | None
     description: str
     enabled: bool
     universe: tuple[str, ...]
@@ -231,6 +232,12 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     )
 
     parameters = _mapping(strategy.get("parameters"), "strategy.parameters", path)
+    display_name = strategy.get("display_name")
+    if display_name is not None:
+        if not isinstance(display_name, str) or not display_name.strip():
+            msg = f"{path}: strategy.display_name must be a non-empty string when provided"
+            raise ValueError(msg)
+        display_name = display_name.strip()
     disable_conditions = strategy.get("disable_conditions_additional")
     if not isinstance(disable_conditions, list) or not all(
         isinstance(item, str) and item.strip() for item in disable_conditions
@@ -257,6 +264,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
         template=str(strategy["template"]),
         variant=str(strategy["variant"]),
         version=int(strategy["version"]),
+        display_name=display_name,
         description=str(strategy["description"]),
         enabled=bool(strategy["enabled"]),
         universe=universe,
@@ -303,7 +311,11 @@ def compute_config_hash(path: Path) -> str:
         raise ValueError(msg)
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle)
-    canonical_json = json.dumps(_canonicalize_data(data), sort_keys=True, separators=(",", ":"))
+    canonical_json = json.dumps(
+        canonicalize_config_data(data),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
@@ -407,7 +419,15 @@ def canonicalize_config_data(value: Any) -> Any:
     path so the ``config_hash`` column and the ``config_json`` column are
     always derived from the exact same canonical representation.
     """
-    return _canonicalize_data(value)
+    canonical = _canonicalize_data(value)
+    if isinstance(canonical, dict):
+        strategy = canonical.get("strategy")
+        if isinstance(strategy, dict):
+            strategy = dict(strategy)
+            strategy.pop("display_name", None)
+            canonical = dict(canonical)
+            canonical["strategy"] = strategy
+    return canonical
 
 
 def _canonicalize_data(value: Any) -> Any:

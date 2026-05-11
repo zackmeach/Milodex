@@ -227,6 +227,52 @@ def test_loader_builds_strategy_context(valid_strategy_config: Path, registry: S
     assert loaded.context.universe == ("SPY",)
 
 
+def test_loader_accepts_optional_display_name(
+    valid_strategy_config: Path, registry: StrategyRegistry
+):
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  description: "Dummy strategy for tests."\n',
+        '  display_name: "Dummy Paper Test"\n  description: "Dummy strategy for tests."\n',
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    loaded = StrategyLoader(registry=registry).load(valid_strategy_config)
+
+    assert loaded.config.display_name == "Dummy Paper Test"
+
+
+def test_loader_defaults_missing_display_name_to_none(
+    valid_strategy_config: Path, registry: StrategyRegistry
+):
+    loaded = StrategyLoader(registry=registry).load(valid_strategy_config)
+
+    assert loaded.config.display_name is None
+
+
+def test_loader_rejects_non_string_display_name(
+    valid_strategy_config: Path, registry: StrategyRegistry
+):
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  description: "Dummy strategy for tests."\n',
+        '  display_name: 123\n  description: "Dummy strategy for tests."\n',
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="strategy.display_name must be a non-empty string"):
+        StrategyLoader(registry=registry).load(valid_strategy_config)
+
+
+def test_display_name_does_not_change_config_hash(valid_strategy_config: Path):
+    baseline_hash = compute_config_hash(valid_strategy_config)
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  description: "Dummy strategy for tests."\n',
+        '  display_name: "Operator Label"\n  description: "Dummy strategy for tests."\n',
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    assert compute_config_hash(valid_strategy_config) == baseline_hash
+
+
 # --- Survivorship-bias disclosure ---------------------------------------
 
 
