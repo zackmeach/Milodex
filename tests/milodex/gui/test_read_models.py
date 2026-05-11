@@ -146,12 +146,18 @@ def _create_db(path: Path) -> None:
     conn.close()
 
 
-def _seed_backtest(db: Path, strategy_id: str, sharpe: float = 0.72) -> None:
+def _seed_backtest(
+    db: Path,
+    strategy_id: str,
+    sharpe: float = 0.72,
+    max_drawdown_pct: float = 8.5,
+    trade_count: int = 120,
+) -> None:
     metadata = {
         "oos_aggregate": {
             "sharpe": sharpe,
-            "max_drawdown_pct": 8.5,
-            "trade_count": 120,
+            "max_drawdown_pct": max_drawdown_pct,
+            "trade_count": trade_count,
         }
     }
     conn = sqlite3.connect(str(db))
@@ -210,6 +216,65 @@ def test_bench_snapshot_groups_config_and_evidence(tmp_path: Path) -> None:
     assert row["metaEvidenceLabel"] == "promoted"
     assert row["metaEvidenceAt"]
     assert "T" not in row["metaEvidenceAt"]
+    assert row["visualPriority"] == 1
+    assert row["actions"][0] == {
+        "id": "open_evidence",
+        "label": "Open Evidence",
+        "kind": "evidence",
+        "requiresConfirmation": False,
+        "isPrototypeOnly": False,
+    }
+
+
+def test_bench_actions_hide_unavailable_actions_and_mark_prototypes(tmp_path: Path) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id, sharpe=0.25, max_drawdown_pct=18.0, trade_count=20)
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    action_ids = [action["id"] for action in row["actions"]]
+
+    assert action_ids[0] == "open_evidence"
+    assert "promote_paper" not in action_ids
+    assert "initiate_backtest" in action_ids
+    assert all(
+        action["isPrototypeOnly"]
+        for action in row["actions"]
+        if action["id"] != "open_evidence"
+    )
+
+
+def test_bench_actions_confirm_capital_stage_targets(tmp_path: Path) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    paper = next(section for section in snapshot["sections"] if section["stage"] == "paper")
+    row = paper["strategies"][0]
+    promote_micro = next(
+        action for action in row["actions"] if action["id"] == "promote_micro_live"
+    )
+    start_trading = next(action for action in row["actions"] if action["id"] == "start_trading")
+
+    assert promote_micro["targetStage"] == "micro_live"
+    assert promote_micro["requiresConfirmation"] is True
+    assert start_trading["requiresConfirmation"] is False
 
 
 def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> None:

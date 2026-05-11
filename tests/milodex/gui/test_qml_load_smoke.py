@@ -25,6 +25,7 @@ compiled-type state. Mirrors the pattern in tests/milodex/gui/test_app.py.
 
 from __future__ import annotations
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -195,3 +196,24 @@ def test_main_qml_loads_clean() -> None:
     qml_path = _MILODEX_QML_DIR / _MAIN_QML
     assert qml_path.exists(), f"Main.qml missing: {qml_path}"
     _run_and_assert(_build_script(qml_path), _MAIN_QML)
+
+
+def test_bench_ledger_copy_and_drag_safety_contract() -> None:
+    """Bench remains a ledger-table prototype, not a cross-stage board."""
+    qml_path = _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
+    source = qml_path.read_text(encoding="utf-8")
+    main_source = (_MILODEX_QML_DIR / _MAIN_QML).read_text(encoding="utf-8")
+
+    assert "Operator Kanban" not in source
+    assert "Milodex · Strategy Bench" in source
+    assert (
+        'root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"'
+        in main_source
+    )
+    assert "DropArea" not in source
+    assert "Drag." not in source
+    assert "targetStage" not in source
+    assert re.search(r"\bstage\s=(?!=)", source) is None
+    assert "Action ->" in (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(
+        encoding="utf-8"
+    )

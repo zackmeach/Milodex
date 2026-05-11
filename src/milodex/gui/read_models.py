@@ -68,6 +68,7 @@ class _StrategyRow:
     job_status: str = ""
     job_action_type: str = ""
     job_detail: str = ""
+    visual_priority: int = 0
 
     def as_qml(self) -> dict[str, Any]:
         return {
@@ -103,6 +104,8 @@ class _StrategyRow:
             "jobStatus": self.job_status,
             "jobActionType": self.job_action_type,
             "jobDetail": self.job_detail,
+            "visualPriority": self.visual_priority,
+            "actions": _bench_actions(self),
         }
 
 
@@ -605,7 +608,104 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
                 job_detail=str(job.get("detail") or ""),
             )
         )
-    return sorted(rows, key=lambda row: (_VISIBLE_STAGES.index(row.stage), row.name.lower()))
+    sorted_rows = sorted(rows, key=lambda row: (_VISIBLE_STAGES.index(row.stage), row.name.lower()))
+    return [
+        _StrategyRow(
+            **{
+                **row.__dict__,
+                "visual_priority": index + 1,
+            }
+        )
+        for index, row in enumerate(sorted_rows)
+    ]
+
+
+def _bench_action(
+    action_id: str,
+    label: str,
+    kind: str,
+    *,
+    target_stage: str = "",
+    requires_confirmation: bool = False,
+    is_prototype_only: bool = True,
+) -> dict[str, Any]:
+    action: dict[str, Any] = {
+        "id": action_id,
+        "label": label,
+        "kind": kind,
+        "requiresConfirmation": requires_confirmation,
+        "isPrototypeOnly": is_prototype_only,
+    }
+    if target_stage:
+        action["targetStage"] = target_stage
+    return action
+
+
+def _bench_actions(row: _StrategyRow) -> list[dict[str, Any]]:
+    actions = [
+        _bench_action(
+            "open_evidence",
+            "Open Evidence",
+            "evidence",
+            is_prototype_only=False,
+        )
+    ]
+    stage = row.stage
+    has_open_job = row.job_status in {"queued", "starting", "running"}
+    is_running = row.session_state == "running"
+
+    if stage == "backtest" and not has_open_job:
+        actions.append(_bench_action("initiate_backtest", "Initiate Backtest", "backtest"))
+
+    if stage in {"backtest", "paper", "micro_live"} and not row.gate_failures:
+        target = _next_stage(stage)
+        if target != stage:
+            actions.append(
+                _bench_action(
+                    f"promote_{target}",
+                    f"Promote to {_stage_label(target)}",
+                    "promote",
+                    target_stage=target,
+                    requires_confirmation=target in {"micro_live", "live"},
+                )
+            )
+
+    if stage == "paper":
+        actions.append(
+            _bench_action(
+                "demote_backtest",
+                "Demote to Backtest",
+                "demote",
+                target_stage="backtest",
+            )
+        )
+    elif stage == "micro_live":
+        actions.append(
+            _bench_action("demote_paper", "Demote to Paper", "demote", target_stage="paper")
+        )
+    elif stage == "live":
+        actions.append(
+            _bench_action(
+                "demote_micro_live",
+                "Demote to Micro Live",
+                "demote",
+                target_stage="micro_live",
+            )
+        )
+
+    if stage in {"paper", "micro_live", "live"}:
+        actions.append(
+            _bench_action(
+                "stop_trading" if is_running else "start_trading",
+                "Stop Trading" if is_running else "Start Trading",
+                "trading",
+            )
+        )
+
+    if stage != "idle":
+        actions.append(_bench_action("send_idle", "Send to Idle", "idle", target_stage="idle"))
+
+    return actions
 
 
 def _load_strategy_configs(configs_dir: Path) -> list[StrategyConfig]:
@@ -964,6 +1064,16 @@ def _next_stage(stage: str) -> str:
     if stage == "micro_live":
         return "live"
     return stage
+
+
+def _stage_label(stage: str) -> str:
+    return {
+        "idle": "Idle",
+        "backtest": "Backtest",
+        "paper": "Paper",
+        "micro_live": "Micro Live",
+        "live": "Live",
+    }.get(stage, stage.replace("_", " ").title())
 
 
 def _status_copy(
