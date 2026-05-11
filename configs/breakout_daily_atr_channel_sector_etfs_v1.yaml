@@ -21,7 +21,7 @@ strategy:
     max_hold_days: 5
     max_concurrent_positions: 3
     sizing_rule: "equal_notional"
-    per_position_notional_pct: 0.20
+    per_position_notional_pct: 0.10
     ranking_enabled: true
     ranking_metric: "atr_channel_strength_descending"
     market_regime_symbol: "SPY"
@@ -33,7 +33,7 @@ strategy:
     max_hold_days: 5
 
   risk:
-    max_position_pct: 0.20
+    max_position_pct: 0.10
     max_positions: 3
     daily_loss_cap_pct: 0.02
     stop_loss_pct: 0.10

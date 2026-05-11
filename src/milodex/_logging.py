@@ -1,7 +1,7 @@
 """Logging bootstrap for the Milodex CLI.
 
 Call ``install_file_handler()`` once at CLI startup to route all milodex
-loggers to a rotating file under ``logs/milodex.log``.  Tests and library
+loggers to a process-scoped rotating file under ``logs/``.  Tests and library
 imports never call this, so no FileHandler is installed outside the CLI.
 """
 
@@ -35,13 +35,13 @@ def _resolve_level() -> int:
 
 
 def install_file_handler(log_dir: Path, *, level: int | None = None) -> logging.Handler:
-    """Install a RotatingFileHandler on the root logger targeting *log_dir*/milodex.log.
+    """Install a process-scoped RotatingFileHandler on the root logger.
 
     Idempotent: if a FileHandler pointing at the same path is already attached
     to the root logger, it is returned as-is without adding a duplicate.
 
     Args:
-        log_dir: Directory that will contain ``milodex.log``.  Created if absent.
+        log_dir: Directory that will contain ``milodex-<pid>.log``.  Created if absent.
         level: Minimum level forwarded to the file.  Defaults to INFO (or the
                value of the ``MILODEX_LOG_LEVEL`` env var if set).  Pass
                ``logging.DEBUG`` explicitly to capture all library internals.
@@ -52,7 +52,7 @@ def install_file_handler(log_dir: Path, *, level: int | None = None) -> logging.
     if level is None:
         level = _resolve_level()
     log_dir.mkdir(parents=True, exist_ok=True)
-    log_path = log_dir / "milodex.log"
+    log_path = log_dir / f"milodex-{os.getpid()}.log"
 
     root = logging.getLogger()
 
