@@ -120,7 +120,13 @@ R-EXE-013 carries the current testable contract for the per-strategy lock invari
 
 ### Runner and intraday 1D bars
 
-`milodex strategy run` is safe to start at any point in the trading day. On a 1D tempo, the in-progress bar fetched during market hours shares its timestamp with the post-close finalized bar, so the runner withholds its `last_processed_bar_at` watermark until the market is closed. The post-close cycle re-evaluates the now-finalized same-timestamp bar exactly once, and subsequent polls are suppressed by the watermark — no duplicate records.
+`milodex strategy run` is safe to start at any point in the trading day. On a 1D tempo, the runner does not fetch bars or submit intents while the market is open because the in-progress daily bar shares its timestamp with the post-close finalized bar. After the market closes, the runner waits for the close-lockin stability window to confirm the final OHLCV bar, evaluates that bar once, and then suppresses subsequent polls via the watermark.
+
+Within a session, the runner also suppresses duplicate execution attempts keyed by `(latest_bar_timestamp, symbol, side)`. This prevents a persistent same-bar signal or risk-blocked intent from producing hundreds of duplicate trade/explanation records while preserving a fresh opportunity on the next bar.
+
+### Process-scoped runtime logs
+
+Each CLI process writes to `logs/milodex-<pid>.log`. Per-process filenames avoid Windows log-rotation lock contention when multiple strategy runners are active. Durable decisions remain in SQLite; file logs are diagnostic streams, not the source of truth.
 
 ---
 

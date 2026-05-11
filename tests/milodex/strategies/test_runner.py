@@ -221,11 +221,21 @@ def build_service(
     return service, event_store, kill_switch_store
 
 
+def make_regime_config_intraday(config_dir: Path) -> Path:
+    config_path = config_dir / "regime_runner.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace('bar_size: "1D"', 'bar_size: "1Min"'),
+        encoding="utf-8",
+    )
+    return config_path
+
+
 def test_runner_submits_regime_signal_through_execution_service(
     tmp_path: Path,
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
+    config_path = make_regime_config_intraday(strategy_config_dir)
     provider = StubProvider(
         {
             "SPY": build_barset([10.0, 10.0, 10.0]),
@@ -258,7 +268,7 @@ def test_runner_submits_regime_signal_through_execution_service(
 
     from tests.milodex._helpers.promotion import seed_frozen_manifest
 
-    seed_frozen_manifest(event_store, strategy_config_dir / "regime_runner.yaml")
+    seed_frozen_manifest(event_store, config_path)
 
     results = runner.run_cycle()
     runner.shutdown(mode="controlled")
@@ -276,6 +286,7 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
+    make_regime_config_intraday(strategy_config_dir)
     provider = StubProvider(
         {
             "SPY": build_barset([10.0, 10.0, 10.0]),
@@ -376,6 +387,7 @@ def test_runner_ignores_non_strategy_yaml_when_resolving_config(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
+    make_regime_config_intraday(strategy_config_dir)
     (strategy_config_dir / "aaa_risk_defaults.yaml").write_text(
         """
 kill_switch:
@@ -478,6 +490,7 @@ def test_runner_requests_all_universe_symbols_from_data_provider(
     risk_defaults_file: Path,
 ):
     """run_cycle() must fetch bars for every symbol in the universe, not only universe[0]."""
+    make_regime_config_intraday(strategy_config_dir)
     provider = StubProvider(
         {
             "SPY": build_barset([10.0, 10.0, 10.0]),
@@ -521,6 +534,11 @@ def test_runner_meanrev_fires_entry_signal_via_bars_by_symbol(
     risk_defaults_file: Path,
 ):
     """MeanRev strategy emits a BUY intent when bars_by_symbol is populated correctly."""
+    config_path = meanrev_config_dir / "meanrev_runner.yaml"
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace('bar_size: "1D"', 'bar_size: "1Min"'),
+        encoding="utf-8",
+    )
     # AAPL: latest (11.0) > SMA(2) of [9.0, 11.0]=10.0; RSI(2) ≈ 66.7 < 70 → entry
     # MSFT: flat, will not meet entry conditions with ma_filter_length=2 (equal bars)
     provider = StubProvider(
@@ -546,7 +564,7 @@ def test_runner_meanrev_fires_entry_signal_via_bars_by_symbol(
     )
     from tests.milodex._helpers.promotion import seed_frozen_manifest
 
-    seed_frozen_manifest(event_store, meanrev_config_dir / "meanrev_runner.yaml")
+    seed_frozen_manifest(event_store, config_path)
     runner = StrategyRunner(
         strategy_id="meanrev.daily.pullback_rsi2.test_runner.v1",
         config_dir=meanrev_config_dir,
@@ -1240,9 +1258,8 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     # --- Cycle 1: market is open, bar is in-progress -------------------------
     results_during_market = runner.run_cycle()
 
-    assert len(results_during_market) >= 1, (
-        "Runner must still evaluate during market hours; only the watermark update is withheld."
-    )
+    assert results_during_market == [], "Daily strategies must not submit on in-progress bars."
+    assert provider.get_bars_calls == [], "Open-market daily polling should not fetch bars."
     assert runner._last_processed_bar_at is None, (
         "In-progress bar must not advance _last_processed_bar_at; doing so "
         "would suppress the same-timestamp finalized-bar evaluation below."
@@ -1252,9 +1269,7 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     broker._market_open = False
     results_post_close = runner.run_cycle()
 
-    assert len(results_post_close) >= 1, (
-        "Once the market closes on the same-day bar, the runner must re-evaluate it."
-    )
+    assert results_post_close == [], "First post-close observation only starts lockin."
     assert runner._last_processed_bar_at is None, (
         "First post-close observation initializes lockin pending; CI-1 "
         "requires a confirming second fetch before advancing the watermark."
@@ -1262,17 +1277,69 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
 
     # --- Cycle 3: still post-close, same bar, 30s elapsed → stability lockin --
     fake_now[0] = fake_now[0] + timedelta(seconds=30)
-    runner.run_cycle()
+    results_after_lockin = runner.run_cycle()
 
+    assert len(results_after_lockin) >= 1, "Stable post-close bar should evaluate exactly once."
     assert runner._last_processed_bar_at is not None, (
         "Once the post-close bar passes the stability check, the watermark advances."
     )
 
     # --- Cycle 4: still post-close, watermark set, short-circuit -------------
-    results_after_lockin = runner.run_cycle()
-    assert results_after_lockin == [], (
+    results_after_seen = runner.run_cycle()
+    assert results_after_seen == [], (
         "Once the watermark is set, further polls on the same bar are already-seen."
     )
+
+
+def test_runner_suppresses_duplicate_same_bar_intents(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A repeated signal for the same latest bar must not spam execution records."""
+    config_path = make_regime_config_intraday(strategy_config_dir)
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=True,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, config_path)
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    first_results = runner.run_cycle()
+    second_results = runner.run_cycle()
+
+    assert len(first_results) == 1
+    assert second_results == []
+    assert len(broker.submit_calls) == 1
+    assert len(event_store.list_trades()) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1725,7 +1792,7 @@ def _build_crash_runner(
     tmp_path: Path,
     strategy_config_dir: Path,
     risk_defaults_file: Path,
-    market_open: bool = True,
+    market_open: bool = False,
 ):
     """Build a minimal runner wired for lifecycle-hardening tests."""
     provider = StubProvider(
@@ -1880,7 +1947,8 @@ def test_runner_market_gate_allows_fetch_when_market_open(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
-    """Fetch IS called when the market is open, regardless of watermark state."""
+    """Intraday strategies still fetch when the market is open."""
+    make_regime_config_intraday(strategy_config_dir)
     runner, _, provider, _ = _build_crash_runner(
         tmp_path=tmp_path,
         strategy_config_dir=strategy_config_dir,
@@ -1888,14 +1956,14 @@ def test_runner_market_gate_allows_fetch_when_market_open(
         market_open=True,
     )
 
-    # Even with a watermark set (unusual but possible), open market should fetch.
+    # Even with a watermark set (unusual but possible), an intraday open-market cycle fetches.
     runner._last_processed_bar_at = datetime(2026, 5, 7, 21, 0, 0, tzinfo=UTC)
 
     initial_fetch_count = len(provider.get_bars_calls)
     runner.run_cycle()
 
     assert len(provider.get_bars_calls) == initial_fetch_count + 1, (
-        "_fetch_bars_by_symbol must be called when the market is open"
+        "_fetch_bars_by_symbol must be called for open-market intraday bars"
     )
 
 

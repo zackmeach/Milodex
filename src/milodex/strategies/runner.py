@@ -83,6 +83,7 @@ class StrategyRunner:
         self._pending_lockin_signature: tuple[float, float, float, float, int] | None = None
         self._pending_lockin_seen_at: datetime | None = None
         self._lockin_started_at: datetime | None = None
+        self._processed_intent_keys: set[tuple[datetime, str, str]] = set()
         self._requested_shutdown: str | None = None
         self._closed = False
         self._dialog_open = False
@@ -172,7 +173,11 @@ class StrategyRunner:
         opens.  The gate checks ``is_market_open()`` FIRST, before any network
         I/O, so closed-market cycles are cheap regardless of fetch cost.
         """
-        if not self._broker.is_market_open() and self._last_processed_bar_at is not None:
+        market_open = self._broker.is_market_open()
+        is_daily_bar = self._is_daily_bar()
+        if is_daily_bar and market_open:
+            return []
+        if not market_open and self._last_processed_bar_at is not None:
             # Market is closed and today's close has been confirmed via the
             # lockin stability window.  Nothing new to process until open.
             return []
@@ -197,8 +202,12 @@ class StrategyRunner:
         )
         decision = self._loaded.strategy.evaluate(primary_bars, context)
         intents = decision.intents
-        if not self._broker.is_market_open():
-            self._maybe_advance_lockin_watermark(latest_bar)
+        if (
+            is_daily_bar
+            and not market_open
+            and not self._maybe_advance_lockin_watermark(latest_bar)
+        ):
+            return []
 
         if not intents:
             self._record_no_action(
@@ -210,6 +219,10 @@ class StrategyRunner:
 
         results: list[ExecutionResult] = []
         for intent in intents:
+            intent_key = self._intent_key(intent, latest_bar.timestamp)
+            if intent_key in self._processed_intent_keys:
+                continue
+            self._processed_intent_keys.add(intent_key)
             results.append(
                 self._execution_service.submit_paper(
                     self._runner_intent(intent),
@@ -274,7 +287,7 @@ class StrategyRunner:
     def _now(self) -> datetime:
         return datetime.now(tz=UTC)
 
-    def _maybe_advance_lockin_watermark(self, latest_bar) -> None:
+    def _maybe_advance_lockin_watermark(self, latest_bar) -> bool:
         """Gate post-close watermark advance on bar finalization stability.
 
         Two consecutive identical OHLCV fetches separated by at least
@@ -296,28 +309,42 @@ class StrategyRunner:
             self._pending_lockin_signature = signature
             self._pending_lockin_seen_at = now
             self._lockin_started_at = now
-            return
+            return False
 
         if (now - self._lockin_started_at).total_seconds() > self._close_lockin_max_wait_seconds:
             self._last_processed_bar_at = latest_bar.timestamp
             self._reset_lockin()
-            return
+            return True
 
         if signature != self._pending_lockin_signature:
             self._pending_lockin_signature = signature
             self._pending_lockin_seen_at = now
-            return
+            return False
 
         if (
             now - self._pending_lockin_seen_at
         ).total_seconds() >= self._close_lockin_min_interval_seconds:
             self._last_processed_bar_at = latest_bar.timestamp
             self._reset_lockin()
+            return True
+        return False
 
     def _reset_lockin(self) -> None:
         self._pending_lockin_signature = None
         self._pending_lockin_seen_at = None
         self._lockin_started_at = None
+
+    def _is_daily_bar(self) -> bool:
+        return self._loaded.config.tempo.get("bar_size") == "1D"
+
+    def _intent_key(
+        self, intent: TradeIntent, latest_bar_timestamp: datetime
+    ) -> tuple[datetime, str, str]:
+        return (
+            latest_bar_timestamp,
+            intent.normalized_symbol(),
+            intent.side.value,
+        )
 
     def _resolve_config_path(self) -> Path:
         for path in sorted(self._config_dir.glob("*.yaml")):

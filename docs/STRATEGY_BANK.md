@@ -100,7 +100,7 @@ Walk-forward evidence sourced from `docs/reviews/screen_2026-05-07.md`. Metrics 
 Lifecycle-proof strategy. Its job is to validate the pipeline end-to-end, not to generate alpha. The SMA-200 signal is binary and regime-dependent — extended sideways markets will produce few or no trades. Do not interpret low activity as a problem. Watch for execution errors, fill confirmation, and P&L attribution.
 
 **`breakout.daily.atr_channel.sector_etfs.v1`**
-Lowest Sharpe of the statistical promotions (0.64, run `294d404a`). Paper will reveal whether the edge persists in live market microstructure. Watch for slippage sensitivity — the ATR channel breakout fires on daily closes, so fill quality matters. No per-window instability flag.
+Lowest Sharpe of the statistical promotions (0.64, run `294d404a`). Paper will reveal whether the edge persists in live market microstructure. Watch for slippage sensitivity — the ATR channel breakout fires on daily closes, so fill quality matters. No per-window instability flag. Runtime sizing is capped at 10% notional per position to match the global single-position and order-value guardrails.
 
 **`meanrev.daily.bbands_lowerband.curated_largecap.v1`**
 Sharpe 0.52 (run `4c91eada`) — narrowest margin above the 0.5 gate. The low drawdown (3.38%) is a positive sign for capital efficiency, but the margin above gate means the edge is fragile. Watch OOS Sharpe trajectory carefully before any promotion discussion.
@@ -112,7 +112,7 @@ This strategy has a complex audit trail. Original promotion on 2026-04-22 was ma
 Strongest statistical promotion (Sharpe 0.88, run `16636a03`). Clean drawdown (6.25%). No stability flags. Standard paper monitoring applies.
 
 **`breakout.daily.donchian_20_10.sector_etfs.v1`**
-Per-window Sharpe instability is a real concern here. The four windows produced: `[0.97, -0.17, 0.62, 2.22]` with std=0.99. One window was materially negative (2022 drawdown period). The OOS aggregate of 0.87 (run `a6f59a53`) passes the gate, but the variance across windows is the highest of any promoted strategy. The aggregate Sharpe is being lifted by the strong final window (2.22). This does not disqualify it — walk-forward methodology accounts for this by requiring the aggregate to gate — but it means paper validation should be watched for regime sensitivity more carefully than the headline Sharpe suggests. Additionally, the strategy's prior whole-period run suggested Sharpe 1.11 / 516 trades, which was in-sample noise. The walk-forward figure is the one that counts.
+Per-window Sharpe instability is a real concern here. The four windows produced: `[0.97, -0.17, 0.62, 2.22]` with std=0.99. One window was materially negative (2022 drawdown period). The OOS aggregate of 0.87 (run `a6f59a53`) passes the gate, but the variance across windows is the highest of any promoted strategy. The aggregate Sharpe is being lifted by the strong final window (2.22). This does not disqualify it — walk-forward methodology accounts for this by requiring the aggregate to gate — but it means paper validation should be watched for regime sensitivity more carefully than the headline Sharpe suggests. Additionally, the strategy's prior whole-period run suggested Sharpe 1.11 / 516 trades, which was in-sample noise. The walk-forward figure is the one that counts. Runtime sizing is capped at 10% notional per position to match the global single-position and order-value guardrails.
 
 ---
 

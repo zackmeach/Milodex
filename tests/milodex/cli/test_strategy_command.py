@@ -8,7 +8,10 @@ from io import StringIO
 
 import pytest
 
+from milodex.broker.models import AccountInfo, OrderSide, OrderType, TimeInForce
 from milodex.cli.main import main as cli_entrypoint
+from milodex.execution.models import ExecutionRequest, ExecutionResult, ExecutionStatus
+from milodex.risk.models import RiskCheckResult, RiskDecision
 
 cli_main_module = importlib.import_module("milodex.cli.main")
 
@@ -167,3 +170,53 @@ class TestCheckStageCompatibilityUnit:
         assert "typo_mode" in msg, "error must name the unrecognized mode"
         assert "paper" in msg, "error must list recognized modes"
         assert "TRADING_MODE" in msg, "error must point to the env var"
+
+
+def test_format_decision_line_includes_reason_codes_for_blocked_submits():
+    from milodex.cli.commands.strategy import _format_decision_line
+
+    result = ExecutionResult(
+        status=ExecutionStatus.BLOCKED,
+        execution_request=ExecutionRequest(
+            symbol="XLK",
+            side=OrderSide.BUY,
+            quantity=113.0,
+            order_type=OrderType.MARKET,
+            time_in_force=TimeInForce.DAY,
+            estimated_unit_price=177.0,
+            estimated_order_value=20_001.0,
+        ),
+        risk_decision=RiskDecision(
+            allowed=False,
+            summary="Blocked by risk checks",
+            checks=[
+                RiskCheckResult(
+                    "order_value",
+                    False,
+                    "Estimated order value exceeded.",
+                    "max_order_value_exceeded",
+                ),
+                RiskCheckResult(
+                    "single_position",
+                    False,
+                    "Projected position value exceeded.",
+                    "max_single_position_exceeded",
+                ),
+            ],
+            reason_codes=["max_order_value_exceeded", "max_single_position_exceeded"],
+        ),
+        account=AccountInfo(
+            equity=100_000.0,
+            cash=100_000.0,
+            buying_power=100_000.0,
+            portfolio_value=100_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=True,
+        latest_bar=None,
+    )
+
+    line = _format_decision_line(result)
+
+    assert "max_order_value_exceeded" in line
+    assert "max_single_position_exceeded" in line

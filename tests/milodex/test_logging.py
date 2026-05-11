@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
+import os
 from pathlib import Path
 
 from milodex._logging import install_file_handler
@@ -29,7 +30,7 @@ class TestInstallFileHandler:
             logger.setLevel(logging.INFO)
             logger.info("sentinel-message-xyz")
             handler.flush()
-            log_text = (log_dir / "milodex.log").read_text(encoding="utf-8")
+            log_text = Path(handler.baseFilename).read_text(encoding="utf-8")
             assert "sentinel-message-xyz" in log_text
         finally:
             # Clean up: remove this handler so it doesn't bleed into other tests.
@@ -44,7 +45,7 @@ class TestInstallFileHandler:
             logger.setLevel(logging.WARNING)
             logger.warning("format-check-message")
             handler.flush()
-            log_text = (log_dir / "milodex.log").read_text(encoding="utf-8")
+            log_text = Path(handler.baseFilename).read_text(encoding="utf-8")
             # ISO8601-ish timestamp present (e.g. 2026-05-07T...)
             assert "T" in log_text  # date/time separator
             assert "WARNING" in log_text
@@ -72,6 +73,15 @@ class TestInstallFileHandler:
         handler = install_file_handler(log_dir)
         try:
             assert isinstance(handler, logging.handlers.RotatingFileHandler)
+        finally:
+            logging.getLogger().removeHandler(handler)
+            handler.close()
+
+    def test_log_file_is_process_scoped(self, tmp_path: Path) -> None:
+        log_dir = tmp_path / "logs"
+        handler = install_file_handler(log_dir)
+        try:
+            assert Path(handler.baseFilename).name == f"milodex-{os.getpid()}.log"
         finally:
             logging.getLogger().removeHandler(handler)
             handler.close()

@@ -46,6 +46,8 @@ def _format_decision_line(result: ExecutionResult) -> str:
     if result.status is ExecutionStatus.SUBMITTED:
         return f"fired {side} {req.symbol} x{req.quantity:g} — allowed"
     reason = result.risk_decision.summary or (result.message or "rejected")
+    if result.risk_decision.reason_codes:
+        reason = f"{reason} ({', '.join(result.risk_decision.reason_codes)})"
     return f"rejected {side} {req.symbol} x{req.quantity:g} — {reason}"
 
 
