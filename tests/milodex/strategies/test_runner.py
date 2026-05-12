@@ -1341,6 +1341,20 @@ def test_runner_suppresses_duplicate_same_bar_intents(
     assert len(broker.submit_calls) == 1
     assert len(event_store.list_trades()) == 1
 
+    # Dedup set is scoped to the current bar — no unbounded growth across bars.
+    assert len(runner._processed_intent_keys) == 1
+    assert runner._processed_intent_bar_at is not None
+
+    # Simulate stale state from an older bar: keys for a prior timestamp must
+    # be cleared on the next cycle so the set cannot grow without bound.
+    stale_ts = runner._processed_intent_bar_at - timedelta(days=1)
+    runner._processed_intent_bar_at = stale_ts
+    runner._processed_intent_keys = {(stale_ts, "OLD", "buy")}
+    runner.run_cycle()
+    assert all(
+        ts != stale_ts for ts, _, _ in runner._processed_intent_keys
+    ), "Dedup set must not retain keys from prior bars."
+
 
 # ---------------------------------------------------------------------------
 # Portfolio-snapshot wiring (closes analytics/snapshots.py scaffolded marker)

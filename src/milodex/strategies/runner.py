@@ -84,6 +84,7 @@ class StrategyRunner:
         self._pending_lockin_seen_at: datetime | None = None
         self._lockin_started_at: datetime | None = None
         self._processed_intent_keys: set[tuple[datetime, str, str]] = set()
+        self._processed_intent_bar_at: datetime | None = None
         self._requested_shutdown: str | None = None
         self._closed = False
         self._dialog_open = False
@@ -216,6 +217,12 @@ class StrategyRunner:
             if self._on_cycle_result is not None:
                 self._on_cycle_result([])
             return []
+
+        if self._processed_intent_bar_at != latest_bar.timestamp:
+            # Bar rolled over; prior keys can never re-match because the
+            # already_seen short-circuit above gates on _last_processed_bar_at.
+            self._processed_intent_keys.clear()
+            self._processed_intent_bar_at = latest_bar.timestamp
 
         results: list[ExecutionResult] = []
         for intent in intents:
