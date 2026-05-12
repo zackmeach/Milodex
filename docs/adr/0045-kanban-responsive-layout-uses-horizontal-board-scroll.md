@@ -1,6 +1,7 @@
 # ADR 0045 - Kanban responsive layout uses horizontal board scroll
 
-**Status:** Accepted - 2026-05-10
+**Status:** Superseded - 2026-05-10
+**Superseded by:** [ADR 0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md) — the surface is no longer a horizontal board, so horizontal scroll is structurally moot.
 **Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-F (responsive layout), [ADR 0033](0033-gui-runtime-is-pyside6-qt-quick.md) (Qt Quick), [ADR 0035](0035-design-system-and-theme-architecture.md), [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md), [DESIGN.md](../DESIGN.md)
 
 ## Context

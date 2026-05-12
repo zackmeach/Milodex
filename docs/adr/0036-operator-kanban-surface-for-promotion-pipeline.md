@@ -57,8 +57,8 @@ Each of the following was a real architectural decision the v0.3 prototype hand-
 - **Q-B — Stage / session decoupling.** Answered by [ADR 0039](0039-stage-session-and-kanban-lane-are-distinct.md): promotion stage, runtime session state, and Kanban lane are distinct axes.
 - **Q-C — Live-eligibility-window rule.** Answered by [ADR 0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md): ADR 0004 remains authoritative, calendar countdowns are rejected, and eligibility copy stays evidence-based.
 - **Q-D — Demotion-gesture security gradient.** Answered by [ADR 0043](0043-kanban-demotion-gestures-open-a-governance-flow.md): demotion drag opens a governance flow; drop alone never mutates state.
-- **Q-E — Hover-validation timing.** Answered by [ADR 0044](0044-kanban-uses-cached-hover-validation-and-authoritative-drop-validation.md): hover uses cached verdicts; drop and job start revalidate authoritatively.
-- **Q-F — Responsive layout strategy.** Answered by [ADR 0045](0045-kanban-responsive-layout-uses-horizontal-board-scroll.md): stable-width columns inside horizontal board scroll.
+- **Q-E — Action-availability surface.** Answered by [ADR 0047](0047-bench-action-availability-is-the-validation-surface.md): action availability is computed pre-menu from cached verdicts; unavailable actions are hidden, not disabled.
+- **Q-F — Responsive layout strategy.** Answered by [ADR 0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md): vertical stage sections with native scroll; no horizontal board.
 - **Q-G — Bulk-action wiring.** Answered by [ADR 0040](0040-kanban-bulk-orchestration-uses-a-durable-job-ledger.md): parent/child orchestration jobs link to concrete execution records.
 - **Q-H — Token reconciliation.** Answered by [ADR 0046](0046-kanban-stage-hues-extend-production-tokens.md): production tokens remain canonical and stage hues become a separate namespace. Prototype palette drift noted:
   - `--brand-accent` is `#863a44` (prototype) vs `#722f37` (production Editorial Dark)
