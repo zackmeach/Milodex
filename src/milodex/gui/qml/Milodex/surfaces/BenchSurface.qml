@@ -230,7 +230,7 @@ Item {
                                     text: sectionData.stageRoman
                                     color: Theme.color.text.muted
                                     font.family: Theme.typography.deck.family
-                                    font.pixelSize: 19
+                                    font.pixelSize: Theme.typography.display.sm.size  // 18px; nearest token, 1px under original
                                     font.italic: true
                                 }
 
@@ -390,7 +390,7 @@ Item {
         property bool alignRight: false
         color: Theme.color.text.muted
         font.family: Theme.typography.label.xs.family
-        font.pixelSize: 10
+        font.pixelSize: 10  // intentionally below label.xs (11px) — column headers read as meta, not content
         font.weight: Font.Medium
         font.letterSpacing: Theme.typography.label.xs.letterSpacing
         font.capitalization: Font.AllUppercase

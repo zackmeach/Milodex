@@ -57,6 +57,10 @@ Item {
     property bool dragging: false
     signal moveRequested(real localY)
 
+    // Action slot signal — declared here so PR G only has to wire the handler.
+    // No handler is connected yet; clicking the Action button remains a no-op.
+    signal actionClicked()
+
     // -----------------------------------------------------------------------
     // Internal state
     // -----------------------------------------------------------------------
@@ -312,7 +316,7 @@ Item {
                 variant: root.actionVariant
                 text: "Action"
                 // PR F: clicking is a no-op visual placeholder.
-                // PR G will wire: onClicked: root.actionClicked(actionButton)
+                // PR G will wire: onClicked: root.actionClicked()
                 onClicked: {}
             }
         }
