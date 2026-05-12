@@ -91,7 +91,7 @@ Milodex's primary nav is `FRONT · BENCH · LEDGER · DESK` (`Main.qml:166-169`)
 | Surface | Role | Voice | Density |
 |---|---|---|---|
 | **FRONT** | Front page / front porch | Conversational, warm-but-factual prose. *"A newspaper does not greet you."* Reports state, never recommends. | One column, generous margins, prose-led |
-| **BENCH** | The strategy bench (active management) | Kanban-ergonomic, but typeset. Vertical stage-stacks (idle → backtest → paper → micro-live → live). Read-only evidence modals replace forms. | Multi-column, stage-stacked, modal-mediated |
+| **BENCH** | The strategy bench (active management) | Governed pipeline ledger, typeset. Vertical stage-stacks (idle → backtest → paper → micro-live → live). Action-menu transitions, evidence modals, gate enforcement visible. | Multi-column, stage-stacked, modal-mediated |
 | **LEDGER** | Paper of record | Mono everywhere, columns aligned, outcomes in bright color (sage / rust). Reads like a printout. | Chronological, monospaced, sparse |
 | **DESK** | The trading desk (dense cockpit) | Newspaper front page: hero band + 3-column body, lettered sections (A through H), italic standfirsts. Maximum density that still reads as edited. | Dense, columnar, typeset-newspaper |
 

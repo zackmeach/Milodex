@@ -1,7 +1,7 @@
 # ADR 0038 — Phase 5 is closed and Phase 6 may open
 
 **Status:** Accepted · 2026-05-10
-**Related:** [PHASE5_PLANNING.md](../PHASE5_PLANNING.md), [ADR 0034](0034-phase-5-scope-orders-observability-before-features.md) (Phase 5 scope and ordering), [ADR 0033](0033-gui-runtime-is-pyside6-qt-quick.md) (GUI runtime), [ADR 0035](0035-design-system-and-theme-architecture.md) (design system), [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) (Phase 6 Kanban visual spec), [ADR 0037](0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md) (distribution model), [DESIGN.md](../DESIGN.md), [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md), [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md)
+**Related:** [PHASE5_PLANNING.md](../PHASE5_PLANNING.md), [ADR 0034](0034-phase-5-scope-orders-observability-before-features.md) (Phase 5 scope and ordering), [ADR 0033](0033-gui-runtime-is-pyside6-qt-quick.md) (GUI runtime), [ADR 0035](0035-design-system-and-theme-architecture.md) (design system), [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) (Phase 6 Kanban visual spec), [ADR 0037](0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md) (distribution model), [DESIGN.md](../DESIGN.md), [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md), [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md)
 
 ## Context
 
@@ -32,7 +32,7 @@ This ADR is the Phase 5 close-out record.
 
 4. **All prior trust boundaries remain in force.** This ADR does not relax [ADR 0004](0004-paper-only-phase-one.md), [ADR 0005](0005-kill-switch-manual-reset.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md), [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md), [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md), or [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md).
 
-5. **Phase 6 inherits Kanban as the likely anchor program, but not as pre-authorized implementation.** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) locks the visual spec and names deferred mechanics questions Q-A through Q-H. Those mechanics are now answered by ADRs 0039-0046 and summarized in [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md). Phase 6 implementation work must follow those decisions before shipping write-capable behavior.
+5. **Phase 6 inherits Kanban as the likely anchor program, but not as pre-authorized implementation.** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) locks the visual spec and names deferred mechanics questions Q-A through Q-H. Those mechanics are now answered by ADRs 0039-0046 and summarized in [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md). Phase 6 implementation work must follow those decisions before shipping write-capable behavior.
 
 6. **The remaining "not wired" empty states are honest Phase 6+ data-feed opportunities, not Phase 5 defects.** Market tape, sector heat, calendar, feed latency, capital deployed, drawdown, and comparable placeholders may be wired as future read models. They do not justify reopening Phase 5 because Phase 5's rule was truthful observability, not simulated completeness.
 
@@ -57,7 +57,7 @@ This ADR is the Phase 5 close-out record.
 | Design-system foundation | 2026-05-07 onward | [ADR 0035](0035-design-system-and-theme-architecture.md), `docs/DESIGN_SYSTEM.md`, `src/milodex/gui/qml/Milodex/Theme.qml`, themes, foundational QML components |
 | Application shell and read-only GUI surfaces | 2026-05-07 to 2026-05-09 | PRs #63-#84: GUI module, bundled fonts, ThemeManager, QML components, app shell, FRONT, BENCH, LEDGER, DESK, router, screenshot tooling, design mockups |
 | Four-surface narrative documented | 2026-05-09 | [DESIGN.md](../DESIGN.md), especially §4 and §5.8 |
-| Operator Kanban captured and deferred | 2026-05-08 | [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md) |
+| Operator Kanban captured and deferred | 2026-05-08 | [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md) |
 | Distribution model selected | 2026-05-08 | [ADR 0037](0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md) |
 | Installer implementation landed | 2026-05-08 | PR #73 / commit `792fb19`: `installer/milodex.spec`, `installer/milodex.iss`, `installer/build_installer.ps1`, `installer/milodex_launcher.py`, `docs/INSTALL.md`, installed-build data-root handling |
 
@@ -80,7 +80,7 @@ These are not Phase 5 defects. They are the first honest menu for Phase 6 planni
 - **Live and micro_live remain locked unless a future ADR explicitly opens them.** Phase 5 did not create live eligibility, live promotion UI, or any exception to [ADR 0004](0004-paper-only-phase-one.md).
 - **The GUI's truthful-incomplete posture remains valid.** "Not wired" is acceptable until the corresponding read model exists. Fake data is not.
 - **Installer work moves from development scope to release operations.** The source implementation exists. Future work may add CI builds, code signing, auto-update, or non-Windows distribution only through new Phase 6+ decisions.
-- **Phase 6 starts with a clearer doorway than Phase 5 did.** The next phase can start with the implementation foundation described in PHASE6_OPERATOR_KANBAN_PREP.md or with read-model wiring for the empty states. Both paths are consistent with Phase 5's close.
+- **Phase 6 starts with a clearer doorway than Phase 5 did.** The next phase can start with the implementation foundation described in PHASE6_BENCH_PREP.md or with read-model wiring for the empty states. Both paths are consistent with Phase 5's close.
 
 ## Non-goals
 

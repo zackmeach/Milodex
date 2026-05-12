@@ -1,7 +1,7 @@
 # ADR 0040 — Bench bulk orchestration uses a durable job ledger
 
 **Status:** Accepted · 2026-05-10
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-G (bulk-action wiring), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md) (stage/session/section separation), [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest sandbox), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (per-process strategy runner), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0005](0005-kill-switch-manual-reset.md) (manual reset and human review), [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-G (bulk-action wiring), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md) (stage/session/section separation), [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest sandbox), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (per-process strategy runner), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0005](0005-kill-switch-manual-reset.md) (manual reset and human review), [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md)
 
 ## Context
 

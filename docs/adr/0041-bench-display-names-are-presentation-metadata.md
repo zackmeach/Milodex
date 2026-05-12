@@ -1,7 +1,7 @@
 # ADR 0041 — Bench display names are presentation metadata
 
 **Status:** Accepted · 2026-05-10
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-A (display-name provenance), [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md) (stable strategy identity), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md) (Bench read model), [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-A (display-name provenance), [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md) (stable strategy identity), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md) (Bench read model), [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md)
 
 ## Context
 

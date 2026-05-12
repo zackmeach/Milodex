@@ -379,9 +379,10 @@
   }
 
   /* ============= BLOCKED-MODAL ============= */
-  /* Shown after a user drags a row to a section it can't move to without
-     remediation. The same modal surface is used for typed-confirm flows
-     (e.g. promotion to live) — only the body content differs. */
+  /* Shown after a user selects a promotion action from the row Action menu
+     and the action is blocked by a gate failure. The same modal surface is
+     used for typed-confirm flows (e.g. promotion to live) — only the body
+     content differs. */
   .modal-overlay {
     position: fixed;
     inset: 0;
@@ -871,9 +872,10 @@
 
 <!-- =================================================================
      BLOCKED-MODAL (mocked open state)
-     Shown after the user dragged "NR7 Inside-Day Breakout" from PAPER
-     toward MICRO LIVE. The drop was rejected because Sharpe is below
-     the gate floor. Modal explains the failure and what unblocks it.
+     Shown after the user opened the Action menu on "NR7 Inside-Day
+     Breakout" and selected a promotion action. The action is blocked
+     because Sharpe is below the gate floor. Modal explains the failure
+     and what unblocks it.
      ================================================================= -->
 <div class="modal-overlay">
   <div class="modal">

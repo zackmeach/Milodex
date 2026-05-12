@@ -6,7 +6,7 @@ These files are **design-only reference artifacts**. They are not shipped code, 
 
 | File | Purpose |
 |---|---|
-| `bench-brief.md` | Implementation brief for the Bench surface (operator Kanban). Describes layout, row anatomy, drag-and-drop mechanics, modal patterns, and visual escalation by stage. If the brief and the HTML mockup disagree, the mockup wins. |
+| `bench-brief.md` | Implementation brief for the Bench surface. Describes layout, row anatomy, Action menu patterns, modal flows, and visual escalation by stage. If the brief and the HTML mockup disagree, the mockup wins. |
 | `bench-surface.html` | Static HTML mockup of the Bench surface. Uses actual Editorial Dark token values (post-2026-05-08 brightness pass) and live Google Fonts. Open in any browser. Shows the complete vertical-stage layout, all five action button variants, the LIVE lead-story treatment, and the blocked-promotion modal in its open state. |
 
 ## Usage

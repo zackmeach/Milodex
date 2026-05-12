@@ -1,7 +1,7 @@
 # ADR 0039 — Stage, session, and Bench section are distinct
 
 **Status:** Accepted · 2026-05-10
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-B (stage / session decoupling), [ADR 0038](0038-phase-5-is-closed-and-phase-6-may-open.md) (Phase 6 may open), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md) (manifest discipline), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (per-process runner model), [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest sandbox), [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md), [DESIGN.md](../DESIGN.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-B (stage / session decoupling), [ADR 0038](0038-phase-5-is-closed-and-phase-6-may-open.md) (Phase 6 may open), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md) (manifest discipline), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (per-process runner model), [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest sandbox), [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md), [DESIGN.md](../DESIGN.md)
 
 ## Context
 

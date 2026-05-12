@@ -10,10 +10,10 @@ The Bench is the operator's primary workspace for managing the Strategy Bank —
 
 It is a **synthesis** of two patterns:
 
-- **Kanban ergonomics** — drag-and-drop between stages, all destinations visible at all times, rapid bench management
+- **Governed-pipeline ergonomics (action-menu-driven, gate-enforced)** — per-row Action menus for state changes, all stages visible top-to-bottom, unavailable actions hidden rather than disabled
 - **Editorial-print aesthetics** — vertical funnel-shaped layout, Newsreader serif headlines, italic standfirsts, prose-with-inline-signals, hairline rules, no card chrome
 
-The synthesis exists because pure kanban (symmetric horizontal columns, free user-driven movement) misrepresents Milodex's actual data model: the data is a **funnel** (many strategies enter, few survive to live), and movement is **gate-driven** (the system decides when evidence passes; the operator approves at boundaries). A traditional kanban renders columns as equally-weighted real estate and treats every drag as equivalent — both wrong for this domain.
+The synthesis exists because a symmetric horizontal board misrepresents Milodex's actual data model: the data is a **funnel** (many strategies enter, few survive to live), and movement is **gate-driven** (the system decides when evidence passes; the operator approves at boundaries). A horizontal column layout treats all stages as equally-weighted real estate — wrong for this domain.
 
 The Bench answers two operator questions simultaneously:
 
@@ -152,49 +152,51 @@ Each row has a single action button on the right edge. The button's variant comm
 
 **Capital-bearing promotion controls stay locked while ADR 0004 remains in force.** A future ADR that opens micro-live or live may reintroduce typed-confirm critical controls, but this mockup is not authority to enable them.
 
-The per-row action button is the **click-equivalent** path for users who don't want to drag. Drag is the alternative fast path for users who want batch movement; both gestures should reach the same modal flows.
+The per-row action button opens the Action menu for that row. Available actions are computed from the row's current read-model state; actions that are not valid for the current stage or evidence state are hidden entirely.
 
 ---
 
-## 7. Drag-and-drop mechanics
+## 7. Action menu mechanics
 
-### Gesture
+State changes on the Bench are driven by a per-row **Action menu** — a dropdown accessible from the action button on each row. Cross-section drag is not a state-change mechanism.
 
-- Every row is draggable from anywhere on the row body (cursor: `grab` on hover, `grabbing` during drag)
-- Drag initiates after a small minimum displacement (~6px) to prevent accidental drags from clicks
-- During drag, the row renders as a "ghost" floating with the cursor; its origin slot remains visible (placeholder) so the operator can return without disrupting the layout
+### Action menu pattern
 
-### Drop targets
+- Each row has a single action button on the right edge. Clicking it opens the Action menu for that row.
+- The menu shows only the actions that are valid for the current row state. Actions that are structurally blocked (gate fails, ADR 0004 lock, etc.) are **hidden entirely** — not disabled. The absence of an action is itself information.
+- Available actions are computed from the read-model state at render time, not lazily at hover.
+- Evidence modals (gate table, strategy detail) are accessible from any row regardless of action availability.
 
-Section headers are the drop targets. During an active drag, each section header's hairline rule changes color based on whether dropping the dragged row there is allowed:
+### Action menu items by stage
 
-| Drop is | Rule color | Behavior on drop |
-|---|---|---|
-| **Allowed without confirmation** | `status.positive` (sage) | Row moves; no modal |
-| **Allowed but requires confirmation** | `status.warning` (amber) | Confirmation modal opens before commit |
-| **Structurally blocked (gate fails)** | `status.negative` (rust) | Blocked-modal opens explaining why |
-
-The dragged row visually snaps back to its origin if a drop is rejected.
-
-### Evaluation logic per drop
-
-When a row is dropped on a section, evaluate based on direction and target:
-
-1. **Forward promotion** (e.g. BACKTEST → PAPER): check all gates for that transition. If any gate fails → blocked-modal. If the target is `micro_live` or `live` while ADR 0004 remains in force → locked-modal/no mutation.
-2. **Backward demotion** (e.g. PAPER → BACKTEST): always opens a consequence-confirmation modal naming what will happen. Drop alone never mutates durable state.
-3. **Re-test** (any stage → BACKTEST): treated as a backward demotion with copy specific to re-testing — *"this will not affect the active paper/live session; it re-runs evidence in parallel."*
-4. **Lateral / no-op** (drop in the same section the row originated from): no-op, no modal.
+| Stage | Available actions |
+|---|---|
+| IDLE | "Run backtest →" |
+| BACKTEST (gate-pass) | "→ Promote to paper", "View evidence →" |
+| BACKTEST (in-progress or gate-fail) | "View evidence →" |
+| PAPER | "View evidence →" (capital-stage promotions hidden while ADR 0004 in force) |
+| MICRO LIVE | "Open detail →" (capital-stage promotions hidden while ADR 0004 in force) |
+| LIVE | "Open detail →" |
 
 ### Friction escalation per ADR 0005 / CLAUDE.md "Autonomy Boundary"
 
-These transitions remain locked while ADR 0004 is in force. If a future ADR opens them, they **always require typed confirmation**, even when all gates pass and even via drag:
+These transitions remain locked while ADR 0004 is in force. If a future ADR opens them, they **always require typed confirmation** before any state mutation:
 
 - Promotion to LIVE
 - Demotion from LIVE
 - Re-enabling any strategy after a kill-switch event
 - Increasing capital allocation on a live strategy
 
-Drag is the *gesture*. The friction is enforced by the modal that the gesture triggers. The autonomy boundary is preserved at the friction level, not the gesture level.
+The friction is enforced by the modal the Action menu triggers. The autonomy boundary is preserved at the modal level.
+
+### Within-section drag for priority reorder
+
+Within a single stage section, rows may be reordered by drag to set visual priority. This drag is **purely cosmetic** — it does not mutate `promotion_stage`, `session_state`, or any durable field. The reorder is reflected in the `stage_section` display order only.
+
+- Drag handle: the 6-dot grip glyph in the row gutter (see §4)
+- Displacement threshold: ~6px to prevent accidental drags from clicks
+- During drag, the row renders as a floating ghost; the origin slot remains as a placeholder
+- Dropping within the same section reorders; dropping outside the section is a no-op (not a promotion/demotion)
 
 ---
 
@@ -320,15 +322,15 @@ Two PRs, decent each. PR 1 ships a fully usable Bench; PR 2 adds the drag ergono
 
 This PR ships a fully functional Bench. Every action is reachable via per-row click. No drag yet.
 
-### PR 2 — Bench-drag
+### PR 2 — Action menu write mechanics
 
-- Drag mechanics on rows (`DragHandler` or equivalent)
-- Section headers become live drop targets during drag (state changes wired to drag-enter / drag-leave)
-- Drag-initiated modal flow (the same modals from PR 1, triggered by drop instead of click)
-- Drop-rejection animation (ghost row snaps back to origin)
+- Action menu wiring: per-row dropdown surfacing available actions computed from read-model state
+- Unavailable actions hidden (not disabled) based on current stage, gate verdicts, and ADR 0004 lock state
+- Write-capable modal flows triggered from the Action menu (same modal components from PR 1, now wired to submit mutations)
+- Within-section drag for priority reorder (`DragHandler` or equivalent), scoped to cosmetic `stage_section` ordering only
 - Touch / trackpad-drag testing on Windows for Qt 6.11+
 
-If PR 2 hits unexpected QML drag-and-drop polish issues, PR 1 is already shipped and usable on its own. The static Bench is a complete product; drag is a usability upgrade, not a prerequisite.
+If PR 2 hits unexpected scope, PR 1 is already shipped and fully usable. The read-only Bench is a complete product; write mechanics are an operational upgrade, not a prerequisite.
 
 ---
 

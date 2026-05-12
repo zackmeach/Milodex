@@ -218,10 +218,9 @@ tables, anywhere a multi-cell row appears). Theme-invariant: constant across all
 | `column.metric` | `64px` | Right-aligned numeric metric (e.g., "+1.19") |
 | `column.chips` | `200px` | Gate-chip slot + optional "— flagged, not retired" marginalia. Max case is 2 chips (~52px) + 8px left-padding + the flagged marginalia (~125px italic Newsreader 14px) ≈ 185px; 200 leaves headroom. |
 | `column.tradeCount` | `88px` | Right-aligned secondary metric (e.g., "433 trades") |
-| `column.kanbanLane` | `320px` | Stable Phase 6 Kanban lane width. Five lanes sit in a horizontal Flickable. |
-| `column.kanbanCard` | `288px` | Stable read-only Kanban card width inside a lane. |
-| `column.kanbanCardMinHeight` | `132px` | Minimum read-only Kanban card height; content may grow downward. |
-| `column.kanbanMetric` | `68px` | Fixed metric slots inside a Kanban card (`S`, `D`, `N`). |
+| `bench.row` | `288px` | Stable Phase 6 Bench row width inside a stage section. |
+| `bench.rowMinHeight` | `132px` | Minimum Bench row height; content may grow downward. |
+| `bench.metric` | `68px` | Fixed metric slots inside a Bench row (`S`, `D`, `N`). |
 
 Accessed via `Theme.column.pill` etc. Surfaces that need different proportions
 may compose `StrategyRow` with their own column widths via property overrides
@@ -294,8 +293,8 @@ Status colors are the load-bearing semantic dimension of a trading-platform GUI:
 
 **Decision:** Status colors are *theme-tinted* &mdash; each theme provides a hue that fits its palette &mdash; but the *role* (positive / warning / negative / info) is stable across themes. Components reference roles, never raw hex.
 
-**Stage hues:** Phase 6 Kanban stage colors are a separate ladder-location axis
-per [ADR 0046](adr/0046-kanban-stage-hues-extend-production-tokens.md). They
+**Stage hues:** Phase 6 Bench stage colors are a separate ladder-location axis
+per [ADR 0046](adr/0046-bench-stage-hues-extend-production-tokens.md). They
 land as `stage.idle`, `stage.backtest`, `stage.paper`, `stage.microLive`, and
 `stage.live` tokens across all themes. Stage hue must not replace `status.*`
 for gate outcomes, refusals, P&amp;L, kill-switch state, or approvals.
@@ -308,9 +307,9 @@ for gate outcomes, refusals, P&amp;L, kill-switch state, or approvals.
 | `stage.microLive` | `#d5a566` | Capital stage, capped and locked |
 | `stage.live` | `#7d3540` | Live-capital stage, locked behind human review |
 
-The Phase 6 Kanban surface is read-only: lane color uses `Theme.stage.*`, but
-every card and lane affordance must say read-only or locked. It exposes no
-drag/drop, no bulk actions, and no runner controls.
+The Phase 6 Bench surface is read-only: stage section color uses `Theme.stage.*`, but
+every row and section affordance must say read-only or locked. It exposes no
+write-capable Action menu submissions, no bulk actions, and no runner controls.
 
 ### 6.1 Roles
 

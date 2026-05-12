@@ -1,7 +1,7 @@
 # ADR 0042 - Live and micro-live eligibility is locked and evidence-based
 
 **Status:** Accepted - 2026-05-10
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-C (live-eligibility window), [ADR 0004](0004-paper-only-phase-one.md) (paper-only lock), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0020](0020-promotion-thresholds-are-code-invariants.md) (promotion thresholds), [PHASE6_OPERATOR_KANBAN_PREP.md](../PHASE6_OPERATOR_KANBAN_PREP.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-C (live-eligibility window), [ADR 0004](0004-paper-only-phase-one.md) (paper-only lock), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0020](0020-promotion-thresholds-are-code-invariants.md) (promotion thresholds), [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md)
 
 ## Context
 
