@@ -25,7 +25,7 @@
 //     output via read_models._compute_bench_action_menu).
 //   - BenchRow.actionVariant derived from actual item verbClasses, not statusKind.
 //   - Clicking a menu item is a visual-prototype no-op (ADR 0049 Decision 2).
-//   - PAPER section uses "outlined" variant to avoid visual over-emphasis.
+//   - PAPER section uses "secondary" (outlined) variant to avoid visual over-emphasis.
 
 import QtQuick
 import QtQuick.Layouts
@@ -70,43 +70,27 @@ Item {
     // Derived from the verbClass of items in row.actions (compute_menu_items()
     // output from bench_v1.py).
     //
-    // Variant logic:
-    //   primary   — row has a Promote-to-next-stage directional verb: the
-    //               filled oxblood button signals an available forward-motion
-    //               transition.  Demote and Return-from-IDLE are also
-    //               directional but represent governance rather than promotion;
-    //               however, they still carry directional weight and warrant
-    //               primary fill per §7.  Exception: if the row has directional
-    //               verbs but none of them is a promote (e.g. Fail-state
-    //               BACKTEST rows with only Demote/Return), use "outlined" —
-    //               the filled button is reserved for rows that can move
-    //               forward in the promotion pipeline.
-    //   outlined  — default for all other cases: invocation-only rows
-    //               (Start/Stop Trading, Initiate/Refresh Backtest), demote-only
-    //               rows, or rows where only the Open Evidence floor is present.
-    //   ghost     — Open Evidence only (informational floor): no state-changing
-    //               verbs available at this row.
+    // Variant logic (post-PR G polish):
+    //   secondary — default for all rows with at least one state-changing verb
+    //               (directional or invocation), including promote-eligible rows.
+    //               Renders as outlined border.regular + text.primary, which
+    //               keeps the right-side Action column visible but not a
+    //               dominant repeated rail.
+    //   ghost     — Open-Evidence-only rows (informational floor only).
     //
-    // Rule: default to "outlined"; use "primary" only when the row has a
-    // promote-eligible directional verb (i.e., a Promote-to-next-stage action
-    // is available).  Everything else — Demote, Return, invocation-only,
-    // evidence-only — renders as "outlined" or "ghost".
+    // The filled-oxblood treatment (variant: "primary") is no longer assigned
+    // here.  BenchRow promotes the button to "primary" transiently on hover or
+    // while its action menu is open — see BenchRow.qml.
     function actionVariant(row) {
         var actions = row.actions || []
-        var hasPromote = false
-        var hasDirectional = false
-        var hasInvocation = false
+        var hasStateChanging = false
         for (var i = 0; i < actions.length; ++i) {
-            if (actions[i].verbClass === "directional") {
-                hasDirectional = true
-                // Promote verbs carry the label "Promote to <stage>"
-                if ((actions[i].label || "").indexOf("Promote") !== -1) hasPromote = true
+            if (actions[i].verbClass === "directional" || actions[i].verbClass === "invocation") {
+                hasStateChanging = true
+                break
             }
-            if (actions[i].verbClass === "invocation") hasInvocation = true
         }
-        // primary only for promote-eligible rows (forward pipeline motion)
-        if (hasPromote) return "primary"
-        if (hasInvocation || hasDirectional) return "outlined"
+        if (hasStateChanging) return "secondary"
         return "ghost"
     }
 

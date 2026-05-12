@@ -317,16 +317,29 @@ Item {
             Layout.alignment: Qt.AlignVCenter
             implicitHeight: actionButton.implicitHeight
 
+            // Transient "primary" fill — the button shows filled oxblood when
+            // hovered or while its action menu is open.  At rest BenchSurface
+            // provides "secondary" (outlined) for state-changing rows and
+            // "ghost" for evidence-only rows.  Ghost rows are never promoted
+            // to primary — they should stay quiet.
+            readonly property bool _actionActive: actionButtonHover.hovered || actionMenu.opened
+
             Button {
                 id: actionButton
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                variant: root.actionVariant
+                variant: parent._actionActive && root.actionVariant !== "ghost"
+                         ? "primary"
+                         : root.actionVariant
                 text: "Action"
                 onClicked: {
                     root.actionClicked()
                     actionMenu.open()
                 }
+
+                // HoverHandler coexists with MouseArea — does not intercept
+                // clicks; the Button's own onClicked fires normally.
+                HoverHandler { id: actionButtonHover }
             }
 
             // Action menu — visual-prototype only (ADR 0049).
@@ -367,18 +380,21 @@ Item {
                         font.family: Theme.typography.label.xs.family
                         font.pixelSize: Theme.typography.label.xs.size
 
-                        // Color: directional verbs use brand.accent (oxblood) to signal
-                        // forward-motion commitment.  Invocation and informational items
-                        // use text.primary (cream) — fully readable on surface.raised.
-                        // Open Evidence (informational floor) deliberately matches
-                        // invocation weight; visual separation is handled by the
-                        // border.regular hairline anchored at the top of the item.
+                        // Color: directional verbs use brand.accentHover (#9a4350) —
+                        // a half-step brighter than brand.accent (#7d3540) — which
+                        // lifts contrast against surface.raised while preserving the
+                        // oxblood signal.  Invocation and informational items use
+                        // text.onBrand (#f5e6c4) — the warmest cream token — so all
+                        // non-directional items including Open Evidence read clearly
+                        // against the dark warm surface without looking disabled.
+                        // Visual separation between invocation and informational floor
+                        // is handled by the border.regular hairline on the item.
                         contentItem: Text {
                             text: parent.text
                             font: parent.font
                             color: modelData.verbClass === "directional"
-                                   ? Theme.color.brand.accent
-                                   : Theme.color.text.primary
+                                   ? Theme.color.brand.accentHover
+                                   : Theme.color.text.onBrand
                             leftPadding: 12
                             rightPadding: 12
                             verticalAlignment: Text.AlignVCenter
