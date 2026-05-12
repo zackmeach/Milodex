@@ -18,9 +18,13 @@
 //   LIVE       — full-strength + 5%-alpha oxblood row background wash +
 //                2px solid brand.accent left border
 //
-// PR G will wire the Action button menu items from compute_menu_items().
-// PR H will enable within-section drag reorder.
-// The drag handle is rendered but drag behavior is not wired in PR F.
+// PR G: Action button menu items wired from compute_menu_items().
+// PR H: Within-section drag reorder wired.
+//   - dragHandle MouseArea in handleSlot initiates Y-axis drag only.
+//   - Emits dragStarted(), moveRequested(localY), dragEnded() so BenchSurface
+//     can own the reorder math and rowOrder array mutation.
+//   - dragMinY / dragMaxY props are set by BenchSurface to section bounds.
+//   - The whole-row mouseArea remains a passive hover capture only.
 
 import QtQuick
 import QtQuick.Layouts
@@ -54,9 +58,18 @@ Item {
     // For PR F, the button is a visual placeholder only; clicking is a no-op.
     property string actionVariant: "ghost"
 
-    // Drag support (PR H will wire; handle rendered but no-op in PR F)
+    // Drag support (PR H — within-section visual reorder only)
     property bool dragging: false
+    // Y bounds for the drag handle — set by BenchSurface to section bounds.
+    // Prevents the row from visually escaping its section.
+    property real dragMinY: 0
+    property real dragMaxY: 0
+    // dragStarted: emitted on mouse-press on the handle.
+    signal dragStarted()
+    // moveRequested(localY): emitted on position change; localY is root.y.
     signal moveRequested(real localY)
+    // dragEnded: emitted on mouse-release; BenchSurface commits the new order.
+    signal dragEnded()
 
     // Action menu items — list of {label, verbClass, targetStage} dicts
     // produced by compute_menu_items() in bench_v1.py via read_models.py.
@@ -138,7 +151,8 @@ Item {
 
     // -----------------------------------------------------------------------
     // Drag handle (col 1 — gutter)
-    // PR H wires the actual drag; rendered but no-op in PR F.
+    // PR H: dragHandle MouseArea initiates Y-axis drag; emits dragStarted,
+    // moveRequested, and dragEnded so BenchSurface owns the reorder math.
     // -----------------------------------------------------------------------
 
     Item {
@@ -150,17 +164,47 @@ Item {
         anchors.bottom: parent.bottom
 
         Text {
+            id: handleGlyph
             anchors.centerIn: parent
-            // Six-dot grip glyph — displayed as "::" rotated; PR H may refine
+            // Six-dot grip glyph — displayed as "::" rotated
             text: "::"
             color: Theme.color.text.muted
-            // Visible at 0.65 on row hover; 0.30 default per brief §4
-            opacity: mouseArea.containsMouse || root.dragging ? 0.65 : 0.30
+            // 0.80 while actively dragging from handle; 0.65 on row hover; 0.30 default
+            opacity: dragHandle.pressed ? 0.80
+                     : (mouseArea.containsMouse || root.dragging ? 0.65 : 0.30)
             font.family: Theme.typography.data.sm.family
             font.pixelSize: Theme.typography.data.sm.size
             font.letterSpacing: 1.2
             rotation: 90
             Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
+        }
+
+        // Drag handle hit area — covers the full handleSlot.
+        // Y-axis drag only; X movement is ignored.
+        // drag.target is root so Qt moves root.y directly.
+        MouseArea {
+            id: dragHandle
+            anchors.fill: parent
+            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.SizeVerCursor
+
+            drag.target: root
+            drag.axis: Drag.YAxis
+            drag.minimumY: root.dragMinY
+            drag.maximumY: root.dragMaxY
+
+            onPressed: {
+                root.dragging = true
+                root.dragStarted()
+            }
+            onPositionChanged: {
+                if (drag.active) {
+                    root.moveRequested(root.y)
+                }
+            }
+            onReleased: {
+                root.dragging = false
+                root.dragEnded()
+            }
         }
     }
 
