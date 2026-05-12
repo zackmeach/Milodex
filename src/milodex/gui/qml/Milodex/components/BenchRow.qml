@@ -364,11 +364,14 @@ Item {
                         font.pixelSize: Theme.typography.label.xs.size
 
                         // Color: directional = brand.accent; invocation = text.primary;
-                        // informational (Open Evidence) = text.secondary.
-                        // A 1px top border on the informational row gives the floor
-                        // break that a QQC2.MenuSeparator inside a Repeater delegate
-                        // cannot reliably provide (it would be a child of the item, not
-                        // a sibling in the Menu's contentData).
+                        // informational (Open Evidence) = text.primary.
+                        // text.secondary was invisible on the menu's dark background
+                        // (surface.elevated is not a defined token — menu background
+                        // falls back to near-black).  ADR 0047 Decision 5 makes Open
+                        // Evidence the always-present floor; readability takes priority
+                        // over visual subordination.  The 1px top border still provides
+                        // the floor break that visually separates it from higher-friction
+                        // verbs.
                         contentItem: Text {
                             text: parent.text
                             font: parent.font
@@ -377,7 +380,7 @@ Item {
                                     return Theme.color.brand.accent
                                 if (modelData.verbClass === "invocation")
                                     return Theme.color.text.primary
-                                return Theme.color.text.secondary
+                                return Theme.color.text.primary
                             }
                             leftPadding: 12
                             rightPadding: 12
