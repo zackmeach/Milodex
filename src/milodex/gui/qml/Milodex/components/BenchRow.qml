@@ -24,6 +24,7 @@
 
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic as QQC2
 import Milodex 1.0
 
 Item {
@@ -57,8 +58,13 @@ Item {
     property bool dragging: false
     signal moveRequested(real localY)
 
-    // Action slot signal — declared here so PR G only has to wire the handler.
-    // No handler is connected yet; clicking the Action button remains a no-op.
+    // Action menu items — list of {label, verbClass, targetStage} dicts
+    // produced by compute_menu_items() in bench_v1.py via read_models.py.
+    // Populated by the parent BenchSurface delegate from modelData.actions.
+    property var actionItems: []
+
+    // Action slot signal — emitted when the Action button is clicked.
+    // Connected to open the menu popup below.
     signal actionClicked()
 
     // -----------------------------------------------------------------------
@@ -301,9 +307,11 @@ Item {
         }
 
         // ---- col 7: Action slot -------------------------------------------
-        // Visual placeholder in PR F. PR G wires menu items from
-        // compute_menu_items(). Button variant communicates friction (brief §6).
-        // TODO (PR G): replace this no-op Button with the real Action menu trigger.
+        // PR G: Action button now opens a per-row menu populated from
+        // compute_menu_items() output (bench_v1.py → read_models.py →
+        // modelData.actions → actionItems).  Clicking a menu item is a
+        // visual-prototype no-op per ADR 0049 — no backend mutation occurs.
+        // PR I will wire confirmation modals and Evidence modal.
         Item {
             Layout.preferredWidth: Theme.column.benchAction
             Layout.alignment: Qt.AlignVCenter
@@ -315,9 +323,79 @@ Item {
                 anchors.verticalCenter: parent.verticalCenter
                 variant: root.actionVariant
                 text: "Action"
-                // PR F: clicking is a no-op visual placeholder.
-                // PR G will wire: onClicked: root.actionClicked()
-                onClicked: {}
+                onClicked: {
+                    root.actionClicked()
+                    actionMenu.open()
+                }
+            }
+
+            // Action menu — visual-prototype only (ADR 0049).
+            // Items are rendered in the order returned by compute_menu_items()
+            // (directional → invocation → informational floor).
+            // Clicking any item is a no-op in v1.  PR I will wire handlers.
+            QQC2.Menu {
+                id: actionMenu
+                // Anchor below-right of the Action button
+                x: actionButton.x + actionButton.width - width
+                y: actionButton.y + actionButton.height + 2
+
+                background: Rectangle {
+                    color: Theme.color.surface.elevated
+                    border.color: Theme.color.border.regular
+                    border.width: 1
+                    radius: 4
+                }
+
+                Repeater {
+                    model: root.actionItems
+
+                    delegate: QQC2.MenuItem {
+                        required property var modelData
+
+                        // Separator line above Open Evidence (the informational
+                        // floor) so it is visually distinct from the verbs above it.
+                        // Per bench-brief §7, Open Evidence is always last.
+                        QQC2.MenuSeparator {
+                            parent: parent
+                            width: parent.width
+                            visible: modelData.verbClass === "informational"
+                            // Positioned above the item text area
+                            y: 0
+                        }
+
+                        text: modelData.label
+                        font.family: Theme.typography.label.xs.family
+                        font.pixelSize: Theme.typography.label.xs.size
+
+                        // Color: directional = brand.accent; invocation = text.primary;
+                        // informational (Open Evidence) = text.secondary.
+                        contentItem: Text {
+                            text: parent.text
+                            font: parent.font
+                            color: {
+                                if (modelData.verbClass === "directional")
+                                    return Theme.color.brand.accent
+                                if (modelData.verbClass === "invocation")
+                                    return Theme.color.text.primary
+                                return Theme.color.text.secondary
+                            }
+                            leftPadding: 12
+                            rightPadding: 12
+                            verticalAlignment: Text.AlignVCenter
+                        }
+
+                        background: Rectangle {
+                            implicitHeight: 32
+                            color: parent.highlighted ? Theme.color.surface.raised : "transparent"
+                        }
+
+                        // v1 visual-prototype: clicking is intentionally a no-op.
+                        // PR I will dispatch to confirmation / evidence modals.
+                        onTriggered: {
+                            // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
+                        }
+                    }
+                }
             }
         }
     }

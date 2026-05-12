@@ -14,17 +14,18 @@
 //   drag handle | strategy block | Sharpe | Max-DD | Trades | status prose | Action
 //
 // PR F scope: visual reconciliation only.
-//   - Action slot is a no-op Button placeholder; PR G wires menu items.
 //   - Within-section drag handle rendered but not wired; PR H wires drag.
 //   - Evidence modal and confirmation modals deferred to PR I.
 //   - No backend mutation (ADR 0049 Decision 2).
 //   - No legacy "View Evidence" primary button rail.
 //   - No kanban column markup.
 //
-// TODO (PR G): wire the Action menu using compute_menu_items() output from
-//   bench_v1.py — populate BenchRow.actionVariant per bench-brief §6, and
-//   connect BenchRow.actionClicked to open a per-row menu dropdown. The
-//   longest v1 menu currently has 5 items; verify readability before shipping.
+// PR G: Action menu wired.
+//   - BenchRow.actionItems populated from modelData.actions (compute_menu_items
+//     output via read_models._compute_bench_action_menu).
+//   - BenchRow.actionVariant derived from actual item verbClasses, not statusKind.
+//   - Clicking a menu item is a visual-prototype no-op (ADR 0049 Decision 2).
+//   - PAPER section uses "outlined" variant to avoid visual over-emphasis.
 
 import QtQuick
 import QtQuick.Layouts
@@ -66,18 +67,37 @@ Item {
     }
 
     // Determine the Action button variant for a row (bench-brief §6).
-    // PR G will refine this using compute_menu_items() output.
-    // For PR F: use a simple heuristic from the existing statusKind signal.
+    // Derived from the actual compute_menu_items() output carried in
+    // row.actions — the pure-function source of truth from bench_v1.py.
+    //
+    // Variant logic:
+    //   primary   — at least one directional verb is present (Promote / Return
+    //               from IDLE / Demote): the operator has a forward or
+    //               governance action available.  Exception: PAPER rows are
+    //               down-weighted to "outlined" so the section doesn't feel
+    //               over-emphasised (carry-forward note from orchestrator).
+    //   outlined  — only invocation verbs (Start/Stop Trading, Initiate /
+    //               Refresh Backtest) or the Open Evidence floor: monitoring
+    //               or evidence-collection action available.
+    //   ghost     — Open Evidence only (informational floor): no state-
+    //               changing verbs available at this row.
     function actionVariant(row) {
-        // Primary: row has forward-eligible actions (gate pass, promotable stage)
-        if (row.statusKind === "positive" && row.stage !== "idle" && row.stage !== "live") {
+        var actions = row.actions || []
+        var hasDirectional = false
+        var hasInvocation = false
+        for (var i = 0; i < actions.length; ++i) {
+            if (actions[i].verbClass === "directional") { hasDirectional = true; break }
+            if (actions[i].verbClass === "invocation") hasInvocation = true
+        }
+        if (hasDirectional) {
+            // PAPER section: use "outlined" to avoid visual over-emphasis on a
+            // section that currently has the most strategies and many of which
+            // have directional verbs.  Other sections keep "primary".
+            // (Carry-forward visual note from bench v1 PR G orchestrator.)
+            if (row.stage === "paper") return "outlined"
             return "primary"
         }
-        // Outlined: evidence or informational actions available
-        if (row.statusKind === "info" || row.statusKind === "warning") {
-            return "outlined"
-        }
-        // Ghost: all state-changing actions hidden (evidence-only state)
+        if (hasInvocation) return "outlined"
         return "ghost"
     }
 
@@ -346,7 +366,12 @@ Item {
                                 statusWordColor: root.statusWordColor(modelData.statusKind || "info")
                                 statusProse: modelData.statusTail || ""
                                 metaLine: root.metaLine(modelData)
-                                // Action slot variant — PR G refines with compute_menu_items()
+                                // Action slot — wired in PR G.
+                                // actionItems carries the compute_menu_items() output from
+                                // read_models._compute_bench_action_menu (bench_v1.py).
+                                // variant is derived from the items so the button weight
+                                // reflects actual menu content, not a statusKind heuristic.
+                                actionItems: modelData.actions || []
                                 actionVariant: root.actionVariant(modelData)
                                 // Drag reorder — PR H wires; no-op in PR F
                                 onMoveRequested: () => {}

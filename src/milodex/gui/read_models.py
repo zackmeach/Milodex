@@ -24,7 +24,14 @@ from typing import Any
 import yaml
 from PySide6.QtCore import Property, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 
-from milodex.gui.bench_v1 import EvidenceRecord, Stage
+from milodex.gui.bench_v1 import (
+    BenchStrategyState,
+    EvidenceRecord,
+    Freshness,
+    GateResult,
+    Stage,
+    compute_menu_items,
+)
 from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
 from milodex.strategies.loader import StrategyConfig, load_strategy_config
 
@@ -111,7 +118,7 @@ class _StrategyRow:
             "jobActionType": self.job_action_type,
             "jobDetail": self.job_detail,
             "visualPriority": self.visual_priority,
-            "actions": _bench_actions(self),
+            "actions": _compute_bench_action_menu(self),
         }
 
 
@@ -626,92 +633,83 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
     ]
 
 
-def _bench_action(
-    action_id: str,
-    label: str,
-    kind: str,
-    *,
-    target_stage: str = "",
-    requires_confirmation: bool = False,
-    is_prototype_only: bool = True,
-) -> dict[str, Any]:
-    action: dict[str, Any] = {
-        "id": action_id,
-        "label": label,
-        "kind": kind,
-        "requiresConfirmation": requires_confirmation,
-        "isPrototypeOnly": is_prototype_only,
-    }
-    if target_stage:
-        action["targetStage"] = target_stage
-    return action
+def _compute_bench_action_menu(row: _StrategyRow) -> list[dict[str, Any]]:
+    """Compute the Action menu item list for a bench row via compute_menu_items.
 
+    Constructs a BenchStrategyState from the row fields and delegates to the
+    pure-function composer in bench_v1.  The legacy _bench_actions() path is
+    removed: this is the only code path that produces the ``actions`` key
+    exposed to QML.
 
-def _bench_actions(row: _StrategyRow) -> list[dict[str, Any]]:
-    actions = [
-        _bench_action(
-            "open_evidence",
-            "Open Evidence",
-            "evidence",
-            is_prototype_only=False,
-        )
+    v1 scope: real Freshness / GateResult derivation from event history is
+    deferred to v2 (ADR 0049 Decision 5).  Until then we synthesise a minimal
+    BenchStrategyState using the fields already carried on _StrategyRow:
+
+    - ``evidence_by_stage``: populated from the dataclass field if non-empty
+      (set by future v2 read-model work).  When empty (the live path today),
+      we fall back to a synthetic mapping that treats the strategy's current
+      stage as Fresh+Pass so the menu has meaningful items to render.
+
+      # TODO(post-v1): derive evidence_by_stage from the event store rather
+      # than using a synthetic Fresh+Pass fallback.
+
+    - ``runs_in_flight``: populated from the dataclass field (also empty today
+      in the live path; future v2 work will set it from the open-runs view).
+
+      # TODO(post-v1): derive runs_in_flight from orchestration_jobs in the
+      # event store once the open-runs view is wired.
+
+    - ``is_session_running``: derived from ``session_state == "running"``.
+
+    The returned list is a list of plain dicts so it serialises cleanly to
+    QML's QVariantList.  Each dict carries:
+
+      - ``label``: the operator-facing verb string (from bench_v1 locked labels)
+      - ``verbClass``: ``"directional"``, ``"invocation"``, or ``"informational"``
+      - ``targetStage``: the target stage string for directional verbs,
+        or ``""`` for invocation / informational verbs
+    """
+    # Prefer the row's evidence_by_stage if it was populated upstream.
+    evidence = row.evidence_by_stage
+
+    if not evidence and row.stage in _VISIBLE_STAGES:
+        # Synthetic fallback: treat the strategy as Fresh+Pass at its current
+        # stage so the menu renders meaningfully in the live UI without a
+        # populated event store.  For LIVE, use NOT_APPLICABLE (the only valid
+        # gate result at that stage).  IDLE rows with no prior history get a
+        # MISSING+PENDING BACKTEST record so Initiate Backtest surfaces.
+        # TODO(post-v1): replace this synthetic mapping with real evidence
+        # derived from the event store (freshness threshold config + gate
+        # evaluation against walk-forward metrics).
+        if row.stage == "idle":
+            evidence = {Stage.BACKTEST: EvidenceRecord(Freshness.MISSING, GateResult.PENDING)}
+        elif row.stage == "live":
+            evidence = {Stage.LIVE: EvidenceRecord(Freshness.FRESH, GateResult.NOT_APPLICABLE)}
+        else:
+            stage_enum = Stage(row.stage)
+            evidence = {stage_enum: EvidenceRecord(Freshness.FRESH, GateResult.PASS)}
+
+    try:
+        current_stage = Stage(row.stage)
+    except ValueError:
+        current_stage = Stage.IDLE
+
+    state = BenchStrategyState(
+        current_stage=current_stage,
+        evidence_by_stage=evidence,
+        runs_in_flight=row.runs_in_flight,
+        is_session_running=row.session_state == "running",
+    )
+
+    items = compute_menu_items(state)
+    return [
+        {
+            "label": item.label,
+            "verbClass": item.verb_class,
+            "targetStage": item.target_stage or "",
+        }
+        for item in items
     ]
-    stage = row.stage
-    has_open_job = row.job_status in {"queued", "starting", "running"}
-    is_running = row.session_state == "running"
-
-    if stage == "backtest" and not has_open_job:
-        actions.append(_bench_action("initiate_backtest", "Initiate Backtest", "backtest"))
-
-    if stage in {"backtest", "paper", "micro_live"} and not row.gate_failures:
-        target = _next_stage(stage)
-        if target != stage:
-            actions.append(
-                _bench_action(
-                    f"promote_{target}",
-                    f"Promote to {_stage_label(target)}",
-                    "promote",
-                    target_stage=target,
-                    requires_confirmation=target in {"micro_live", "live"},
-                )
-            )
-
-    if stage == "paper":
-        actions.append(
-            _bench_action(
-                "demote_backtest",
-                "Demote to Backtest",
-                "demote",
-                target_stage="backtest",
-            )
-        )
-    elif stage == "micro_live":
-        actions.append(
-            _bench_action("demote_paper", "Demote to Paper", "demote", target_stage="paper")
-        )
-    elif stage == "live":
-        actions.append(
-            _bench_action(
-                "demote_micro_live",
-                "Demote to Micro Live",
-                "demote",
-                target_stage="micro_live",
-            )
-        )
-
-    if stage in {"paper", "micro_live", "live"}:
-        actions.append(
-            _bench_action(
-                "stop_trading" if is_running else "start_trading",
-                "Stop Trading" if is_running else "Start Trading",
-                "trading",
-            )
-        )
-
-    if stage != "idle":
-        actions.append(_bench_action("send_idle", "Send to Idle", "idle", target_stage="idle"))
-
-    return actions
 
 
 def _load_strategy_configs(configs_dir: Path) -> list[StrategyConfig]:
@@ -1111,9 +1109,7 @@ def _meta_line(config: StrategyConfig, promotion: dict[str, Any], metrics: dict[
     return " | ".join(parts)
 
 
-def _meta_evidence(
-    promotion: dict[str, Any], metrics: dict[str, Any]
-) -> tuple[str, str]:
+def _meta_evidence(promotion: dict[str, Any], metrics: dict[str, Any]) -> tuple[str, str]:
     if promotion.get("recorded_at"):
         return "promoted", _compact_timestamp(str(promotion["recorded_at"]))
     if metrics.get("started_at"):
@@ -1155,9 +1151,7 @@ def _kanban_lane(row: _StrategyRow) -> str:
 def _card_activity(session: dict[str, str], job: dict[str, str]) -> dict[str, str]:
     if job:
         state = (
-            "canceling"
-            if job.get("cancel_requested_at")
-            else str(job.get("status") or "queued")
+            "canceling" if job.get("cancel_requested_at") else str(job.get("status") or "queued")
         )
         detail = str(job.get("detail") or job.get("action_type") or "orchestration job")
         if state == "canceling":

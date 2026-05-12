@@ -217,16 +217,14 @@ def test_bench_snapshot_groups_config_and_evidence(tmp_path: Path) -> None:
     assert row["metaEvidenceAt"]
     assert "T" not in row["metaEvidenceAt"]
     assert row["visualPriority"] == 1
-    assert row["actions"][0] == {
-        "id": "open_evidence",
-        "label": "Open Evidence",
-        "kind": "evidence",
-        "requiresConfirmation": False,
-        "isPrototypeOnly": False,
-    }
+    # PR G: actions are now produced by compute_menu_items via
+    # _compute_bench_action_menu.  The floor item is always Open Evidence last.
+    assert row["actions"][-1]["label"] == "Open Evidence"
+    assert row["actions"][-1]["verbClass"] == "informational"
 
 
-def test_bench_actions_hide_unavailable_actions_and_mark_prototypes(tmp_path: Path) -> None:
+def test_bench_actions_no_forbidden_labels_and_open_evidence_is_floor(tmp_path: Path) -> None:
+    """compute_menu_items path: no forbidden verbs; Open Evidence is always last."""
     from milodex.gui.read_models import build_bench_snapshot
 
     configs = tmp_path / "configs"
@@ -240,19 +238,21 @@ def test_bench_actions_hide_unavailable_actions_and_mark_prototypes(tmp_path: Pa
     snapshot = build_bench_snapshot(db, configs)
     backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
     row = backtest["strategies"][0]
-    action_ids = [action["id"] for action in row["actions"]]
+    labels = [a["label"] for a in row["actions"]]
 
-    assert action_ids[0] == "open_evidence"
-    assert "promote_paper" not in action_ids
-    assert "initiate_backtest" in action_ids
-    assert all(
-        action["isPrototypeOnly"]
-        for action in row["actions"]
-        if action["id"] != "open_evidence"
-    )
+    # Open Evidence is always the last item (ADR 0047 Decision 5).
+    assert labels[-1] == "Open Evidence"
+
+    # Forbidden verbs must not appear (ADR 0050 Decision 7).
+    forbidden = {"Send to Idle", "Demote to Paper", "Demote to Micro Live"}
+    assert not forbidden.intersection(labels), f"Forbidden label found in: {labels}"
+
+    # verbClass keys must be present on each action dict.
+    assert all("verbClass" in a for a in row["actions"])
 
 
-def test_bench_actions_confirm_capital_stage_targets(tmp_path: Path) -> None:
+def test_bench_actions_paper_row_has_correct_menu_structure(tmp_path: Path) -> None:
+    """PAPER row: ADR 0004 hides Promote to Micro Live; directional verbs precede invocation."""
     from milodex.gui.read_models import build_bench_snapshot
 
     configs = tmp_path / "configs"
@@ -267,14 +267,27 @@ def test_bench_actions_confirm_capital_stage_targets(tmp_path: Path) -> None:
     snapshot = build_bench_snapshot(db, configs)
     paper = next(section for section in snapshot["sections"] if section["stage"] == "paper")
     row = paper["strategies"][0]
-    promote_micro = next(
-        action for action in row["actions"] if action["id"] == "promote_micro_live"
-    )
-    start_trading = next(action for action in row["actions"] if action["id"] == "start_trading")
+    labels = [a["label"] for a in row["actions"]]
+    verb_classes = [a["verbClass"] for a in row["actions"]]
 
-    assert promote_micro["targetStage"] == "micro_live"
-    assert promote_micro["requiresConfirmation"] is True
-    assert start_trading["requiresConfirmation"] is False
+    # ADR 0004 forward lock: Promote to Micro Live must not appear.
+    assert "Promote to Micro Live" not in labels
+
+    # Open Evidence floor is always last (ADR 0047 Decision 5).
+    assert labels[-1] == "Open Evidence"
+    assert verb_classes[-1] == "informational"
+
+    # Ordering: all directional verbs precede all invocation verbs.
+    saw_invocation = False
+    for vc in verb_classes:
+        if vc == "invocation":
+            saw_invocation = True
+        if vc == "directional":
+            assert not saw_invocation, "directional verb appeared after an invocation verb"
+
+    # Start Trading or Stop Trading must appear (paper is a trading-eligible stage).
+    trading_labels = {"Start Trading", "Stop Trading"}
+    assert any(lbl in trading_labels for lbl in labels)
 
 
 def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> None:
