@@ -235,13 +235,16 @@ Item {
                     }
 
                     function syncRows() {
+                        // Guard: never rebuild row order while a drag is in progress —
+                        // doing so would destroy the delegate under the cursor.
+                        if (draggingIndex >= 0) return
                         rowOrder = (sectionData && sectionData.strategies)
                                    ? sectionData.strategies.slice()
                                    : []
                     }
 
                     Component.onCompleted: syncRows()
-                    onSectionDataChanged: syncRows()
+                    onSectionDataChanged: { if (draggingIndex < 0) syncRows() }
 
                     Column {
                         id: sectionCol
@@ -393,11 +396,10 @@ Item {
 
                                     width: rowsContainer.width
 
-                                    // Y positioning: resting slot + neighbor shift.
-                                    // The dragged row itself is positioned via the
-                                    // drag.target mechanism (its y is updated by Qt
-                                    // drag directly); we only apply the shift to
-                                    // non-dragged rows.
+                                    // Y positioning: fully declarative.
+                                    // The dragged row's y is driven by dragYOffset
+                                    // (set via the delta-based onMoveRequested handler);
+                                    // non-dragged rows receive a shift to open the slot.
                                     y: sectionRoot.draggingIndex === index
                                        ? (index * sectionRoot.rowHeight + sectionRoot.dragYOffset)
                                        : (index * sectionRoot.rowHeight + sectionRoot.shiftFor(index))
@@ -424,21 +426,21 @@ Item {
                                     actionItems: modelData.actions || []
                                     actionVariant: root.actionVariant(modelData)
 
-                                    // Drag bounds — Y only, within this section.
-                                    dragMinY: 0
-                                    dragMaxY: Math.max(0, (sectionRoot.rowOrder.length - 1) * sectionRoot.rowHeight)
-
                                     // Drag signal handlers (PR H).
                                     onDragStarted: {
                                         sectionRoot.draggingIndex = index
                                         sectionRoot.targetIndex = index
                                         sectionRoot.dragYOffset = 0
                                     }
-                                    onMoveRequested: (localY) => {
-                                        sectionRoot.dragYOffset = localY - (index * sectionRoot.rowHeight)
+                                    onMoveRequested: (delta) => {
+                                        // delta is cumulative offset from press.
+                                        // Clamp so the dragged row cannot leave the section.
+                                        var maxY = (sectionRoot.rowOrder.length - 1) * sectionRoot.rowHeight
+                                        var absY = Math.max(0, Math.min(maxY, index * sectionRoot.rowHeight + delta))
+                                        sectionRoot.dragYOffset = absY - (index * sectionRoot.rowHeight)
                                         sectionRoot.targetIndex = Math.max(0,
                                             Math.min(sectionRoot.rowOrder.length - 1,
-                                                     Math.round(localY / sectionRoot.rowHeight)))
+                                                     Math.round(absY / sectionRoot.rowHeight)))
                                     }
                                     onDragEnded: {
                                         if (sectionRoot.targetIndex !== sectionRoot.draggingIndex) {

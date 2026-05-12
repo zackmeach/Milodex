@@ -232,7 +232,8 @@ def test_bench_pr_h_drag_safety_contract() -> None:
     - No backend mutation tokens: BenchState.promote / BenchState.demote must
       not appear in either QML file.
     - BenchSurface does not reference Drag. at all (drag wiring lives in BenchRow).
-    - BenchRow's drag uses Drag.YAxis (the only permitted axis constant).
+    - BenchRow uses cursor-delta tracking (no drag.target, no Drag.YAxis) so the
+      dragged row's y remains fully declarative via BenchSurface's binding.
     """
     bench_surface = _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
     bench_row = _MILODEX_QML_DIR / "components" / "BenchRow.qml"
@@ -253,8 +254,18 @@ def test_bench_pr_h_drag_safety_contract() -> None:
     # BenchSurface must not reference Drag. at all (drag wiring is in BenchRow only).
     assert "Drag." not in surface_src, "BenchSurface.qml must not reference Drag."
 
-    # BenchRow must use Y-axis drag.
-    assert "Drag.YAxis" in row_src, "BenchRow.qml must use Drag.YAxis for within-section drag"
+    # BenchRow uses cursor-delta tracking, not Qt's drag.target mechanism.
+    # This keeps the dragged row's position fully declarative via the y binding
+    # in BenchSurface, avoiding the binding-break that drag.target would cause.
+    # Check for the QML property assignment form (drag.target:) not bare mentions
+    # in comments, which legitimately reference drag.target to explain why it's absent.
+    assert "drag.target:" not in row_src, (
+        "BenchRow.qml must not use drag.target — cursor-delta tracking only"
+    )
+    assert "Drag.YAxis" not in row_src, (
+        "BenchRow.qml must not use Drag.YAxis — Qt's built-in drag mechanism is "
+        "incompatible with declarative y binding"
+    )
 
     # No backend mutation calls in either file.
     assert "BenchState.promote" not in surface_src, (
