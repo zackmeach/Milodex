@@ -1,4 +1,30 @@
-// BenchSurface.qml - full-width vertical strategy ledger.
+// BenchSurface.qml — full-width vertical strategy ledger.
+//
+// Visual model (bench-brief §2): five promotion stages rendered as vertical
+// sections stacked top-to-bottom. Section height is determined by strategy
+// count — the funnel shape (many strategies early, few at live) is the design.
+//
+// Section anatomy (bench-brief §3):
+//   roman numeral · STAGE NAME · count     [right-aligned caption]
+//   ─────────────────────────────────────  (hairline; 2px brand.accent for LIVE)
+//   [column header row]
+//   [BenchRow …]
+//
+// Row anatomy (bench-brief §4) handled by BenchRow.qml:
+//   drag handle | strategy block | Sharpe | Max-DD | Trades | status prose | Action
+//
+// PR F scope: visual reconciliation only.
+//   - Action slot is a no-op Button placeholder; PR G wires menu items.
+//   - Within-section drag handle rendered but not wired; PR H wires drag.
+//   - Evidence modal and confirmation modals deferred to PR I.
+//   - No backend mutation (ADR 0049 Decision 2).
+//   - No legacy "View Evidence" primary button rail.
+//   - No kanban column markup.
+//
+// TODO (PR G): wire the Action menu using compute_menu_items() output from
+//   bench_v1.py — populate BenchRow.actionVariant per bench-brief §6, and
+//   connect BenchRow.actionClicked to open a per-row menu dropdown. The
+//   longest v1 menu currently has 5 items; verify readability before shipping.
 
 import QtQuick
 import QtQuick.Layouts
@@ -7,82 +33,77 @@ import Milodex 1.0
 Item {
     id: root
 
-    property real captureContentHeight: scroller.contentHeight
+    // Sections from the BenchState read model.
+    // Each section: { stage, stageRoman, stageName, stageCaption, strategies[] }
+    // Each strategy: as_qml() output from _StrategyRow (read_models.py)
     property var benchData: BenchState.sections
 
-    property var activeStrategy: null
-    property var activeAction: null
-    property string activeModalKind: ""
-    property real menuX: 0
-    property real menuY: 0
-
-    function sectionCount(section) {
-        return section && section.strategies ? section.strategies.length : 0
-    }
-
-    function formatCount(section) {
-        var count = sectionCount(section)
-        return count < 10 ? "0" + count : "" + count
-    }
+    // -----------------------------------------------------------------------
+    // Formatting helpers
+    // -----------------------------------------------------------------------
 
     function formattedSharpe(row) {
-        if (row.sharpe === undefined || row.sharpe === null) return "-"
+        if (row.sharpe === undefined || row.sharpe === null) return "—"
         return ("+" + Number(row.sharpe).toFixed(2)).replace("+-", "-")
     }
 
     function formattedMaxDD(row) {
-        if (row.maxDrawdownPct === undefined || row.maxDrawdownPct === null) return "-"
+        if (row.maxDrawdownPct === undefined || row.maxDrawdownPct === null) return "—"
         return Number(row.maxDrawdownPct).toFixed(1) + "%"
     }
 
     function formattedTrades(row) {
-        return row.tradeCount === 0 || row.tradeCount === undefined || row.tradeCount === null
-               ? "-"
-               : "" + row.tradeCount
+        if (!row.tradeCount || row.tradeCount === 0) return "—"
+        return "" + row.tradeCount
     }
 
-    function formattedEvidence(row) {
-        return ((row.metaEvidenceLabel || "") + " " + (row.metaEvidenceAt || "")).trim()
+    // Resolve status word color from statusKind string
+    function statusWordColor(kind) {
+        if (kind === "positive") return Theme.status.positive
+        if (kind === "warning")  return Theme.status.warning
+        if (kind === "negative") return Theme.status.negative
+        return Theme.status.info
     }
 
-    function openActionMenu(strategy, anchor) {
-        root.activeStrategy = strategy
-        root.activeAction = null
-        root.activeModalKind = "menu"
-        var point = anchor.mapToItem(root, 0, anchor.height + Theme.space[1])
-        root.menuX = Math.max(
-            Theme.space[4],
-            Math.min(root.width - actionMenu.width - Theme.space[4], point.x + anchor.width - actionMenu.width)
-        )
-        root.menuY = Math.max(Theme.space[4], Math.min(root.height - actionMenu.implicitHeight - Theme.space[4], point.y))
-    }
-
-    function closeMenu() {
-        if (root.activeModalKind === "menu") {
-            root.activeModalKind = ""
-            root.activeAction = null
+    // Determine the Action button variant for a row (bench-brief §6).
+    // PR G will refine this using compute_menu_items() output.
+    // For PR F: use a simple heuristic from the existing statusKind signal.
+    function actionVariant(row) {
+        // Primary: row has forward-eligible actions (gate pass, promotable stage)
+        if (row.statusKind === "positive" && row.stage !== "idle" && row.stage !== "live") {
+            return "primary"
         }
-    }
-
-    function dismissModal() {
-        root.activeStrategy = null
-        root.activeAction = null
-        root.activeModalKind = ""
-    }
-
-    function selectAction(action) {
-        root.activeAction = action
-        if (action.kind === "evidence") {
-            root.activeModalKind = "evidence"
-            return
+        // Outlined: evidence or informational actions available
+        if (row.statusKind === "info" || row.statusKind === "warning") {
+            return "outlined"
         }
-        root.activeModalKind = action.requiresConfirmation ? "confirm" : "prototype"
+        // Ghost: all state-changing actions hidden (evidence-only state)
+        return "ghost"
     }
+
+    // Format the meta line for the status column.
+    // MICRO LIVE rows gain capital-deployed detail per brief §5.
+    function metaLine(row) {
+        var parts = []
+        if (row.metaLine && row.metaLine.length > 0) return row.metaLine
+        if (row.stage === "micro_live" || row.stage === "live") {
+            parts.push("session: " + (row.sessionState || "not_running"))
+        }
+        return parts.join(" · ")
+    }
+
+    // -----------------------------------------------------------------------
+    // Surface background
+    // -----------------------------------------------------------------------
 
     Rectangle {
         anchors.fill: parent
         color: Theme.color.surface.canvas
     }
+
+    // -----------------------------------------------------------------------
+    // Scrollable ledger
+    // -----------------------------------------------------------------------
 
     Flickable {
         id: scroller
@@ -95,9 +116,13 @@ Item {
         Column {
             id: pageColumn
             width: scroller.width
-            padding: Theme.space[7]
+            topPadding: Theme.space[7]
+            bottomPadding: Theme.space[7]
+            leftPadding: Theme.space[7]
+            rightPadding: Theme.space[7]
             spacing: Theme.space[7]
 
+            // ---- Page header -----------------------------------------------
             Column {
                 width: parent.width - Theme.space[7] * 2
                 spacing: Theme.space[3]
@@ -112,10 +137,11 @@ Item {
                     font.capitalization: Font.AllUppercase
                 }
 
+                // "THE BENCH." headline — Newsreader display with oxblood period
                 Row {
                     spacing: 0
                     Text {
-                        text: "The Strategy Bench"
+                        text: "The Bench"
                         color: Theme.color.text.primary
                         font.family: Theme.typography.display.lg.family
                         font.pixelSize: Theme.typography.display.lg.size
@@ -130,9 +156,10 @@ Item {
                     }
                 }
 
+                // Standfirst — italic Newsreader deck
                 Text {
                     width: parent.width
-                    text: "Every config on the ladder, top to bottom: what is working, what is stuck, and what is waiting at the next gate. Drag a row to move it; the system enforces the gates."
+                    text: "Every strategy on the ladder, top to bottom — what is working, what is blocked, and what is waiting at the next gate."
                     color: Theme.color.text.secondary
                     font.family: Theme.typography.deck.family
                     font.pixelSize: Theme.typography.deck.size
@@ -140,6 +167,7 @@ Item {
                     wrapMode: Text.WordWrap
                 }
 
+                // Hairline below header
                 Rectangle {
                     width: parent.width
                     height: 1
@@ -147,41 +175,37 @@ Item {
                 }
             }
 
+            // ---- Stage sections --------------------------------------------
+            // Repeater over sections from BenchState.sections
             Repeater {
                 model: root.benchData
 
                 delegate: Item {
                     id: sectionRoot
                     width: pageColumn.width - Theme.space[7] * 2
-                    height: sectionColumn.implicitHeight
+                    height: sectionCol.implicitHeight
 
                     property var sectionData: modelData
+
+                    // Session-only row order (within-section reorder lives
+                    // here; PR H will wire drag; non-persisting per ADR 0049).
                     property var rowOrder: []
 
                     function syncRows() {
-                        rowOrder = sectionData && sectionData.strategies
+                        rowOrder = (sectionData && sectionData.strategies)
                                    ? sectionData.strategies.slice()
                                    : []
-                    }
-
-                    function moveRow(fromIndex, localY) {
-                        if (fromIndex < 0 || fromIndex >= rowOrder.length) return
-                        var target = Math.max(0, Math.min(rowOrder.length - 1, Math.floor(localY / 78)))
-                        if (target === fromIndex) return
-                        var rows = rowOrder.slice()
-                        var moved = rows.splice(fromIndex, 1)[0]
-                        rows.splice(target, 0, moved)
-                        rowOrder = rows
                     }
 
                     Component.onCompleted: syncRows()
                     onSectionDataChanged: syncRows()
 
                     Column {
-                        id: sectionColumn
+                        id: sectionCol
                         width: parent.width
                         spacing: 0
 
+                        // ---- Section rule (2px oxblood for LIVE, 1px for others) ----
                         Rectangle {
                             width: parent.width
                             height: sectionData.stage === "live" ? 2 : 1
@@ -190,34 +214,58 @@ Item {
                                    : Theme.color.border.regular
                         }
 
+                        // ---- Section header (bench-brief §3) -------------------
                         Item {
                             width: parent.width
                             height: 54
 
+                            // Left cluster: roman numeral · STAGE NAME · count
                             Row {
                                 anchors.left: parent.left
                                 anchors.verticalCenter: parent.verticalCenter
-                                spacing: Theme.space[3]
+                                spacing: Theme.space[2]
 
+                                // Roman numeral — Newsreader italic, text.muted
                                 Text {
                                     text: sectionData.stageRoman
-                                    color: Theme.color.text.secondary
+                                    color: Theme.color.text.muted
                                     font.family: Theme.typography.deck.family
-                                    font.pixelSize: Theme.typography.deck.size
+                                    font.pixelSize: 19
                                     font.italic: true
                                 }
 
+                                // Stage name — Public Sans, letter-spaced uppercase, weight 600
                                 Text {
-                                    text: sectionData.stageName + " · " + root.formatCount(sectionData)
+                                    text: sectionData.stageName.toUpperCase()
                                     color: Theme.color.text.primary
                                     font.family: Theme.typography.label.xs.family
                                     font.pixelSize: Theme.typography.label.xs.size
-                                    font.weight: Theme.typography.label.xs.weight
+                                    font.weight: Font.DemiBold
                                     font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
+                                }
+
+                                // Mid-dot separator
+                                Text {
+                                    text: "·"
+                                    color: Theme.color.text.muted
+                                    font.family: Theme.typography.label.xs.family
+                                    font.pixelSize: Theme.typography.label.xs.size
+                                }
+
+                                // Strategy count — JetBrains Mono, 2-digit zero-padded
+                                Text {
+                                    text: {
+                                        var n = sectionRoot.rowOrder.length
+                                        return n < 10 ? "0" + n : "" + n
+                                    }
+                                    color: Theme.color.text.muted
+                                    font.family: Theme.typography.data.sm.family
+                                    font.pixelSize: Theme.typography.data.sm.size
+                                    font.features: Theme.typography.data.sm.features
                                 }
                             }
 
+                            // Right: section caption — Newsreader italic, text.secondary
                             Text {
                                 anchors.right: parent.right
                                 anchors.verticalCenter: parent.verticalCenter
@@ -227,17 +275,20 @@ Item {
                                 font.pixelSize: Theme.typography.deck.size
                                 font.italic: true
                                 elide: Text.ElideRight
+                                maximumLineCount: 1
                             }
                         }
 
+                        // Hairline below section header (border.subtle per brief §3)
                         Rectangle {
                             width: parent.width
                             height: 1
                             color: Theme.color.border.subtle
                         }
 
+                        // ---- Empty-state (bench-brief §3 empty-state treatment) -----
                         Item {
-                            visible: rowOrder.length === 0
+                            visible: sectionRoot.rowOrder.length === 0
                             width: parent.width
                             height: 64
 
@@ -251,239 +302,96 @@ Item {
                             }
                         }
 
+                        // ---- Column header row (bench-brief §4) ----------------
+                        // Visible only when section has rows.
                         Item {
-                            visible: rowOrder.length > 0
+                            visible: sectionRoot.rowOrder.length > 0
                             width: parent.width
-                            height: 34
+                            height: 32
 
                             RowLayout {
                                 anchors.fill: parent
-                                anchors.leftMargin: Theme.space[5]
+                                anchors.leftMargin: 0
                                 anchors.rightMargin: Theme.space[3]
                                 spacing: Theme.space[4]
 
-                                Item { Layout.fillWidth: true; Layout.minimumWidth: 260 }
-                                HeaderCell { text: "Sharpe"; alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                HeaderCell { text: "Max-DD"; alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                HeaderCell { text: "Trades"; alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                HeaderCell { text: "Config"; Layout.preferredWidth: Theme.column.benchConfigKey }
-                                HeaderCell { text: "Stage"; Layout.preferredWidth: Theme.column.benchStage }
-                                HeaderCell { text: "Evidence"; Layout.preferredWidth: Theme.column.benchEvidence }
-                                HeaderCell { text: "Action"; alignRight: true; Layout.preferredWidth: Theme.column.benchAction }
+                                // Gutter spacer — matches handleSlot width in BenchRow
+                                Item { Layout.preferredWidth: Theme.space[5] }
+
+                                // Strategy column — fills remaining space
+                                Item { Layout.fillWidth: true; Layout.minimumWidth: 200 }
+
+                                ColHeader { text: "Sharpe";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
+                                ColHeader { text: "Max-DD";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
+                                ColHeader { text: "Trades";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
+                                ColHeader { text: "Status";   Layout.fillWidth: true; Layout.minimumWidth: 180 }
+                                ColHeader { text: "Action";   alignRight: true; Layout.preferredWidth: Theme.column.benchAction }
                             }
                         }
 
+                        // ---- Strategy rows ----------------------------------
                         Repeater {
                             model: sectionRoot.rowOrder
 
                             delegate: BenchRow {
                                 width: sectionRoot.width
-                                strategyName: modelData.name || modelData.strategyName
-                                strategyId: modelData.strategyId
                                 stage: sectionData.stage
+                                strategyName: modelData.name || modelData.displayName || ""
+                                strategyId: modelData.strategyId || ""
                                 sharpe: root.formattedSharpe(modelData)
                                 maxDD: root.formattedMaxDD(modelData)
                                 tradeCount: root.formattedTrades(modelData)
-                                metaConfigKey: modelData.metaConfigKey || ""
-                                metaStage: modelData.metaStage || sectionData.stage
-                                metaEvidence: root.formattedEvidence(modelData)
-                                onMoveRequested: (localY) => sectionRoot.moveRow(index, localY)
-                                onActionClicked: (anchorItem) => root.openActionMenu(modelData, anchorItem)
+                                // Status prose column (bench-brief §4)
+                                statusWord: modelData.statusWord || ""
+                                statusWordColor: root.statusWordColor(modelData.statusKind || "info")
+                                statusProse: modelData.statusTail || ""
+                                metaLine: root.metaLine(modelData)
+                                // Action slot variant — PR G refines with compute_menu_items()
+                                actionVariant: root.actionVariant(modelData)
+                                // Drag reorder — PR H wires; no-op in PR F
+                                onMoveRequested: () => {}
                             }
                         }
                     }
                 }
             }
 
-            Rectangle {
+            // ---- Page footer -----------------------------------------------
+            Column {
                 width: parent.width - Theme.space[7] * 2
-                height: 1
-                color: Theme.color.border.regular
-            }
+                spacing: Theme.space[3]
 
-            Text {
-                width: (parent.width - Theme.space[7] * 2) * 0.78
-                text: "Promotion to paper requires walk-forward gate-pass on every window. Promotion to micro-live requires Sharpe >= 0.50, max-dd <= 15%, n >= 30. Promotion to live requires explicit human review and a recorded decision."
-                color: Theme.color.text.muted
-                font.family: Theme.typography.deck.family
-                font.pixelSize: Theme.typography.deck.size
-                font.italic: true
-                wrapMode: Text.WordWrap
-            }
-        }
-    }
+                Rectangle {
+                    width: parent.width
+                    height: 1
+                    color: Theme.color.border.regular
+                }
 
-    MouseArea {
-        anchors.fill: parent
-        visible: root.activeModalKind === "menu"
-        z: 80
-        onClicked: root.closeMenu()
-    }
-
-    Rectangle {
-        id: actionMenu
-        visible: root.activeModalKind === "menu"
-        x: root.menuX
-        y: root.menuY
-        z: 90
-        width: 240
-        implicitHeight: menuColumn.implicitHeight + Theme.space[2] * 2
-        color: Theme.color.surface.base
-        border.color: Theme.color.border.regular
-        border.width: 1
-        radius: Theme.radius.lg
-
-        Column {
-            id: menuColumn
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.topMargin: Theme.space[2]
-            anchors.bottomMargin: Theme.space[2]
-            spacing: 0
-
-            Repeater {
-                model: root.activeStrategy ? (root.activeStrategy.actions || []) : []
-
-                delegate: Item {
-                    width: menuColumn.width
-                    height: 36
-
-                    Text {
-                        anchors.left: parent.left
-                        anchors.leftMargin: Theme.space[3]
-                        anchors.right: parent.right
-                        anchors.rightMargin: Theme.space[3]
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: modelData.label
-                        color: menuMouse.containsMouse ? Theme.color.text.primary : Theme.color.text.secondary
-                        font.family: Theme.typography.body.sm.family
-                        font.pixelSize: Theme.typography.body.sm.size
-                        elide: Text.ElideRight
-                    }
-
-                    MouseArea {
-                        id: menuMouse
-                        anchors.fill: parent
-                        hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: root.selectAction(modelData)
-                    }
+                Text {
+                    width: parent.width * 0.78
+                    text: "Promotion to paper requires walk-forward gate-pass on every window. "
+                        + "Promotion beyond paper requires explicit human review per ADR 0004. "
+                        + "Capital-bearing stages remain locked. Kill switch is a global affordance on the Anchor view."
+                    color: Theme.color.text.muted
+                    font.family: Theme.typography.deck.family
+                    font.pixelSize: Theme.typography.deck.size
+                    font.italic: true
+                    wrapMode: Text.WordWrap
                 }
             }
         }
     }
 
-    Loader {
-        anchors.fill: parent
-        active: root.activeModalKind === "evidence"
-        sourceComponent: evidenceComponent
-        z: 100
-    }
-
-    Component {
-        id: evidenceComponent
-        BenchModal {
-            anchors.fill: parent
-            topBorderColor: root.activeStrategy && root.activeStrategy.statusKind === "warning"
-                            ? Theme.status.warning
-                            : Theme.status.info
-            eyebrowText: "Evidence"
-            titleText: root.activeStrategy ? (root.activeStrategy.name || root.activeStrategy.strategyId) : ""
-            proseText: root.activeStrategy
-                       ? ((root.activeStrategy.statusWord || "State recorded") + " "
-                          + (root.activeStrategy.statusTail || "No write actions are exposed in this prototype."))
-                       : ""
-            onDismissed: root.dismissModal()
-
-            Text {
-                width: parent.width
-                text: root.activeStrategy
-                      ? ("Stage " + root.activeStrategy.stage
-                         + " | Sharpe " + root.formattedSharpe(root.activeStrategy)
-                         + " | Max-dd " + root.formattedMaxDD(root.activeStrategy)
-                         + " | Trades " + root.formattedTrades(root.activeStrategy))
-                      : ""
-                color: Theme.color.text.secondary
-                font.family: Theme.typography.data.sm.family
-                font.pixelSize: Theme.typography.data.sm.size
-                font.features: Theme.typography.data.sm.features
-                wrapMode: Text.WordWrap
-            }
-
-            Text {
-                width: parent.width
-                text: root.activeStrategy ? ("Config: " + root.activeStrategy.configPath) : ""
-                color: Theme.color.text.muted
-                font.family: Theme.typography.data.xs.family
-                font.pixelSize: Theme.typography.data.xs.size
-                font.features: Theme.typography.data.xs.features
-                wrapMode: Text.WrapAnywhere
-            }
-
-            actionContent: [
-                Button {
-                    variant: "ghost"
-                    text: "Close"
-                    onClicked: root.dismissModal()
-                }
-            ]
-        }
-    }
-
-    Loader {
-        anchors.fill: parent
-        active: root.activeModalKind === "prototype" || root.activeModalKind === "confirm"
-        sourceComponent: prototypeComponent
-        z: 100
-    }
-
-    Component {
-        id: prototypeComponent
-        BenchModal {
-            anchors.fill: parent
-            topBorderColor: root.activeModalKind === "confirm"
-                            ? Theme.color.brand.accent
-                            : Theme.status.info
-            eyebrowText: root.activeModalKind === "confirm" ? "Confirmation prototype" : "Prototype only"
-            titleText: root.activeAction ? root.activeAction.label : ""
-            proseText: root.activeAction
-                       ? (root.activeAction.label
-                          + " is available for this strategy, but this visual prototype does not mutate strategy stage, write to the ledger, start trading, stop trading, or run backtests.")
-                       : ""
-            onDismissed: root.dismissModal()
-
-            Text {
-                visible: root.activeModalKind === "confirm"
-                width: parent.width
-                text: "Moving into Micro Live or Live remains consequential. The write-capable phase will require governed confirmation before any state changes."
-                color: Theme.color.text.secondary
-                font.family: Theme.typography.body.md.family
-                font.pixelSize: Theme.typography.body.md.size
-                wrapMode: Text.WordWrap
-            }
-
-            actionContent: [
-                Button {
-                    variant: "ghost"
-                    text: "Cancel"
-                    onClicked: root.dismissModal()
-                },
-                Button {
-                    variant: root.activeModalKind === "confirm" ? "secondary" : "ghost"
-                    text: "Prototype only - no change"
-                    onClicked: root.dismissModal()
-                }
-            ]
-        }
-    }
-
-    component HeaderCell: Text {
+    // -----------------------------------------------------------------------
+    // Internal component: column header label (num-label style per brief §4)
+    // 10px Public Sans uppercase letter-spaced, text.muted
+    // -----------------------------------------------------------------------
+    component ColHeader: Text {
         property bool alignRight: false
-        color: Theme.color.text.secondary
+        color: Theme.color.text.muted
         font.family: Theme.typography.label.xs.family
-        font.pixelSize: Theme.typography.label.xs.size
-        font.weight: Font.DemiBold
+        font.pixelSize: 10
+        font.weight: Font.Medium
         font.letterSpacing: Theme.typography.label.xs.letterSpacing
         font.capitalization: Font.AllUppercase
         horizontalAlignment: alignRight ? Text.AlignRight : Text.AlignLeft
