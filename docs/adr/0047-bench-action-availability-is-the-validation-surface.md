@@ -20,7 +20,7 @@ The operator still needs to know what actions are available at a glance, without
 
 4. **Cached verdicts remain the data source for computing action availability.** The concept from ADR 0044 survives as the mechanism behind menu computation. It no longer surfaces as hover-on-drop feedback; it surfaces as the set of visible menu items.
 
-5. **`Open Evidence` is the menu's empty-menu floor.** It is always present, regardless of stage, runtime session state, gate evidence, freshness, kill-switch state, or any other input to menu computation. The Action menu is never empty.
+5. **`Open Evidence` is the menu's empty-menu floor.** It is always present, regardless of stage, runtime session state, gate evidence, freshness, kill-switch state, or any other input to menu computation. The Action menu is never empty. The floor item appears as the **last** item in the menu — operator-facing scan order is action-bearing items first, informational floor last; this matches every per-row example in the bench-brief §7.3 menu-items table.
 
 ## Rationale
 
