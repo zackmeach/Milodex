@@ -24,6 +24,7 @@
 
 import QtQuick
 import QtQuick.Layouts
+import QtQuick.Controls.Basic as QQC2
 import Milodex 1.0
 
 Item {
@@ -57,8 +58,13 @@ Item {
     property bool dragging: false
     signal moveRequested(real localY)
 
-    // Action slot signal — declared here so PR G only has to wire the handler.
-    // No handler is connected yet; clicking the Action button remains a no-op.
+    // Action menu items — list of {label, verbClass, targetStage} dicts
+    // produced by compute_menu_items() in bench_v1.py via read_models.py.
+    // Populated by the parent BenchSurface delegate from modelData.actions.
+    property var actionItems: []
+
+    // Action slot signal — emitted when the Action button is clicked.
+    // Connected to open the menu popup below.
     signal actionClicked()
 
     // -----------------------------------------------------------------------
@@ -301,23 +307,133 @@ Item {
         }
 
         // ---- col 7: Action slot -------------------------------------------
-        // Visual placeholder in PR F. PR G wires menu items from
-        // compute_menu_items(). Button variant communicates friction (brief §6).
-        // TODO (PR G): replace this no-op Button with the real Action menu trigger.
+        // PR G: Action button now opens a per-row menu populated from
+        // compute_menu_items() output (bench_v1.py → read_models.py →
+        // modelData.actions → actionItems).  Clicking a menu item is a
+        // visual-prototype no-op per ADR 0049 — no backend mutation occurs.
+        // PR I will wire confirmation modals and Evidence modal.
         Item {
             Layout.preferredWidth: Theme.column.benchAction
             Layout.alignment: Qt.AlignVCenter
             implicitHeight: actionButton.implicitHeight
 
+            // Transient "primary" fill — the button shows filled oxblood when
+            // hovered or while its action menu is open.  At rest BenchSurface
+            // provides "secondary" (outlined) for state-changing rows and
+            // "ghost" for evidence-only rows.  Ghost rows are never promoted
+            // to primary — they should stay quiet.
+            readonly property bool _actionActive: actionButtonHover.hovered || actionMenu.opened
+
             Button {
                 id: actionButton
                 anchors.right: parent.right
                 anchors.verticalCenter: parent.verticalCenter
-                variant: root.actionVariant
+                variant: parent._actionActive && root.actionVariant !== "ghost"
+                         ? "primary"
+                         : root.actionVariant
                 text: "Action"
-                // PR F: clicking is a no-op visual placeholder.
-                // PR G will wire: onClicked: root.actionClicked()
-                onClicked: {}
+                onClicked: {
+                    root.actionClicked()
+                    actionMenu.open()
+                }
+
+                // HoverHandler coexists with MouseArea — does not intercept
+                // clicks; the Button's own onClicked fires normally.
+                HoverHandler { id: actionButtonHover }
+            }
+
+            // Action menu — visual-prototype only (ADR 0049).
+            // Items are rendered in the order returned by compute_menu_items()
+            // (directional → invocation → informational floor).
+            // Clicking any item is a no-op in v1.  PR I will wire handlers.
+            QQC2.Menu {
+                id: actionMenu
+                width: 240
+                // Anchor below-right of the Action button
+                x: actionButton.x + actionButton.width - width
+                y: actionButton.y + actionButton.height + 2
+
+                // Warm-dark surface to match ledger aesthetic.
+                // surface.raised (#1a1611) is the highest defined surface token;
+                // border.regular (#33291c) gives a thin brass/brown hairline;
+                // radius 4 keeps the editorial softness.
+                background: Rectangle {
+                    color: Theme.color.surface.raised
+                    border.color: Theme.color.border.regular
+                    border.width: 1
+                    radius: Theme.radius.md
+                }
+
+                // Instantiator is required here — QQC2.Menu uses addItem()/removeItem()
+                // internally and does NOT pick up children created by a Repeater.
+                // onObjectAdded/onObjectRemoved wire each dynamically-created MenuItem
+                // into the Menu's managed item list so they actually appear.
+                Instantiator {
+                    model: root.actionItems
+
+                    delegate: QQC2.MenuItem {
+                        required property var modelData
+
+                        text: modelData.label
+                        implicitWidth: 240
+                        implicitHeight: 36
+                        font.family: Theme.typography.label.xs.family
+                        font.pixelSize: Theme.typography.label.xs.size
+
+                        // Color: directional verbs use brand.accentHover (#9a4350) —
+                        // a half-step brighter than brand.accent (#7d3540) — which
+                        // lifts contrast against surface.raised while preserving the
+                        // oxblood signal.  Invocation and informational items use
+                        // text.onBrand (#f5e6c4) — the warmest cream token — so all
+                        // non-directional items including Open Evidence read clearly
+                        // against the dark warm surface without looking disabled.
+                        // Visual separation between invocation and informational floor
+                        // is handled by the border.regular hairline on the item.
+                        contentItem: Text {
+                            text: parent.text
+                            font: parent.font
+                            color: modelData.verbClass === "directional"
+                                   ? Theme.color.brand.accentHover
+                                   : Theme.color.text.onBrand
+                            leftPadding: 12
+                            rightPadding: 12
+                            verticalAlignment: Text.AlignVCenter
+
+                            // Full-width hairline separator above the informational floor
+                            // (Open Evidence).  border.regular (#33291c) is more visible
+                            // than border.subtle (#241f15) against surface.raised.
+                            Rectangle {
+                                visible: modelData.verbClass === "informational"
+                                anchors.top: parent.top
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                // Extend into left/right padding so the rule spans the full
+                                // menu width rather than just the text content area.
+                                anchors.leftMargin: -12
+                                anchors.rightMargin: -12
+                                height: 1
+                                color: Theme.color.border.regular
+                            }
+                        }
+
+                        // Hover: shift to surface.base (#13100a) — one step darker than
+                        // surface.raised — for a subtle, non-flashy active indicator.
+                        background: Rectangle {
+                            implicitWidth: 240
+                            implicitHeight: 36
+                            color: parent.highlighted ? Theme.color.surface.base : "transparent"
+                        }
+
+                        // v1 visual-prototype: clicking is intentionally a no-op.
+                        // PR I will dispatch to confirmation / evidence modals.
+                        onTriggered: {
+                            // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
+                        }
+                    }
+
+                    onObjectAdded: (index, object) => actionMenu.insertItem(index, object)
+                    onObjectRemoved: (index, object) => actionMenu.removeItem(object)
+                }
             }
         }
     }

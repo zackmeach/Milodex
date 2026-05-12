@@ -14,17 +14,18 @@
 //   drag handle | strategy block | Sharpe | Max-DD | Trades | status prose | Action
 //
 // PR F scope: visual reconciliation only.
-//   - Action slot is a no-op Button placeholder; PR G wires menu items.
 //   - Within-section drag handle rendered but not wired; PR H wires drag.
 //   - Evidence modal and confirmation modals deferred to PR I.
 //   - No backend mutation (ADR 0049 Decision 2).
 //   - No legacy "View Evidence" primary button rail.
 //   - No kanban column markup.
 //
-// TODO (PR G): wire the Action menu using compute_menu_items() output from
-//   bench_v1.py — populate BenchRow.actionVariant per bench-brief §6, and
-//   connect BenchRow.actionClicked to open a per-row menu dropdown. The
-//   longest v1 menu currently has 5 items; verify readability before shipping.
+// PR G: Action menu wired.
+//   - BenchRow.actionItems populated from modelData.actions (compute_menu_items
+//     output via read_models._compute_bench_action_menu).
+//   - BenchRow.actionVariant derived from actual item verbClasses, not statusKind.
+//   - Clicking a menu item is a visual-prototype no-op (ADR 0049 Decision 2).
+//   - PAPER section uses "secondary" (outlined) variant to avoid visual over-emphasis.
 
 import QtQuick
 import QtQuick.Layouts
@@ -65,19 +66,31 @@ Item {
         return Theme.status.info
     }
 
-    // Determine the Action button variant for a row (bench-brief §6).
-    // PR G will refine this using compute_menu_items() output.
-    // For PR F: use a simple heuristic from the existing statusKind signal.
+    // Determine the Action button variant for a row (bench-brief §6, §7).
+    // Derived from the verbClass of items in row.actions (compute_menu_items()
+    // output from bench_v1.py).
+    //
+    // Variant logic (post-PR G polish):
+    //   secondary — default for all rows with at least one state-changing verb
+    //               (directional or invocation), including promote-eligible rows.
+    //               Renders as outlined border.regular + text.primary, which
+    //               keeps the right-side Action column visible but not a
+    //               dominant repeated rail.
+    //   ghost     — Open-Evidence-only rows (informational floor only).
+    //
+    // The filled-oxblood treatment (variant: "primary") is no longer assigned
+    // here.  BenchRow promotes the button to "primary" transiently on hover or
+    // while its action menu is open — see BenchRow.qml.
     function actionVariant(row) {
-        // Primary: row has forward-eligible actions (gate pass, promotable stage)
-        if (row.statusKind === "positive" && row.stage !== "idle" && row.stage !== "live") {
-            return "primary"
+        var actions = row.actions || []
+        var hasStateChanging = false
+        for (var i = 0; i < actions.length; ++i) {
+            if (actions[i].verbClass === "directional" || actions[i].verbClass === "invocation") {
+                hasStateChanging = true
+                break
+            }
         }
-        // Outlined: evidence or informational actions available
-        if (row.statusKind === "info" || row.statusKind === "warning") {
-            return "outlined"
-        }
-        // Ghost: all state-changing actions hidden (evidence-only state)
+        if (hasStateChanging) return "secondary"
         return "ghost"
     }
 
@@ -346,7 +359,12 @@ Item {
                                 statusWordColor: root.statusWordColor(modelData.statusKind || "info")
                                 statusProse: modelData.statusTail || ""
                                 metaLine: root.metaLine(modelData)
-                                // Action slot variant — PR G refines with compute_menu_items()
+                                // Action slot — wired in PR G.
+                                // actionItems carries the compute_menu_items() output from
+                                // read_models._compute_bench_action_menu (bench_v1.py).
+                                // variant is derived from the items so the button weight
+                                // reflects actual menu content, not a statusKind heuristic.
+                                actionItems: modelData.actions || []
                                 actionVariant: root.actionVariant(modelData)
                                 // Drag reorder — PR H wires; no-op in PR F
                                 onMoveRequested: () => {}
