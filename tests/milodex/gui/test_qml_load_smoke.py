@@ -214,6 +214,9 @@ def test_bench_ledger_copy_and_drag_safety_contract() -> None:
     assert "Drag." not in source
     assert "targetStage" not in source
     assert re.search(r"\bstage\s=(?!=)", source) is None
-    assert "Action ->" in (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(
+    # PR F: Action button label is the literal word "Action" per bench-brief §6
+    # (uniform label; variant communicates friction; PR G wires the menu items).
+    # The old "Action ->" QuietAction label was replaced with Button text: "Action".
+    assert 'text: "Action"' in (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(
         encoding="utf-8"
     )
