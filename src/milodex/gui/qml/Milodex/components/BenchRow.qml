@@ -346,7 +346,11 @@ Item {
                     radius: 4
                 }
 
-                Repeater {
+                // Instantiator is required here — QQC2.Menu uses addItem()/removeItem()
+                // internally and does NOT pick up children created by a Repeater.
+                // onObjectAdded/onObjectRemoved wire each dynamically-created MenuItem
+                // into the Menu's managed item list so they actually appear.
+                Instantiator {
                     model: root.actionItems
 
                     delegate: QQC2.MenuItem {
@@ -397,6 +401,9 @@ Item {
                             // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
                         }
                     }
+
+                    onObjectAdded: (index, object) => actionMenu.insertItem(index, object)
+                    onObjectRemoved: (index, object) => actionMenu.removeItem(object)
                 }
             }
         }
