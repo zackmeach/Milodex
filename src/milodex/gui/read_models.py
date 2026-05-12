@@ -16,7 +16,7 @@ import json
 import logging
 import sqlite3
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -24,6 +24,7 @@ from typing import Any
 import yaml
 from PySide6.QtCore import Property, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
 
+from milodex.gui.bench_v1 import EvidenceRecord, Stage
 from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
 from milodex.strategies.loader import StrategyConfig, load_strategy_config
 
@@ -69,6 +70,11 @@ class _StrategyRow:
     job_action_type: str = ""
     job_detail: str = ""
     visual_priority: int = 0
+    # Bench v1 read-model schema (ADR 0050). Populated empty by default;
+    # PR G will wire the menu computation and PR E will populate fixtures.
+    # Not exposed in `as_qml()` yet — that wiring is PR G's scope.
+    evidence_by_stage: dict[Stage, EvidenceRecord] = field(default_factory=dict)
+    runs_in_flight: dict[Stage, bool] = field(default_factory=dict)
 
     def as_qml(self) -> dict[str, Any]:
         return {

@@ -165,7 +165,7 @@ State changes on the Bench are driven by a per-row **Action menu** — a dropdow
 - Each row has a single `Action` button on the right edge. Clicking it opens the Action menu for that row.
 - Menu items are computed from `(current_stage, evidence_by_stage, runs_in_flight)` in the Python read-model layer per [ADR 0047](../adr/0047-bench-action-availability-is-the-validation-surface.md). QML consumes the precomputed per-row action set; QML does not own the computation rules.
 - Unavailable actions are **hidden, not disabled** per ADR 0047 Decision 2. The absence of an action is itself information; gate-failure context lives in the evidence modal.
-- `Open Evidence` is always present — it is the menu's empty-menu floor per ADR 0047 Decision 5. The Action menu is never empty.
+- `Open Evidence` is always present and appears **last** in the menu — it is the menu's empty-menu floor per ADR 0047 Decision 5. The Action menu is never empty. Operator-facing scan order is action-bearing items first, informational floor last; this matches every row example in §7.3.
 - Available items are computed at render time, not lazily on menu open.
 
 ### §7.2 — Verb grammar
