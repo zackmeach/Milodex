@@ -67,13 +67,13 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0036](0036-operator-kanban-surface-for-promotion-pipeline.md) | Operator Kanban surface for the promotion pipeline | Accepted - visual spec only |
 | [0037](0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md) | Distribution model: PyInstaller --onedir + Inno Setup, unsigned with documented SmartScreen workaround | Accepted |
 | [0038](0038-phase-5-is-closed-and-phase-6-may-open.md) | Phase 5 is closed and Phase 6 may open | Accepted |
-| [0039](0039-stage-session-and-kanban-lane-are-distinct.md) | Stage, session, and Kanban lane are distinct | Accepted |
-| [0040](0040-kanban-bulk-orchestration-uses-a-durable-job-ledger.md) | Kanban bulk orchestration uses a durable job ledger | Accepted |
-| [0041](0041-kanban-display-names-are-presentation-metadata.md) | Kanban display names are presentation metadata | Accepted |
+| [0039](0039-stage-session-and-bench-section-are-distinct.md) | Stage, session, and Bench section are distinct | Accepted |
+| [0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md) | Bench bulk orchestration uses a durable job ledger | Accepted |
+| [0041](0041-bench-display-names-are-presentation-metadata.md) | Bench display names are presentation metadata | Accepted |
 | [0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md) | Live and micro-live eligibility is locked and evidence-based | Accepted |
-| [0043](0043-kanban-demotion-gestures-open-a-governance-flow.md) | Kanban demotion gestures open a governance flow | Accepted |
+| [0043](0043-bench-demotion-actions-open-a-governance-flow.md) | Bench demotion actions open a governance flow | Accepted |
 | [0044](0044-kanban-uses-cached-hover-validation-and-authoritative-drop-validation.md) | Kanban uses cached hover validation and authoritative drop validation | Superseded |
 | [0045](0045-kanban-responsive-layout-uses-horizontal-board-scroll.md) | Kanban responsive layout uses horizontal board scroll | Superseded |
-| [0046](0046-kanban-stage-hues-extend-production-tokens.md) | Kanban stage hues extend production tokens | Accepted |
+| [0046](0046-bench-stage-hues-extend-production-tokens.md) | Bench stage hues extend production tokens | Accepted |
 | [0047](0047-bench-action-availability-is-the-validation-surface.md) | Bench action availability is the validation surface | Accepted |
 | [0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md) | Bench uses vertical stage sections with natural scroll | Accepted |

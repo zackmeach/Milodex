@@ -2,7 +2,7 @@
 
 **Status:** Accepted - 2026-05-12
 **Supersedes:** [ADR 0045](0045-kanban-responsive-layout-uses-horizontal-board-scroll.md) — the surface is no longer a horizontal board, so horizontal scroll is structurally moot.
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [ADR 0033](0033-gui-runtime-is-pyside6-qt-quick.md) (Qt Quick), [ADR 0035](0035-design-system-and-theme-architecture.md), [ADR 0046](0046-kanban-stage-hues-extend-production-tokens.md), [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [ADR 0033](0033-gui-runtime-is-pyside6-qt-quick.md) (Qt Quick), [ADR 0035](0035-design-system-and-theme-architecture.md), [ADR 0046](0046-bench-stage-hues-extend-production-tokens.md), [DESIGN_SYSTEM.md](../DESIGN_SYSTEM.md)
 
 ## Context
 
@@ -39,5 +39,5 @@ Asymmetric section heights are honest. A padded-to-equal-height layout would sug
 ## Non-goals
 
 - Does not specify exact section header markup or row layout tokens.
-- Does not change stage hue token decisions (see [ADR 0046](0046-kanban-stage-hues-extend-production-tokens.md)).
+- Does not change stage hue token decisions (see [ADR 0046](0046-bench-stage-hues-extend-production-tokens.md)).
 - Does not implement within-section priority reorder drag (that mechanic survives from ADR 0036 Decision 2 and is implementation work).

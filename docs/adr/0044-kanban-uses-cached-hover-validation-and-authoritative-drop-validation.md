@@ -2,7 +2,7 @@
 
 **Status:** Superseded - 2026-05-10
 **Superseded by:** [ADR 0047](0047-bench-action-availability-is-the-validation-surface.md) — drag-as-state-change is gone; validation is now computed pre-menu, not at drop time.
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-E (hover-validation timing), [ADR 0039](0039-stage-session-and-kanban-lane-are-distinct.md), [ADR 0040](0040-kanban-bulk-orchestration-uses-a-durable-job-ledger.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) Q-E (hover-validation timing), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md), [ADR 0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md)
 
 ## Context
 

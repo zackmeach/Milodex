@@ -2,7 +2,7 @@
 
 **Status:** Accepted - 2026-05-12
 **Supersedes:** [ADR 0044](0044-kanban-uses-cached-hover-validation-and-authoritative-drop-validation.md) — drag-as-state-change is gone; validation is now computed pre-menu, not at drop time.
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [ADR 0039](0039-stage-session-and-kanban-lane-are-distinct.md), [ADR 0040](0040-kanban-bulk-orchestration-uses-a-durable-job-ledger.md), [ADR 0004](0004-paper-only-phase-one.md), [ADR 0005](0005-kill-switch-manual-reset.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md), [ADR 0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md), [ADR 0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md), [ADR 0004](0004-paper-only-phase-one.md), [ADR 0005](0005-kill-switch-manual-reset.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md), [ADR 0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md)
 
 ## Context
 
