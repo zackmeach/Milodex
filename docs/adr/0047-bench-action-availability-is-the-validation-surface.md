@@ -2,7 +2,7 @@
 
 **Status:** Accepted - 2026-05-12
 **Supersedes:** [ADR 0044](0044-kanban-uses-cached-hover-validation-and-authoritative-drop-validation.md) — drag-as-state-change is gone; validation is now computed pre-menu, not at drop time.
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md), [ADR 0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md), [ADR 0004](0004-paper-only-phase-one.md), [ADR 0005](0005-kill-switch-manual-reset.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md), [ADR 0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md)
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md), [ADR 0039](0039-stage-session-and-bench-section-are-distinct.md), [ADR 0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md), [ADR 0049](0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) (v1 prototype scope), [ADR 0050](0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) (evidence freshness), [ADR 0004](0004-paper-only-phase-one.md), [ADR 0005](0005-kill-switch-manual-reset.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md), [ADR 0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md)
 
 ## Context
 
@@ -20,6 +20,8 @@ The operator still needs to know what actions are available at a glance, without
 
 4. **Cached verdicts remain the data source for computing action availability.** The concept from ADR 0044 survives as the mechanism behind menu computation. It no longer surfaces as hover-on-drop feedback; it surfaces as the set of visible menu items.
 
+5. **`Open Evidence` is the menu's empty-menu floor.** It is always present, regardless of stage, runtime session state, gate evidence, freshness, kill-switch state, or any other input to menu computation. The Action menu is never empty.
+
 ## Rationale
 
 Hiding unavailable actions rather than disabling them keeps the menu proportional to what the operator can actually do. Disabled items answer a question the operator did not ask ("why can't I do this?"); the evidence modal answers it directly and at a point when the operator is ready to engage with it.
@@ -28,13 +30,16 @@ Precomputed verdicts avoid coupling the menu-open event to live domain queries o
 
 Carrying forward the start-time revalidation rule from ADR 0044 is mandatory: state can change between menu-open and execution, especially for queued jobs where the gap may be minutes or longer.
 
+The `Open Evidence` floor exists because hide-don't-disable would otherwise produce empty menus in legitimate states (a strategy with stale evidence at every prior stage, gate-failing current evidence, and no in-flight run has no state-changing verbs available). An empty menu confuses the operator into thinking the row is broken or unselectable. Forcing an informational-only floor item turns the menu into a guaranteed forensic destination: every row, every state, has a way in.
+
 ## Consequences
 
 - **ADR 0036 Q-E is now answered by this ADR.** ADR 0044 is superseded.
 - The read-model layer must produce a per-row action set as part of its precomputed output, not just eligibility verdicts.
 - The evidence modal is a required surface. The absence of visible actions is not self-explanatory without it.
+- The Action menu is never empty. The read-model's per-row action set always contains at least `Open Evidence`. Implementations that compute zero items have a bug in either the floor enforcement or the rule wiring.
 - The write path continues to treat every job start as a fresh command validation, same as ADR 0044 Decision 3.
-- Tests should cover menu content (which actions appear) as a function of strategy state, not just whether operations succeed or fail.
+- Tests should cover menu content (which actions appear) as a function of strategy state, not just whether operations succeed or fail. Coverage must include at least one row where every state-changing verb is hidden, asserting that `Open Evidence` is still rendered.
 
 ## Non-goals
 
