@@ -399,17 +399,29 @@ def compute_menu_items(state: BenchStrategyState) -> list[MenuItem]:
     opens the live boundary, those constants change; the composer
     surfaces the previously-hidden verbs without further edits.
 
-    Display order follows the bench-brief §7.3 examples:
+    Display order: **directional verbs first, then invocation verbs,
+    then the informational floor.** The operator decides *what changes*
+    (Promote / Demote / Return) before *what runs* (Initiate / Refresh /
+    Start / Stop). Open Evidence is always last per ADR 0047 Decision 5.
 
+    Within directional verbs, the order is:
     1. Promote to next stage (forward action; if available)
-    2. Start Trading / Stop Trading (current-stage runtime control)
-    3. Re-run verb (Refresh Backtest or Initiate Backtest)
-    4. Return to <active stage> verbs (IDLE rows only; in pipeline order)
-    5. Demote to Backtest (active stages only; if not policy-locked)
-    6. Return to Idle (active stages only)
-    7. Open Evidence (always)
+    2. Return to <active stage> verbs (IDLE rows only; deepest target
+       first — Live → Micro Live → Paper, matching bench-brief §7.3
+       examples that surface the most-consequential restoration first)
+    3. Demote to Backtest (backward action from active stages; if not
+       policy-locked)
+    4. Return to Idle (to-shelf affordance from active stages)
+
+    Within invocation verbs, the order is:
+    5. Start Trading / Stop Trading (current-stage runtime control)
+    6. Re-run verb (Refresh Backtest or Initiate Backtest)
+
+    7. Open Evidence (informational floor; always last)
     """
     items: list[MenuItem] = []
+
+    # ---- Directional verbs (operator-driven stage transitions) ---------
 
     # 1. Promote to next stage
     if can_promote_to_next(state):
@@ -423,7 +435,46 @@ def compute_menu_items(state: BenchStrategyState) -> list[MenuItem]:
                 )
             )
 
-    # 2. Start Trading / Stop Trading at trading-eligible stages
+    # 2. Return to <active stage> — leave-IDLE affordance, deepest first.
+    # Iterating LIVE → MICRO_LIVE → PAPER surfaces the most-consequential
+    # restoration target before shallower ones, matching the bench-brief
+    # §7.3 IDLE-with-prior-LIVE example. BACKTEST is excluded: there is
+    # no `Return to Backtest` verb per ADR 0050 Decision 7. From IDLE, a
+    # backtest is started via Initiate Backtest and the system-driven
+    # IDLE → BACKTEST transition (ADR 0050 Decision 6).
+    for target in (Stage.LIVE, Stage.MICRO_LIVE, Stage.PAPER):
+        if can_return_to(state, target):
+            items.append(
+                MenuItem(
+                    label=label_return_to(target),
+                    verb_class="directional",
+                    target_stage=target,
+                )
+            )
+
+    # 3. Demote to Backtest (active stages, not capital-stage-locked)
+    if can_demote(state) and state.current_stage not in ADR_0043_LIVE_LOCKED_DEMOTIONS_FROM:
+        items.append(
+            MenuItem(
+                label=LABEL_DEMOTE_TO_BACKTEST,
+                verb_class="directional",
+                target_stage=Stage.BACKTEST,
+            )
+        )
+
+    # 4. Return to Idle (to-shelf affordance from any active stage)
+    if can_return_to(state, Stage.IDLE):
+        items.append(
+            MenuItem(
+                label=LABEL_RETURN_TO_IDLE,
+                verb_class="directional",
+                target_stage=Stage.IDLE,
+            )
+        )
+
+    # ---- Invocation verbs (operator-driven jobs/sessions) --------------
+
+    # 5. Start Trading / Stop Trading at trading-eligible stages
     if state.current_stage in {Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE}:
         if state.is_session_running:
             items.append(
@@ -440,7 +491,7 @@ def compute_menu_items(state: BenchStrategyState) -> list[MenuItem]:
                 )
             )
 
-    # 3. Re-run verb (operates on BACKTEST evidence)
+    # 6. Re-run verb (operates on BACKTEST evidence)
     backtest_evidence = state.evidence_by_stage.get(Stage.BACKTEST)
     if backtest_evidence is not None:
         backtest_in_flight = state.runs_in_flight.get(Stage.BACKTEST, False)
@@ -453,41 +504,9 @@ def compute_menu_items(state: BenchStrategyState) -> list[MenuItem]:
                 )
             )
 
-    # 4. Return to <active stage> — leave-IDLE affordance, in pipeline order.
-    # BACKTEST is excluded: there is no `Return to Backtest` verb per ADR
-    # 0050 Decision 7. From IDLE, a backtest is started via Initiate Backtest
-    # and the system-driven IDLE → BACKTEST transition (ADR 0050 Decision 6).
-    for target in (Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE):
-        if can_return_to(state, target):
-            items.append(
-                MenuItem(
-                    label=label_return_to(target),
-                    verb_class="directional",
-                    target_stage=target,
-                )
-            )
+    # ---- Informational floor (ADR 0047 Decision 5) ---------------------
 
-    # 5. Demote to Backtest (active stages, not capital-stage-locked)
-    if can_demote(state) and state.current_stage not in ADR_0043_LIVE_LOCKED_DEMOTIONS_FROM:
-        items.append(
-            MenuItem(
-                label=LABEL_DEMOTE_TO_BACKTEST,
-                verb_class="directional",
-                target_stage=Stage.BACKTEST,
-            )
-        )
-
-    # 6. Return to Idle (to-shelf affordance from any active stage)
-    if can_return_to(state, Stage.IDLE):
-        items.append(
-            MenuItem(
-                label=LABEL_RETURN_TO_IDLE,
-                verb_class="directional",
-                target_stage=Stage.IDLE,
-            )
-        )
-
-    # 7. Open Evidence — empty-menu floor per ADR 0047 Decision 5
+    # 7. Open Evidence — always present, always last
     items.append(
         MenuItem(
             label=LABEL_OPEN_EVIDENCE,

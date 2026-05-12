@@ -266,8 +266,8 @@ Menu visibility is computed from `(current_stage, evidence_by_stage, runs_in_fli
 | Visible items |
 |---|
 | `Promote to Paper` |
-| `Refresh Backtest` |
 | `Return to Idle` |
+| `Refresh Backtest` |
 | `Open Evidence` |
 
 **BACKTEST — run in flight (`runs_in_flight[BACKTEST] == True`; evidence may be Missing+Pending for an initial run, or any prior state for a refresh-in-flight)**
@@ -281,9 +281,9 @@ Menu visibility is computed from `(current_stage, evidence_by_stage, runs_in_fli
 
 | Visible items |
 |---|
-| `Start Trading` |
 | `Demote to Backtest` |
 | `Return to Idle` |
+| `Start Trading` |
 | `Open Evidence` |
 | *(capital-stage promotions hidden while ADR 0004 in force)* |
 
@@ -291,19 +291,19 @@ Menu visibility is computed from `(current_stage, evidence_by_stage, runs_in_fli
 
 | Visible items |
 |---|
-| `Stop Trading` |
 | `Demote to Backtest` |
 | `Return to Idle` |
+| `Stop Trading` |
 | `Open Evidence` |
 
 **PAPER — Aging+Pass evidence, session idle**
 
 | Visible items |
 |---|
-| `Start Trading` |
-| `Refresh Backtest` *(aging evidence triggers refresh; Promote to Micro Live also gated-out by ADR 0004 forward lock)* |
 | `Demote to Backtest` |
 | `Return to Idle` |
+| `Start Trading` |
+| `Refresh Backtest` *(aging evidence triggers refresh; Promote to Micro Live also gated-out by ADR 0004 forward lock)* |
 | `Open Evidence` |
 
 > **Coverage note:** the rows above are canonical, not exhaustive. Fixture data per ADR 0049 Decision 5 must additionally cover Stale and Invalidated evidence at PAPER, MICRO LIVE, and (where applicable) other states the menu rules can produce. Each fixture row exercises a distinct branch of the menu computation; the table here demonstrates the rule patterns.
@@ -312,8 +312,8 @@ Menu visibility is computed from `(current_stage, evidence_by_stage, runs_in_fli
 
 | Visible items |
 |---|
-| `Stop Trading` (if session running) or `Start Trading` (if session idle) |
 | `Return to Idle` |
+| `Stop Trading` (if session running) or `Start Trading` (if session idle) |
 | `Open Evidence` |
 | *(Promote to Live is hidden by ADR 0004's forward lock. Demote to Backtest and Return to Paper are capital-affecting demotions; per [ADR 0043](../adr/0043-bench-demotion-actions-open-a-governance-flow.md) Decision 3 they remain locked rather than merely confirmed while ADR 0004 is in force.)* |
 
@@ -321,8 +321,8 @@ Menu visibility is computed from `(current_stage, evidence_by_stage, runs_in_fli
 
 | Visible items |
 |---|
-| `Stop Trading` (if session running) or `Start Trading` (if session idle) |
 | `Return to Idle` |
+| `Stop Trading` (if session running) or `Start Trading` (if session idle) |
 | `Open Evidence` |
 | *(Demote to Backtest and Return to Micro Live are capital-affecting demotions; per [ADR 0043](../adr/0043-bench-demotion-actions-open-a-governance-flow.md) Decision 3 they remain locked rather than merely confirmed while ADR 0004 is in force. The hide is governance-gated, not forward-lock-gated. LIVE evidence carries `gate_result == NotApplicable` since LIVE has no further promotion gate.)* |
 
