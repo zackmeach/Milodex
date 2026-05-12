@@ -26,6 +26,14 @@
 //   - BenchRow.actionVariant derived from actual item verbClasses, not statusKind.
 //   - Clicking a menu item is a visual-prototype no-op (ADR 0049 Decision 2).
 //   - PAPER section uses "secondary" (outlined) variant to avoid visual over-emphasis.
+//
+// PR H: Within-section visual drag reorder.
+//   - Rows rendered in an explicit-Y Item (rowsContainer) instead of a Column so
+//     each BenchRow can be positioned by index during drag.
+//   - Drag lives in BenchRow.qml (handle MouseArea); BenchSurface owns reorder math.
+//   - Order is session-local only (sectionRoot.rowOrder); not persisted (ADR 0049).
+//   - Cross-stage drag is structurally impossible: drag bounds are clamped to the
+//     section's rowsContainer; clip:true prevents visual escape.
 
 import QtQuick
 import QtQuick.Layouts
@@ -200,18 +208,43 @@ Item {
 
                     property var sectionData: modelData
 
-                    // Session-only row order (within-section reorder lives
-                    // here; PR H will wire drag; non-persisting per ADR 0049).
+                    // Session-only row order (within-section reorder; non-persisting per ADR 0049).
                     property var rowOrder: []
 
+                    // ---- PR H drag state ----------------------------------------
+                    // rowHeight must match BenchRow.implicitHeight (78px).
+                    readonly property int rowHeight: 78
+                    // Index of the row currently being dragged (-1 = none).
+                    property int draggingIndex: -1
+                    // Target landing index as the drag moves (clamped to valid range).
+                    property int targetIndex: -1
+                    // Y offset of the dragged row relative to its resting slot.
+                    property real dragYOffset: 0
+
+                    // shiftFor(index): how many px a non-dragged row should shift
+                    // to open the landing slot for the dragged row.
+                    // Returns +rowHeight (shift down) or -rowHeight (shift up) or 0.
+                    function shiftFor(idx) {
+                        if (draggingIndex < 0 || idx === draggingIndex) return 0
+                        var lo = Math.min(draggingIndex, targetIndex)
+                        var hi = Math.max(draggingIndex, targetIndex)
+                        if (idx < lo || idx > hi) return 0
+                        // Dragging downward: rows between source and target shift up
+                        // Dragging upward: rows between target and source shift down
+                        return draggingIndex < targetIndex ? -rowHeight : rowHeight
+                    }
+
                     function syncRows() {
+                        // Guard: never rebuild row order while a drag is in progress —
+                        // doing so would destroy the delegate under the cursor.
+                        if (draggingIndex >= 0) return
                         rowOrder = (sectionData && sectionData.strategies)
                                    ? sectionData.strategies.slice()
                                    : []
                     }
 
                     Component.onCompleted: syncRows()
-                    onSectionDataChanged: syncRows()
+                    onSectionDataChanged: { if (draggingIndex < 0) syncRows() }
 
                     Column {
                         id: sectionCol
@@ -342,32 +375,85 @@ Item {
                             }
                         }
 
-                        // ---- Strategy rows ----------------------------------
-                        Repeater {
-                            model: sectionRoot.rowOrder
+                        // ---- Strategy rows (PR H: explicit-Y container) ------
+                        // Rows are positioned by index so drag can reposition
+                        // individual rows without reflowing the whole column.
+                        // clip:true keeps rows visually inside this section.
+                        Item {
+                            id: rowsContainer
+                            width: parent.width
+                            height: sectionRoot.rowOrder.length * sectionRoot.rowHeight
+                            clip: true
+                            visible: sectionRoot.rowOrder.length > 0
 
-                            delegate: BenchRow {
-                                width: sectionRoot.width
-                                stage: sectionData.stage
-                                strategyName: modelData.name || modelData.displayName || ""
-                                strategyId: modelData.strategyId || ""
-                                sharpe: root.formattedSharpe(modelData)
-                                maxDD: root.formattedMaxDD(modelData)
-                                tradeCount: root.formattedTrades(modelData)
-                                // Status prose column (bench-brief §4)
-                                statusWord: modelData.statusWord || ""
-                                statusWordColor: root.statusWordColor(modelData.statusKind || "info")
-                                statusProse: modelData.statusTail || ""
-                                metaLine: root.metaLine(modelData)
-                                // Action slot — wired in PR G.
-                                // actionItems carries the compute_menu_items() output from
-                                // read_models._compute_bench_action_menu (bench_v1.py).
-                                // variant is derived from the items so the button weight
-                                // reflects actual menu content, not a statusKind heuristic.
-                                actionItems: modelData.actions || []
-                                actionVariant: root.actionVariant(modelData)
-                                // Drag reorder — PR H wires; no-op in PR F
-                                onMoveRequested: () => {}
+                            Repeater {
+                                model: sectionRoot.rowOrder
+
+                                delegate: BenchRow {
+                                    id: benchRowDelegate
+                                    required property var modelData
+                                    required property int index
+
+                                    width: rowsContainer.width
+
+                                    // Y positioning: fully declarative.
+                                    // The dragged row's y is driven by dragYOffset
+                                    // (set via the delta-based onMoveRequested handler);
+                                    // non-dragged rows receive a shift to open the slot.
+                                    y: sectionRoot.draggingIndex === index
+                                       ? (index * sectionRoot.rowHeight + sectionRoot.dragYOffset)
+                                       : (index * sectionRoot.rowHeight + sectionRoot.shiftFor(index))
+
+                                    // Smooth neighbor shifts; disabled for the dragged
+                                    // row so it tracks the mouse without lag.
+                                    Behavior on y {
+                                        enabled: sectionRoot.draggingIndex !== index
+                                        NumberAnimation { duration: Theme.motion.fast }
+                                    }
+
+                                    stage: sectionData.stage
+                                    strategyName: modelData.name || modelData.displayName || ""
+                                    strategyId: modelData.strategyId || ""
+                                    sharpe: root.formattedSharpe(modelData)
+                                    maxDD: root.formattedMaxDD(modelData)
+                                    tradeCount: root.formattedTrades(modelData)
+                                    // Status prose column (bench-brief §4)
+                                    statusWord: modelData.statusWord || ""
+                                    statusWordColor: root.statusWordColor(modelData.statusKind || "info")
+                                    statusProse: modelData.statusTail || ""
+                                    metaLine: root.metaLine(modelData)
+                                    // Action slot — wired in PR G.
+                                    actionItems: modelData.actions || []
+                                    actionVariant: root.actionVariant(modelData)
+
+                                    // Drag signal handlers (PR H).
+                                    onDragStarted: {
+                                        sectionRoot.draggingIndex = index
+                                        sectionRoot.targetIndex = index
+                                        sectionRoot.dragYOffset = 0
+                                    }
+                                    onMoveRequested: (delta) => {
+                                        // delta is cumulative offset from press.
+                                        // Clamp so the dragged row cannot leave the section.
+                                        var maxY = (sectionRoot.rowOrder.length - 1) * sectionRoot.rowHeight
+                                        var absY = Math.max(0, Math.min(maxY, index * sectionRoot.rowHeight + delta))
+                                        sectionRoot.dragYOffset = absY - (index * sectionRoot.rowHeight)
+                                        sectionRoot.targetIndex = Math.max(0,
+                                            Math.min(sectionRoot.rowOrder.length - 1,
+                                                     Math.round(absY / sectionRoot.rowHeight)))
+                                    }
+                                    onDragEnded: {
+                                        if (sectionRoot.targetIndex !== sectionRoot.draggingIndex) {
+                                            var newOrder = sectionRoot.rowOrder.slice()
+                                            var item = newOrder.splice(sectionRoot.draggingIndex, 1)[0]
+                                            newOrder.splice(sectionRoot.targetIndex, 0, item)
+                                            sectionRoot.rowOrder = newOrder
+                                        }
+                                        sectionRoot.draggingIndex = -1
+                                        sectionRoot.targetIndex = -1
+                                        sectionRoot.dragYOffset = 0
+                                    }
+                                }
                             }
                         }
                     }

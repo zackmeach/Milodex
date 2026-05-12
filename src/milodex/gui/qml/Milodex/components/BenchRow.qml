@@ -18,9 +18,17 @@
 //   LIVE       — full-strength + 5%-alpha oxblood row background wash +
 //                2px solid brand.accent left border
 //
-// PR G will wire the Action button menu items from compute_menu_items().
-// PR H will enable within-section drag reorder.
-// The drag handle is rendered but drag behavior is not wired in PR F.
+// PR G: Action button menu items wired from compute_menu_items().
+// PR H: Within-section drag reorder wired.
+//   - dragHandle MouseArea uses cursor-delta tracking (no drag.target).
+//     This keeps the dragged row's y fully declarative via BenchSurface's
+//     binding; drag.target would imperatively overwrite y and break the binding.
+//   - Emits dragStarted(), moveRequested(delta), dragEnded() so BenchSurface
+//     can own the reorder math and rowOrder array mutation.
+//     moveRequested(delta): delta is the cumulative Y offset from press.
+//   - Drag activation is threshold-gated (Qt.styleHints.startDragDistance or 4px)
+//     to avoid a visual blip on plain handle clicks.
+//   - The whole-row mouseArea remains a passive hover capture only.
 
 import QtQuick
 import QtQuick.Layouts
@@ -54,9 +62,17 @@ Item {
     // For PR F, the button is a visual placeholder only; clicking is a no-op.
     property string actionVariant: "ghost"
 
-    // Drag support (PR H will wire; handle rendered but no-op in PR F)
+    // Drag support (PR H — within-section visual reorder only)
     property bool dragging: false
-    signal moveRequested(real localY)
+    // dragStarted: emitted once the drag threshold is crossed (not on raw press).
+    signal dragStarted()
+    // moveRequested(delta): emitted on position change while drag is active.
+    // delta is the cumulative Y offset from the press position.
+    // BenchSurface uses delta to compute dragYOffset and targetIndex.
+    signal moveRequested(real delta)
+    // dragEnded: emitted on mouse-release when drag was active; BenchSurface
+    // commits the new order.
+    signal dragEnded()
 
     // Action menu items — list of {label, verbClass, targetStage} dicts
     // produced by compute_menu_items() in bench_v1.py via read_models.py.
@@ -138,7 +154,8 @@ Item {
 
     // -----------------------------------------------------------------------
     // Drag handle (col 1 — gutter)
-    // PR H wires the actual drag; rendered but no-op in PR F.
+    // PR H: dragHandle MouseArea initiates Y-axis drag; emits dragStarted,
+    // moveRequested, and dragEnded so BenchSurface owns the reorder math.
     // -----------------------------------------------------------------------
 
     Item {
@@ -150,17 +167,64 @@ Item {
         anchors.bottom: parent.bottom
 
         Text {
+            id: handleGlyph
             anchors.centerIn: parent
-            // Six-dot grip glyph — displayed as "::" rotated; PR H may refine
+            // Six-dot grip glyph — displayed as "::" rotated
             text: "::"
             color: Theme.color.text.muted
-            // Visible at 0.65 on row hover; 0.30 default per brief §4
-            opacity: mouseArea.containsMouse || root.dragging ? 0.65 : 0.30
+            // 0.80 while actively dragging from handle; 0.65 on row hover; 0.30 default
+            opacity: dragHandle.pressed ? 0.80
+                     : (mouseArea.containsMouse || root.dragging ? 0.65 : 0.30)
             font.family: Theme.typography.data.sm.family
             font.pixelSize: Theme.typography.data.sm.size
             font.letterSpacing: 1.2
             rotation: 90
             Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
+        }
+
+        // Drag handle hit area — covers the full handleSlot.
+        // Uses cursor-delta tracking rather than drag.target so the dragged
+        // row's y remains fully declarative (bound in BenchSurface).
+        // drag.target would imperatively overwrite root.y and break the binding.
+        MouseArea {
+            id: dragHandle
+            anchors.fill: parent
+            cursorShape: pressed ? Qt.ClosedHandCursor : Qt.SizeVerCursor
+
+            // Internal drag-tracking state.
+            property real _pressMouseY: 0
+            property bool _activeDrag: false
+
+            onPressed: {
+                _pressMouseY = mouseY
+                _activeDrag = false
+                // Do NOT set root.dragging or emit dragStarted yet —
+                // wait for the threshold check in onPositionChanged.
+            }
+            onPositionChanged: {
+                if (!pressed) return
+                var delta = mouseY - _pressMouseY
+                var threshold = (typeof Qt.styleHints !== "undefined" &&
+                                 Qt.styleHints.startDragDistance > 0)
+                                ? Qt.styleHints.startDragDistance : 4
+                if (!_activeDrag) {
+                    if (Math.abs(delta) >= threshold) {
+                        _activeDrag = true
+                        root.dragging = true
+                        root.dragStarted()
+                    }
+                }
+                if (_activeDrag) {
+                    root.moveRequested(delta)
+                }
+            }
+            onReleased: {
+                if (_activeDrag) {
+                    root.dragging = false
+                    root.dragEnded()
+                }
+                _activeDrag = false
+            }
         }
     }
 

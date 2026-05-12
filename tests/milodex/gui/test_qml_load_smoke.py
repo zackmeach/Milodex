@@ -220,3 +220,63 @@ def test_bench_ledger_copy_and_drag_safety_contract() -> None:
     assert 'text: "Action"' in (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(
         encoding="utf-8"
     )
+
+
+def test_bench_pr_h_drag_safety_contract() -> None:
+    """PR H static guards: Y-only drag, no cross-stage drop surface, no backend mutation.
+
+    These assertions enforce the hard constraints from the PR H brief:
+    - No DropArea in either BenchRow or BenchSurface (within-section drag uses
+      explicit Y positioning, not a DropArea-based drop target).
+    - Drag is Y-axis only: Drag.XAxis and Drag.XAndYAxis are forbidden.
+    - No backend mutation tokens: BenchState.promote / BenchState.demote must
+      not appear in either QML file.
+    - BenchSurface does not reference Drag. at all (drag wiring lives in BenchRow).
+    - BenchRow uses cursor-delta tracking (no drag.target, no Drag.YAxis) so the
+      dragged row's y remains fully declarative via BenchSurface's binding.
+    """
+    bench_surface = _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
+    bench_row = _MILODEX_QML_DIR / "components" / "BenchRow.qml"
+
+    surface_src = bench_surface.read_text(encoding="utf-8")
+    row_src = bench_row.read_text(encoding="utf-8")
+
+    # No DropArea in either file — within-section drag uses explicit Y positioning.
+    assert "DropArea" not in surface_src, "BenchSurface.qml must not contain DropArea"
+    assert "DropArea" not in row_src, "BenchRow.qml must not contain DropArea"
+
+    # Drag axis — X or XAndY axes are forbidden; only Y is permitted.
+    assert "Drag.XAxis" not in surface_src, "BenchSurface.qml must not use Drag.XAxis"
+    assert "Drag.XAxis" not in row_src, "BenchRow.qml must not use Drag.XAxis"
+    assert "Drag.XAndYAxis" not in surface_src, "BenchSurface.qml must not use Drag.XAndYAxis"
+    assert "Drag.XAndYAxis" not in row_src, "BenchRow.qml must not use Drag.XAndYAxis"
+
+    # BenchSurface must not reference Drag. at all (drag wiring is in BenchRow only).
+    assert "Drag." not in surface_src, "BenchSurface.qml must not reference Drag."
+
+    # BenchRow uses cursor-delta tracking, not Qt's drag.target mechanism.
+    # This keeps the dragged row's position fully declarative via the y binding
+    # in BenchSurface, avoiding the binding-break that drag.target would cause.
+    # Check for the QML property assignment form (drag.target:) not bare mentions
+    # in comments, which legitimately reference drag.target to explain why it's absent.
+    assert "drag.target:" not in row_src, (
+        "BenchRow.qml must not use drag.target — cursor-delta tracking only"
+    )
+    assert "Drag.YAxis" not in row_src, (
+        "BenchRow.qml must not use Drag.YAxis — Qt's built-in drag mechanism is "
+        "incompatible with declarative y binding"
+    )
+
+    # No backend mutation calls in either file.
+    assert "BenchState.promote" not in surface_src, (
+        "BenchSurface.qml must not call BenchState.promote"
+    )
+    assert "BenchState.demote" not in surface_src, (
+        "BenchSurface.qml must not call BenchState.demote"
+    )
+    assert "BenchState.promote" not in row_src, (
+        "BenchRow.qml must not call BenchState.promote"
+    )
+    assert "BenchState.demote" not in row_src, (
+        "BenchRow.qml must not call BenchState.demote"
+    )
