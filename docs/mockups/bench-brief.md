@@ -20,6 +20,8 @@ The Bench answers two operator questions simultaneously:
 1. **What's on the bench right now?** — status at a glance, by stage
 2. **What can I move, and why is the rest blocked?** — active management with gate enforcement made visible
 
+The authoritative decision register for the v1 implementation is the ADR pack: [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) (v1 scope and forbidden mutations), [ADR 0050](../adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) (read-model schema and menu computation rules), [ADR 0047](../adr/0047-bench-action-availability-is-the-validation-surface.md) (action availability and empty-menu floor). Where this brief and an ADR conflict, the ADR governs.
+
 ---
 
 ## 2. Layout — vertical stage-stacks, not horizontal columns
@@ -96,7 +98,7 @@ Grid columns (left to right):
 | 4 | **Max drawdown** | Right-aligned percentage (e.g. `9.2%`) | data.md mono with `tnum` |
 | 5 | **Trade count** | Right-aligned integer (e.g. `435`) | data.md mono with `tnum` |
 | 6 | **Status prose** | Italic Newsreader sentence with one inline colored signal word + a smaller mono `meta` line below | Newsreader italic 14.5px, `text.secondary` for prose; the signal word in body weight + status color; meta line in mono 11px, `text.muted` |
-| 7 | **Action button** | Stage-appropriate button variant | per `Button.qml` (see §6) |
+| 7 | **Action button** | Uniformly labeled `Action`; variant escalates by row state (see §6) | per `Button.qml` |
 
 A subtle column-header row (Sharpe / max-dd / trades) appears once per section, between the section header and the first row, in the `num-label` style (10px Public Sans uppercase letter-spaced, `text.muted`).
 
@@ -138,45 +140,226 @@ The LIVE row is the only row on the surface with a background color other than t
 
 ---
 
-## 6. Action button — escalating by stage
+## 6. Action button
 
-Each row has a single action button on the right edge. The button's variant communicates the friction level of the next forward action. The Button component (`Button.qml`) already supports the variants; use it directly.
+Every row has a single action button on the right edge, uniformly labeled **`Action`**. The label is always the literal word `Action` — it does not change based on stage, evidence state, or available operations. The button opens the Action menu for that row (§7); the menu's contents — not the button's label — communicate what's available.
 
-| Stage | When forward-eligible | When blocked / in-progress |
-|---|---|---|
-| IDLE | `outlined` "Run backtest →" | n/a |
-| BACKTEST | `primary` "→ Promote to paper" | `outlined` "View evidence →" or `ghost` "in progress…" |
-| PAPER | `ghost` "locked" while ADR 0004 remains in force; future ADR may reopen | `outlined` "View evidence →" |
-| MICRO LIVE | `ghost` "locked" while ADR 0004 remains in force; future ADR may reopen | `ghost` "no action" |
-| LIVE | `outlined` "Open detail →" | n/a |
+The button's **visual variant** escalates by row state to communicate friction level, using the same `Button.qml` variants as before:
 
-**Capital-bearing promotion controls stay locked while ADR 0004 remains in force.** A future ADR that opens micro-live or live may reintroduce typed-confirm critical controls, but this mockup is not authority to enable them.
+| Row state | Button variant |
+|---|---|
+| Rows with forward-eligible actions available | `primary` |
+| Rows with evidence or informational actions only | `outlined` |
+| Rows where all state-changing actions are hidden (evidence-only state) | `ghost` |
 
-The per-row action button opens the Action menu for that row. Available actions are computed from the row's current read-model state; actions that are not valid for the current stage or evidence state are hidden entirely.
+**Capital-stage promotion items are hidden from the Action menu while ADR 0004 remains in force.** The button is still present and opens the menu; the menu simply does not show `Promote to Micro Live`, `Promote to Live`, or any other capital-stage directional verb until a future ADR lifts the lock. The button does not show `locked` — it shows `Action` and opens a shorter menu.
 
 ---
 
 ## 7. Action menu mechanics
 
-State changes on the Bench are driven by a per-row **Action menu** — a dropdown accessible from the action button on each row. Cross-section drag is not a state-change mechanism.
+State changes on the Bench are driven by a per-row **Action menu** — a dropdown accessible from the `Action` button on each row. Cross-section drag is not a state-change mechanism.
 
-### Action menu pattern
+### §7.1 — Action menu pattern
 
-- Each row has a single action button on the right edge. Clicking it opens the Action menu for that row.
-- The menu shows only the actions that are valid for the current row state. Actions that are structurally blocked (gate fails, ADR 0004 lock, etc.) are **hidden entirely** — not disabled. The absence of an action is itself information.
-- Available actions are computed from the read-model state at render time, not lazily at hover.
-- Evidence modals (gate table, strategy detail) are accessible from any row regardless of action availability.
+- Each row has a single `Action` button on the right edge. Clicking it opens the Action menu for that row.
+- Menu items are computed from `(current_stage, evidence_by_stage, runs_in_flight)` in the Python read-model layer per [ADR 0047](../adr/0047-bench-action-availability-is-the-validation-surface.md). QML consumes the precomputed per-row action set; QML does not own the computation rules.
+- Unavailable actions are **hidden, not disabled** per ADR 0047 Decision 2. The absence of an action is itself information; gate-failure context lives in the evidence modal.
+- `Open Evidence` is always present — it is the menu's empty-menu floor per ADR 0047 Decision 5. The Action menu is never empty.
+- Available items are computed at render time, not lazily on menu open.
 
-### Action menu items by stage
+### §7.2 — Verb grammar
 
-| Stage | Available actions |
-|---|---|
-| IDLE | "Run backtest →" |
-| BACKTEST (gate-pass) | "→ Promote to paper", "View evidence →" |
-| BACKTEST (in-progress or gate-fail) | "View evidence →" |
-| PAPER | "View evidence →" (capital-stage promotions hidden while ADR 0004 in force) |
-| MICRO LIVE | "Open detail →" (capital-stage promotions hidden while ADR 0004 in force) |
-| LIVE | "Open detail →" |
+The Action menu's verbs are grouped into three closed classes. New verbs require an ADR amendment to [ADR 0050](../adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md).
+
+**Directional (operator-driven):**
+`Promote to Paper`, `Promote to Micro Live`, `Promote to Live`, `Demote to Backtest`, `Return to Paper`, `Return to Micro Live`, `Return to Live`, `Return to Idle`
+
+- `Return to <active stage>` verbs are the leave-IDLE affordance; they surface only when the target stage's evidence is `freshness ∈ {Fresh, Aging}` AND `gate_result == Pass` (or `gate_result == NotApplicable` for LIVE — the only stage where NotApplicable is a valid gate_result, since LIVE has no further promotion gate).
+- `Return to Idle` is the to-shelf affordance; surfaces from any active stage.
+- There is no `Promote to Backtest` verb. `IDLE → BACKTEST` is system-driven on backtest job acceptance.
+- Use `Return to Idle`; do not use `Send to Idle`.
+
+**Invocation (operator-driven):**
+`Initiate Backtest`, `Refresh Backtest`, `Start Trading`, `Stop Trading`
+
+- `Stop Trading` maps to controlled-stop semantics — finish current cycle, close the `strategy_runs` row cleanly, do **not** cancel open orders. See [ADR 0012](../adr/0012-runtime-and-dual-stop.md) for the dual-stop model and [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) Decision 4 for the Bench mapping. The kill switch is a separate global affordance on the Anchor view, not a Bench Action menu item.
+
+**Informational (empty-menu floor):**
+`Open Evidence` — always present regardless of any other menu computation input.
+
+### §7.3 — Menu items by row state
+
+Menu visibility is computed from `(current_stage, evidence_by_stage, runs_in_flight)`. The pseudocode lives in ADR 0050 Decision 5; the table below groups the canonical row states for implementation reference.
+
+**IDLE — no prior history (Missing+Pending evidence at all stages, no run in flight)**
+
+| Visible items |
+|---|
+| `Initiate Backtest` |
+| `Open Evidence` |
+
+**IDLE — no prior history, backtest run in flight (`runs_in_flight[BACKTEST] == True`)**
+
+| Visible items |
+|---|
+| `Open Evidence` (monitoring affordance while run is in flight; no second re-run verb) |
+
+**IDLE — with prior PAPER evidence Fresh+Pass (returning shelf candidate)**
+
+| Visible items |
+|---|
+| `Return to Paper` |
+| `Initiate Backtest` |
+| `Open Evidence` |
+
+**IDLE — with prior MICRO LIVE evidence Fresh+Pass (deeper shelf candidate)**
+
+| Visible items |
+|---|
+| `Return to Micro Live` |
+| `Return to Paper` *(if PAPER evidence is also Fresh/Aging+Pass)* |
+| Re-run verb depends on BACKTEST evidence: `Initiate Backtest` if BACKTEST is Missing, Invalidated, or `(Aging|Stale)+Fail`; `Refresh Backtest` if BACKTEST is `(Aging|Stale)+Pass`; hidden if BACKTEST is Fresh+anything. |
+| `Open Evidence` |
+
+**IDLE — with prior LIVE evidence Fresh+NotApplicable (deepest shelf candidate)**
+
+| Visible items |
+|---|
+| `Return to Live` *(only stage where `gate_result == NotApplicable` satisfies `can_return_to`; LIVE has no further promotion gate)* |
+| `Return to Micro Live` *(if MICRO LIVE evidence is also Fresh/Aging+Pass)* |
+| `Return to Paper` *(if PAPER evidence is also Fresh/Aging+Pass)* |
+| Re-run verb: hidden if BACKTEST evidence is Fresh+anything (workflow discipline); `Refresh Backtest` if BACKTEST is `(Aging|Stale)+Pass`; `Initiate Backtest` if BACKTEST is Missing, Invalidated, or `(Aging|Stale)+Fail`. *(LIVE evidence's `NotApplicable` does not trigger any re-run verb directly per `re_run_verb`.)* |
+| `Open Evidence` |
+
+**IDLE — with prior MICRO LIVE evidence Stale+Pass; BACKTEST evidence also Stale+Pass (aged-out shelved candidate)**
+
+| Visible items |
+|---|
+| `Refresh Backtest` *(driven by BACKTEST evidence Stale+Pass per `re_run_verb`; MICRO LIVE Stale+Pass cannot support a Return verb but signals the strategy has prior usable history. Note: at IDLE, `re_run_verb` operates on the BACKTEST evidence record — the verb name reflects the stage being re-run.)* |
+| `Open Evidence` |
+
+**IDLE — with prior MICRO LIVE evidence Stale+Fail; BACKTEST evidence Stale+Fail or Invalidated (aged out, no usable baseline)**
+
+| Visible items |
+|---|
+| `Initiate Backtest` *(driven by BACKTEST evidence; Stale+Fail and Invalidated both produce `Initiate Backtest` per `re_run_verb`. Stale failing evidence has no usable baseline; start fresh.)* |
+| `Open Evidence` |
+
+**BACKTEST — gate pass, Fresh+Pass evidence, no run in flight**
+
+| Visible items |
+|---|
+| `Promote to Paper` |
+| `Return to Idle` |
+| `Open Evidence` |
+
+**BACKTEST — gate fail, Fresh+Fail evidence (just-completed failing run)**
+
+| Visible items |
+|---|
+| `Return to Idle` |
+| `Open Evidence` (no re-run verb — evidence is Fresh; an invalidating change must come first) |
+
+**BACKTEST — Aging+Pass evidence (passing but approaching stale)**
+
+| Visible items |
+|---|
+| `Promote to Paper` |
+| `Refresh Backtest` |
+| `Return to Idle` |
+| `Open Evidence` |
+
+**BACKTEST — run in flight (`runs_in_flight[BACKTEST] == True`; evidence may be Missing+Pending for an initial run, or any prior state for a refresh-in-flight)**
+
+| Visible items |
+|---|
+| `Return to Idle` |
+| `Open Evidence` (monitoring affordance; no re-run verb while run is in flight) |
+
+**PAPER — current Fresh+Pass evidence, session idle**
+
+| Visible items |
+|---|
+| `Start Trading` |
+| `Demote to Backtest` |
+| `Return to Idle` |
+| `Open Evidence` |
+| *(capital-stage promotions hidden while ADR 0004 in force)* |
+
+**PAPER — session running (`Stop Trading` surfaces, `Start Trading` hidden)**
+
+| Visible items |
+|---|
+| `Stop Trading` |
+| `Demote to Backtest` |
+| `Return to Idle` |
+| `Open Evidence` |
+
+**PAPER — Aging+Pass evidence, session idle**
+
+| Visible items |
+|---|
+| `Start Trading` |
+| `Refresh Backtest` *(aging evidence triggers refresh; Promote to Micro Live also gated-out by ADR 0004 forward lock)* |
+| `Demote to Backtest` |
+| `Return to Idle` |
+| `Open Evidence` |
+
+> **Coverage note:** the rows above are canonical, not exhaustive. Fixture data per ADR 0049 Decision 5 must additionally cover Stale and Invalidated evidence at PAPER, MICRO LIVE, and (where applicable) other states the menu rules can produce. Each fixture row exercises a distinct branch of the menu computation; the table here demonstrates the rule patterns.
+
+**MICRO LIVE — all states (capital-stage forward path locked under ADR 0004)**
+
+| Visible items |
+|---|
+| `Stop Trading` (if session running) or `Start Trading` (if session idle) |
+| `Return to Idle` |
+| `Open Evidence` |
+| *(Promote to Live is hidden by ADR 0004's forward lock. Demote to Backtest and Return to Paper are capital-affecting demotions; per [ADR 0043](../adr/0043-bench-demotion-actions-open-a-governance-flow.md) Decision 3 they remain locked rather than merely confirmed while ADR 0004 is in force.)* |
+
+**LIVE — all states (capital-stage paths locked while ADR 0004 in force)**
+
+| Visible items |
+|---|
+| `Stop Trading` (if session running) or `Start Trading` (if session idle) |
+| `Return to Idle` |
+| `Open Evidence` |
+| *(Demote to Backtest and Return to Micro Live are capital-affecting demotions; per [ADR 0043](../adr/0043-bench-demotion-actions-open-a-governance-flow.md) Decision 3 they remain locked rather than merely confirmed while ADR 0004 is in force. The hide is governance-gated, not forward-lock-gated. LIVE evidence carries `gate_result == NotApplicable` since LIVE has no further promotion gate.)* |
+
+### §7.4 — Refresh Backtest vs. Initiate Backtest boundary
+
+These two verbs have a precise, non-overlapping boundary:
+
+- **`Refresh Backtest`** — only for `(Aging|Stale)+Pass` evidence. Connotation: "this passed, but it's been a while; renew usable evidence." Never surfaces for any Fail variant.
+- **`Initiate Backtest`** — for `Invalidated` evidence (at any age), `(Aging|Stale)+Fail` evidence, and `Missing+Pending` with no run in flight (no completed evidence and nothing started).
+- **No re-run verb** for `Fresh+Pass`, `Fresh+Fail`, or any evidence state with a run in flight. For the Fresh cases: an invalidating change (config edit, parameter change, risk-policy update, methodology change) must transition the evidence to `Invalidated` first; only then does `Initiate Backtest` appear. This enforces "do something different before retrying" rather than allowing blind re-runs. `Open Evidence` carries the monitoring affordance while a run is in flight.
+
+The semantic boundary keeps the audit trail honest: a `Refresh` event in the audit trail implies prior usable evidence existed; an `Initiate` event does not.
+
+### §7.5 — Within-section drag for priority reorder
+
+Within a single stage section, rows may be reordered by drag to set visual priority. This drag is **purely cosmetic** — it does not mutate `promotion_stage`, `session_state`, or any durable field. Per [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md), the v1 reorder is session-only and not persisted: a page navigation, view switch, or app restart loses the reorder.
+
+- Drag handle: the 6-dot grip glyph in the row gutter (see §4)
+- Displacement threshold: ~6px to prevent accidental drags from clicks
+- During drag, the row renders as a floating ghost; the origin slot remains as a placeholder
+- Dropping within the same section reorders; dropping outside the section is a no-op (not a promotion/demotion)
+- Cross-section drag does not exist
+
+### §7.6 — v1 visual-prototype scope
+
+Every menu item, every modal, every drag action, and every confirmation in v1 is rendered for feel-validation only. **No backend state is mutated.** Specifically, per [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) Decision 2, all eight forbidden mutation paths apply:
+
+- No promotion writes
+- No demotion writes
+- No broker calls (Alpaca client not invoked from any Bench path)
+- No backtest execution calls (no actual backtest jobs are created or queued)
+- No trading-session start/stop writes (`strategy_runs` rows not opened or closed by Bench paths)
+- No persisted priority reorder (within-section drag is session-only)
+- No event-store writes from Bench code paths (no operator-action ledger records)
+- No kill-switch triggers from Bench paths
+
+Any contributor who finds a Bench path requiring one of the above must escalate before proceeding. This constraint is binary — "limited writes" is not an acceptable interpretation.
 
 ### Friction escalation per ADR 0005 / CLAUDE.md "Autonomy Boundary"
 
@@ -189,18 +372,11 @@ These transitions remain locked while ADR 0004 is in force. If a future ADR open
 
 The friction is enforced by the modal the Action menu triggers. The autonomy boundary is preserved at the modal level.
 
-### Within-section drag for priority reorder
-
-Within a single stage section, rows may be reordered by drag to set visual priority. This drag is **purely cosmetic** — it does not mutate `promotion_stage`, `session_state`, or any durable field. The reorder is reflected in the `stage_section` display order only.
-
-- Drag handle: the 6-dot grip glyph in the row gutter (see §4)
-- Displacement threshold: ~6px to prevent accidental drags from clicks
-- During drag, the row renders as a floating ghost; the origin slot remains as a placeholder
-- Dropping within the same section reorders; dropping outside the section is a no-op (not a promotion/demotion)
-
 ---
 
 ## 8. Modals — the three patterns
+
+> **v1 note:** All three modal patterns are visual stubs per [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md). Every modal renders and dismisses cleanly without mutating backend state. Modal copy may use placeholder phrasing such as "this would have done X" where helpful.
 
 There are three modal flows used by the Bench. **All three share the same surface treatment**; only content varies.
 
@@ -216,7 +392,7 @@ There are three modal flows used by the Bench. **All three share the same surfac
 
 ### Pattern A — Blocked-promotion modal (gate failure)
 
-Shown when a forward-promotion drop is blocked because one or more gates fail.
+Shown when a forward promotion is blocked because one or more gates fail.
 
 Content structure:
 
@@ -225,7 +401,7 @@ Content structure:
 3. **Prose paragraph** — italic Newsreader, plain-language explanation referencing the gate count
 4. **Gate table** — 4-column (Gate / Current / Required / Result), one row per gate, pass/fail styled in sage/rust
 5. **"What unblocks this" section** — italic Newsreader bullet list of remediation options. Each option is concrete and actionable.
-6. **Action footer** — `outlined` "Open evidence →" + `ghost` "Cancel"
+6. **Action footer** — `outlined` "Open Evidence" + `ghost` "Cancel"
 
 The gate table is a **reusable component** — it appears here, in the Strategy Detail drill-in, and (where applicable) in the consequence-confirm modal. Build it as a reusable element.
 
@@ -237,24 +413,26 @@ Content structure:
 
 1. **Eyebrow** — "Confirm promotion to live" or "Confirm retirement from live" — `label.xs`, `text.muted`
 2. **Title** — Newsreader display, e.g. *"Promote RSI-2 Pullback to live trading."*
-3. **Prose paragraph** — italic Newsreader, names the consequences. For promotion: *"This will allocate live capital and begin live trading. The decision is recorded permanently per ADR 0005."* For demotion: *"This will halt live trading on regime.daily.* — close 1 open position at the next session boundary, drain over 5 sessions, and archive attribution."*
+3. **Prose paragraph** — italic Newsreader, names the consequences. For promotion: *"This will allocate live capital and begin live trading. The decision is recorded permanently per ADR 0005."* For demotion / shelving: *"This will halt live trading on regime.daily — close 1 open position at the next session boundary, drain over 5 sessions, and archive attribution."*
 4. **Typed-confirm field** — `TextField` requiring the operator to type the literal phrase `PROMOTE` (or `RETIRE`). The action button is `disabled` until the field's value matches exactly.
 5. **Action footer** — `critical` "PROMOTE →" (or `critical` "RETIRE →") + `ghost` "Cancel". The action button is uppercase letter-spaced even disabled.
 
-This modal's top border is `brand.accent` (oxblood), not rust — the live boundary is a brand-level commitment, not a system-decline event.
+This modal's top border is `brand.accent` (oxblood), not rust — the live boundary is a brand-level commitment, not a system-decline event. The verbs in the eyebrow and title use the locked grammar: `Promote to Live`, `Return to Idle`, etc.
 
-### Pattern C — Consequence-confirm modal (demotion / re-test)
+### Pattern C — Consequence-confirm modal (demotion)
 
-Shown for backward demotion that doesn't cross the live boundary, or for re-test from any stage.
+Shown for backward demotion that doesn't cross the live boundary. Per the verb grammar (ADR 0050 Decision 7), demotion and re-test are separate verbs: a re-test is a `Demote to Backtest` (Pattern C) followed by a separate `Initiate Backtest` invocation on the resulting BACKTEST row. Pattern C governs only the demotion step.
+
+**v1 scope:** in v1, Pattern C is reachable only from PAPER via `Demote to Backtest`. Capital-affecting demotions (`Return to Paper` from MICRO LIVE; `Demote to Backtest` and `Return to Micro Live` from LIVE) are locked while ADR 0004 is in force per ADR 0043 Decision 3 and do not surface in any menu. When the live boundary opens, those paths reach Pattern C as well.
 
 Content structure:
 
-1. **Eyebrow** — "Confirm move" — `label.xs`, `text.muted`
-2. **Title** — Newsreader display, e.g. *"Move ATR Channel Breakout back to backtest."*
+1. **Eyebrow** — "Confirm demotion" — `label.xs`, `text.muted`
+2. **Title** — Newsreader display, e.g. *"Demote to Backtest — ATR Channel Breakout."*
 3. **Prose paragraph** — italic Newsreader, names the consequences (positions to close, evidence to re-evaluate, etc.)
-4. **Action footer** — `primary` "Move →" + `ghost` "Cancel"
+4. **Action footer** — `primary` "Confirm →" + `ghost` "Cancel"
 
-This modal's top border is `status.negative` (rust) like Pattern A — both surfaces communicate "the system is asking you to slow down and read."
+This modal's top border is `status.negative` (rust) like Pattern A — both surfaces communicate "the system is asking you to slow down and read." Titles use the locked verb names: `Demote to Backtest`, `Return to Idle`, etc.
 
 ---
 
@@ -272,6 +450,7 @@ These are the moves an implementer's instinctive UX habits will pull toward. Res
 - **No animated value transitions.** Per existing motion-discipline (DESIGN_SYSTEM.md §5.3 / 8): metric values, trade counts, and status changes update **instantly**, not by tweening. Animation is reserved for hover state, drag mechanics, and modal enter/exit.
 - **No StatusPill on rows.** The inline-signal-within-prose is a different pattern. StatusPill is for column-based status in tabular surfaces, not for the Bench.
 - **No "AI suggests promoting X" copy.** The system reports; it does not advise. Surface the facts (gates pass, evidence locked, days at stage). The operator decides.
+- **No backend mutations from Bench paths in v1.** Per [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) Decision 2, all eight mutation classes are forbidden: no promotion writes, no demotion writes, no broker calls, no backtest execution, no trading-session start/stop, no persisted priority reorder, no event-store writes, no kill-switch triggers. Any Bench code path that reaches a write surface in v1 is a bug.
 
 ---
 
@@ -305,32 +484,33 @@ Live data wiring (when the surface composes against real strategy state) should 
 
 ---
 
-## 11. Implementation sequencing — recommended
+## 11. Implementation sequencing — v1 PR plan
 
-Two PRs, decent each. PR 1 ships a fully usable Bench; PR 2 adds the drag ergonomics on top.
+The existing implementation (`BenchSurface`, `BenchRow`, prototype Action menu, prototype modals, in-section reorder) is **reconciled** to the ADR pack rather than rebuilt. Each PR's scope is "bring the existing code into compliance with the ADRs and this brief," not "build from scratch."
 
-### PR 1 — Bench-static
+### PR D — Read-model schema extension
 
-- Vertical stage-stacked layout
-- All section headers, row anatomy, status prose, action buttons
-- Inline-signal coloring
-- LIVE-row distinguished treatment (oxblood wash + 2px accent border)
-- All three modal patterns (blocked-promotion, typed-confirm, consequence-confirm) wired to per-row buttons
-- Reusable gate table component
-- Empty-state caption per section
-- Section header drop-target *visual states* defined in CSS / QML, but not yet wired to drag events
+Decent. Adds `Freshness` and `GateResult` enums; `EvidenceRecord` dataclass; `evidence_by_stage: dict[Stage, EvidenceRecord]` and `runs_in_flight: dict[Stage, bool]` fields on the strategy read model. Schema only — no fixture data, no freshness computation. Freshness computation is v2 work deferred to a future ADR.
 
-This PR ships a fully functional Bench. Every action is reachable via per-row click. No drag yet.
+### PR E — Fixture data set
 
-### PR 2 — Action menu write mechanics
+Small. Populates fixture strategies spanning the menu state space per [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) Decision 5: every promotion stage, every `Freshness` value at relevant stages, every `GateResult` value, at least one fixture exercising every menu rule in ADR 0047 and ADR 0050, and `Open Evidence` verifiable as the empty-menu floor on every fixture row.
 
-- Action menu wiring: per-row dropdown surfacing available actions computed from read-model state
-- Unavailable actions hidden (not disabled) based on current stage, gate verdicts, and ADR 0004 lock state
-- Write-capable modal flows triggered from the Action menu (same modal components from PR 1, now wired to submit mutations)
-- Within-section drag for priority reorder (`DragHandler` or equivalent), scoped to cosmetic `stage_section` ordering only
-- Touch / trackpad-drag testing on Windows for Qt 6.11+
+### PR F — BenchSurface + BenchRow QML reconciliation
 
-If PR 2 hits unexpected scope, PR 1 is already shipped and fully usable. The read-only Bench is a complete product; write mechanics are an operational upgrade, not a prerequisite.
+Decent. Reconciles the existing vertical `BenchSurface` and `BenchRow` QML to the ADR pack: vertical sections, full row anatomy per §4, visual escalation per §5, section header anatomy per §3, empty-state treatment. Existing code refined, not rebuilt.
+
+### PR G — Action menu wiring
+
+Decent. **Major checkpoint.** Reconciles the existing prototype Action menu to the ADR pack: uniform `Action` button label per §6, per-row menu items computed from `(current_stage, evidence_by_stage, runs_in_flight)` in Python per §7.1, hide-don't-disable per ADR 0047 Decision 2, `Open Evidence` floor always present per ADR 0047 Decision 5. Existing prototype refined.
+
+### PR H — Within-section drag
+
+Small. Reconciles existing in-section reorder to the ADR pack: cosmetic only, non-persisting, session-lifetime only per §7.5 and ADR 0049. Cross-section drag does not exist.
+
+### PR I — Evidence modal + per-action confirmation modals
+
+Decent. Reconciles existing prototype modals to the ADR pack: all three patterns per §8, locked verb names in eyebrows and titles, visual stubs with no backend mutation per ADR 0049. `Open Evidence` modal is a required surface per ADR 0047 — absence of visible actions is not self-explanatory without it.
 
 ---
 
@@ -344,4 +524,4 @@ Open `docs/mockups/bench-surface.html` in a browser. The mockup uses the actual 
 - The drag-handle affordance on every row
 - The blocked-promotion modal in its open state, anchored over the page
 
-The mockup is the source of truth for visual decisions. If the brief and the mockup disagree, **the mockup wins** — update the brief.
+The authority order is: **ADRs > this brief > mockup**. If the brief and the mockup disagree, update the brief against the ADRs, then update the mockup against the brief. The mockup is the source of truth for visual decisions not governed by an ADR; ADRs govern interaction model, verb grammar, schema, and scope.
