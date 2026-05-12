@@ -26,7 +26,7 @@ The right model is two orthogonal axes attached to a per-stage evidence record s
    Freshness asks *when*; gate_result asks *what*. They do not depend on each other. A given record can be in any combination of the two values that the invariants below permit.
 
 3. **Freshness state semantics (locked).**
-   - **Missing** — no completed usable evidence exists for this stage. Always pairs with `gate_result=Pending` (no verdict has been produced). Whether a backtest run is currently in flight is carried by a separate read-model field, `is_run_in_flight: bool` (see Decision 5); the (`Missing`, `Pending`, `is_run_in_flight=True`) triple represents an accepted run that has not completed, and (`Missing`, `Pending`, `is_run_in_flight=False`) represents "no run started yet."
+   - **Missing** — no completed usable evidence exists for this stage. Always pairs with `gate_result=Pending` (no verdict has been produced). Whether a backtest run is currently in flight at this stage is **operational run state**, not evidence — it lives on a separate per-stage map on the strategy read model (`runs_in_flight: dict[Stage, bool]`), not inside the `EvidenceRecord`. The menu rule consults that map alongside the evidence record (see Decision 5). The pair (`Missing+Pending`, `runs_in_flight[stage]=True`) represents an accepted run that has not completed; (`Missing+Pending`, `runs_in_flight[stage]=False`) represents "no run started yet."
    - **Fresh** — recent and accepted; current. No claim about gate result.
    - **Aging** — older than the "fresh" threshold but younger than the "stale" threshold. The freshness axis is still usable for `Promote` and `Return` paths *if* `gate_result == Pass`; the modal warns about approaching staleness. With `gate_result == Fail`, Aging behaves like a Fail evidence record and triggers `Initiate Backtest` per Decision 5 — the freshness gradient is preserved in the audit trail, not in the verb offered.
    - **Stale** — past the "stale" threshold. Cannot be used for state-changing verbs. Operator must `Refresh Backtest` (when prior gate was a Pass) or `Initiate Backtest` (otherwise).
@@ -75,10 +75,11 @@ The right model is two orthogonal axes attached to a per-stage evidence record s
    def re_run_verb(evidence, is_run_in_flight: bool):
        """Which re-run verb (if any) should appear for this evidence record?
 
-       `is_run_in_flight` is a separate read-model field that signals an
-       accepted-but-not-completed backtest run for this stage. When True,
-       no re-run verb appears regardless of evidence state — Open Evidence
-       carries the monitoring affordance.
+       `is_run_in_flight` is **operational run state**, not evidence. It is
+       sourced from the strategy read-model's `runs_in_flight: dict[Stage,
+       bool]` map at the relevant stage. When True, no re-run verb appears
+       regardless of evidence state — Open Evidence carries the monitoring
+       affordance.
        """
        if is_run_in_flight:
            return None  # don't offer a second run while one is in flight
@@ -106,7 +107,7 @@ The right model is two orthogonal axes attached to a per-stage evidence record s
 6. **`IDLE → BACKTEST` is system-driven on backtest job acceptance.** When the operator invokes `Initiate Backtest` on an IDLE strategy, the system transitions the row to BACKTEST when the backtest job is accepted/created — not when it completes. There is no `Promote to Backtest` operator verb. Leaving an actively-running backtest at IDLE would produce a stale read-model; the moment work is taken is the moment the row should reflect that. (The system-driven transition class is described in ADR 0049 Decision 3.)
 
 7. **Verb grammar (locked).** The Action menu's verbs are grouped into three classes:
-   - **Directional (operator-driven)** — `Promote to Paper`, `Promote to Micro Live`, `Promote to Live`, `Demote to Backtest`, `Return to Paper`, `Return to Idle`. Use `Return to Idle`; do not use `Send to Idle`. There is no `Promote to Backtest` verb.
+   - **Directional (operator-driven)** — `Promote to Paper`, `Promote to Micro Live`, `Promote to Live`, `Demote to Backtest`, `Return to Paper`, `Return to Micro Live`, `Return to Live`, `Return to Idle`. The `Return to <active stage>` verbs (`Return to Paper`, `Return to Micro Live`, `Return to Live`) are the leave-IDLE affordance and surface only when the target stage's evidence is `Fresh|Aging` + `Pass` (or `NotApplicable` for LIVE) per the `can_return_to` rule. `Return to Idle` is the to-shelf affordance and surfaces from any active stage. Use `Return to Idle`; do not use `Send to Idle`. There is no `Promote to Backtest` verb.
    - **Invocation (operator-driven)** — `Initiate Backtest`, `Refresh Backtest`, `Start Trading`, `Stop Trading`. `Stop Trading` maps to controlled-stop semantics, not kill switch (see ADR 0049 Decision 4).
    - **Informational (empty-menu floor)** — `Open Evidence`. Always present per ADR 0047 Decision 5.
 
@@ -118,7 +119,7 @@ The right model is two orthogonal axes attached to a per-stage evidence record s
 
 **Per-stage records match the existing event-store grain.** Backtest runs, strategy runs (paper / micro-live / live), and frozen manifests are all already per-stage in the event store (ADR 0011, ADR 0015). A per-strategy evidence axis is a derived view over data that already exists per-stage. A global `evidence_status` field would impose a different grain on the read-model than the underlying truth, requiring lossy aggregation.
 
-**Orthogonal freshness and gate_result let the read-model represent states that a fused axis cannot.** A Fresh+Fail run (just-completed backtest that didn't pass) and a Stale+Fail run (old failing evidence) demand different operator action. Conflating them loses the distinction. The orthogonality also accommodates the Missing case cleanly: freshness records "no completed evidence" and gate_result records "no verdict" (`Pending`) without either axis having to model run-in-flight semantics. That state is carried separately by `is_run_in_flight` so the in-flight-vs-not-yet-started distinction stays out of the evidence-axis enums.
+**Orthogonal freshness and gate_result let the read-model represent states that a fused axis cannot.** A Fresh+Fail run (just-completed backtest that didn't pass) and a Stale+Fail run (old failing evidence) demand different operator action. Conflating them loses the distinction. The orthogonality also accommodates the Missing case cleanly: freshness records "no completed evidence" and gate_result records "no verdict" (`Pending`) without either axis having to model run-in-flight semantics. The in-flight-vs-not-yet-started distinction is operational run state, kept separately on the strategy read model as `runs_in_flight: dict[Stage, bool]` so the evidence-axis enums stay purely about historical evidence.
 
 **The five freshness states preserve forensic distinctions even where menu effects collapse.** Missing and Invalidated produce the same operator menu (`Initiate Backtest`) but mean different things in the audit trail: "no backtest has ever run" vs. "a prior backtest was invalidated by event X on date Y." Aging and Stale share the Pass-with-aging gradient — Aging surfaces a warning band where the evidence is still usable but approaching staleness; Stale is the cliff where it stops being usable. Forensic distinctions are cheap at the schema level and become load-bearing once the audit-trail design lands in v2.
 
@@ -134,7 +135,11 @@ The right model is two orthogonal axes attached to a per-stage evidence record s
 
 ## Consequences
 
-- **The Bench read-model dataclass gains `evidence_by_stage: dict[Stage, EvidenceRecord]`.** `EvidenceRecord` carries `freshness: Freshness`, `gate_result: GateResult`, and `is_run_in_flight: bool`, plus stage-specific metric snapshots and timestamps to be specified in the read-model implementation PR. The `is_run_in_flight` flag is consulted by `re_run_verb` to suppress the verb when a backtest run is already accepted but not yet completed; it is independent of the freshness/gate_result axes and is sourced from the open-backtest-runs view in the event store.
+- **The Bench read-model dataclass gains two new fields.**
+  - `evidence_by_stage: dict[Stage, EvidenceRecord]` — historical evidence. `EvidenceRecord` carries `freshness: Freshness` and `gate_result: GateResult`, plus stage-specific metric snapshots and timestamps to be specified in the read-model implementation PR.
+  - `runs_in_flight: dict[Stage, bool]` — **operational run state**, separate from evidence. Each entry signals whether an accepted-but-not-completed backtest run exists at that stage. Sourced from the open-backtest-runs view in the event store. Consulted by `re_run_verb` to suppress the verb during in-flight runs.
+
+  The split keeps the evidence axes pure (history only) and the operational state visible (current activity). Implementations that put `is_run_in_flight` inside `EvidenceRecord` have the layering wrong.
 - **`Freshness` and `GateResult` are Python enums** in the strategies / Bench module. The five freshness values and four gate-result values are the complete enumerations; future additions require an ADR amendment.
 - **v1 fixture data must populate evidence records for every relevant `(strategy, stage)` pair** — at minimum every stage the demo strategy has reached, plus the relevant target stages for any `Return` verb the prototype needs to exercise. Fixtures must collectively span the menu's state space per ADR 0049 Decision 5.
 - **Menu computation lives in the Python read-model layer** per ADR 0047. QML consumes the precomputed per-row action set; QML does not own the rules. Implementations that compute action visibility in QML have the rules in the wrong place.
