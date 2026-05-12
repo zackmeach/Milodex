@@ -335,6 +335,7 @@ Item {
             // Clicking any item is a no-op in v1.  PR I will wire handlers.
             QQC2.Menu {
                 id: actionMenu
+                width: 240
                 // Anchor below-right of the Action button
                 x: actionButton.x + actionButton.width - width
                 y: actionButton.y + actionButton.height + 2
@@ -357,6 +358,8 @@ Item {
                         required property var modelData
 
                         text: modelData.label
+                        implicitWidth: 240
+                        implicitHeight: 32
                         font.family: Theme.typography.label.xs.family
                         font.pixelSize: Theme.typography.label.xs.size
 
@@ -391,6 +394,7 @@ Item {
                         }
 
                         background: Rectangle {
+                            implicitWidth: 240
                             implicitHeight: 32
                             color: parent.highlighted ? Theme.color.surface.raised : "transparent"
                         }
