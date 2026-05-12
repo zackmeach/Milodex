@@ -352,23 +352,16 @@ Item {
                     delegate: QQC2.MenuItem {
                         required property var modelData
 
-                        // Separator line above Open Evidence (the informational
-                        // floor) so it is visually distinct from the verbs above it.
-                        // Per bench-brief §7, Open Evidence is always last.
-                        QQC2.MenuSeparator {
-                            parent: parent
-                            width: parent.width
-                            visible: modelData.verbClass === "informational"
-                            // Positioned above the item text area
-                            y: 0
-                        }
-
                         text: modelData.label
                         font.family: Theme.typography.label.xs.family
                         font.pixelSize: Theme.typography.label.xs.size
 
                         // Color: directional = brand.accent; invocation = text.primary;
                         // informational (Open Evidence) = text.secondary.
+                        // A 1px top border on the informational row gives the floor
+                        // break that a QQC2.MenuSeparator inside a Repeater delegate
+                        // cannot reliably provide (it would be a child of the item, not
+                        // a sibling in the Menu's contentData).
                         contentItem: Text {
                             text: parent.text
                             font: parent.font
@@ -382,6 +375,15 @@ Item {
                             leftPadding: 12
                             rightPadding: 12
                             verticalAlignment: Text.AlignVCenter
+                            topPadding: modelData.verbClass === "informational" ? 1 : 0
+
+                            Rectangle {
+                                visible: modelData.verbClass === "informational"
+                                width: parent.width
+                                height: 1
+                                y: 0
+                                color: Theme.color.border.subtle
+                            }
                         }
 
                         background: Rectangle {

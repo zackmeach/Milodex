@@ -67,20 +67,23 @@ Item {
     }
 
     // Determine the Action button variant for a row (bench-brief §6).
-    // Derived from the actual compute_menu_items() output carried in
-    // row.actions — the pure-function source of truth from bench_v1.py.
+    // Derived from the verbClass of items in row.actions (compute_menu_items()
+    // output from bench_v1.py), with a deliberate PAPER-section override.
     //
     // Variant logic:
     //   primary   — at least one directional verb is present (Promote / Return
     //               from IDLE / Demote): the operator has a forward or
-    //               governance action available.  Exception: PAPER rows are
-    //               down-weighted to "outlined" so the section doesn't feel
-    //               over-emphasised (carry-forward note from orchestrator).
+    //               governance action available.
     //   outlined  — only invocation verbs (Start/Stop Trading, Initiate /
     //               Refresh Backtest) or the Open Evidence floor: monitoring
     //               or evidence-collection action available.
     //   ghost     — Open Evidence only (informational floor): no state-
     //               changing verbs available at this row.
+    //
+    // PAPER-section override (carry-forward note — PAPER section visual weight):
+    //   When verbClass analysis would yield "primary", PAPER rows are instead
+    //   returned as "outlined" to dial back visual weight in the most-populated
+    //   section.  All other stages keep the verbClass-derived result.
     function actionVariant(row) {
         var actions = row.actions || []
         var hasDirectional = false
