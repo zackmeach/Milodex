@@ -66,41 +66,47 @@ Item {
         return Theme.status.info
     }
 
-    // Determine the Action button variant for a row (bench-brief §6).
+    // Determine the Action button variant for a row (bench-brief §6, §7).
     // Derived from the verbClass of items in row.actions (compute_menu_items()
-    // output from bench_v1.py), with a deliberate PAPER-section override.
+    // output from bench_v1.py).
     //
     // Variant logic:
-    //   primary   — at least one directional verb is present (Promote / Return
-    //               from IDLE / Demote): the operator has a forward or
-    //               governance action available.
-    //   outlined  — only invocation verbs (Start/Stop Trading, Initiate /
-    //               Refresh Backtest) or the Open Evidence floor: monitoring
-    //               or evidence-collection action available.
-    //   ghost     — Open Evidence only (informational floor): no state-
-    //               changing verbs available at this row.
+    //   primary   — row has a Promote-to-next-stage directional verb: the
+    //               filled oxblood button signals an available forward-motion
+    //               transition.  Demote and Return-from-IDLE are also
+    //               directional but represent governance rather than promotion;
+    //               however, they still carry directional weight and warrant
+    //               primary fill per §7.  Exception: if the row has directional
+    //               verbs but none of them is a promote (e.g. Fail-state
+    //               BACKTEST rows with only Demote/Return), use "outlined" —
+    //               the filled button is reserved for rows that can move
+    //               forward in the promotion pipeline.
+    //   outlined  — default for all other cases: invocation-only rows
+    //               (Start/Stop Trading, Initiate/Refresh Backtest), demote-only
+    //               rows, or rows where only the Open Evidence floor is present.
+    //   ghost     — Open Evidence only (informational floor): no state-changing
+    //               verbs available at this row.
     //
-    // PAPER-section override (carry-forward note — PAPER section visual weight):
-    //   When verbClass analysis would yield "primary", PAPER rows are instead
-    //   returned as "outlined" to dial back visual weight in the most-populated
-    //   section.  All other stages keep the verbClass-derived result.
+    // Rule: default to "outlined"; use "primary" only when the row has a
+    // promote-eligible directional verb (i.e., a Promote-to-next-stage action
+    // is available).  Everything else — Demote, Return, invocation-only,
+    // evidence-only — renders as "outlined" or "ghost".
     function actionVariant(row) {
         var actions = row.actions || []
+        var hasPromote = false
         var hasDirectional = false
         var hasInvocation = false
         for (var i = 0; i < actions.length; ++i) {
-            if (actions[i].verbClass === "directional") { hasDirectional = true; break }
+            if (actions[i].verbClass === "directional") {
+                hasDirectional = true
+                // Promote verbs carry the label "Promote to <stage>"
+                if ((actions[i].label || "").indexOf("Promote") !== -1) hasPromote = true
+            }
             if (actions[i].verbClass === "invocation") hasInvocation = true
         }
-        if (hasDirectional) {
-            // PAPER section: use "outlined" to avoid visual over-emphasis on a
-            // section that currently has the most strategies and many of which
-            // have directional verbs.  Other sections keep "primary".
-            // (Carry-forward visual note from bench v1 PR G orchestrator.)
-            if (row.stage === "paper") return "outlined"
-            return "primary"
-        }
-        if (hasInvocation) return "outlined"
+        // primary only for promote-eligible rows (forward pipeline motion)
+        if (hasPromote) return "primary"
+        if (hasInvocation || hasDirectional) return "outlined"
         return "ghost"
     }
 

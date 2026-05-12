@@ -340,11 +340,15 @@ Item {
                 x: actionButton.x + actionButton.width - width
                 y: actionButton.y + actionButton.height + 2
 
+                // Warm-dark surface to match ledger aesthetic.
+                // surface.raised (#1a1611) is the highest defined surface token;
+                // border.regular (#33291c) gives a thin brass/brown hairline;
+                // radius 4 keeps the editorial softness.
                 background: Rectangle {
-                    color: Theme.color.surface.elevated
+                    color: Theme.color.surface.raised
                     border.color: Theme.color.border.regular
                     border.width: 1
-                    radius: 4
+                    radius: Theme.radius.md
                 }
 
                 // Instantiator is required here — QQC2.Menu uses addItem()/removeItem()
@@ -359,47 +363,49 @@ Item {
 
                         text: modelData.label
                         implicitWidth: 240
-                        implicitHeight: 32
+                        implicitHeight: 36
                         font.family: Theme.typography.label.xs.family
                         font.pixelSize: Theme.typography.label.xs.size
 
-                        // Color: directional = brand.accent; invocation = text.primary;
-                        // informational (Open Evidence) = text.primary.
-                        // text.secondary was invisible on the menu's dark background
-                        // (surface.elevated is not a defined token — menu background
-                        // falls back to near-black).  ADR 0047 Decision 5 makes Open
-                        // Evidence the always-present floor; readability takes priority
-                        // over visual subordination.  The 1px top border still provides
-                        // the floor break that visually separates it from higher-friction
-                        // verbs.
+                        // Color: directional verbs use brand.accent (oxblood) to signal
+                        // forward-motion commitment.  Invocation and informational items
+                        // use text.primary (cream) — fully readable on surface.raised.
+                        // Open Evidence (informational floor) deliberately matches
+                        // invocation weight; visual separation is handled by the
+                        // border.regular hairline anchored at the top of the item.
                         contentItem: Text {
                             text: parent.text
                             font: parent.font
-                            color: {
-                                if (modelData.verbClass === "directional")
-                                    return Theme.color.brand.accent
-                                if (modelData.verbClass === "invocation")
-                                    return Theme.color.text.primary
-                                return Theme.color.text.primary
-                            }
+                            color: modelData.verbClass === "directional"
+                                   ? Theme.color.brand.accent
+                                   : Theme.color.text.primary
                             leftPadding: 12
                             rightPadding: 12
                             verticalAlignment: Text.AlignVCenter
-                            topPadding: modelData.verbClass === "informational" ? 1 : 0
 
+                            // Full-width hairline separator above the informational floor
+                            // (Open Evidence).  border.regular (#33291c) is more visible
+                            // than border.subtle (#241f15) against surface.raised.
                             Rectangle {
                                 visible: modelData.verbClass === "informational"
-                                width: parent.width
+                                anchors.top: parent.top
+                                anchors.left: parent.left
+                                anchors.right: parent.right
+                                // Extend into left/right padding so the rule spans the full
+                                // menu width rather than just the text content area.
+                                anchors.leftMargin: -12
+                                anchors.rightMargin: -12
                                 height: 1
-                                y: 0
-                                color: Theme.color.border.subtle
+                                color: Theme.color.border.regular
                             }
                         }
 
+                        // Hover: shift to surface.base (#13100a) — one step darker than
+                        // surface.raised — for a subtle, non-flashy active indicator.
                         background: Rectangle {
                             implicitWidth: 240
-                            implicitHeight: 32
-                            color: parent.highlighted ? Theme.color.surface.raised : "transparent"
+                            implicitHeight: 36
+                            color: parent.highlighted ? Theme.color.surface.base : "transparent"
                         }
 
                         // v1 visual-prototype: clicking is intentionally a no-op.
