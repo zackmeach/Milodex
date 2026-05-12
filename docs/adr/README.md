@@ -72,6 +72,8 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0041](0041-kanban-display-names-are-presentation-metadata.md) | Kanban display names are presentation metadata | Accepted |
 | [0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md) | Live and micro-live eligibility is locked and evidence-based | Accepted |
 | [0043](0043-kanban-demotion-gestures-open-a-governance-flow.md) | Kanban demotion gestures open a governance flow | Accepted |
-| [0044](0044-kanban-uses-cached-hover-validation-and-authoritative-drop-validation.md) | Kanban uses cached hover validation and authoritative drop validation | Accepted |
-| [0045](0045-kanban-responsive-layout-uses-horizontal-board-scroll.md) | Kanban responsive layout uses horizontal board scroll | Accepted |
+| [0044](0044-kanban-uses-cached-hover-validation-and-authoritative-drop-validation.md) | Kanban uses cached hover validation and authoritative drop validation | Superseded |
+| [0045](0045-kanban-responsive-layout-uses-horizontal-board-scroll.md) | Kanban responsive layout uses horizontal board scroll | Superseded |
 | [0046](0046-kanban-stage-hues-extend-production-tokens.md) | Kanban stage hues extend production tokens | Accepted |
+| [0047](0047-bench-action-availability-is-the-validation-surface.md) | Bench action availability is the validation surface | Accepted |
+| [0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md) | Bench uses vertical stage sections with natural scroll | Accepted |
