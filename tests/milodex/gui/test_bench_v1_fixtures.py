@@ -233,28 +233,34 @@ class TestAnchorScenarios:
 
     def test_idle_with_prior_paper_fresh_pass(self) -> None:
         row = _row_by_id("momentum.daily.cross_sectional_rsi.spy_holdings.v1")
+        # Directional first (Return to Paper), then invocation (Initiate
+        # Backtest), then floor.
         assert _labels_for(row) == [
-            LABEL_INITIATE_BACKTEST,
             "Return to Paper",
+            LABEL_INITIATE_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_idle_with_prior_micro_live_fresh_pass(self) -> None:
         row = _row_by_id("regime.daily.sma200_rotation.spy_shy.v1")
+        # Returns ordered deepest-first (Micro Live before Paper) per
+        # bench-brief §7.3, then invocation, then floor.
         assert _labels_for(row) == [
-            LABEL_INITIATE_BACKTEST,
-            "Return to Paper",
             "Return to Micro Live",
+            "Return to Paper",
+            LABEL_INITIATE_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_idle_with_prior_live_fresh_not_applicable(self) -> None:
         row = _row_by_id("breakout.daily.donchian_20_10.sector_etfs.demo.v1")
+        # Returns deepest-first (Live → Micro Live → Paper), then
+        # invocation, then floor.
         assert _labels_for(row) == [
-            LABEL_INITIATE_BACKTEST,
-            "Return to Paper",
-            "Return to Micro Live",
             "Return to Live",
+            "Return to Micro Live",
+            "Return to Paper",
+            LABEL_INITIATE_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -284,10 +290,12 @@ class TestAnchorScenarios:
 
     def test_backtest_aging_pass(self) -> None:
         row = _row_by_id("regime.weekly.dual_momentum.global_etf_set.v1")
+        # Directional verbs (Promote, Return to Idle) precede invocation
+        # (Refresh Backtest).
         assert _labels_for(row) == [
             "Promote to Paper",
-            LABEL_REFRESH_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_REFRESH_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -297,45 +305,51 @@ class TestAnchorScenarios:
 
     def test_paper_fresh_pass_session_idle(self) -> None:
         row = _row_by_id("momentum.daily.cross_sectional_rsi.bonds.v1")
+        # Directional verbs (Demote, Return to Idle) precede invocation
+        # (Start Trading) per the ordering rule.
         assert _labels_for(row) == [
-            LABEL_START_TRADING,
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_paper_session_running(self) -> None:
         row = _row_by_id("breakout.daily.atr_channel.sector_etfs.paper_runner.v1")
         assert _labels_for(row) == [
-            LABEL_STOP_TRADING,
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_STOP_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_paper_aging_pass_with_backtest_aging_pass(self) -> None:
         row = _row_by_id("meanrev.daily.zscore_reversion.bonds.v1")
+        # Directional (Demote, Return to Idle) → invocation
+        # (Start Trading, Refresh Backtest) → floor.
         assert _labels_for(row) == [
-            LABEL_START_TRADING,
-            LABEL_REFRESH_BACKTEST,
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
+            LABEL_REFRESH_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_micro_live_session_idle(self) -> None:
         row = _row_by_id("regime.daily.adaptive_volatility.spy_iwm.v1")
+        # Directional Return to Idle precedes invocation Start Trading.
         assert _labels_for(row) == [
-            LABEL_START_TRADING,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_live_session_running(self) -> None:
         row = _row_by_id("regime.daily.sma200_rotation.spy_shy.live.v1")
+        # Directional Return to Idle precedes invocation Stop Trading.
         assert _labels_for(row) == [
-            LABEL_STOP_TRADING,
             LABEL_RETURN_TO_IDLE,
+            LABEL_STOP_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 

@@ -505,9 +505,11 @@ class TestComposerIdleRows:
                 Stage.PAPER: EvidenceRecord(Freshness.FRESH, GateResult.PASS),
             },
         )
+        # Directional first (Return to Paper), then invocation (Initiate
+        # Backtest), then floor (Open Evidence).
         assert _labels(compute_menu_items(state)) == [
-            LABEL_INITIATE_BACKTEST,
             "Return to Paper",
+            LABEL_INITIATE_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -604,10 +606,12 @@ class TestComposerBacktestRows:
                 Stage.BACKTEST: EvidenceRecord(Freshness.AGING, GateResult.PASS),
             },
         )
+        # Directional first (Promote, Return to Idle), then invocation
+        # (Refresh Backtest), then floor.
         assert _labels(compute_menu_items(state)) == [
             "Promote to Paper",
-            LABEL_REFRESH_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_REFRESH_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -633,12 +637,14 @@ class TestComposerPaperRows:
                 Stage.PAPER: EvidenceRecord(Freshness.FRESH, GateResult.PASS),
             },
         )
-        # Promote to Micro Live is hidden (ADR 0004); no re-run verb
-        # (no BACKTEST evidence record); Start Trading shown.
+        # Promote to Micro Live hidden (ADR 0004); no re-run verb (no
+        # BACKTEST evidence record). Directional verbs (Demote, Return
+        # to Idle) precede invocation (Start Trading) per the ordering
+        # rule.
         assert _labels(compute_menu_items(state)) == [
-            LABEL_START_TRADING,
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -651,9 +657,9 @@ class TestComposerPaperRows:
             is_session_running=True,
         )
         assert _labels(compute_menu_items(state)) == [
-            LABEL_STOP_TRADING,
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_STOP_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -665,13 +671,15 @@ class TestComposerPaperRows:
                 Stage.PAPER: EvidenceRecord(Freshness.AGING, GateResult.PASS),
             },
         )
-        # Promote to Micro Live still hidden (ADR 0004), but Refresh
-        # Backtest now appears because BACKTEST evidence is Aging+Pass.
+        # Promote to Micro Live still hidden (ADR 0004); Refresh Backtest
+        # now surfaces because BACKTEST evidence is Aging+Pass. Directional
+        # verbs (Demote, Return to Idle) come before invocation (Start
+        # Trading, Refresh Backtest).
         assert _labels(compute_menu_items(state)) == [
-            LABEL_START_TRADING,
-            LABEL_REFRESH_BACKTEST,
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
+            LABEL_REFRESH_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -688,9 +696,10 @@ class TestComposerCapitalStageRows:
         )
         # Promote to Live hidden by ADR 0004 forward lock.
         # Demote to Backtest hidden by ADR 0043 Decision 3 + ADR 0004.
+        # Directional Return to Idle precedes invocation Start Trading.
         assert _labels(compute_menu_items(state)) == [
-            LABEL_START_TRADING,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -704,9 +713,10 @@ class TestComposerCapitalStageRows:
         # No further promotion (LIVE is terminal).
         # Demote and Return to Micro Live both capital-affecting →
         # hidden by ADR 0043 Decision 3 + ADR 0004.
+        # Directional Return to Idle precedes invocation Start Trading.
         assert _labels(compute_menu_items(state)) == [
-            LABEL_START_TRADING,
             LABEL_RETURN_TO_IDLE,
+            LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
