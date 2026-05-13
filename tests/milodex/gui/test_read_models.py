@@ -840,3 +840,269 @@ def test_bench_pr_m_no_command_proposal_keys_in_packet(tmp_path: Path) -> None:
     for section in snapshot["sections"]:
         for row in section["strategies"]:
             _walk(row.get("evidencePacket"))
+
+
+# ---------------------------------------------------------------------------
+# PR N (ADR 0049): normalized read-only Action Intent Preview contract
+# ---------------------------------------------------------------------------
+
+
+def _all_actions(snapshot: dict) -> list[dict]:
+    actions = []
+    for section in snapshot["sections"]:
+        for row in section["strategies"]:
+            actions.extend(row["actions"])
+    return actions
+
+
+def test_bench_pr_n_action_preview_present_on_every_action(tmp_path: Path) -> None:
+    """Every Bench action carries an actionIntentPreview object."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    actions = _all_actions(snapshot)
+    assert actions, "expected at least one action in the snapshot"
+    for action in actions:
+        assert "actionIntentPreview" in action, (
+            f"missing actionIntentPreview on action {action.get('label')!r}"
+        )
+        preview = action["actionIntentPreview"]
+        assert preview["schemaVersion"] == 1
+        assert preview["executable"] is False, "PR N must keep executable=False"
+        assert preview["wired"] is False, "PR N must keep wired=False"
+
+
+def test_bench_pr_n_action_preview_keys_are_stable(tmp_path: Path) -> None:
+    """Lock the action preview key set so future PRs can't silently drift."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    preview = _all_actions(snapshot)[0]["actionIntentPreview"]
+    assert set(preview.keys()) == {
+        "schemaVersion",
+        "actionKind",
+        "actionLabel",
+        "verbClass",
+        "currentStage",
+        "targetStage",
+        "intentCopy",
+        "requirements",
+        "futureRecord",
+        "capitalBearing",
+        "safetyCopy",
+        "executable",
+        "wired",
+    }
+
+
+def test_bench_pr_n_action_preview_kind_classification(tmp_path: Path) -> None:
+    """actionKind classifies Promote/Demote/Return prefixes and fixed labels."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    actions = _all_actions(build_bench_snapshot(db, configs))
+    by_label = {a["label"]: a["actionIntentPreview"] for a in actions}
+
+    # Every action's kind must be the canonical classification.
+    expected_by_prefix = (
+        ("Promote to ", "promote"),
+        ("Demote to ", "demote"),
+        ("Return to ", "return"),
+    )
+    fixed_labels = {
+        "Start Trading": "start_trading",
+        "Stop Trading": "stop_trading",
+        "Initiate Backtest": "initiate_backtest",
+        "Refresh Backtest": "refresh_backtest",
+        "Open Evidence": "open_evidence",
+    }
+    for label, preview in by_label.items():
+        kind = preview["actionKind"]
+        if label in fixed_labels:
+            assert kind == fixed_labels[label], (
+                f"{label!r} → kind {kind!r}, expected {fixed_labels[label]!r}"
+            )
+            continue
+        matched = False
+        for prefix, expected_kind in expected_by_prefix:
+            if label.startswith(prefix):
+                assert kind == expected_kind, (
+                    f"{label!r} prefix {prefix!r} → kind {kind!r}, expected {expected_kind!r}"
+                )
+                matched = True
+                break
+        assert matched or kind == "unknown", f"{label!r} unclassified — kind {kind!r}"
+
+
+def test_bench_pr_n_action_preview_capital_bearing_paper_start(tmp_path: Path) -> None:
+    """Paper-stage Start Trading is NOT capital-bearing (PR L refinement)."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    actions = _all_actions(build_bench_snapshot(db, configs))
+    start = next((a for a in actions if a["label"] == "Start Trading"), None)
+    assert start is not None, "paper row should expose Start Trading"
+    preview = start["actionIntentPreview"]
+    assert preview["capitalBearing"] is False, (
+        "paper-stage Start Trading must not be classified as capital-bearing"
+    )
+    # The pre-rendered safetyCopy must include the paper-start clarification.
+    assert "no capital exposure" in preview["safetyCopy"]
+    assert "Bench v1 renders this intent packet for review only." in preview["safetyCopy"]
+
+
+def test_bench_pr_n_action_preview_future_record_strings(tmp_path: Path) -> None:
+    """Each actionKind maps to the canonical futureRecord string."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    expected = {
+        "promote": "promotion_event",
+        "demote": "demotion_event",
+        "return": "stage_return_event",
+        "start_trading": "session_start_event",
+        "stop_trading": "session_stop_event",
+        "initiate_backtest": "backtest_request_event",
+        "refresh_backtest": "backtest_refresh_event",
+        "open_evidence": "—",
+    }
+    for action in _all_actions(build_bench_snapshot(db, configs)):
+        preview = action["actionIntentPreview"]
+        kind = preview["actionKind"]
+        if kind in expected:
+            assert preview["futureRecord"] == expected[kind], (
+                f"{kind!r} → futureRecord {preview['futureRecord']!r}, expected {expected[kind]!r}"
+            )
+
+
+def test_bench_pr_n_action_preview_requirements_are_independent(tmp_path: Path) -> None:
+    """requirements is a fresh list per preview — mutation must not leak."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    actions = _all_actions(build_bench_snapshot(db, configs))
+    first, second = actions[0], actions[1]
+    first["actionIntentPreview"]["requirements"].append("LEAKED")
+    assert "LEAKED" not in second["actionIntentPreview"]["requirements"]
+
+
+def test_bench_pr_n_no_command_keys_in_action_preview(tmp_path: Path) -> None:
+    """ADR 0049 Decision 2: preview must never introduce command/proposal keys."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    forbidden = {
+        "commandProposal",
+        "CommandProposal",
+        "submitCommand",
+        "dispatchCommand",
+        "command",
+        "proposal",
+        "payload",
+        "broker",
+        "eventStore",
+    }
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                assert key not in forbidden, (
+                    f"forbidden key '{key}' found in actionIntentPreview — "
+                    "ADR 0049 Decision 2: Bench v1 is read-only"
+                )
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for action in _all_actions(build_bench_snapshot(db, configs)):
+        _walk(action["actionIntentPreview"])
+
+
+def test_bench_pr_n_action_preview_micro_live_capital_bearing(tmp_path: Path) -> None:
+    """Promote-target of micro_live/live or label containing 'Live' is capital-bearing."""
+    from milodex.gui.bench_v1 import MenuItem
+    from milodex.gui.read_models import _action_intent_preview, _StrategyRow
+
+    row = _StrategyRow(
+        strategy_id="x.y.z.v1",
+        name="X",
+        display_name_source="derived",
+        stage="paper",
+        description="",
+        config_path="",
+        family="meanrev",
+        template="daily",
+        enabled=True,
+    )
+    item = MenuItem(
+        label="Promote to Micro Live",
+        verb_class="directional",
+        target_stage="micro_live",
+    )
+    preview = _action_intent_preview(row, item)
+    assert preview["capitalBearing"] is True
+    assert _COPY_CAPITAL_LOCK_SHORT_TEST in preview["safetyCopy"]
+
+
+_COPY_CAPITAL_LOCK_SHORT_TEST = (
+    "Capital-bearing transitions remain locked while ADR 0004 is in force."
+)

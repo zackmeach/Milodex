@@ -868,3 +868,82 @@ def test_bench_pr_m_no_authoritative_freshness_claims() -> None:
     assert "_pktGate.freshness" in evidence_src and "_pktGate.gateResult" in evidence_src, (
         "BenchEvidenceModal.qml must render the packet's freshness/gateResult sentinels"
     )
+
+
+# ---------------------------------------------------------------------------
+# PR N (ADR 0049): Action Intent Preview read-model contract — QML consumption
+# ---------------------------------------------------------------------------
+
+
+def test_bench_pr_n_confirmation_modal_prefers_action_preview() -> None:
+    """BenchConfirmationModal must read actionData.actionIntentPreview (PR N)."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+    assert "actionIntentPreview" in modal_src, (
+        "BenchConfirmationModal.qml must reference actionIntentPreview (PR N)"
+    )
+    for helper in ("_preview", "_previewAvailable"):
+        assert helper in modal_src, (
+            f"BenchConfirmationModal.qml must declare {helper!r} helper (PR N)"
+        )
+
+    # Each PR L helper must now consult the preview before falling back.
+    for needle in (
+        "_preview.capitalBearing",
+        "action.actionIntentPreview.actionKind",
+        "action.actionIntentPreview.intentCopy",
+        "_preview.requirements",
+        "action.actionIntentPreview.futureRecord",
+        "action.actionIntentPreview.safetyCopy",
+    ):
+        assert needle in modal_src, f"BenchConfirmationModal.qml must read {needle!r} (PR N)"
+
+
+def test_bench_pr_n_no_executable_or_wired_truth_in_qml() -> None:
+    """PR N preview MUST stay non-executable; QML must not invent executable=true."""
+    forbidden = (
+        "executable: true",
+        "wired: true",
+        "preview.executable === true",
+        "preview.wired === true",
+    )
+    for filename in ("BenchRow.qml", "BenchConfirmationModal.qml", "BenchEvidenceModal.qml"):
+        src = (_MILODEX_QML_DIR / "components" / filename).read_text(encoding="utf-8")
+        for phrase in forbidden:
+            assert phrase not in src, (
+                f"{filename} must not contain {phrase!r} (PR N: previews stay non-executable)"
+            )
+
+
+def test_bench_pr_n_no_mutation_token_drift() -> None:
+    """PR N must not regress the PR J/K/L/M mutation-token forbid list."""
+    mutation_tokens = (
+        "BenchState.promote",
+        "BenchState.demote",
+        "BenchState.start",
+        "BenchState.stop",
+        "BenchState.refresh",
+        "BenchState.backtest",
+        "BenchState.return",
+        "broker.",
+        "eventStore.",
+        "eventstore.",
+        "executeOrder",
+        "config.write",
+        "submitCommand",
+        "dispatchCommand",
+        "CommandProposal",
+    )
+    files = (
+        _MILODEX_QML_DIR / "components" / "BenchRow.qml",
+        _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml",
+        _MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml",
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml",
+    )
+    for path in files:
+        src = path.read_text(encoding="utf-8")
+        for token in mutation_tokens:
+            assert token not in src, (
+                f"{path.name} must not contain mutation token {token!r} (ADR 0049)"
+            )

@@ -708,9 +708,187 @@ def _compute_bench_action_menu(row: _StrategyRow) -> list[dict[str, Any]]:
             "label": item.label,
             "verbClass": item.verb_class,
             "targetStage": item.target_stage or "",
+            "actionIntentPreview": _action_intent_preview(row, item),
         }
         for item in items
     ]
+
+
+# ---------------------------------------------------------------------------
+# PR N: Action Intent Preview contract
+#
+# Stable, read-only preview metadata attached to every Bench action item. The
+# QML confirmation modal renders from this object instead of recomputing the
+# same classifications inline. The preview is descriptive only — `executable`
+# and `wired` are both False in v1; ADR 0049 Decision 2 holds.
+# ---------------------------------------------------------------------------
+
+# Plain-language intent copy, keyed by action_kind. The exact wording matches
+# the PR L QML _intentCopy() helper so the confirmation modal's prose remains
+# identical whether read from the preview or the QML fallback.
+_ACTION_INTENT_COPY: dict[str, str] = {
+    "promote": (
+        "Move this strategy forward from its current stage to the next stage "
+        "after evidence and policy gates are satisfied."
+    ),
+    "demote": (
+        "Move this strategy backward to an earlier stage and remove it from "
+        "its current operating stage."
+    ),
+    "return": (
+        "Restore this strategy to a previously eligible stage or return it to the idle shelf."
+    ),
+    "start_trading": (
+        "Start an operational session for this strategy at its current stage. "
+        "In Bench v1 this is preview-only."
+    ),
+    "stop_trading": (
+        "Stop the current operational session for this strategy. In Bench v1 this is preview-only."
+    ),
+    "initiate_backtest": (
+        "Request new backtest evidence for this strategy. In Bench v1 this is preview-only."
+    ),
+    "refresh_backtest": (
+        "Refresh aging or stale backtest evidence for this strategy. "
+        "In Bench v1 this is preview-only."
+    ),
+    "open_evidence": (
+        "Open the read-only Evidence snapshot for this strategy. "
+        "Informational only — no state changes."
+    ),
+    "unknown": "Action not recognised by the intent preview.",
+}
+
+# Static enumeration of what a future Milodex would validate before this
+# action could proceed. Copy-only — no real check is performed by including
+# the action item in this list.
+_ACTION_REQUIREMENTS: tuple[str, ...] = (
+    "Evidence gate check",
+    "Freshness check",
+    "Operator confirmation",
+    "Policy lock check",
+    "Risk guard check",
+    "Event write after confirmation",
+)
+
+# Display string identifying the kind of record a future event-store would
+# write. NOT a class name, NOT a function, NOT a payload — purely a label
+# for operator orientation.
+_ACTION_FUTURE_RECORD: dict[str, str] = {
+    "promote": "promotion_event",
+    "demote": "demotion_event",
+    "return": "stage_return_event",
+    "start_trading": "session_start_event",
+    "stop_trading": "session_stop_event",
+    "initiate_backtest": "backtest_request_event",
+    "refresh_backtest": "backtest_refresh_event",
+    "open_evidence": "—",
+    "unknown": "—",
+}
+
+# Verbatim safety copy strings. These match the PR L QML _COPY_* constants
+# so the confirmation modal renders the same prose whether sourced from the
+# preview or the QML fallback. The strings MUST remain single-line literals
+# so static grep-based safety tests continue to match substring-exactly.
+_COPY_SAFETY_BOUNDARY: str = (
+    "Bench v1 renders this intent packet for review only. "
+    "No command is submitted, no event is written, and no state is changed."
+)
+_COPY_CAPITAL_LOCK_SHORT: str = (
+    "Capital-bearing transitions remain locked while ADR 0004 is in force."
+)
+_COPY_PAPER_START: str = (
+    "Paper-stage sessions use live feed with no capital exposure. "
+    "Capital-bearing stages remain locked while ADR 0004 is in force."
+)
+
+
+def _action_kind(label: str) -> str:
+    """Coarse classification from the action label.
+
+    Promote/Demote/Return are prefix-matched (multiple target-stage suffixes
+    exist); the invocation labels are fixed strings; Open Evidence is the
+    informational floor.
+    """
+    if label.startswith("Promote to "):
+        return "promote"
+    if label.startswith("Demote to "):
+        return "demote"
+    if label.startswith("Return to "):
+        return "return"
+    if label == "Start Trading":
+        return "start_trading"
+    if label == "Stop Trading":
+        return "stop_trading"
+    if label == "Initiate Backtest":
+        return "initiate_backtest"
+    if label == "Refresh Backtest":
+        return "refresh_backtest"
+    if label == "Open Evidence":
+        return "open_evidence"
+    return "unknown"
+
+
+def _is_capital_bearing(label: str, target_stage: str, current_stage: str) -> bool:
+    """Classify whether an action crosses ADR 0004 capital-bearing territory.
+
+    Mirrors the PR L QML `_isCapitalBoundary` helper, including the paper-
+    stage Start Trading refinement: paper sessions use live feed with no
+    capital exposure and are NOT capital-bearing.
+    """
+    if target_stage in {"micro_live", "live"}:
+        return True
+    if "Micro Live" in label or "Live" in label:
+        return True
+    if label == "Start Trading":
+        return current_stage in {"micro_live", "live"}
+    return False
+
+
+def _safety_copy(label: str, current_stage: str, capital_bearing: bool) -> str:
+    base = _COPY_SAFETY_BOUNDARY
+    if label == "Start Trading" and current_stage == "paper":
+        return base + "\n\n" + _COPY_PAPER_START
+    if capital_bearing:
+        return base + "\n\n" + _COPY_CAPITAL_LOCK_SHORT
+    return base
+
+
+def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
+    """Normalized read-only Action Intent Preview (PR N, ADR 0049).
+
+    Carries the descriptive metadata a confirmation modal needs to render
+    an Intent Packet without recomputing classifications in QML. This is a
+    *preview*, never an executable command:
+
+      - ``executable`` MUST stay False
+      - ``wired`` MUST stay False
+
+    until command infrastructure lands behind a separate ADR. Downstream UI
+    reads these flags to keep the v1 framing explicit.
+
+    The preview never carries a command payload, a proposal object, or any
+    field whose name implies execution (submit, dispatch, broker, event).
+    """
+    label = item.label
+    target_stage = item.target_stage or ""
+    kind = _action_kind(label)
+    capital_bearing = _is_capital_bearing(label, target_stage, row.stage)
+    return {
+        "schemaVersion": 1,
+        "actionKind": kind,
+        "actionLabel": label,
+        "verbClass": item.verb_class,
+        "currentStage": row.stage,
+        "targetStage": target_stage,
+        "intentCopy": _ACTION_INTENT_COPY.get(kind, _ACTION_INTENT_COPY["unknown"]),
+        "requirements": list(_ACTION_REQUIREMENTS),
+        "futureRecord": _ACTION_FUTURE_RECORD.get(kind, "—"),
+        "capitalBearing": capital_bearing,
+        "safetyCopy": _safety_copy(label, row.stage, capital_bearing),
+        "executable": False,
+        "wired": False,
+    }
 
 
 def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
