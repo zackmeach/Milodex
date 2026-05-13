@@ -782,9 +782,17 @@ _ACTION_FUTURE_RECORD: dict[str, str] = {
     "stop_trading": "session_stop_event",
     "initiate_backtest": "backtest_request_event",
     "refresh_backtest": "backtest_refresh_event",
-    "open_evidence": "—",
+    "open_evidence": "evidence_view",
     "unknown": "—",
 }
+
+
+# Verbatim source-note string for every actionIntentPreview. Single-line
+# literal so static grep-based safety tests can match substring-exactly.
+_ACTION_PREVIEW_SOURCE_NOTE: str = (
+    "Bench v1 action intent previews are read-only. "
+    "No command is submitted, no event is written, and no state is changed."
+)
 
 # Verbatim safety copy strings. These match the PR L QML _COPY_* constants
 # so the confirmation modal renders the same prose whether sourced from the
@@ -876,6 +884,13 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
     capital_bearing = _is_capital_bearing(label, target_stage, row.stage)
     return {
         "schemaVersion": 1,
+        "source": {
+            "kind": "gui_read_model_preview",
+            "authoritative": False,
+            "note": _ACTION_PREVIEW_SOURCE_NOTE,
+        },
+        "strategyId": row.strategy_id,
+        "strategyName": row.name,
         "actionKind": kind,
         "actionLabel": label,
         "verbClass": item.verb_class,

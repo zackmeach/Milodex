@@ -895,9 +895,13 @@ def test_bench_pr_n_action_preview_keys_are_stable(tmp_path: Path) -> None:
     _seed_promotion(db, strategy_id)
 
     snapshot = build_bench_snapshot(db, configs)
-    preview = _all_actions(snapshot)[0]["actionIntentPreview"]
+    actions = _all_actions(snapshot)
+    preview = actions[0]["actionIntentPreview"]
     assert set(preview.keys()) == {
         "schemaVersion",
+        "source",
+        "strategyId",
+        "strategyName",
         "actionKind",
         "actionLabel",
         "verbClass",
@@ -911,6 +915,37 @@ def test_bench_pr_n_action_preview_keys_are_stable(tmp_path: Path) -> None:
         "executable",
         "wired",
     }
+    assert set(preview["source"].keys()) == {"kind", "authoritative", "note"}
+
+    # Row identity flows into every action's preview.
+    paper_row = next(s for s in snapshot["sections"] if s["stage"] == "paper")["strategies"][0]
+    for action in actions:
+        p = action["actionIntentPreview"]
+        assert p["strategyId"] == paper_row["strategyId"]
+        assert p["strategyName"] == paper_row["name"]
+
+
+def test_bench_pr_n_action_preview_source_contract(tmp_path: Path) -> None:
+    """Every preview carries the explicit non-authoritative source object."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    for action in _all_actions(build_bench_snapshot(db, configs)):
+        source = action["actionIntentPreview"]["source"]
+        assert source["kind"] == "gui_read_model_preview"
+        assert source["authoritative"] is False
+        note = source["note"]
+        assert "No command is submitted" in note
+        assert "no event is written" in note
+        assert "no state is changed" in note
 
 
 def test_bench_pr_n_action_preview_kind_classification(tmp_path: Path) -> None:
@@ -1006,7 +1041,7 @@ def test_bench_pr_n_action_preview_future_record_strings(tmp_path: Path) -> None
         "stop_trading": "session_stop_event",
         "initiate_backtest": "backtest_request_event",
         "refresh_backtest": "backtest_refresh_event",
-        "open_evidence": "—",
+        "open_evidence": "evidence_view",
     }
     for action in _all_actions(build_bench_snapshot(db, configs)):
         preview = action["actionIntentPreview"]
