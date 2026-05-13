@@ -400,29 +400,74 @@ Item {
                         }
 
                         // ---- Column header row (bench-brief §4) ----------------
-                        // Visible only when section has rows.
+                        // STABLE COLUMN GEOMETRY CONTRACT: this header MUST use
+                        // the same explicit anchor chain as BenchRow.qml row
+                        // content. A per-row RowLayout with two fillWidth
+                        // participants would solve widths differently on
+                        // different rows, causing columns to shift after a
+                        // `rowOrder` reorder. Explicit anchors + fixed Theme
+                        // tokens guarantee header and every row resolve to
+                        // identical x positions regardless of content.
                         Item {
                             visible: sectionRoot.rowOrder.length > 0
                             width: parent.width
                             height: 32
 
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 0
+                            // Right-anchored chain (rightmost first).
+                            ColHeader {
+                                id: headerAction
+                                text: "Action"
+                                alignRight: true
+                                anchors.right: parent.right
                                 anchors.rightMargin: Theme.space[3]
-                                spacing: Theme.space[4]
-
-                                // Gutter spacer — matches handleSlot width in BenchRow
-                                Item { Layout.preferredWidth: Theme.space[5] }
-
-                                // Strategy column — fills remaining space
-                                Item { Layout.fillWidth: true; Layout.minimumWidth: 200 }
-
-                                ColHeader { text: "Sharpe";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                ColHeader { text: "Max-DD";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                ColHeader { text: "Trades";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                ColHeader { text: "Status";   Layout.fillWidth: true; Layout.minimumWidth: 180 }
-                                ColHeader { text: "Action";   alignRight: true; Layout.preferredWidth: Theme.column.benchAction }
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchAction
+                            }
+                            ColHeader {
+                                id: headerStatus
+                                text: "Status"
+                                anchors.right: headerAction.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchStatus
+                            }
+                            ColHeader {
+                                id: headerTrades
+                                text: "Trades"
+                                alignRight: true
+                                anchors.right: headerStatus.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchMetric
+                            }
+                            ColHeader {
+                                id: headerMaxDD
+                                text: "Max-DD"
+                                alignRight: true
+                                anchors.right: headerTrades.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchMetric
+                            }
+                            ColHeader {
+                                id: headerSharpe
+                                text: "Sharpe"
+                                alignRight: true
+                                anchors.right: headerMaxDD.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchMetric
+                            }
+                            // Strategy column header — fills remaining space.
+                            // Gutter (handleSlot width) sits to its left.
+                            ColHeader {
+                                id: headerStrategy
+                                text: ""
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.space[5] + Theme.space[4]
+                                anchors.right: headerSharpe.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
                             }
                         }
 

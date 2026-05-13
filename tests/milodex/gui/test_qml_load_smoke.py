@@ -281,6 +281,91 @@ def test_bench_drag_uses_stable_coordinate_mapping() -> None:
     )
 
 
+def test_bench_stable_column_geometry_contract() -> None:
+    """Bench rows and section header MUST share a stable column geometry contract.
+
+    The previous implementation used a per-row `RowLayout` with two
+    `Layout.fillWidth: true` participants (strategy + status). After a
+    `rowOrder` splice, delegates get rebound to different modelData → different
+    text implicitWidths → the layout solver picks different widths → columns
+    visibly shift after reorder. The header had its own independent RowLayout,
+    so header and rows could diverge from each other too.
+
+    The fix is explicit anchor-based geometry with fixed Theme.column.* widths
+    for every column except the strategy block (which fills the residual). The
+    same anchor chain runs in both BenchRow.qml row content and BenchSurface.qml
+    section header — that is the contract this test enforces.
+    """
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(
+        encoding="utf-8"
+    )
+
+    # Stable column ids must exist in BenchRow — these are the load-bearing
+    # anchor targets that future refactors might be tempted to remove.
+    for column_id in (
+        "id: actionSlot",
+        "id: statusCol",
+        "id: tradesText",
+        "id: maxDDText",
+        "id: sharpeText",
+        "id: strategyCol",
+    ):
+        assert column_id in row_src, (
+            f"BenchRow.qml must declare {column_id!r} for the stable column chain"
+        )
+
+    # BenchRow row content must not reintroduce a top-level RowLayout. The
+    # status-prose Column still contains a small RowLayout for the inline
+    # signal-word + tail rendering — that's contained and not the column grid.
+    # Forbid the specific token used by the old top-level layout instead.
+    assert "id: rowLayout" not in row_src, (
+        "BenchRow.qml must not contain the old top-level `id: rowLayout` RowLayout"
+    )
+
+    # Right-anchored chain must be visibly present (rightmost-first).
+    # If a refactor breaks the chain, one of these substrings will be missing.
+    assert "anchors.right: actionSlot.left" in row_src
+    assert "anchors.right: statusCol.left" in row_src
+    assert "anchors.right: tradesText.left" in row_src
+    assert "anchors.right: maxDDText.left" in row_src
+    assert "anchors.right: sharpeText.left" in row_src
+
+    # Shared geometry contract: every fixed-width column reads from
+    # Theme.column.* in both files. The header must reference the same tokens.
+    assert "Theme.column.benchStatus" in row_src, (
+        "BenchRow.qml status column must use Theme.column.benchStatus"
+    )
+    assert "Theme.column.benchStatus" in surface_src, (
+        "BenchSurface.qml header status column must use Theme.column.benchStatus"
+    )
+    for token in (
+        "Theme.column.benchMetric",
+        "Theme.column.benchAction",
+    ):
+        assert token in row_src, f"BenchRow.qml must reference {token}"
+        assert token in surface_src, f"BenchSurface.qml header must reference {token}"
+
+    # Header must use the same right-anchored chain pattern. The header
+    # ColHeader ids must form a chain anchored to the right; if either the
+    # ids or the chain disappear, the header could diverge from rows again.
+    for header_id in (
+        "id: headerAction",
+        "id: headerStatus",
+        "id: headerTrades",
+        "id: headerMaxDD",
+        "id: headerSharpe",
+    ):
+        assert header_id in surface_src, (
+            f"BenchSurface.qml header must declare {header_id!r}"
+        )
+    assert "anchors.right: headerAction.left" in surface_src
+    assert "anchors.right: headerStatus.left" in surface_src
+    assert "anchors.right: headerTrades.left" in surface_src
+    assert "anchors.right: headerMaxDD.left" in surface_src
+    assert "anchors.right: headerSharpe.left" in surface_src
+
+
 def test_bench_dragging_branch_precedes_live_branch() -> None:
     """Dragged rows — LIVE included — must paint opaque, not as a 5% oxblood wash.
 

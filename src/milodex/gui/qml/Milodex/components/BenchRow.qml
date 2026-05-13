@@ -315,101 +315,153 @@ Item {
     }
 
     // -----------------------------------------------------------------------
-    // Row content layout (cols 2–7)
+    // Row content layout (cols 2–7) — STABLE COLUMN GEOMETRY CONTRACT
+    //
+    // Every column except `strategyCol` has a fixed width drawn from
+    // Theme.column.*.  Columns are right-anchored in a chain from the row's
+    // right edge inward; `strategyCol` fills the remainder between
+    // `handleSlot.right` and `sharpeText.left`.  This is intentional: a
+    // per-row RowLayout with two `Layout.fillWidth` participants (strategy +
+    // status) lets the layout solver pick different widths for different
+    // rows based on each row's implicitWidth, and after a `rowOrder` splice
+    // the delegates get rebound to different modelData → different implicit
+    // widths → columns visibly shift.  Explicit anchors + fixed widths make
+    // column geometry invariant to row content and identical across header
+    // and rows.  The same widths are used in BenchSurface's section header;
+    // do not change one without changing the other.
     // -----------------------------------------------------------------------
 
-    RowLayout {
-        id: rowLayout
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.left: handleSlot.right
+    // ---- col 7 (rightmost): Action slot --------------------------------
+    Item {
+        id: actionSlot
         anchors.right: parent.right
         anchors.rightMargin: Theme.space[3]
-        spacing: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchAction
+        height: 78   // matches BenchRow.implicitHeight
 
-        // ---- col 2: Strategy block (name + ID) ----------------------------
-        Column {
-            spacing: 4
-            Layout.fillWidth: true
-            Layout.minimumWidth: 200
+        // Folio mark — 1-px vertical hairline at right edge of slot,
+        // plus a small action-count glyph.  No fill, no border-radius.
+        Item {
+            id: folioMark
+            anchors.fill: parent
 
+            // Opacity driven by row hover / menu-open state
+            opacity: {
+                if (actionMenu.opened || root.activeFocus) return 1.0
+                if (mouseArea.containsMouse || rowClickArea.containsMouse) return 0.45
+                return 0
+            }
+            Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
+
+            // 1-px column rule at the right edge of the slot
+            Rectangle {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.color.border.regular
+            }
+
+            // Action-count glyph centered in the slot
             Text {
-                width: parent.width
-                text: root.strategyName
-                // IDLE: text.secondary; all others: text.primary (brief §5)
-                color: root._isIdle
+                anchors.centerIn: parent
+                text: "· " + root.actionItems.length + " ·"
+                color: (actionMenu.opened || root.activeFocus)
                        ? Theme.color.text.secondary
-                       : Theme.color.text.primary
-                font.family: Theme.typography.display.sm.family
-                font.pixelSize: Theme.typography.display.sm.size
-                font.weight: Theme.typography.display.sm.weight
-                elide: Text.ElideRight
+                       : Theme.color.text.muted
+                font.family: Theme.typography.label.xs.family
+                font.pixelSize: Theme.typography.label.xs.size
             }
 
-            Text {
-                width: parent.width
-                text: root.strategyId
-                color: Theme.color.text.muted
-                font.family: Theme.typography.data.xs.family
-                font.pixelSize: Theme.typography.data.xs.size
-                font.features: Theme.typography.data.xs.features
-                elide: Text.ElideRight
+            // Folio mark hit area — opens the same menu as the row-body click
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: actionMenu.open()
             }
         }
 
-        // ---- col 3: Sharpe --------------------------------------------------
-        Text {
-            text: root.sharpe
-            // IDLE: text.disabled (em-dash); others: text.primary (brief §5)
-            color: root._isIdle
-                   ? Theme.color.text.disabled
-                   : Theme.color.text.primary
-            font.family: Theme.typography.data.md.family
-            font.pixelSize: Theme.typography.data.md.size
-            font.features: Theme.typography.data.md.features
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Theme.column.benchMetric
-        }
+        // Action menu — visual-prototype only (ADR 0049).
+        QQC2.Menu {
+            id: actionMenu
+            width: 240
+            x: actionSlot.width - width
+            y: actionSlot.height + 2
 
-        // ---- col 4: Max drawdown -------------------------------------------
-        Text {
-            text: root.maxDD
-            color: root._isIdle
-                   ? Theme.color.text.disabled
-                   : Theme.color.text.primary
-            font.family: Theme.typography.data.md.family
-            font.pixelSize: Theme.typography.data.md.size
-            font.features: Theme.typography.data.md.features
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Theme.column.benchMetric
-        }
+            background: Rectangle {
+                color: Theme.color.surface.raised
+                border.color: Theme.color.border.regular
+                border.width: 1
+                radius: Theme.radius.md
+            }
 
-        // ---- col 5: Trade count --------------------------------------------
-        Text {
-            text: root.tradeCount
-            color: root._isIdle
-                   ? Theme.color.text.disabled
-                   : Theme.color.text.primary
-            font.family: Theme.typography.data.md.family
-            font.pixelSize: Theme.typography.data.md.size
-            font.features: Theme.typography.data.md.features
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Theme.column.benchMetric
-        }
+            Instantiator {
+                model: root.actionItems
 
-        // ---- col 6: Status prose -------------------------------------------
-        // Italic Newsreader sentence with one inline colored signal word;
-        // smaller mono meta line below (bench-brief §4 "load-bearing element")
+                delegate: QQC2.MenuItem {
+                    required property var modelData
+
+                    text: modelData.label
+                    implicitWidth: 240
+                    implicitHeight: 36
+                    font.family: Theme.typography.label.xs.family
+                    font.pixelSize: Theme.typography.label.xs.size
+
+                    contentItem: Text {
+                        text: parent.text
+                        font: parent.font
+                        color: modelData.verbClass === "directional"
+                               ? Theme.color.brand.accentHover
+                               : Theme.color.text.onBrand
+                        leftPadding: 12
+                        rightPadding: 12
+                        verticalAlignment: Text.AlignVCenter
+
+                        Rectangle {
+                            visible: modelData.verbClass === "informational"
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: -12
+                            anchors.rightMargin: -12
+                            height: 1
+                            color: Theme.color.border.regular
+                        }
+                    }
+
+                    background: Rectangle {
+                        implicitWidth: 240
+                        implicitHeight: 36
+                        color: parent.highlighted ? Theme.color.surface.base : "transparent"
+                    }
+
+                    onTriggered: {
+                        // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
+                    }
+                }
+
+                onObjectAdded: (index, object) => actionMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => actionMenu.removeItem(object)
+            }
+        }
+    }
+
+    // ---- col 6: Status prose (fixed-width, right-anchored) ------------
+    Item {
+        id: statusCol
+        anchors.right: actionSlot.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchStatus
+        height: statusContent.implicitHeight
+
         Column {
+            id: statusContent
+            width: parent.width
             spacing: 3
-            Layout.fillWidth: true
-            Layout.minimumWidth: 180
 
             // Prose line: signal word in status color inline with italic tail.
-            // Using a single Text with inline HTML-style color span would need
-            // textFormat: Text.RichText which can break font sizing. Instead
-            // we use a RowLayout so each segment keeps its own color and the
-            // prose tail elides cleanly.
             RowLayout {
                 width: parent.width
                 spacing: 0
@@ -455,151 +507,95 @@ Item {
                 visible: root.metaLine.length > 0
             }
         }
+    }
 
-        // ---- col 7: Action slot -------------------------------------------
-        // PR I: Folio mark affordance — a quiet column-rule + glyph that
-        // appears on hover.  Clicking the mark (or anywhere on the row body
-        // via rowClickArea) opens the per-row action menu.
-        Item {
-            id: actionSlot
-            Layout.preferredWidth: Theme.column.benchAction
-            Layout.alignment: Qt.AlignVCenter
-            implicitHeight: 78   // matches BenchRow.implicitHeight
+    // ---- col 5: Trade count (fixed, right-anchored) -------------------
+    Text {
+        id: tradesText
+        anchors.right: statusCol.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchMetric
+        text: root.tradeCount
+        color: root._isIdle
+               ? Theme.color.text.disabled
+               : Theme.color.text.primary
+        font.family: Theme.typography.data.md.family
+        font.pixelSize: Theme.typography.data.md.size
+        font.features: Theme.typography.data.md.features
+        horizontalAlignment: Text.AlignRight
+    }
 
-            // Folio mark — 1-px vertical hairline at right edge of slot,
-            // plus a small action-count glyph.  No fill, no border-radius.
-            Item {
-                id: folioMark
-                anchors.fill: parent
+    // ---- col 4: Max drawdown (fixed, right-anchored) ------------------
+    Text {
+        id: maxDDText
+        anchors.right: tradesText.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchMetric
+        text: root.maxDD
+        color: root._isIdle
+               ? Theme.color.text.disabled
+               : Theme.color.text.primary
+        font.family: Theme.typography.data.md.family
+        font.pixelSize: Theme.typography.data.md.size
+        font.features: Theme.typography.data.md.features
+        horizontalAlignment: Text.AlignRight
+    }
 
-                // Opacity driven by row hover / menu-open state
-                opacity: {
-                    if (actionMenu.opened || root.activeFocus) return 1.0
-                    if (mouseArea.containsMouse || rowClickArea.containsMouse) return 0.45
-                    return 0
-                }
-                Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
+    // ---- col 3: Sharpe (fixed, right-anchored) ------------------------
+    Text {
+        id: sharpeText
+        anchors.right: maxDDText.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchMetric
+        text: root.sharpe
+        color: root._isIdle
+               ? Theme.color.text.disabled
+               : Theme.color.text.primary
+        font.family: Theme.typography.data.md.family
+        font.pixelSize: Theme.typography.data.md.size
+        font.features: Theme.typography.data.md.features
+        horizontalAlignment: Text.AlignRight
+    }
 
-                // 1-px column rule at the right edge of the slot
-                Rectangle {
-                    anchors.right: parent.right
-                    anchors.top: parent.top
-                    anchors.bottom: parent.bottom
-                    width: 1
-                    color: Theme.color.border.regular
-                }
+    // ---- col 2: Strategy block (fills remaining space) ----------------
+    Item {
+        id: strategyCol
+        anchors.left: handleSlot.right
+        anchors.leftMargin: Theme.space[4]
+        anchors.right: sharpeText.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        height: strategyContent.implicitHeight
 
-                // Action-count glyph centered in the slot
-                Text {
-                    anchors.centerIn: parent
-                    text: "· " + root.actionItems.length + " ·"
-                    color: (actionMenu.opened || root.activeFocus)
-                           ? Theme.color.text.secondary
-                           : Theme.color.text.muted
-                    font.family: Theme.typography.label.xs.family
-                    font.pixelSize: Theme.typography.label.xs.size
-                }
+        Column {
+            id: strategyContent
+            width: parent.width
+            spacing: 4
 
-                // Folio mark hit area — opens the same menu as the row-body click
-                MouseArea {
-                    anchors.fill: parent
-                    cursorShape: Qt.PointingHandCursor
-                    onClicked: actionMenu.open()
-                }
+            Text {
+                width: parent.width
+                text: root.strategyName
+                // IDLE: text.secondary; all others: text.primary (brief §5)
+                color: root._isIdle
+                       ? Theme.color.text.secondary
+                       : Theme.color.text.primary
+                font.family: Theme.typography.display.sm.family
+                font.pixelSize: Theme.typography.display.sm.size
+                font.weight: Theme.typography.display.sm.weight
+                elide: Text.ElideRight
             }
 
-            // Action menu — visual-prototype only (ADR 0049).
-            // Items are rendered in the order returned by compute_menu_items()
-            // (directional → invocation → informational floor).
-            // Clicking any item is a no-op in v1.  PR I will wire handlers.
-            QQC2.Menu {
-                id: actionMenu
-                width: 240
-                // Anchor below-right of the action slot
-                x: actionSlot.width - width
-                y: actionSlot.height + 2
-
-                // Warm-dark surface to match ledger aesthetic.
-                // surface.raised (#1a1611) is the highest defined surface token;
-                // border.regular (#33291c) gives a thin brass/brown hairline;
-                // radius 4 keeps the editorial softness.
-                background: Rectangle {
-                    color: Theme.color.surface.raised
-                    border.color: Theme.color.border.regular
-                    border.width: 1
-                    radius: Theme.radius.md
-                }
-
-                // Instantiator is required here — QQC2.Menu uses addItem()/removeItem()
-                // internally and does NOT pick up children created by a Repeater.
-                // onObjectAdded/onObjectRemoved wire each dynamically-created MenuItem
-                // into the Menu's managed item list so they actually appear.
-                Instantiator {
-                    model: root.actionItems
-
-                    delegate: QQC2.MenuItem {
-                        required property var modelData
-
-                        text: modelData.label
-                        implicitWidth: 240
-                        implicitHeight: 36
-                        font.family: Theme.typography.label.xs.family
-                        font.pixelSize: Theme.typography.label.xs.size
-
-                        // Color: directional verbs use brand.accentHover (#9a4350) —
-                        // a half-step brighter than brand.accent (#7d3540) — which
-                        // lifts contrast against surface.raised while preserving the
-                        // oxblood signal.  Invocation and informational items use
-                        // text.onBrand (#f5e6c4) — the warmest cream token — so all
-                        // non-directional items including Open Evidence read clearly
-                        // against the dark warm surface without looking disabled.
-                        // Visual separation between invocation and informational floor
-                        // is handled by the border.regular hairline on the item.
-                        contentItem: Text {
-                            text: parent.text
-                            font: parent.font
-                            color: modelData.verbClass === "directional"
-                                   ? Theme.color.brand.accentHover
-                                   : Theme.color.text.onBrand
-                            leftPadding: 12
-                            rightPadding: 12
-                            verticalAlignment: Text.AlignVCenter
-
-                            // Full-width hairline separator above the informational floor
-                            // (Open Evidence).  border.regular (#33291c) is more visible
-                            // than border.subtle (#241f15) against surface.raised.
-                            Rectangle {
-                                visible: modelData.verbClass === "informational"
-                                anchors.top: parent.top
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                // Extend into left/right padding so the rule spans the full
-                                // menu width rather than just the text content area.
-                                anchors.leftMargin: -12
-                                anchors.rightMargin: -12
-                                height: 1
-                                color: Theme.color.border.regular
-                            }
-                        }
-
-                        // Hover: shift to surface.base (#13100a) — one step darker than
-                        // surface.raised — for a subtle, non-flashy active indicator.
-                        background: Rectangle {
-                            implicitWidth: 240
-                            implicitHeight: 36
-                            color: parent.highlighted ? Theme.color.surface.base : "transparent"
-                        }
-
-                        // v1 visual-prototype: clicking is intentionally a no-op.
-                        // PR I will dispatch to confirmation / evidence modals.
-                        onTriggered: {
-                            // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
-                        }
-                    }
-
-                    onObjectAdded: (index, object) => actionMenu.insertItem(index, object)
-                    onObjectRemoved: (index, object) => actionMenu.removeItem(object)
-                }
+            Text {
+                width: parent.width
+                text: root.strategyId
+                color: Theme.color.text.muted
+                font.family: Theme.typography.data.xs.family
+                font.pixelSize: Theme.typography.data.xs.size
+                font.features: Theme.typography.data.xs.features
+                elide: Text.ElideRight
             }
         }
     }
