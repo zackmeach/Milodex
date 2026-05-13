@@ -478,7 +478,7 @@ Item {
                 font.family:    Theme.typography.data.xs.family
                 font.pixelSize: Theme.typography.data.xs.size
                 font.features:  Theme.typography.data.xs.features
-                Layout.preferredWidth: 132
+                Layout.preferredWidth: 96
                 Layout.alignment:      Qt.AlignTop
             }
 
