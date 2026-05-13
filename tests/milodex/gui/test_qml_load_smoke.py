@@ -230,16 +230,148 @@ def test_bench_ledger_copy_and_drag_safety_contract() -> None:
 
 
 def test_bench_menu_engine_contract() -> None:
-    """Folio mark affordance still uses the compute_menu_items engine pipeline."""
+    """Folio mark affordance still uses the compute_menu_items engine pipeline.
+
+    PR J narrowed the contract: the informational floor item ("Open Evidence",
+    verbClass "informational") now emits evidenceRequested via a guarded branch
+    in onTriggered. All state-changing verbs (directional / invocation) remain
+    no-op per ADR 0049 Decision 2. This test asserts the exact shape of that
+    guard so any future addition of a mutation pathway forces a test edit.
+    """
     row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
     assert "actionItems" in row_src
     assert "QQC2.Menu" in row_src
     assert "Instantiator" in row_src
     assert "modelData.label" in row_src
-    # v1 visual-prototype contract: menu items remain no-op. Wiring real dispatch
-    # through onTriggered would break ADR 0049; this assertion forces any future
-    # implementer adding a mutation pathway to also touch this test.
+    # onTriggered must exist and contain the informational-floor guard.
     assert "onTriggered" in row_src
+    # The guard must check BOTH verbClass and label before dispatching.
+    assert 'modelData.verbClass === "informational"' in row_src, (
+        'BenchRow.qml onTriggered must gate on verbClass === "informational"'
+    )
+    assert 'modelData.label === "Open Evidence"' in row_src, (
+        'BenchRow.qml onTriggered must gate on label === "Open Evidence"'
+    )
+    # State-changing dispatch tokens must not appear anywhere in the file.
+    for forbidden in (
+        "BenchState.promote",
+        "BenchState.demote",
+        "BenchState.start",
+        "BenchState.stop",
+        "BenchState.refresh",
+        "BenchState.backtest",
+        "BenchState.return",
+        "broker.",
+        "eventStore.",
+        "eventstore.",
+        "executeOrder",
+        "config.write",
+    ):
+        assert forbidden not in row_src, (
+            f"BenchRow.qml must not contain mutation token {forbidden!r} (ADR 0049)"
+        )
+
+
+def test_bench_pr_j_evidence_modal_wiring() -> None:
+    """PR J modal wiring contract: one surface-owned BenchEvidenceModal, zero per-row."""
+    modal_path = _MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml"
+    assert modal_path.exists(), f"BenchEvidenceModal.qml missing: {modal_path}"
+
+    qmldir_src = (_MILODEX_QML_DIR / "qmldir").read_text(encoding="utf-8")
+    assert "BenchEvidenceModal 1.0" in qmldir_src, (
+        "qmldir must register BenchEvidenceModal 1.0"
+    )
+
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    assert "property var rowData" in row_src, (
+        "BenchRow.qml must declare `property var rowData`"
+    )
+    assert "signal evidenceRequested" in row_src, (
+        "BenchRow.qml must declare `signal evidenceRequested`"
+    )
+    assert "BenchEvidenceModal {" not in row_src, (
+        "BenchRow.qml must NOT instantiate BenchEvidenceModal — zero per-row instances"
+    )
+
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
+    assert "rowData: modelData" in surface_src, (
+        "BenchSurface.qml must pass `rowData: modelData` to the BenchRow delegate"
+    )
+    assert surface_src.count("BenchEvidenceModal {") == 1, (
+        "BenchSurface.qml must contain exactly one BenchEvidenceModal instantiation"
+    )
+    assert "evidenceModalOpen" in surface_src, (
+        "BenchSurface.qml must declare property evidenceModalOpen"
+    )
+    assert "evidenceModalRow" in surface_src, (
+        "BenchSurface.qml must declare property evidenceModalRow"
+    )
+    assert "onEvidenceRequested:" in surface_src, (
+        "BenchSurface.qml must handle onEvidenceRequested: on the BenchRow delegate"
+    )
+    assert "onCloseRequested: root.evidenceModalOpen = false" in surface_src, (
+        "BenchSurface.qml must wire onCloseRequested to clear evidenceModalOpen"
+    )
+
+
+def test_bench_pr_j_modal_wording_contract() -> None:
+    """PR J modal disclaimer and forbidden-phrase contract."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml"
+    ).read_text(encoding="utf-8")
+
+    # Mandatory disclaimer must appear verbatim.
+    disclaimer = (
+        "Bench v1 evidence is read-only and sourced from the current GUI "
+        "read-model snapshot. Real event-derived freshness and gate "
+        "reconstruction are deferred."
+    )
+    assert disclaimer in modal_src, (
+        "BenchEvidenceModal.qml footer disclaimer must match the mandatory verbatim text"
+    )
+
+    # Forbidden phrases — would imply authoritative freshness or
+    # event-store reconstruction.
+    for forbidden in ("is fresh", "currently passing", "current gate result", "reconstructed"):
+        assert forbidden not in modal_src, (
+            f"BenchEvidenceModal.qml must not contain forbidden phrase {forbidden!r}"
+        )
+
+    # Close affordance must be emitted from at least 3 places:
+    # Escape handler, outside-click MouseArea, close glyph MouseArea.
+    assert modal_src.count("root.closeRequested()") >= 3, (
+        "BenchEvidenceModal.qml must emit closeRequested() from at least 3 places "
+        "(Escape, outside-click, close glyph)"
+    )
+
+
+def test_bench_pr_j_no_mutation_guarantee() -> None:
+    """PR J introduces no backend mutation in BenchRow, BenchSurface, or BenchEvidenceModal."""
+    mutation_tokens = (
+        "BenchState.promote",
+        "BenchState.demote",
+        "BenchState.start",
+        "BenchState.stop",
+        "BenchState.refresh",
+        "BenchState.backtest",
+        "BenchState.return",
+        "broker.",
+        "eventStore.",
+        "eventstore.",
+        "executeOrder",
+        "config.write",
+    )
+    files = {
+        "BenchRow.qml": _MILODEX_QML_DIR / "components" / "BenchRow.qml",
+        "BenchSurface.qml": _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml",
+        "BenchEvidenceModal.qml": _MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml",
+    }
+    for filename, path in files.items():
+        src = path.read_text(encoding="utf-8")
+        for token in mutation_tokens:
+            assert token not in src, (
+                f"{filename} must not contain mutation token {token!r} (ADR 0049)"
+            )
 
 
 def test_bench_drag_uses_stable_coordinate_mapping() -> None:

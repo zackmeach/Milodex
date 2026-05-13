@@ -57,6 +57,14 @@ Item {
     // Force-reset it whenever the data reference changes.
     onBenchDataChanged: anyDragging = false
 
+    // PR J: Evidence modal state.
+    // One BenchEvidenceModal instance is rendered as an overlay below; rows
+    // request it via the BenchRow.evidenceRequested signal. Surface owns the
+    // modal so we don't pay for N instances on N rows and so focus / Escape /
+    // outside-click can be reasoned about in one place.
+    property bool evidenceModalOpen: false
+    property var  evidenceModalRow:  ({})
+
     // -----------------------------------------------------------------------
     // Formatting helpers
     // -----------------------------------------------------------------------
@@ -153,6 +161,14 @@ Item {
 
         Keys.onPressed: (event) => {
             if (root.anyDragging) return
+            // PR J: when the Evidence modal is open it owns the focus chain;
+            // arrow / Page / Home / End must not bleed through to scroll the
+            // ledger underneath. Eat them here so they neither scroll nor
+            // re-route. Escape is handled by the modal itself.
+            if (root.evidenceModalOpen) {
+                event.accepted = true
+                return
+            }
             var max = Math.max(0, scroller.contentHeight - scroller.height)
             if (event.key === Qt.Key_Down) {
                 scroller.contentY = Math.max(0, Math.min(max, scroller.contentY + 40))
@@ -178,6 +194,12 @@ Item {
         WheelHandler {
             target: null
             onWheel: (event) => {
+                // PR J: don't scroll the ledger while the Evidence modal is open;
+                // the modal owns its own wheel handler inside its scroll area.
+                if (root.evidenceModalOpen) {
+                    event.accepted = true
+                    return
+                }
                 var max = Math.max(0, scroller.contentHeight - scroller.height)
                 var step = event.angleDelta.y / 120 * 40
                 scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - step))
@@ -522,6 +544,16 @@ Item {
                                     actionItems: modelData.actions || []
                                     actionVariant: root.actionVariant(modelData)
 
+                                    // PR J: hand the raw row dict to the
+                                    // delegate so it can be forwarded to
+                                    // BenchEvidenceModal on Open Evidence.
+                                    rowData: modelData
+
+                                    onEvidenceRequested: (row) => {
+                                        root.evidenceModalRow = row
+                                        root.evidenceModalOpen = true
+                                    }
+
                                     // Stable coordinate frame for drag-delta math.
                                     // rowsContainer does NOT move during drag (only its
                                     // child rows reposition), so dragHandle.mapToItem
@@ -604,6 +636,20 @@ Item {
                 }
             }
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // PR J: Evidence modal overlay — single instance shared across all rows.
+    // Renders above the Flickable so it covers the ledger when open. Visible
+    // is gated on `evidenceModalOpen`; the modal itself handles its own
+    // Escape/outside-click/✕ close semantics.
+    // -----------------------------------------------------------------------
+    BenchEvidenceModal {
+        id: evidenceModal
+        anchors.fill: parent
+        open:    root.evidenceModalOpen
+        rowData: root.evidenceModalRow
+        onCloseRequested: root.evidenceModalOpen = false
     }
 
     // -----------------------------------------------------------------------

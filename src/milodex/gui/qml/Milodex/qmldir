@@ -13,6 +13,7 @@ QuietAction 1.0 components/QuietAction.qml
 RiskStrip 1.0 components/RiskStrip.qml
 BenchRow 1.0 components/BenchRow.qml
 BenchModal 1.0 components/BenchModal.qml
+BenchEvidenceModal 1.0 components/BenchEvidenceModal.qml
 Main 1.0 Main.qml
 AnchorSurface 1.0 surfaces/AnchorSurface.qml
 FrontSurface 1.0 surfaces/FrontSurface.qml
