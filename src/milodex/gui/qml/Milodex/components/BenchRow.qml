@@ -94,6 +94,14 @@ Item {
     // listens for this signal. No other menu item dispatches anything in v1.
     signal evidenceRequested(var rowData)
 
+    // PR K: emitted when the operator selects any state-changing menu item
+    // (directional or invocation). BenchSurface owns the (one and only)
+    // BenchConfirmationModal instance and listens for this signal. The
+    // confirmation modal is a *visual preview only* in v1 — its primary
+    // action is disabled and labelled "Not wired in v1". No backend
+    // command is dispatched anywhere along this path.
+    signal actionPreviewRequested(var rowData, var actionData)
+
     // -----------------------------------------------------------------------
     // Internal state
     // -----------------------------------------------------------------------
@@ -449,11 +457,15 @@ Item {
                     onTriggered: {
                         // PR J: the informational floor item ("Open Evidence",
                         // verbClass: "informational") opens the read-only
-                        // BenchEvidenceModal owned by BenchSurface. All other
-                        // verbs remain no-op per ADR 0049 Decision 2.
+                        // BenchEvidenceModal owned by BenchSurface.
+                        // PR K: every other menu item opens the visual
+                        // confirmation preview owned by BenchSurface. Neither
+                        // path dispatches a backend command in v1.
                         if (modelData.verbClass === "informational" &&
                                 modelData.label === "Open Evidence") {
                             root.evidenceRequested(root.rowData)
+                        } else {
+                            root.actionPreviewRequested(root.rowData, modelData)
                         }
                     }
                 }

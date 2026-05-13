@@ -252,6 +252,14 @@ def test_bench_menu_engine_contract() -> None:
     assert 'modelData.label === "Open Evidence"' in row_src, (
         'BenchRow.qml onTriggered must gate on label === "Open Evidence"'
     )
+    # PR K: the else branch must emit actionPreviewRequested.
+    assert "signal actionPreviewRequested" in row_src, (
+        "BenchRow.qml must declare signal actionPreviewRequested (PR K)"
+    )
+    assert "root.actionPreviewRequested(root.rowData, modelData)" in row_src, (
+        "BenchRow.qml onTriggered else branch must emit "
+        "actionPreviewRequested(root.rowData, modelData)"
+    )
     # State-changing dispatch tokens must not appear anywhere in the file.
     for forbidden in (
         "BenchState.promote",
@@ -365,6 +373,9 @@ def test_bench_pr_j_no_mutation_guarantee() -> None:
         "BenchRow.qml": _MILODEX_QML_DIR / "components" / "BenchRow.qml",
         "BenchSurface.qml": _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml",
         "BenchEvidenceModal.qml": _MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml",
+        "BenchConfirmationModal.qml": (
+            _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+        ),
     }
     for filename, path in files.items():
         src = path.read_text(encoding="utf-8")
@@ -580,4 +591,119 @@ def test_bench_pr_h_drag_safety_contract() -> None:
     )
     assert "BenchState.demote" not in row_src, (
         "BenchRow.qml must not call BenchState.demote"
+    )
+
+
+def test_bench_pr_k_confirmation_modal_wiring() -> None:
+    """PR K modal wiring contract: one surface-owned BenchConfirmationModal, zero per-row."""
+    modal_path = _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    assert modal_path.exists(), f"BenchConfirmationModal.qml missing: {modal_path}"
+
+    qmldir_src = (_MILODEX_QML_DIR / "qmldir").read_text(encoding="utf-8")
+    assert "BenchConfirmationModal 1.0" in qmldir_src, (
+        "qmldir must register BenchConfirmationModal 1.0"
+    )
+
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    assert "signal actionPreviewRequested" in row_src, (
+        "BenchRow.qml must declare signal actionPreviewRequested"
+    )
+    assert "BenchConfirmationModal {" not in row_src, (
+        "BenchRow.qml must NOT instantiate BenchConfirmationModal — zero per-row instances"
+    )
+
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
+    assert surface_src.count("BenchConfirmationModal {") == 1, (
+        "BenchSurface.qml must contain exactly one BenchConfirmationModal instantiation"
+    )
+    assert "confirmationModalOpen" in surface_src, (
+        "BenchSurface.qml must declare property confirmationModalOpen"
+    )
+    assert "confirmationModalRow" in surface_src, (
+        "BenchSurface.qml must declare property confirmationModalRow"
+    )
+    assert "confirmationModalAction" in surface_src, (
+        "BenchSurface.qml must declare property confirmationModalAction"
+    )
+    assert "onActionPreviewRequested:" in surface_src, (
+        "BenchSurface.qml must handle onActionPreviewRequested: on the BenchRow delegate"
+    )
+    assert "onCloseRequested: root.confirmationModalOpen = false" in surface_src, (
+        "BenchSurface.qml must wire onCloseRequested to clear confirmationModalOpen"
+    )
+    # Mutual exclusion: each handler clears the other modal.
+    # confirmationModalOpen = false appears in onEvidenceRequested AND onCloseRequested.
+    assert surface_src.count("confirmationModalOpen = false") >= 2, (
+        "BenchSurface.qml must clear confirmationModalOpen in at least 2 places "
+        "(onEvidenceRequested mutual-exclusion + onCloseRequested)"
+    )
+    # evidenceModalOpen referenced in onActionPreviewRequested AND onCloseRequested.
+    assert surface_src.count("evidenceModalOpen") >= 2, (
+        "BenchSurface.qml must reference evidenceModalOpen in at least 2 clearing contexts "
+        "(onActionPreviewRequested mutual-exclusion + onCloseRequested)"
+    )
+
+
+def test_bench_pr_k_modal_wording_contract() -> None:
+    """PR K confirmation modal disclaimer and forbidden-phrase contract."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    # Mandatory verbatim copy strings — single-line literals in the source.
+    assert (
+        "This preview shows the confirmation Milodex will require before changing a "
+        "strategy's Bench stage. Command execution is not wired in Bench v1."
+    ) in modal_src, "BenchConfirmationModal.qml _COPY_DIRECTIONAL must match verbatim"
+
+    assert (
+        "This preview shows the confirmation Milodex will require before starting, "
+        "stopping, initiating, or refreshing an operational process. "
+        "Command execution is not wired in Bench v1."
+    ) in modal_src, "BenchConfirmationModal.qml _COPY_INVOCATION must match verbatim"
+
+    assert (
+        "Capital-bearing transitions remain locked while ADR 0004 is in force. "
+        "This modal is a visual shell only."
+    ) in modal_src, "BenchConfirmationModal.qml _COPY_CAPITAL_LOCK must match verbatim"
+
+    assert "Not wired in v1" in modal_src, (
+        "BenchConfirmationModal.qml disabled primary action must be labelled 'Not wired in v1'"
+    )
+    assert "visual shell only" in modal_src, (
+        "BenchConfirmationModal.qml must contain 'visual shell only' scope statement"
+    )
+
+    # Forbidden phrases — would imply live command dispatch.
+    for forbidden in (
+        "will promote",
+        "will demote",
+        "will start",
+        "will stop",
+        "will initiate",
+        "command sent",
+        "executing",
+        "in progress",
+    ):
+        assert forbidden not in modal_src, (
+            f"BenchConfirmationModal.qml must not contain forbidden phrase {forbidden!r} "
+            "(ADR 0049 Decision 2)"
+        )
+
+
+def test_bench_pr_k_bleed_through_guards() -> None:
+    """PR K bleed-through guards: KeyHandler and WheelHandler both gate on both modals.
+
+    When either modal is open, keyboard scroll and mouse-wheel scroll must be
+    suppressed in the Bench Flickable. The exact OR expression in both handlers
+    is asserted so a refactor that drops one modal from the guard fails fast.
+    """
+    surface_src = (
+        _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
+    ).read_text(encoding="utf-8")
+
+    guard = "root.evidenceModalOpen || root.confirmationModalOpen"
+    assert surface_src.count(guard) >= 2, (
+        f"BenchSurface.qml must contain the bleed-through guard "
+        f'"{guard}" in at least 2 places (Keys.onPressed and WheelHandler.onWheel)'
     )
