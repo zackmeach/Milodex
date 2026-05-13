@@ -71,9 +71,9 @@ Item {
     // EXCEPT the informational Open Evidence floor; the surface routes that
     // signal here. Strictly visual — the modal's primary action is disabled
     // and labelled "Not wired in v1". ADR 0049 Decision 2 holds.
-    property bool confirmationModalOpen: false
-    property var  confirmationModalRow:    ({})
-    property var  confirmationModalAction: ({})
+    property bool confirmationPreviewOpen: false
+    property var  confirmationPreviewRow:    ({})
+    property var  confirmationPreviewAction: ({})
 
     // -----------------------------------------------------------------------
     // Formatting helpers
@@ -176,7 +176,7 @@ Item {
             // arrow / Page / Home / End must not bleed through to scroll the
             // ledger underneath. Eat them here so they neither scroll nor
             // re-route. Escape is handled by the modal itself.
-            if (root.evidenceModalOpen || root.confirmationModalOpen) {
+            if (root.evidenceModalOpen || root.confirmationPreviewOpen) {
                 event.accepted = true
                 return
             }
@@ -207,7 +207,7 @@ Item {
             onWheel: (event) => {
                 // PR J / PR K: don't scroll the ledger while either modal is
                 // open; each modal owns its own wheel handler/overlay.
-                if (root.evidenceModalOpen || root.confirmationModalOpen) {
+                if (root.evidenceModalOpen || root.confirmationPreviewOpen) {
                     event.accepted = true
                     return
                 }
@@ -564,7 +564,7 @@ Item {
                                         // PR K mutual exclusion: opening
                                         // Evidence closes the confirmation
                                         // preview if it was open.
-                                        root.confirmationModalOpen = false
+                                        root.confirmationPreviewOpen = false
                                         root.evidenceModalRow  = row
                                         root.evidenceModalOpen = true
                                     }
@@ -575,9 +575,9 @@ Item {
                                     // dispatch ever happens on this path.
                                     onActionPreviewRequested: (row, action) => {
                                         root.evidenceModalOpen        = false
-                                        root.confirmationModalRow     = row
-                                        root.confirmationModalAction  = action
-                                        root.confirmationModalOpen    = true
+                                        root.confirmationPreviewRow     = row
+                                        root.confirmationPreviewAction  = action
+                                        root.confirmationPreviewOpen    = true
                                     }
 
                                     // Stable coordinate frame for drag-delta math.
@@ -684,12 +684,12 @@ Item {
     // labelled "Not wired in v1". No backend command dispatch.
     // -----------------------------------------------------------------------
     BenchConfirmationModal {
-        id: confirmationModal
+        id: confirmationPreview
         anchors.fill: parent
-        open:       root.confirmationModalOpen
-        rowData:    root.confirmationModalRow
-        actionData: root.confirmationModalAction
-        onCloseRequested: root.confirmationModalOpen = false
+        open:       root.confirmationPreviewOpen
+        rowData:    root.confirmationPreviewRow
+        actionData: root.confirmationPreviewAction
+        onCloseRequested: root.confirmationPreviewOpen = false
     }
 
     // -----------------------------------------------------------------------

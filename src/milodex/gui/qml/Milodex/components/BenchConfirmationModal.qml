@@ -62,7 +62,7 @@ Item {
 
     // Absorb any wheel events that hit the overlay so they cannot bubble
     // to the Bench Flickable underneath. (The Flickable's WheelHandler is
-    // also gated on confirmationModalOpen, but absorbing here is belt &
+    // also gated on confirmationPreviewOpen, but absorbing here is belt &
     // braces against ordering surprises.)
     WheelHandler {
         target: null

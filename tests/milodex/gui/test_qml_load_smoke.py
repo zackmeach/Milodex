@@ -274,6 +274,8 @@ def test_bench_menu_engine_contract() -> None:
         "eventstore.",
         "executeOrder",
         "config.write",
+        "submitCommand",
+        "dispatchCommand",
     ):
         assert forbidden not in row_src, (
             f"BenchRow.qml must not contain mutation token {forbidden!r} (ADR 0049)"
@@ -368,6 +370,8 @@ def test_bench_pr_j_no_mutation_guarantee() -> None:
         "eventstore.",
         "executeOrder",
         "config.write",
+        "submitCommand",
+        "dispatchCommand",
     )
     files = {
         "BenchRow.qml": _MILODEX_QML_DIR / "components" / "BenchRow.qml",
@@ -616,25 +620,25 @@ def test_bench_pr_k_confirmation_modal_wiring() -> None:
     assert surface_src.count("BenchConfirmationModal {") == 1, (
         "BenchSurface.qml must contain exactly one BenchConfirmationModal instantiation"
     )
-    assert "confirmationModalOpen" in surface_src, (
-        "BenchSurface.qml must declare property confirmationModalOpen"
+    assert "confirmationPreviewOpen" in surface_src, (
+        "BenchSurface.qml must declare property confirmationPreviewOpen"
     )
-    assert "confirmationModalRow" in surface_src, (
-        "BenchSurface.qml must declare property confirmationModalRow"
+    assert "confirmationPreviewRow" in surface_src, (
+        "BenchSurface.qml must declare property confirmationPreviewRow"
     )
-    assert "confirmationModalAction" in surface_src, (
-        "BenchSurface.qml must declare property confirmationModalAction"
+    assert "confirmationPreviewAction" in surface_src, (
+        "BenchSurface.qml must declare property confirmationPreviewAction"
     )
     assert "onActionPreviewRequested:" in surface_src, (
         "BenchSurface.qml must handle onActionPreviewRequested: on the BenchRow delegate"
     )
-    assert "onCloseRequested: root.confirmationModalOpen = false" in surface_src, (
-        "BenchSurface.qml must wire onCloseRequested to clear confirmationModalOpen"
+    assert "onCloseRequested: root.confirmationPreviewOpen = false" in surface_src, (
+        "BenchSurface.qml must wire onCloseRequested to clear confirmationPreviewOpen"
     )
     # Mutual exclusion: each handler clears the other modal.
-    # confirmationModalOpen = false appears in onEvidenceRequested AND onCloseRequested.
-    assert surface_src.count("confirmationModalOpen = false") >= 2, (
-        "BenchSurface.qml must clear confirmationModalOpen in at least 2 places "
+    # confirmationPreviewOpen = false appears in onEvidenceRequested AND onCloseRequested.
+    assert surface_src.count("confirmationPreviewOpen = false") >= 2, (
+        "BenchSurface.qml must clear confirmationPreviewOpen in at least 2 places "
         "(onEvidenceRequested mutual-exclusion + onCloseRequested)"
     )
     # evidenceModalOpen referenced in onActionPreviewRequested AND onCloseRequested.
@@ -702,7 +706,7 @@ def test_bench_pr_k_bleed_through_guards() -> None:
         _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
     ).read_text(encoding="utf-8")
 
-    guard = "root.evidenceModalOpen || root.confirmationModalOpen"
+    guard = "root.evidenceModalOpen || root.confirmationPreviewOpen"
     assert surface_src.count(guard) >= 2, (
         f"BenchSurface.qml must contain the bleed-through guard "
         f'"{guard}" in at least 2 places (Keys.onPressed and WheelHandler.onWheel)'
