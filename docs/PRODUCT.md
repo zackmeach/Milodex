@@ -72,6 +72,33 @@ The goal these four rules serve is **justified trust** — the trust an operator
 
 ---
 
+## 5b. Risk Preferences vs Risk Enforcement
+
+The risk-veto rule above raises a fair question: *whose* risk policy? Milodex's answer separates **preference** from **enforcement**:
+
+> **The operator owns risk preferences. The risk layer owns enforcement.**
+
+Different operators have different risk appetites, and a system that pretends one fixed risk profile is right for everyone is not trustworthy. The operator should eventually be able to express personal risk tolerance — but inside a governed framework: safe by default, deliberately opted into for higher risk, human-approved for live-capital effect, logged, visibly active, bounded by non-negotiable account-level guardrails (kill switch, broker live-trade permission, fat-finger protection), and enforceable in code.
+
+Four framings are explicitly refused, because each one inverts the relationship the harness depends on:
+
+- ✗ *"The user controls the risk layer."* — Too loose; implies disabling the safety structure rather than choosing a posture inside it.
+- ✗ *"Strategies configure their own risk."* — Lets the thing being evaluated influence the rules evaluating it.
+- ✗ *"Risk gates can be weakened when they block a useful feature."* — The most common path to compromise on a system like this; the harness exists to refuse it.
+- ✗ Any path by which a strategy, ML model, frontier agent, or feature modifies the risk policy that judges its own actions.
+
+The load-bearing sentence, preserved verbatim:
+
+> **Milodex lets the operator define risk preferences within explicit, bounded, auditable policy. The risk layer enforces those preferences and retains veto power. No strategy, model, agent, or feature may modify, weaken, or bypass the risk policy that evaluates it.**
+
+The short form downstream surfaces should quote:
+
+> **The operator may choose the risk posture. The system must enforce it. The automation must submit to it.**
+
+The full thesis — properties of the governed framework, additional rejected framings, and the relationship to product trust — lives in [`docs/FOUNDER_INTENT.md`](FOUNDER_INTENT.md) "The Risk Layer — Operator Preferences, System Enforcement."
+
+---
+
 ## 6. Current Product Surfaces
 
 Milodex's primary navigation is a four-surface narrative — `FRONT · BENCH · LEDGER · DESK` — chosen as a publication-and-workshop metaphor rather than a software-tab metaphor. Detailed visual contracts live in [`docs/DESIGN.md`](DESIGN.md); the product-level role of each surface is summarized here.
