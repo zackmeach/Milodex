@@ -916,6 +916,94 @@ def test_bench_pr_n_no_executable_or_wired_truth_in_qml() -> None:
             )
 
 
+def test_bench_pr_o_command_draft_preview_section_present() -> None:
+    """PR O: confirmation modal renders a COMMAND DRAFT PREVIEW section."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+    assert "COMMAND DRAFT PREVIEW" in modal_src, (
+        "BenchConfirmationModal.qml must render the COMMAND DRAFT PREVIEW section (PR O)"
+    )
+    assert "commandDraftPreview" in modal_src, (
+        "BenchConfirmationModal.qml must declare commandDraftPreview (PR O)"
+    )
+
+
+def test_bench_pr_o_command_draft_preview_shape() -> None:
+    """PR O: commandDraftPreview must carry the required display-only fields."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+    for needle in (
+        '"schemaVersion": 1',
+        '"source":',
+        '"submissionState": "not_submittable_v1"',
+        '"validationState": "not_validated_v1"',
+        '"blockedBy":',
+        '"executable": false',
+        '"wired": false',
+    ):
+        assert needle in modal_src, f"commandDraftPreview must declare {needle!r} (PR O)"
+
+
+def test_bench_pr_o_command_draft_preview_source_copy() -> None:
+    """PR O: source.note must include the read-only boundary phrases."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+    # Single-line literals so grep matches substring-exactly.
+    assert '"kind": "local_ui_draft_preview"' in modal_src, (
+        "commandDraftPreview.source.kind must be 'local_ui_draft_preview' (PR O)"
+    )
+    for phrase in (
+        "No command is submitted",
+        "no event is written",
+        "no state is changed",
+    ):
+        assert phrase in modal_src, (
+            f"commandDraftPreview source note must contain {phrase!r} (PR O)"
+        )
+
+
+def test_bench_pr_o_command_draft_preview_ui_copy() -> None:
+    """PR O: visible UI copy must include literal state strings and banner."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+    assert "not_submittable_v1" in modal_src, (
+        "commandDraftPreview must surface the not_submittable_v1 sentinel (PR O)"
+    )
+    assert "not_validated_v1" in modal_src, (
+        "commandDraftPreview must surface the not_validated_v1 sentinel (PR O)"
+    )
+    assert (
+        "Milodex can render this draft for review, but Bench v1 cannot submit it." in modal_src
+    ), "commandDraftPreview banner copy must be verbatim (PR O)"
+
+
+def test_bench_pr_o_command_draft_preview_no_submit_handler() -> None:
+    """PR O: the draft preview must never wire an onClicked submit handler.
+
+    Defense-in-depth: the existing 'Not wired in v1' primary stays inert,
+    and the new section must not introduce a MouseArea+onClicked that
+    would silently make the draft submittable.
+    """
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+    forbidden_handlers = (
+        "onSubmit",
+        "submitDraft",
+        "submit(",
+        "dispatch(",
+        "executeDraft",
+    )
+    for token in forbidden_handlers:
+        assert token not in modal_src, (
+            f"BenchConfirmationModal.qml must not declare {token!r} (PR O: draft is display-only)"
+        )
+
+
 def test_bench_pr_n_no_mutation_token_drift() -> None:
     """PR N must not regress the PR J/K/L/M mutation-token forbid list."""
     mutation_tokens = (

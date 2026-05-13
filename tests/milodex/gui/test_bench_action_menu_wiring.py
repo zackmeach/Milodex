@@ -39,6 +39,7 @@ class _FakeRow:
     """Minimal stand-in for _StrategyRow to drive _compute_bench_action_menu."""
 
     strategy_id: str = "test.strategy.v1"
+    name: str = "Test Strategy"
     stage: str = "backtest"
     session_state: str = "not_running"
     gate_failures: tuple = ()

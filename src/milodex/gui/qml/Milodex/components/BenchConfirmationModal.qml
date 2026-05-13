@@ -61,6 +61,62 @@ Item {
     readonly property var  _preview:           (actionData && actionData.actionIntentPreview) || ({})
     readonly property bool _previewAvailable:  !!(actionData && actionData.actionIntentPreview)
 
+    // ------------------------------------------------------------------
+    // PR O (ADR 0049): local command-draft preview
+    //
+    // The first explicit visual boundary between "the operator is reviewing
+    // an intent" and "a future command could be submitted." Composed
+    // locally in QML from the read-only evidencePacket + actionIntentPreview.
+    //
+    // This object MUST stay display-only:
+    //   - `executable` is false
+    //   - `wired` is false
+    //   - `submissionState` is the literal "not_submittable_v1"
+    //   - `validationState` is the literal "not_validated_v1"
+    //
+    // It is NOT a command-proposal object. It does NOT carry a payload. The
+    // name is deliberately `commandDraftPreview` — "draft" + "preview" —
+    // to keep the boundary visible to future readers who might be tempted
+    // to graft a submit path onto this object.
+    //
+    // The `source.note` says explicitly: "No command is submitted, no event
+    // is written, and no state is changed." The visible UI copy says
+    // "Milodex can render this draft for review, but Bench v1 cannot
+    // submit it."
+    // ------------------------------------------------------------------
+    readonly property string _COPY_DRAFT_SOURCE_NOTE: "This is a local UI draft preview only. No command is submitted, no event is written, and no state is changed."
+
+    readonly property string _COPY_DRAFT_BANNER: "Milodex can render this draft for review, but Bench v1 cannot submit it."
+
+    readonly property var _draftBlockedBy: [
+        "Bench v1 command submission is not wired",
+        "Authoritative evidence reconstruction is deferred",
+        "Risk/policy validation is not executed from the UI"
+    ]
+
+    readonly property var commandDraftPreview: ({
+        "schemaVersion": 1,
+        "source": {
+            "kind": "local_ui_draft_preview",
+            "authoritative": false,
+            "note": _COPY_DRAFT_SOURCE_NOTE
+        },
+        "strategyId":   (_preview.strategyId   || (rowData && rowData.strategyId)   || ""),
+        "strategyName": (_preview.strategyName || (rowData && (rowData.name || rowData.displayName)) || ""),
+        "actionKind":   (_preview.actionKind   || ""),
+        "actionLabel":  (_preview.actionLabel  || (actionData && actionData.label) || ""),
+        "currentStage": (_preview.currentStage || (rowData && rowData.stage)      || ""),
+        "targetStage":  (_preview.targetStage  || (actionData && actionData.targetStage) || ""),
+        "evidencePacketSchemaVersion":      (_packet.schemaVersion  || 0),
+        "actionIntentPreviewSchemaVersion": (_preview.schemaVersion || 0),
+        "expectedFutureRecord": (_preview.futureRecord || "—"),
+        "executable": false,
+        "wired": false,
+        "submissionState": "not_submittable_v1",
+        "validationState": "not_validated_v1",
+        "blockedBy": _draftBlockedBy
+    })
+
     visible: open
     focus: open
 
@@ -427,7 +483,50 @@ Item {
             SectionRule {}
 
             // ============================================================
-            // 6. SAFETY BOUNDARY  (always present; appended capital copy)
+            // 6. COMMAND DRAFT PREVIEW  (PR O — display-only boundary)
+            //
+            // Renders the local `commandDraftPreview` object. NO submission,
+            // NO dispatch, NO state change. The visible banner makes the
+            // boundary explicit; the rows below show the future-command
+            // shape so the operator knows what would be assembled.
+            // ============================================================
+            SectionLabel { label: "COMMAND DRAFT PREVIEW" }
+
+            ProseBlock { text: root._COPY_DRAFT_BANNER }
+
+            DetailRow { label: "Submission state"; value: root.commandDraftPreview.submissionState }
+            DetailRow { label: "Validation state"; value: root.commandDraftPreview.validationState }
+            DetailRow { label: "Expected record";  value: root.commandDraftPreview.expectedFutureRecord }
+            DetailRow {
+                label: "Evidence packet v"
+                value: "" + root.commandDraftPreview.evidencePacketSchemaVersion
+            }
+            DetailRow {
+                label: "Action preview v"
+                value: "" + root.commandDraftPreview.actionIntentPreviewSchemaVersion
+            }
+            DetailRow {
+                label: "Executable"
+                value: root.commandDraftPreview.executable ? "true" : "false"
+            }
+            DetailRow {
+                label: "Wired"
+                value: root.commandDraftPreview.wired ? "true" : "false"
+            }
+
+            // Blocked-by list — quiet ledger rows, not an alert block.
+            Repeater {
+                model: root.commandDraftPreview.blockedBy
+                delegate: RequirementRow {
+                    required property string modelData
+                    text: modelData
+                }
+            }
+
+            SectionRule {}
+
+            // ============================================================
+            // 7. SAFETY BOUNDARY  (always present; appended capital copy)
             // ============================================================
             SectionLabel { label: "SAFETY BOUNDARY" }
 
