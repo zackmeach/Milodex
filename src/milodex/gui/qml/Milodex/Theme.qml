@@ -356,6 +356,11 @@ QtObject {
         benchStage: 90,
         benchEvidence: 260,
         benchAction: 152,
+        // Bench status column — fixed width so neither header nor row
+        // RowLayout solvers can negotiate it differently after a row reorder.
+        // Width chosen to comfortably fit the status prose + meta line for
+        // the common cases; longer strings elide.
+        benchStatus: 280,
         ledgerTimestamp: 148,
         ledgerSubject: 224,
         ledgerTransition: 220,

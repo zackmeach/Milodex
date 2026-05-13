@@ -64,6 +64,11 @@ Item {
 
     // Drag support (PR H — within-section visual reorder only)
     property bool dragging: false
+    // Stable coordinate frame for drag-delta calculation. BenchSurface MUST
+    // set this to the rowsContainer Item (the parent that holds all rows in a
+    // section) so the dragged row's own motion does not feed back into mouseY.
+    // See the dragHandle MouseArea below for the full rationale.
+    property Item dragCoordinateItem: null
     // dragStarted: emitted once the drag threshold is crossed (not on raw press).
     signal dragStarted()
     // moveRequested(delta): emitted on position change while drag is active.
@@ -78,10 +83,6 @@ Item {
     // produced by compute_menu_items() in bench_v1.py via read_models.py.
     // Populated by the parent BenchSurface delegate from modelData.actions.
     property var actionItems: []
-
-    // Action slot signal — emitted when the Action button is clicked.
-    // Connected to open the menu popup below.
-    signal actionClicked()
 
     // -----------------------------------------------------------------------
     // Internal state
@@ -118,28 +119,49 @@ Item {
         color: Theme.color.brand.accent
     }
 
+    // Shadow — visible only while dragging; sits below the row background
+    Rectangle {
+        anchors.fill: parent
+        anchors.topMargin: 2
+        anchors.leftMargin: 2
+        color: Qt.rgba(0, 0, 0, 0.25)
+        visible: root.dragging
+    }
+
     // Row background — transparent by default; LIVE gets oxblood wash;
-    // hover gets a surface.raised tint at reduced opacity
+    // hover gets a surface.raised tint at reduced opacity;
+    // dragging: opaque surface.raised with 1-px border
     Rectangle {
         anchors.fill: parent
         anchors.leftMargin: liveBorder.width
 
         // LIVE: 5%-alpha oxblood wash; hover: surface.raised at 0.42;
-        // dragging: surface.raised at 0.72
+        // dragging: opaque surface.raised.
+        // ORDER MATTERS: `root.dragging` MUST be checked before `_isLive`.
+        // Every dragged row — LIVE included — must paint opaque so neighbors
+        // do not ghost through the paper strip. If the LIVE branch wins first,
+        // dragged LIVE rows render at 5% alpha and the drag-visual contract
+        // breaks. A static test in tests/milodex/gui/test_qml_load_smoke.py
+        // guards this ordering; do not reshuffle the branches.
         color: {
+            if (root.dragging) {
+                return Theme.color.surface.raised
+            }
             if (_isLive) {
                 return Qt.rgba(0.49, 0.21, 0.25, 0.05)   // brand.accent ≈ #7d3540 at ~5%
             }
-            if (mouseArea.containsMouse || root.dragging) {
+            if (mouseArea.containsMouse || rowClickArea.containsMouse) {
                 return Qt.rgba(
                     Theme.color.surface.raised.r,
                     Theme.color.surface.raised.g,
                     Theme.color.surface.raised.b,
-                    root.dragging ? 0.72 : 0.42
+                    0.42
                 )
             }
             return "transparent"
         }
+        border.color: Theme.color.border.regular
+        border.width: root.dragging ? 1 : 0
         Behavior on color { ColorAnimation { duration: Theme.motion.fast } }
     }
 
@@ -150,6 +172,47 @@ Item {
         hoverEnabled: true
         propagateComposedEvents: true
         onClicked: (mouse) => mouse.accepted = false
+    }
+
+    // Row-body click — opens the action menu when the user clicks anywhere on
+    // the row except the drag handle.  Handle is excluded geometrically
+    // (anchors.left: handleSlot.right), not by z-order.
+    // Movement-threshold gating prevents accidental menu-open on press/move/release.
+    MouseArea {
+        id: rowClickArea
+        anchors.left: handleSlot.right
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        cursorShape: Qt.PointingHandCursor
+        // hoverEnabled must be set explicitly so containsMouse is reliable.
+        // Without this, the PointingHandCursor may still register hover
+        // internally (implicitly enabling it) but containsMouse won't update
+        // consistently, and the cursor intercepts mouseArea's hover events.
+        hoverEnabled: true
+
+        property real _pressX: 0
+        property real _pressY: 0
+        property bool _movedTooFar: false
+
+        onPressed: (mouse) => {
+            _pressX = mouse.x
+            _pressY = mouse.y
+            _movedTooFar = false
+        }
+        onPositionChanged: (mouse) => {
+            if (!pressed) return
+            var threshold = (typeof Qt.styleHints !== "undefined" &&
+                             Qt.styleHints.startDragDistance > 0)
+                            ? Qt.styleHints.startDragDistance : 4
+            if (Math.abs(mouse.x - _pressX) >= threshold ||
+                Math.abs(mouse.y - _pressY) >= threshold) {
+                _movedTooFar = true
+            }
+        }
+        onReleased: {
+            if (!_movedTooFar) actionMenu.open()
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -174,7 +237,7 @@ Item {
             color: Theme.color.text.muted
             // 0.80 while actively dragging from handle; 0.65 on row hover; 0.30 default
             opacity: dragHandle.pressed ? 0.80
-                     : (mouseArea.containsMouse || root.dragging ? 0.65 : 0.30)
+                     : (mouseArea.containsMouse || rowClickArea.containsMouse || root.dragging ? 0.65 : 0.30)
             font.family: Theme.typography.data.sm.family
             font.pixelSize: Theme.typography.data.sm.size
             font.letterSpacing: 1.2
@@ -186,24 +249,47 @@ Item {
         // Uses cursor-delta tracking rather than drag.target so the dragged
         // row's y remains fully declarative (bound in BenchSurface).
         // drag.target would imperatively overwrite root.y and break the binding.
+        //
+        // STABLE-COORDINATE MAPPING: delta is computed against
+        // root.dragCoordinateItem (set by BenchSurface to rowsContainer), NOT
+        // against this MouseArea's local mouseY. The row itself moves during
+        // drag, so the row-local coordinate frame moves under the cursor — a
+        // naive `mouseY - _pressMouseY` produces a negative-feedback oscillation
+        // (row moves → local mouseY shifts inversely → delta collapses → row
+        // snaps back → jitter / visual overlap on commit). Mapping into a
+        // stable parent frame via dragHandle.mapToItem cancels the row's own
+        // motion. Do NOT replace this with mouseY-based math.
         MouseArea {
             id: dragHandle
             anchors.fill: parent
             cursorShape: pressed ? Qt.ClosedHandCursor : Qt.SizeVerCursor
 
-            // Internal drag-tracking state.
-            property real _pressMouseY: 0
+            // Internal drag-tracking state — _pressPointerY is in
+            // root.dragCoordinateItem's coordinate frame.
+            property real _pressPointerY: 0
             property bool _activeDrag: false
 
-            onPressed: {
-                _pressMouseY = mouseY
+            // Single source of truth for stable-frame pointer mapping.
+            // Falls back to row-local mouse.y only if the coordinate item
+            // was never wired (safety net — won't oscillate because the
+            // fallback is consistent between press and move, but BenchSurface
+            // MUST wire dragCoordinateItem: rowsContainer in production).
+            function pointerYInDragFrame(mouse) {
+                if (root.dragCoordinateItem === null) return mouse.y
+                return dragHandle.mapToItem(
+                    root.dragCoordinateItem, mouse.x, mouse.y).y
+            }
+
+            onPressed: (mouse) => {
+                _pressPointerY = pointerYInDragFrame(mouse)
                 _activeDrag = false
                 // Do NOT set root.dragging or emit dragStarted yet —
                 // wait for the threshold check in onPositionChanged.
             }
-            onPositionChanged: {
+            onPositionChanged: (mouse) => {
                 if (!pressed) return
-                var delta = mouseY - _pressMouseY
+                var currentPointerY = pointerYInDragFrame(mouse)
+                var delta = currentPointerY - _pressPointerY
                 var threshold = (typeof Qt.styleHints !== "undefined" &&
                                  Qt.styleHints.startDragDistance > 0)
                                 ? Qt.styleHints.startDragDistance : 4
@@ -229,101 +315,153 @@ Item {
     }
 
     // -----------------------------------------------------------------------
-    // Row content layout (cols 2–7)
+    // Row content layout (cols 2–7) — STABLE COLUMN GEOMETRY CONTRACT
+    //
+    // Every column except `strategyCol` has a fixed width drawn from
+    // Theme.column.*.  Columns are right-anchored in a chain from the row's
+    // right edge inward; `strategyCol` fills the remainder between
+    // `handleSlot.right` and `sharpeText.left`.  This is intentional: a
+    // per-row RowLayout with two `Layout.fillWidth` participants (strategy +
+    // status) lets the layout solver pick different widths for different
+    // rows based on each row's implicitWidth, and after a `rowOrder` splice
+    // the delegates get rebound to different modelData → different implicit
+    // widths → columns visibly shift.  Explicit anchors + fixed widths make
+    // column geometry invariant to row content and identical across header
+    // and rows.  The same widths are used in BenchSurface's section header;
+    // do not change one without changing the other.
     // -----------------------------------------------------------------------
 
-    RowLayout {
-        id: rowLayout
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.left: handleSlot.right
+    // ---- col 7 (rightmost): Action slot --------------------------------
+    Item {
+        id: actionSlot
         anchors.right: parent.right
         anchors.rightMargin: Theme.space[3]
-        spacing: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchAction
+        height: 78   // matches BenchRow.implicitHeight
 
-        // ---- col 2: Strategy block (name + ID) ----------------------------
-        Column {
-            spacing: 4
-            Layout.fillWidth: true
-            Layout.minimumWidth: 200
+        // Folio mark — 1-px vertical hairline at right edge of slot,
+        // plus a small action-count glyph.  No fill, no border-radius.
+        Item {
+            id: folioMark
+            anchors.fill: parent
 
+            // Opacity driven by row hover / menu-open state
+            opacity: {
+                if (actionMenu.opened || root.activeFocus) return 1.0
+                if (mouseArea.containsMouse || rowClickArea.containsMouse) return 0.45
+                return 0
+            }
+            Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
+
+            // 1-px column rule at the right edge of the slot
+            Rectangle {
+                anchors.right: parent.right
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: 1
+                color: Theme.color.border.regular
+            }
+
+            // Action-count glyph centered in the slot
             Text {
-                width: parent.width
-                text: root.strategyName
-                // IDLE: text.secondary; all others: text.primary (brief §5)
-                color: root._isIdle
+                anchors.centerIn: parent
+                text: "· " + root.actionItems.length + " ·"
+                color: (actionMenu.opened || root.activeFocus)
                        ? Theme.color.text.secondary
-                       : Theme.color.text.primary
-                font.family: Theme.typography.display.sm.family
-                font.pixelSize: Theme.typography.display.sm.size
-                font.weight: Theme.typography.display.sm.weight
-                elide: Text.ElideRight
+                       : Theme.color.text.muted
+                font.family: Theme.typography.label.xs.family
+                font.pixelSize: Theme.typography.label.xs.size
             }
 
-            Text {
-                width: parent.width
-                text: root.strategyId
-                color: Theme.color.text.muted
-                font.family: Theme.typography.data.xs.family
-                font.pixelSize: Theme.typography.data.xs.size
-                font.features: Theme.typography.data.xs.features
-                elide: Text.ElideRight
+            // Folio mark hit area — opens the same menu as the row-body click
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: actionMenu.open()
             }
         }
 
-        // ---- col 3: Sharpe --------------------------------------------------
-        Text {
-            text: root.sharpe
-            // IDLE: text.disabled (em-dash); others: text.primary (brief §5)
-            color: root._isIdle
-                   ? Theme.color.text.disabled
-                   : Theme.color.text.primary
-            font.family: Theme.typography.data.md.family
-            font.pixelSize: Theme.typography.data.md.size
-            font.features: Theme.typography.data.md.features
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Theme.column.benchMetric
-        }
+        // Action menu — visual-prototype only (ADR 0049).
+        QQC2.Menu {
+            id: actionMenu
+            width: 240
+            x: actionSlot.width - width
+            y: actionSlot.height + 2
 
-        // ---- col 4: Max drawdown -------------------------------------------
-        Text {
-            text: root.maxDD
-            color: root._isIdle
-                   ? Theme.color.text.disabled
-                   : Theme.color.text.primary
-            font.family: Theme.typography.data.md.family
-            font.pixelSize: Theme.typography.data.md.size
-            font.features: Theme.typography.data.md.features
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Theme.column.benchMetric
-        }
+            background: Rectangle {
+                color: Theme.color.surface.raised
+                border.color: Theme.color.border.regular
+                border.width: 1
+                radius: Theme.radius.md
+            }
 
-        // ---- col 5: Trade count --------------------------------------------
-        Text {
-            text: root.tradeCount
-            color: root._isIdle
-                   ? Theme.color.text.disabled
-                   : Theme.color.text.primary
-            font.family: Theme.typography.data.md.family
-            font.pixelSize: Theme.typography.data.md.size
-            font.features: Theme.typography.data.md.features
-            horizontalAlignment: Text.AlignRight
-            Layout.preferredWidth: Theme.column.benchMetric
-        }
+            Instantiator {
+                model: root.actionItems
 
-        // ---- col 6: Status prose -------------------------------------------
-        // Italic Newsreader sentence with one inline colored signal word;
-        // smaller mono meta line below (bench-brief §4 "load-bearing element")
+                delegate: QQC2.MenuItem {
+                    required property var modelData
+
+                    text: modelData.label
+                    implicitWidth: 240
+                    implicitHeight: 36
+                    font.family: Theme.typography.label.xs.family
+                    font.pixelSize: Theme.typography.label.xs.size
+
+                    contentItem: Text {
+                        text: parent.text
+                        font: parent.font
+                        color: modelData.verbClass === "directional"
+                               ? Theme.color.brand.accentHover
+                               : Theme.color.text.onBrand
+                        leftPadding: 12
+                        rightPadding: 12
+                        verticalAlignment: Text.AlignVCenter
+
+                        Rectangle {
+                            visible: modelData.verbClass === "informational"
+                            anchors.top: parent.top
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.leftMargin: -12
+                            anchors.rightMargin: -12
+                            height: 1
+                            color: Theme.color.border.regular
+                        }
+                    }
+
+                    background: Rectangle {
+                        implicitWidth: 240
+                        implicitHeight: 36
+                        color: parent.highlighted ? Theme.color.surface.base : "transparent"
+                    }
+
+                    onTriggered: {
+                        // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
+                    }
+                }
+
+                onObjectAdded: (index, object) => actionMenu.insertItem(index, object)
+                onObjectRemoved: (index, object) => actionMenu.removeItem(object)
+            }
+        }
+    }
+
+    // ---- col 6: Status prose (fixed-width, right-anchored) ------------
+    Item {
+        id: statusCol
+        anchors.right: actionSlot.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchStatus
+        height: statusContent.implicitHeight
+
         Column {
+            id: statusContent
+            width: parent.width
             spacing: 3
-            Layout.fillWidth: true
-            Layout.minimumWidth: 180
 
             // Prose line: signal word in status color inline with italic tail.
-            // Using a single Text with inline HTML-style color span would need
-            // textFormat: Text.RichText which can break font sizing. Instead
-            // we use a RowLayout so each segment keeps its own color and the
-            // prose tail elides cleanly.
             RowLayout {
                 width: parent.width
                 spacing: 0
@@ -369,135 +507,95 @@ Item {
                 visible: root.metaLine.length > 0
             }
         }
+    }
 
-        // ---- col 7: Action slot -------------------------------------------
-        // PR G: Action button now opens a per-row menu populated from
-        // compute_menu_items() output (bench_v1.py → read_models.py →
-        // modelData.actions → actionItems).  Clicking a menu item is a
-        // visual-prototype no-op per ADR 0049 — no backend mutation occurs.
-        // PR I will wire confirmation modals and Evidence modal.
-        Item {
-            Layout.preferredWidth: Theme.column.benchAction
-            Layout.alignment: Qt.AlignVCenter
-            implicitHeight: actionButton.implicitHeight
+    // ---- col 5: Trade count (fixed, right-anchored) -------------------
+    Text {
+        id: tradesText
+        anchors.right: statusCol.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchMetric
+        text: root.tradeCount
+        color: root._isIdle
+               ? Theme.color.text.disabled
+               : Theme.color.text.primary
+        font.family: Theme.typography.data.md.family
+        font.pixelSize: Theme.typography.data.md.size
+        font.features: Theme.typography.data.md.features
+        horizontalAlignment: Text.AlignRight
+    }
 
-            // Transient "primary" fill — the button shows filled oxblood when
-            // hovered or while its action menu is open.  At rest BenchSurface
-            // provides "secondary" (outlined) for state-changing rows and
-            // "ghost" for evidence-only rows.  Ghost rows are never promoted
-            // to primary — they should stay quiet.
-            readonly property bool _actionActive: actionButtonHover.hovered || actionMenu.opened
+    // ---- col 4: Max drawdown (fixed, right-anchored) ------------------
+    Text {
+        id: maxDDText
+        anchors.right: tradesText.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchMetric
+        text: root.maxDD
+        color: root._isIdle
+               ? Theme.color.text.disabled
+               : Theme.color.text.primary
+        font.family: Theme.typography.data.md.family
+        font.pixelSize: Theme.typography.data.md.size
+        font.features: Theme.typography.data.md.features
+        horizontalAlignment: Text.AlignRight
+    }
 
-            Button {
-                id: actionButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                variant: parent._actionActive && root.actionVariant !== "ghost"
-                         ? "primary"
-                         : root.actionVariant
-                text: "Action"
-                onClicked: {
-                    root.actionClicked()
-                    actionMenu.open()
-                }
+    // ---- col 3: Sharpe (fixed, right-anchored) ------------------------
+    Text {
+        id: sharpeText
+        anchors.right: maxDDText.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        width: Theme.column.benchMetric
+        text: root.sharpe
+        color: root._isIdle
+               ? Theme.color.text.disabled
+               : Theme.color.text.primary
+        font.family: Theme.typography.data.md.family
+        font.pixelSize: Theme.typography.data.md.size
+        font.features: Theme.typography.data.md.features
+        horizontalAlignment: Text.AlignRight
+    }
 
-                // HoverHandler coexists with MouseArea — does not intercept
-                // clicks; the Button's own onClicked fires normally.
-                HoverHandler { id: actionButtonHover }
+    // ---- col 2: Strategy block (fills remaining space) ----------------
+    Item {
+        id: strategyCol
+        anchors.left: handleSlot.right
+        anchors.leftMargin: Theme.space[4]
+        anchors.right: sharpeText.left
+        anchors.rightMargin: Theme.space[4]
+        anchors.verticalCenter: parent.verticalCenter
+        height: strategyContent.implicitHeight
+
+        Column {
+            id: strategyContent
+            width: parent.width
+            spacing: 4
+
+            Text {
+                width: parent.width
+                text: root.strategyName
+                // IDLE: text.secondary; all others: text.primary (brief §5)
+                color: root._isIdle
+                       ? Theme.color.text.secondary
+                       : Theme.color.text.primary
+                font.family: Theme.typography.display.sm.family
+                font.pixelSize: Theme.typography.display.sm.size
+                font.weight: Theme.typography.display.sm.weight
+                elide: Text.ElideRight
             }
 
-            // Action menu — visual-prototype only (ADR 0049).
-            // Items are rendered in the order returned by compute_menu_items()
-            // (directional → invocation → informational floor).
-            // Clicking any item is a no-op in v1.  PR I will wire handlers.
-            QQC2.Menu {
-                id: actionMenu
-                width: 240
-                // Anchor below-right of the Action button
-                x: actionButton.x + actionButton.width - width
-                y: actionButton.y + actionButton.height + 2
-
-                // Warm-dark surface to match ledger aesthetic.
-                // surface.raised (#1a1611) is the highest defined surface token;
-                // border.regular (#33291c) gives a thin brass/brown hairline;
-                // radius 4 keeps the editorial softness.
-                background: Rectangle {
-                    color: Theme.color.surface.raised
-                    border.color: Theme.color.border.regular
-                    border.width: 1
-                    radius: Theme.radius.md
-                }
-
-                // Instantiator is required here — QQC2.Menu uses addItem()/removeItem()
-                // internally and does NOT pick up children created by a Repeater.
-                // onObjectAdded/onObjectRemoved wire each dynamically-created MenuItem
-                // into the Menu's managed item list so they actually appear.
-                Instantiator {
-                    model: root.actionItems
-
-                    delegate: QQC2.MenuItem {
-                        required property var modelData
-
-                        text: modelData.label
-                        implicitWidth: 240
-                        implicitHeight: 36
-                        font.family: Theme.typography.label.xs.family
-                        font.pixelSize: Theme.typography.label.xs.size
-
-                        // Color: directional verbs use brand.accentHover (#9a4350) —
-                        // a half-step brighter than brand.accent (#7d3540) — which
-                        // lifts contrast against surface.raised while preserving the
-                        // oxblood signal.  Invocation and informational items use
-                        // text.onBrand (#f5e6c4) — the warmest cream token — so all
-                        // non-directional items including Open Evidence read clearly
-                        // against the dark warm surface without looking disabled.
-                        // Visual separation between invocation and informational floor
-                        // is handled by the border.regular hairline on the item.
-                        contentItem: Text {
-                            text: parent.text
-                            font: parent.font
-                            color: modelData.verbClass === "directional"
-                                   ? Theme.color.brand.accentHover
-                                   : Theme.color.text.onBrand
-                            leftPadding: 12
-                            rightPadding: 12
-                            verticalAlignment: Text.AlignVCenter
-
-                            // Full-width hairline separator above the informational floor
-                            // (Open Evidence).  border.regular (#33291c) is more visible
-                            // than border.subtle (#241f15) against surface.raised.
-                            Rectangle {
-                                visible: modelData.verbClass === "informational"
-                                anchors.top: parent.top
-                                anchors.left: parent.left
-                                anchors.right: parent.right
-                                // Extend into left/right padding so the rule spans the full
-                                // menu width rather than just the text content area.
-                                anchors.leftMargin: -12
-                                anchors.rightMargin: -12
-                                height: 1
-                                color: Theme.color.border.regular
-                            }
-                        }
-
-                        // Hover: shift to surface.base (#13100a) — one step darker than
-                        // surface.raised — for a subtle, non-flashy active indicator.
-                        background: Rectangle {
-                            implicitWidth: 240
-                            implicitHeight: 36
-                            color: parent.highlighted ? Theme.color.surface.base : "transparent"
-                        }
-
-                        // v1 visual-prototype: clicking is intentionally a no-op.
-                        // PR I will dispatch to confirmation / evidence modals.
-                        onTriggered: {
-                            // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
-                        }
-                    }
-
-                    onObjectAdded: (index, object) => actionMenu.insertItem(index, object)
-                    onObjectRemoved: (index, object) => actionMenu.removeItem(object)
-                }
+            Text {
+                width: parent.width
+                text: root.strategyId
+                color: Theme.color.text.muted
+                font.family: Theme.typography.data.xs.family
+                font.pixelSize: Theme.typography.data.xs.size
+                font.features: Theme.typography.data.xs.features
+                elide: Text.ElideRight
             }
         }
     }

@@ -47,6 +47,16 @@ Item {
     // Each strategy: as_qml() output from _StrategyRow (read_models.py)
     property var benchData: BenchState.sections
 
+    // True while any section has a row drag in progress.
+    // Used to gate keyboard scroll so arrow keys don't fight the drag.
+    property bool anyDragging: false
+
+    // Watchdog: if benchData is rebound mid-drag (e.g. BenchState emits a new
+    // sections snapshot), delegate destruction prevents onDragEnded from firing
+    // and anyDragging would remain true, permanently disabling keyboard scroll.
+    // Force-reset it whenever the data reference changes.
+    onBenchDataChanged: anyDragging = false
+
     // -----------------------------------------------------------------------
     // Formatting helpers
     // -----------------------------------------------------------------------
@@ -133,6 +143,47 @@ Item {
         contentHeight: pageColumn.implicitHeight + Theme.space[7] * 2
         clip: true
         flickableDirection: Flickable.VerticalFlick
+        interactive: false
+        focus: true
+        // When loaded inside a Loader/StackView the parent is not necessarily
+        // an active focus scope, so focus:true alone leaves arrow keys dead until
+        // the user clicks.  forceActiveFocus() requests the active focus chain
+        // immediately, ensuring keyboard scroll works from first render.
+        Component.onCompleted: scroller.forceActiveFocus()
+
+        Keys.onPressed: (event) => {
+            if (root.anyDragging) return
+            var max = Math.max(0, scroller.contentHeight - scroller.height)
+            if (event.key === Qt.Key_Down) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY + 40))
+                event.accepted = true
+            } else if (event.key === Qt.Key_Up) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - 40))
+                event.accepted = true
+            } else if (event.key === Qt.Key_PageDown) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY + scroller.height * 0.9))
+                event.accepted = true
+            } else if (event.key === Qt.Key_PageUp) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - scroller.height * 0.9))
+                event.accepted = true
+            } else if (event.key === Qt.Key_Home) {
+                scroller.contentY = 0
+                event.accepted = true
+            } else if (event.key === Qt.Key_End) {
+                scroller.contentY = max
+                event.accepted = true
+            }
+        }
+
+        WheelHandler {
+            target: null
+            onWheel: (event) => {
+                var max = Math.max(0, scroller.contentHeight - scroller.height)
+                var step = event.angleDelta.y / 120 * 40
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - step))
+                event.accepted = true
+            }
+        }
 
         Column {
             id: pageColumn
@@ -349,29 +400,74 @@ Item {
                         }
 
                         // ---- Column header row (bench-brief §4) ----------------
-                        // Visible only when section has rows.
+                        // STABLE COLUMN GEOMETRY CONTRACT: this header MUST use
+                        // the same explicit anchor chain as BenchRow.qml row
+                        // content. A per-row RowLayout with two fillWidth
+                        // participants would solve widths differently on
+                        // different rows, causing columns to shift after a
+                        // `rowOrder` reorder. Explicit anchors + fixed Theme
+                        // tokens guarantee header and every row resolve to
+                        // identical x positions regardless of content.
                         Item {
                             visible: sectionRoot.rowOrder.length > 0
                             width: parent.width
                             height: 32
 
-                            RowLayout {
-                                anchors.fill: parent
-                                anchors.leftMargin: 0
+                            // Right-anchored chain (rightmost first).
+                            ColHeader {
+                                id: headerAction
+                                text: "Action"
+                                alignRight: true
+                                anchors.right: parent.right
                                 anchors.rightMargin: Theme.space[3]
-                                spacing: Theme.space[4]
-
-                                // Gutter spacer — matches handleSlot width in BenchRow
-                                Item { Layout.preferredWidth: Theme.space[5] }
-
-                                // Strategy column — fills remaining space
-                                Item { Layout.fillWidth: true; Layout.minimumWidth: 200 }
-
-                                ColHeader { text: "Sharpe";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                ColHeader { text: "Max-DD";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                ColHeader { text: "Trades";   alignRight: true; Layout.preferredWidth: Theme.column.benchMetric }
-                                ColHeader { text: "Status";   Layout.fillWidth: true; Layout.minimumWidth: 180 }
-                                ColHeader { text: "Action";   alignRight: true; Layout.preferredWidth: Theme.column.benchAction }
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchAction
+                            }
+                            ColHeader {
+                                id: headerStatus
+                                text: "Status"
+                                anchors.right: headerAction.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchStatus
+                            }
+                            ColHeader {
+                                id: headerTrades
+                                text: "Trades"
+                                alignRight: true
+                                anchors.right: headerStatus.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchMetric
+                            }
+                            ColHeader {
+                                id: headerMaxDD
+                                text: "Max-DD"
+                                alignRight: true
+                                anchors.right: headerTrades.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchMetric
+                            }
+                            ColHeader {
+                                id: headerSharpe
+                                text: "Sharpe"
+                                alignRight: true
+                                anchors.right: headerMaxDD.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: Theme.column.benchMetric
+                            }
+                            // Strategy column header — fills remaining space.
+                            // Gutter (handleSlot width) sits to its left.
+                            ColHeader {
+                                id: headerStrategy
+                                text: ""
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.space[5] + Theme.space[4]
+                                anchors.right: headerSharpe.left
+                                anchors.rightMargin: Theme.space[4]
+                                anchors.verticalCenter: parent.verticalCenter
                             }
                         }
 
@@ -426,11 +522,22 @@ Item {
                                     actionItems: modelData.actions || []
                                     actionVariant: root.actionVariant(modelData)
 
+                                    // Stable coordinate frame for drag-delta math.
+                                    // rowsContainer does NOT move during drag (only its
+                                    // child rows reposition), so dragHandle.mapToItem
+                                    // returns a pointer-Y that is invariant to the
+                                    // dragged row's own motion. Required to prevent the
+                                    // negative-feedback oscillation that row-local mouseY
+                                    // produces. Do not point this at `root` or at the
+                                    // delegate itself.
+                                    dragCoordinateItem: rowsContainer
+
                                     // Drag signal handlers (PR H).
                                     onDragStarted: {
                                         sectionRoot.draggingIndex = index
                                         sectionRoot.targetIndex = index
                                         sectionRoot.dragYOffset = 0
+                                        root.anyDragging = true
                                     }
                                     onMoveRequested: (delta) => {
                                         // delta is cumulative offset from press.
@@ -443,15 +550,28 @@ Item {
                                                      Math.round(absY / sectionRoot.rowHeight)))
                                     }
                                     onDragEnded: {
-                                        if (sectionRoot.targetIndex !== sectionRoot.draggingIndex) {
-                                            var newOrder = sectionRoot.rowOrder.slice()
-                                            var item = newOrder.splice(sectionRoot.draggingIndex, 1)[0]
-                                            newOrder.splice(sectionRoot.targetIndex, 0, item)
-                                            sectionRoot.rowOrder = newOrder
-                                        }
+                                        // ORDER MATTERS: snapshot indices, reset all
+                                        // drag state, THEN mutate rowOrder. Mutating
+                                        // rowOrder first causes the Repeater to tear
+                                        // down/recreate delegates — including the one
+                                        // whose handler is still executing — which
+                                        // invalidates the delegate's QML context and
+                                        // makes outer-scope ids (sectionRoot, root)
+                                        // unresolvable for the rest of this handler.
+                                        // Symptom: "ReferenceError: sectionRoot is
+                                        // not defined" on the post-splice reset lines.
+                                        var fromIdx = sectionRoot.draggingIndex
+                                        var toIdx = sectionRoot.targetIndex
                                         sectionRoot.draggingIndex = -1
                                         sectionRoot.targetIndex = -1
                                         sectionRoot.dragYOffset = 0
+                                        root.anyDragging = false
+                                        if (toIdx !== fromIdx && fromIdx >= 0 && toIdx >= 0) {
+                                            var newOrder = sectionRoot.rowOrder.slice()
+                                            var item = newOrder.splice(fromIdx, 1)[0]
+                                            newOrder.splice(toIdx, 0, item)
+                                            sectionRoot.rowOrder = newOrder
+                                        }
                                     }
                                 }
                             }
