@@ -477,6 +477,16 @@ Item {
                                     actionItems: modelData.actions || []
                                     actionVariant: root.actionVariant(modelData)
 
+                                    // Stable coordinate frame for drag-delta math.
+                                    // rowsContainer does NOT move during drag (only its
+                                    // child rows reposition), so dragHandle.mapToItem
+                                    // returns a pointer-Y that is invariant to the
+                                    // dragged row's own motion. Required to prevent the
+                                    // negative-feedback oscillation that row-local mouseY
+                                    // produces. Do not point this at `root` or at the
+                                    // delegate itself.
+                                    dragCoordinateItem: rowsContainer
+
                                     // Drag signal handlers (PR H).
                                     onDragStarted: {
                                         sectionRoot.draggingIndex = index

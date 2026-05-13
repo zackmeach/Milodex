@@ -242,6 +242,45 @@ def test_bench_menu_engine_contract() -> None:
     assert "onTriggered" in row_src
 
 
+def test_bench_drag_uses_stable_coordinate_mapping() -> None:
+    """Drag delta must be computed against a stable parent frame, not row-local mouseY.
+
+    The dragged row's own position changes during drag. If the delta is computed
+    from this MouseArea's local `mouseY`, the row's motion feeds back into the
+    coordinate frame and the delta oscillates — visible as row jitter and
+    delegates overlapping each other on commit. The fix is to map the pointer
+    position into a stable parent frame (rowsContainer) via dragHandle.mapToItem,
+    which cancels the row's own motion.
+
+    These assertions are deliberately tight:
+    - BenchRow.qml must declare `property Item dragCoordinateItem` so the
+      stable target is injectable by BenchSurface.
+    - BenchRow.qml must contain at least one `dragHandle.mapToItem(` call so
+      a refactor cannot silently revert to row-local mouseY.
+    - BenchSurface.qml must wire `dragCoordinateItem: rowsContainer` on the
+      BenchRow delegate. Pointing this at `root` or the delegate itself would
+      reintroduce the feedback loop.
+    - The previous bug pattern `_pressMouseY = mouseY` must not return.
+    """
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "property Item dragCoordinateItem" in row_src, (
+        "BenchRow.qml must declare property Item dragCoordinateItem"
+    )
+    assert "dragHandle.mapToItem(" in row_src, (
+        "BenchRow.qml drag delta must be computed via dragHandle.mapToItem"
+    )
+    assert "dragCoordinateItem: rowsContainer" in surface_src, (
+        "BenchSurface.qml must wire dragCoordinateItem: rowsContainer on the BenchRow delegate"
+    )
+    assert "_pressMouseY = mouseY" not in row_src, (
+        "BenchRow.qml must not compute press position from row-local mouseY"
+    )
+
+
 def test_bench_dragging_branch_precedes_live_branch() -> None:
     """Dragged rows — LIVE included — must paint opaque, not as a 5% oxblood wash.
 

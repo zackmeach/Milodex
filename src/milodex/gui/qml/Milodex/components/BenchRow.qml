@@ -64,6 +64,11 @@ Item {
 
     // Drag support (PR H — within-section visual reorder only)
     property bool dragging: false
+    // Stable coordinate frame for drag-delta calculation. BenchSurface MUST
+    // set this to the rowsContainer Item (the parent that holds all rows in a
+    // section) so the dragged row's own motion does not feed back into mouseY.
+    // See the dragHandle MouseArea below for the full rationale.
+    property Item dragCoordinateItem: null
     // dragStarted: emitted once the drag threshold is crossed (not on raw press).
     signal dragStarted()
     // moveRequested(delta): emitted on position change while drag is active.
@@ -244,24 +249,40 @@ Item {
         // Uses cursor-delta tracking rather than drag.target so the dragged
         // row's y remains fully declarative (bound in BenchSurface).
         // drag.target would imperatively overwrite root.y and break the binding.
+        //
+        // STABLE-COORDINATE MAPPING: delta is computed against
+        // root.dragCoordinateItem (set by BenchSurface to rowsContainer), NOT
+        // against this MouseArea's local mouseY. The row itself moves during
+        // drag, so the row-local coordinate frame moves under the cursor — a
+        // naive `mouseY - _pressMouseY` produces a negative-feedback oscillation
+        // (row moves → local mouseY shifts inversely → delta collapses → row
+        // snaps back → jitter / visual overlap on commit). Mapping into a
+        // stable parent frame via dragHandle.mapToItem cancels the row's own
+        // motion. Do NOT replace this with mouseY-based math.
         MouseArea {
             id: dragHandle
             anchors.fill: parent
             cursorShape: pressed ? Qt.ClosedHandCursor : Qt.SizeVerCursor
 
-            // Internal drag-tracking state.
-            property real _pressMouseY: 0
+            // Internal drag-tracking state — _pressPointerY is in
+            // root.dragCoordinateItem's coordinate frame.
+            property real _pressPointerY: 0
             property bool _activeDrag: false
 
-            onPressed: {
-                _pressMouseY = mouseY
+            onPressed: function(mouse) {
+                if (!root.dragCoordinateItem) { _activeDrag = false; return }
+                _pressPointerY = dragHandle.mapToItem(
+                    root.dragCoordinateItem, mouse.x, mouse.y).y
                 _activeDrag = false
                 // Do NOT set root.dragging or emit dragStarted yet —
                 // wait for the threshold check in onPositionChanged.
             }
-            onPositionChanged: {
+            onPositionChanged: function(mouse) {
                 if (!pressed) return
-                var delta = mouseY - _pressMouseY
+                if (!root.dragCoordinateItem) return
+                var currentY = dragHandle.mapToItem(
+                    root.dragCoordinateItem, mouse.x, mouse.y).y
+                var delta = currentY - _pressPointerY
                 var threshold = (typeof Qt.styleHints !== "undefined" &&
                                  Qt.styleHints.startDragDistance > 0)
                                 ? Qt.styleHints.startDragDistance : 4
