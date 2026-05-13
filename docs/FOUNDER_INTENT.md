@@ -20,6 +20,122 @@ Milodex should ultimately be something the founder can stand behind and say:
 
 ---
 
+## Milodex Is an Automation Harness, Not an AI Trading Bot
+
+Milodex is sometimes easy to misread as "an AI trading bot." That framing is wrong, and the misreading is corrosive enough that it has to be corrected explicitly in the founder-intent layer rather than left to be inferred later.
+
+**Milodex is an operator-governed automation harness for investment strategies and automated investing techniques.**
+
+It is not the operator handing money to a frontier model and saying "go trade for me." A frontier model, a machine-learning model, a ruleset, or a config-driven strategy may eventually decide what it wants to trade — but only from inside the harness Milodex provides.
+
+The distinction matters because it determines who owns what:
+
+- the **operator** controls promotion
+- the **architecture** controls lifecycle
+- the **risk layer** has veto power
+- the **model or strategy** does not own the system
+- every technique must be testable, observable, promotable, and risk-gated before it is allowed to affect real capital
+
+Milodex should support many possible automated investing techniques over time:
+
+- simple rule-based strategies
+- academic, config-driven strategies
+- machine-learning models
+- frontier-model or agentic decision systems
+- equities and ETFs in the near term
+- additional asset classes such as crypto over time
+- multiple broker and exchange APIs as the harness matures
+
+The harness framing is the load-bearing one. "AI trading bot" is rejected. "Automated investing technique inside a governed harness" is the correct mental model.
+
+---
+
+## The Harness Model — What Owns the Decision vs. What Owns the System
+
+The harness model splits responsibility cleanly between the decision-making technique and the system around it.
+
+**The technique owns the decision.** A rule, a config, an ML model, or an agent can decide *what* it wants to do — what to buy, what to sell, when to enter, when to exit, when to wait.
+
+**The harness owns the system.** Milodex decides *whether* that decision is allowed to take effect, *under what conditions*, *with what evidence*, *with what risk constraints*, and *with what operator approval*. The harness owns lifecycle, promotion, evidence reconstruction, risk veto, kill switch, audit trail, and the human-approval gates that stand between a technique's intent and the broker.
+
+This means a strategy is never "live" by virtue of existing. It is live only because:
+
+1. it survived backtest with statistically credible results,
+2. it survived paper trading,
+3. it survived micro-live with real but tightly bounded capital,
+4. the operator explicitly promoted it at every stage,
+5. the risk layer has not vetoed it, and
+6. no kill switch is engaged.
+
+A technique that cannot be evaluated, promoted, paused, vetoed, or rolled back is not a technique the harness can host. The harness's job is to make the decision-making layer **substitutable** — rules today, ML tomorrow, an agentic system after that — without letting any of them bypass the controls.
+
+This is the core architectural promise. The decision layer is plural and evolving; the harness is singular and disciplined.
+
+---
+
+## Core Promise
+
+Milodex helps one technical operator move automated investing techniques through a disciplined lifecycle:
+
+> **idea → research → backtest → evidence review → paper trading → controlled live exposure**
+
+without skipping safety gates.
+
+The deliberate word here is **techniques**, not only "strategies." The long-term product must support different automation forms: rules, configs, ML models, LLM agents, and other decision engines. The lifecycle is the constant. The technique inside it is allowed to vary.
+
+A useful one-line framing:
+
+> **Milodex is a harness for automated trading and investing techniques.**
+
+---
+
+## Trust Through Lifecycle, Evidence, Preview, and Veto
+
+Milodex's safety posture is captured in four short rules. They are not slogans; they are the architectural posture the rest of the product flows from:
+
+- **Preview before action.** Every operator-driven change is rendered as a reviewable preview before it can dispatch. The operator sees what would happen before it happens.
+- **Evidence before promotion.** No technique advances a stage without evidence the harness can show, reconstruct, and explain. Promotion is gated, not granted.
+- **Risk veto before execution.** The risk layer sits between intent and broker, with the authority to refuse any trade. Strategies propose; risk disposes.
+- **Manual gates before capital.** The transitions that put real money at risk — promotion to live, capital allocation, kill-switch reset, broker live-trade permission — require explicit human approval, every time.
+
+These four rules exist because Milodex can eventually automate actions involving real money. The product must make automation feel **trustworthy, reviewable, bounded, and professionally controlled**.
+
+Important nuance, stated plainly so it cannot be flattened by a later edit:
+
+**Milodex is not equivalent to handing one's finances to a licensed financial professional.** It does not have fiduciary status. It does not give financial advice. It does not guarantee returns. It is not a magic-money-machine. It is not a blind-delegation interface to an opaque model.
+
+Instead, the intent is this:
+
+> Milodex should make automated investing feel legible, reviewable, bounded, and controlled enough that the operator can develop *justified trust* in the system before allowing it to affect real capital.
+
+Justified trust is the goal. Blind trust is the failure mode the harness exists to prevent.
+
+---
+
+## Product Tone
+
+Milodex should feel:
+
+- serious
+- sober
+- audit-heavy
+- market-desk and editorial in register
+- clear
+- empowering
+- approachable without being simplistic
+
+Milodex should not feel:
+
+- like flashy consumer fintech
+- magical
+- hype-driven
+- reliant on unnecessary jargon to seem sophisticated
+- opaque or intimidating
+
+The product should help the operator understand what is happening and why. It should make complex automation feel **legible and controlled**, not opaque or impressive-for-its-own-sake. The editorial register — quiet typography, restrained color, evidence rendered as document rather than dashboard — is a deliberate choice that follows from the harness framing. A harness that hides its own workings cannot earn justified trust.
+
+---
+
 ## Primary Meaning of the Project
 
 Milodex is meant to demonstrate all of the following at once:
@@ -56,7 +172,7 @@ A major part of the founder's intent is that Milodex should make the prospect of
 
 This includes the founder himself.
 
-The founder is not approaching this project as someone with deep investing expertise. Part of the value of Milodex is that it should help bridge that gap by creating a system that feels trustworthy, understandable, and easy to use even for someone who is not highly sophisticated in financial markets.
+The founder is not approaching this project as someone with deep investing expertise. Part of the value of Milodex is that it should help bridge that gap by creating a system that feels trustworthy, understandable, and oriented even for someone who is not highly sophisticated in financial markets.
 
 Milodex should therefore aim to be:
 
@@ -64,9 +180,9 @@ Milodex should therefore aim to be:
 - powerful without being intimidating
 - informative without being overwhelming
 - structured enough to build trust
-- easy enough to use that a less financially literate person can still feel oriented and supported
+- legible enough that a less financially literate operator can still feel oriented, supported, and in control
 
-The product should lower the practical and emotional barrier to using a disciplined investing system.
+Accessibility here means **legibility**, not **simplification**. The product should not hide complexity to seem friendlier; it should *render* complexity well so that a non-expert operator can read what the system is doing, why, and what would happen next. The audit-heavy, market-desk register is the same register that earns trust from a sophisticated reader — it should also be the register that orients a careful but inexperienced one. Lowering the emotional barrier is a goal; lowering the safety posture is not.
 
 ---
 
@@ -86,6 +202,8 @@ The desired reaction is something close to:
 
 That reaction should come from thoughtful product design, not from hiding complexity irresponsibly. The system should make something serious feel approachable.
 
+The "almost seems too easy" reaction is specifically about **legibility**: complex automation made readable. It is not about Milodex being a lightweight or casual product. The harness is serious, sober, and audit-heavy underneath. The polish of the surface is what makes the seriousness approachable — not a substitute for it.
+
 Milodex should feel:
 
 - polished
@@ -94,6 +212,7 @@ Milodex should feel:
 - visually clear
 - already active and useful shortly after setup
 - impressive without feeling cluttered or confusing
+- serious without feeling intimidating
 
 ---
 
@@ -187,20 +306,24 @@ Documentation should prioritize:
 Milodex should **not** become:
 
 - a hype-driven "AI trader" with black-box behavior
-- an overcomplicated system that overwhelms users
+- a product framed as handing one's finances to an opaque model
+- a product that implies fiduciary status, financial advice, or guaranteed returns
+- an overcomplicated system that overwhelms operators
 - a product that assumes high financial literacy as a prerequisite
 - a technically impressive shell with weak real behavior
 - a project that values polish over truth
 - a system that makes investing look magical or risk-free
+- a harness whose safety gates can be quietly weakened to ship a feature
 
 Milodex **should** become:
 
+- an operator-governed automation harness for investment techniques
 - a trustworthy system
 - a clearly explained system
 - a usable system
 - a shareable system
 - a polished system
-- a system that makes disciplined autonomous investing feel more accessible
+- a system that makes disciplined automated investing feel legible, reviewable, bounded, and controlled
 - a system that demonstrates the founder's ability to build something real and substantial
 
 ---
@@ -221,7 +344,7 @@ This order matters. Milodex should not chase profit at the cost of trust, usabil
 
 ## Canonical Intent Statement
 
-Milodex is an AI-assisted, safety-conscious, shareable software product meant to demonstrate the founder's ability to architect and ship a real, complex, working system in an unfamiliar domain. It should be trustworthy, polished, easy to start, and understandable even to users with limited financial literacy. While financial effectiveness matters as evidence that the system genuinely works, the deeper goal is to build a credible, well-designed platform that makes disciplined autonomous investing feel more accessible and that clearly reflects the founder's technical capability, product judgment, and ability to deliver.
+Milodex is an operator-governed automation harness for investment strategies and automated investing techniques. It is an AI-assisted, safety-conscious, shareable software product meant to demonstrate the founder's ability to architect and ship a real, complex, working system in an unfamiliar domain. The harness moves techniques — rules, configs, ML models, agentic systems — through a disciplined lifecycle of research, backtest, evidence review, paper trading, and controlled live exposure, with preview before action, evidence before promotion, risk veto before execution, and manual gates before capital. It should be trustworthy, polished, easy to start, sober and audit-heavy in register, and legible even to operators with limited financial literacy. While financial effectiveness matters as evidence that the system genuinely works, the deeper goal is to build a credible, well-designed platform that makes disciplined automated investing feel legible, reviewable, bounded, and controlled enough that the operator can develop justified trust in the system before allowing it to affect real capital — and that clearly reflects the founder's technical capability, product judgment, and ability to deliver.
 
 ---
 
@@ -229,14 +352,20 @@ Milodex is an AI-assisted, safety-conscious, shareable software product meant to
 
 Any future documentation for Milodex should remain consistent with this founder intent. In particular:
 
+- Frame Milodex as an **operator-governed automation harness for investment techniques**, not as an "AI trading bot" and not as a product that hands the operator's money to a model.
+- Use **"automated investing techniques"** (or "techniques") where the discussion spans rules, configs, ML models, and agentic systems. Reserve **"strategies"** for the specific case.
+- Preserve the four-rule safety posture in every layer that touches it: *preview before action, evidence before promotion, risk veto before execution, manual gates before capital.*
+- Do **not** imply fiduciary status, financial advice, guaranteed returns, magic-money-machine behavior, or blind delegation of personal finances to an opaque model. Use the "justified trust" framing instead.
 - Do not frame Milodex primarily as a finance-learning project.
 - Do not frame it primarily as a hype-driven autonomous trading system.
+- Hold the editorial / market-desk / audit-heavy tone. Approachability is achieved through legibility, not through softening the safety posture or hiding complexity.
 - Emphasize trust, usability, accessibility, clarity, and real functionality.
-- Keep the product approachable for users with limited financial literacy.
-- Preserve the idea that the system should feel surprisingly easy to start and understand.
+- Keep the product legible for operators with limited financial literacy without lowering the safety posture.
+- Preserve the idea that the system should feel surprisingly easy to start and understand — where "easy" means legible, not lightweight.
 - Ensure the project continues to present as portfolio-worthy, polished, and shareable.
 - Treat profitability as validation of effectiveness, not as the only measure of success.
+- Do not weaken [ADR 0049](adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md), [`docs/BENCH_BOUNDARY.md`](BENCH_BOUNDARY.md), or the human-approval list in [`CLAUDE.md`](../CLAUDE.md) and [`docs/VISION.md`](VISION.md) when writing downstream product or design docs. Those documents are downstream instances of the harness model captured here; this document is upstream of all of them.
 
 When in doubt, future documentation and product decisions should ask:
 
-> Does this help Milodex feel more trustworthy, more usable, more accessible, and more clearly reflective of the founder's ability to build and deliver something real?
+> Does this help Milodex feel more like a trustworthy, operator-governed harness for automated investing — legible, reviewable, bounded, and controlled — while remaining usable, accessible, and clearly reflective of the founder's ability to build and deliver something real?
