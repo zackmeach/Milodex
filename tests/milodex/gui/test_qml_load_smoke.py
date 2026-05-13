@@ -981,6 +981,98 @@ def test_bench_pr_o_command_draft_preview_ui_copy() -> None:
     ), "commandDraftPreview banner copy must be verbatim (PR O)"
 
 
+def test_bench_pr_p_boundary_doc_exists_and_anchors_to_code() -> None:
+    """PR P: docs/BENCH_BOUNDARY.md must exist and cite the load-bearing artifacts.
+
+    The doc is a human-facing layer over ADR 0049 Decision 2 + the data
+    shapes added in PRs M / N / O. It explains the three-layer read-only
+    chain (Evidence Packet → Action Intent Preview → Command Draft Preview)
+    and the invariants that keep each layer non-executable.
+
+    This test does NOT police prose. It only verifies the doc references
+    the binding artifacts so a future contributor cannot silently delete
+    the doc and quietly weaken the boundary. If you rename a referenced
+    artifact, update the doc — both must move together.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    doc_path = repo_root / "docs" / "BENCH_BOUNDARY.md"
+    assert doc_path.exists(), (
+        "docs/BENCH_BOUNDARY.md must exist — it is the human-facing layer "
+        "over ADR 0049 Decision 2 + the PR M/N/O data shapes"
+    )
+
+    src = doc_path.read_text(encoding="utf-8")
+
+    # The doc must name the three layers by their property names so a
+    # rename refactor cannot leave the doc pointing at the wrong object.
+    required_anchors = (
+        "evidencePacket",
+        "actionIntentPreview",
+        "commandDraftPreview",
+        "ADR 0049",
+        "read_models.py",
+        "BenchConfirmationModal.qml",
+        "test_qml_load_smoke.py",
+        "test_read_models.py",
+    )
+    for needle in required_anchors:
+        assert needle in src, (
+            f"docs/BENCH_BOUNDARY.md must reference {needle!r} — "
+            "the doc and the code must stay in lockstep"
+        )
+
+    # The doc must reproduce the load-bearing invariant strings verbatim
+    # so a silent weakening of the contract trips a test, not just a
+    # surprised reader.
+    invariants = (
+        "not_reconstructed_v1",
+        "not_submittable_v1",
+        "not_validated_v1",
+        "local_ui_draft_preview",
+        "gui_read_model_snapshot",
+        "gui_read_model_preview",
+        "Milodex can render this draft for review, but Bench v1 cannot submit it.",
+    )
+    for needle in invariants:
+        assert needle in src, f"docs/BENCH_BOUNDARY.md must quote the invariant {needle!r} verbatim"
+
+    # The doc must explicitly state that wiring real commands requires a
+    # new ADR — this is the escalation rail the boundary depends on.
+    assert "new ADR" in src or "separate ADR" in src, (
+        "docs/BENCH_BOUNDARY.md must require a new/separate ADR for any "
+        "move from preview to submit (escalation rail per ADR 0049)"
+    )
+
+
+def test_bench_pr_p_python_has_no_command_infrastructure() -> None:
+    """PR P: no Python file may define a CommandProposal class or submit/dispatch entry point.
+
+    A grep-level guard: if any future PR adds `class CommandProposal`, a
+    `submit_command` function, or a `dispatch_command` function anywhere in
+    the Python codebase, this test fails and forces the contributor to open
+    a new ADR per the BENCH_BOUNDARY.md escalation rail.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    src_root = repo_root / "src" / "milodex"
+
+    forbidden_python_patterns = (
+        re.compile(r"\bclass\s+CommandProposal\b"),
+        re.compile(r"\bdef\s+submit_command\b"),
+        re.compile(r"\bdef\s+dispatch_command\b"),
+        re.compile(r"\bdef\s+execute_command\b"),
+    )
+
+    for py_path in src_root.rglob("*.py"):
+        text = py_path.read_text(encoding="utf-8")
+        for pattern in forbidden_python_patterns:
+            match = pattern.search(text)
+            assert match is None, (
+                f"{py_path.relative_to(repo_root)} declares {match.group(0)!r} — "
+                "ADR 0049 Decision 2 forbids Python command infrastructure in v1. "
+                "Open a new ADR before introducing this."
+            )
+
+
 def test_bench_pr_o_modal_is_viewport_bounded() -> None:
     """PR O follow-up: BenchModal must cap its height against parent.height.
 
