@@ -65,6 +65,16 @@ Item {
     property bool evidenceModalOpen: false
     property var  evidenceModalRow:  ({})
 
+    // PR K: Confirmation preview modal state.
+    // One BenchConfirmationModal instance is rendered alongside the Evidence
+    // modal. Rows emit BenchRow.actionPreviewRequested for every menu item
+    // EXCEPT the informational Open Evidence floor; the surface routes that
+    // signal here. Strictly visual — the modal's primary action is disabled
+    // and labelled "Not wired in v1". ADR 0049 Decision 2 holds.
+    property bool confirmationPreviewOpen: false
+    property var  confirmationPreviewRow:    ({})
+    property var  confirmationPreviewAction: ({})
+
     // -----------------------------------------------------------------------
     // Formatting helpers
     // -----------------------------------------------------------------------
@@ -161,11 +171,12 @@ Item {
 
         Keys.onPressed: (event) => {
             if (root.anyDragging) return
-            // PR J: when the Evidence modal is open it owns the focus chain;
+            // PR J / PR K: when either the Evidence modal or the
+            // Confirmation preview modal is open it owns the focus chain;
             // arrow / Page / Home / End must not bleed through to scroll the
             // ledger underneath. Eat them here so they neither scroll nor
             // re-route. Escape is handled by the modal itself.
-            if (root.evidenceModalOpen) {
+            if (root.evidenceModalOpen || root.confirmationPreviewOpen) {
                 event.accepted = true
                 return
             }
@@ -194,9 +205,9 @@ Item {
         WheelHandler {
             target: null
             onWheel: (event) => {
-                // PR J: don't scroll the ledger while the Evidence modal is open;
-                // the modal owns its own wheel handler inside its scroll area.
-                if (root.evidenceModalOpen) {
+                // PR J / PR K: don't scroll the ledger while either modal is
+                // open; each modal owns its own wheel handler/overlay.
+                if (root.evidenceModalOpen || root.confirmationPreviewOpen) {
                     event.accepted = true
                     return
                 }
@@ -550,8 +561,23 @@ Item {
                                     rowData: modelData
 
                                     onEvidenceRequested: (row) => {
-                                        root.evidenceModalRow = row
+                                        // PR K mutual exclusion: opening
+                                        // Evidence closes the confirmation
+                                        // preview if it was open.
+                                        root.confirmationPreviewOpen = false
+                                        root.evidenceModalRow  = row
                                         root.evidenceModalOpen = true
+                                    }
+
+                                    // PR K: every menu item except Open
+                                    // Evidence routes here. Open the
+                                    // confirmation preview shell. No backend
+                                    // dispatch ever happens on this path.
+                                    onActionPreviewRequested: (row, action) => {
+                                        root.evidenceModalOpen        = false
+                                        root.confirmationPreviewRow     = row
+                                        root.confirmationPreviewAction  = action
+                                        root.confirmationPreviewOpen    = true
                                     }
 
                                     // Stable coordinate frame for drag-delta math.
@@ -650,6 +676,20 @@ Item {
         open:    root.evidenceModalOpen
         rowData: root.evidenceModalRow
         onCloseRequested: root.evidenceModalOpen = false
+    }
+
+    // -----------------------------------------------------------------------
+    // PR K: Confirmation preview modal overlay — single instance shared
+    // across all rows. Strictly visual; its primary action is disabled and
+    // labelled "Not wired in v1". No backend command dispatch.
+    // -----------------------------------------------------------------------
+    BenchConfirmationModal {
+        id: confirmationPreview
+        anchors.fill: parent
+        open:       root.confirmationPreviewOpen
+        rowData:    root.confirmationPreviewRow
+        actionData: root.confirmationPreviewAction
+        onCloseRequested: root.confirmationPreviewOpen = false
     }
 
     // -----------------------------------------------------------------------
