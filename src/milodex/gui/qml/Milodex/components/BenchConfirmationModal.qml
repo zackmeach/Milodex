@@ -382,7 +382,7 @@ Item {
             // ============================================================
             // 1. ACTION
             // ============================================================
-            SectionLabel { label: "ACTION" }
+            SectionLabel { label: "ACTION"; ordinal: "01" }
 
             DetailRow { label: "Action";        value: root._or(root.actionData.label) }
             DetailRow { label: "Verb class";    value: root._or(root.actionData.verbClass) }
@@ -400,7 +400,7 @@ Item {
             // ============================================================
             // 2. INTENT PACKET
             // ============================================================
-            SectionLabel { label: "INTENT PACKET" }
+            SectionLabel { label: "INTENT PACKET"; ordinal: "02" }
 
             ProseBlock { text: root._intentCopy(root.actionData) }
 
@@ -409,22 +409,25 @@ Item {
             // ============================================================
             // 3. CURRENT SNAPSHOT  (existing rowData only)
             // ============================================================
-            SectionLabel { label: "CURRENT SNAPSHOT" }
+            SectionLabel { label: "CURRENT SNAPSHOT"; ordinal: "03" }
 
             DetailRow {
                 label: "Sharpe"
+                numeric: true
                 value: root._fmtSharpe(root._pktMetrics.sharpe !== undefined
                                        ? root._pktMetrics.sharpe
                                        : root.rowData.sharpe)
             }
             DetailRow {
                 label: "Max drawdown"
+                numeric: true
                 value: root._fmtPct(root._pktMetrics.maxDrawdownPct !== undefined
                                     ? root._pktMetrics.maxDrawdownPct
                                     : root.rowData.maxDrawdownPct)
             }
             DetailRow {
                 label: "Trade count"
+                numeric: true
                 value: root._fmtInt(root._pktMetrics.tradeCount !== undefined
                                     ? root._pktMetrics.tradeCount
                                     : root.rowData.tradeCount)
@@ -445,14 +448,17 @@ Item {
             }
             DetailRow {
                 label: "Evidence run"
+                labelWidth: 116
                 value: root._or(root._pktEvidence.runId || root.rowData.evidenceRunId)
             }
             DetailRow {
                 label: "Evidence label"
+                labelWidth: 116
                 value: root._or(root._pktEvidence.label || root.rowData.metaEvidenceLabel)
             }
             DetailRow {
                 label: "Evidence at"
+                labelWidth: 116
                 value: root._or(root._pktEvidence.observedAt || root.rowData.metaEvidenceAt)
             }
 
@@ -461,7 +467,7 @@ Item {
             // ============================================================
             // 4. WOULD EVENTUALLY REQUIRE  (copy-only; no real check)
             // ============================================================
-            SectionLabel { label: "WOULD EVENTUALLY REQUIRE" }
+            SectionLabel { label: "WOULD EVENTUALLY REQUIRE"; ordinal: "04" }
 
             Repeater {
                 model: root._requirements
@@ -476,7 +482,7 @@ Item {
             // ============================================================
             // 5. FUTURE RECORD  (display string only; not a class, not a payload)
             // ============================================================
-            SectionLabel { label: "FUTURE RECORD" }
+            SectionLabel { label: "FUTURE RECORD"; ordinal: "05" }
 
             DetailRow { label: "Record kind"; value: root._futureRecord(root.actionData) }
 
@@ -490,27 +496,45 @@ Item {
             // boundary explicit; the rows below show the future-command
             // shape so the operator knows what would be assembled.
             // ============================================================
-            SectionLabel { label: "COMMAND DRAFT PREVIEW" }
+            SectionLabel { label: "COMMAND DRAFT PREVIEW"; ordinal: "06" }
 
             ProseBlock { text: root._COPY_DRAFT_BANNER }
 
-            DetailRow { label: "Submission state"; value: root.commandDraftPreview.submissionState }
-            DetailRow { label: "Validation state"; value: root.commandDraftPreview.validationState }
-            DetailRow { label: "Expected record";  value: root.commandDraftPreview.expectedFutureRecord }
+            DetailRow {
+                label: "Submission state"
+                labelWidth: 124
+                value: root.commandDraftPreview.submissionState
+            }
+            DetailRow {
+                label: "Validation state"
+                labelWidth: 124
+                value: root.commandDraftPreview.validationState
+            }
+            DetailRow {
+                label: "Expected record"
+                labelWidth: 124
+                value: root.commandDraftPreview.expectedFutureRecord
+            }
             DetailRow {
                 label: "Evidence packet v"
+                labelWidth: 124
+                numeric: true
                 value: "" + root.commandDraftPreview.evidencePacketSchemaVersion
             }
             DetailRow {
                 label: "Action preview v"
+                labelWidth: 124
+                numeric: true
                 value: "" + root.commandDraftPreview.actionIntentPreviewSchemaVersion
             }
             DetailRow {
                 label: "Executable"
+                labelWidth: 124
                 value: root.commandDraftPreview.executable ? "true" : "false"
             }
             DetailRow {
                 label: "Wired"
+                labelWidth: 124
                 value: root.commandDraftPreview.wired ? "true" : "false"
             }
 
@@ -528,7 +552,7 @@ Item {
             // ============================================================
             // 7. SAFETY BOUNDARY  (always present; appended capital copy)
             // ============================================================
-            SectionLabel { label: "SAFETY BOUNDARY" }
+            SectionLabel { label: "SAFETY BOUNDARY"; ordinal: "07" }
 
             ProseBlock { text: root._safetyCopy(root.rowData, root.actionData) }
         }
@@ -614,25 +638,46 @@ Item {
     // PR L: Inline sub-components for the Intent Packet body
     // ------------------------------------------------------------------
 
-    // Quiet ALL-CAPS section label — used to mark each of the six packet
+    // Quiet ALL-CAPS section label — used to mark each of the seven packet
     // sections. Same typographic register as BenchEvidenceModal's section
     // headers but rendered in muted color (not brand.accent) per PR L
     // visual direction ("structured, not decorative").
+    //
+    // Polish: optional `ordinal` prefix renders as a small mono numeral
+    // (`01`, `02`, …) ahead of the label so the seven-section structure
+    // reads as a deliberate progression rather than a flat list. Extra
+    // top breathing room (Theme.space[3]) separates sections visually
+    // without needing heavier rules.
     component SectionLabel: Item {
+        id: sectionLabelRoot
         property string label: ""
+        property string ordinal: ""
         width: parent ? parent.width : 0
-        implicitHeight: sectionText.implicitHeight + Theme.space[1]
+        implicitHeight: sectionText.implicitHeight + Theme.space[3]
 
-        Text {
-            id: sectionText
+        Row {
             anchors.bottom: parent.bottom
-            text:  parent.label
-            color: Theme.color.text.muted
-            font.family:         Theme.typography.label.xs.family
-            font.pixelSize:      Theme.typography.label.xs.size
-            font.weight:         Font.DemiBold
-            font.letterSpacing:  Theme.typography.label.xs.letterSpacing
-            font.capitalization: Font.AllUppercase
+            spacing: Theme.space[2]
+
+            Text {
+                visible: sectionLabelRoot.ordinal.length > 0
+                text:  sectionLabelRoot.ordinal
+                color: Theme.color.text.disabled
+                font.family:    Theme.typography.data.xs.family
+                font.pixelSize: Theme.typography.data.xs.size
+                font.features:  Theme.typography.data.xs.features
+            }
+
+            Text {
+                id: sectionText
+                text:  sectionLabelRoot.label
+                color: Theme.color.text.muted
+                font.family:         Theme.typography.label.xs.family
+                font.pixelSize:      Theme.typography.label.xs.size
+                font.weight:         Font.DemiBold
+                font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+                font.capitalization: Font.AllUppercase
+            }
         }
     }
 
@@ -678,9 +723,22 @@ Item {
     }
 
     // Single label/value row (PR K original).
+    //
+    // Polish: label column narrowed 132 → 96 px so short labels ("Sharpe",
+    // "Wired", "Stage") sit closer to their values; the eye no longer
+    // crosses a wide gutter for every read. `numeric: true` right-aligns
+    // the value so columns of numbers (Sharpe / Max-DD / schema versions)
+    // read as a tabular stack instead of a left-aligned string list.
+    //
+    // `labelWidth` overrides the 96 px default for sections whose labels
+    // are visibly longer ("Submission state", "Evidence packet v", etc.) —
+    // applied per-row at the call site so the tight default still holds
+    // wherever it is visibly safe.
     component DetailRow: RowLayout {
         property string label: ""
         property string value: ""
+        property bool   numeric: false
+        property real   labelWidth: 96
         width: parent ? parent.width : 0
         spacing: Theme.space[3]
 
@@ -690,7 +748,7 @@ Item {
             font.family:    Theme.typography.data.xs.family
             font.pixelSize: Theme.typography.data.xs.size
             font.features:  Theme.typography.data.xs.features
-            Layout.preferredWidth: 132
+            Layout.preferredWidth: labelWidth
         }
 
         Text {
@@ -700,6 +758,7 @@ Item {
             font.pixelSize: Theme.typography.data.xs.size
             font.features:  Theme.typography.data.xs.features
             Layout.fillWidth: true
+            horizontalAlignment: numeric ? Text.AlignRight : Text.AlignLeft
             elide: Text.ElideRight
         }
     }
