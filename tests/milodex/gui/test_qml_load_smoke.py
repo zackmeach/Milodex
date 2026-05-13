@@ -242,6 +242,31 @@ def test_bench_menu_engine_contract() -> None:
     assert "onTriggered" in row_src
 
 
+def test_bench_dragging_branch_precedes_live_branch() -> None:
+    """Dragged rows — LIVE included — must paint opaque, not as a 5% oxblood wash.
+
+    The row background color block must check `root.dragging` before `_isLive`
+    so the opaque surface.raised branch wins for dragged LIVE rows. If `_isLive`
+    appears first, dragged LIVE rows render at 5% alpha and neighbors ghost
+    through the paper strip — violating the PR I drag-visual contract.
+
+    This is a static ordering guard, not a runtime check. The two distinctive
+    tokens we look for are the literal `if (root.dragging)` open and the
+    `if (_isLive)` open in BenchRow.qml. Both appear only inside this color
+    block, so simple index comparison is sufficient.
+    """
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    dragging_idx = row_src.find("if (root.dragging)")
+    is_live_idx = row_src.find("if (_isLive)")
+    assert dragging_idx != -1, "BenchRow.qml must contain `if (root.dragging)` branch"
+    assert is_live_idx != -1, "BenchRow.qml must contain `if (_isLive)` branch"
+    assert dragging_idx < is_live_idx, (
+        "BenchRow.qml row-background color block must check root.dragging "
+        "before _isLive — otherwise dragged LIVE rows render at 5% alpha and "
+        "neighbors ghost through the paper strip."
+    )
+
+
 def test_bench_pr_h_drag_safety_contract() -> None:
     """PR H static guards: Y-only drag, no cross-stage drop surface, no backend mutation.
 

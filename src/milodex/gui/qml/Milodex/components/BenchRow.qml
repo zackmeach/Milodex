@@ -131,13 +131,19 @@ Item {
         anchors.leftMargin: liveBorder.width
 
         // LIVE: 5%-alpha oxblood wash; hover: surface.raised at 0.42;
-        // dragging: opaque surface.raised
+        // dragging: opaque surface.raised.
+        // ORDER MATTERS: `root.dragging` MUST be checked before `_isLive`.
+        // Every dragged row — LIVE included — must paint opaque so neighbors
+        // do not ghost through the paper strip. If the LIVE branch wins first,
+        // dragged LIVE rows render at 5% alpha and the drag-visual contract
+        // breaks. A static test in tests/milodex/gui/test_qml_load_smoke.py
+        // guards this ordering; do not reshuffle the branches.
         color: {
-            if (_isLive) {
-                return Qt.rgba(0.49, 0.21, 0.25, 0.05)   // brand.accent ≈ #7d3540 at ~5%
-            }
             if (root.dragging) {
                 return Theme.color.surface.raised
+            }
+            if (_isLive) {
+                return Qt.rgba(0.49, 0.21, 0.25, 0.05)   // brand.accent ≈ #7d3540 at ~5%
             }
             if (mouseArea.containsMouse || rowClickArea.containsMouse) {
                 return Qt.rgba(
