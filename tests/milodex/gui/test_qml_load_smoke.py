@@ -207,8 +207,7 @@ def test_bench_ledger_copy_and_drag_safety_contract() -> None:
     assert "Operator Kanban" not in source
     assert "Milodex · Strategy Bench" in source
     assert (
-        'root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"'
-        in main_source
+        'root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"' in main_source
     )
     assert "DropArea" not in source
     assert "Drag." not in source
@@ -288,14 +287,10 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
     assert modal_path.exists(), f"BenchEvidenceModal.qml missing: {modal_path}"
 
     qmldir_src = (_MILODEX_QML_DIR / "qmldir").read_text(encoding="utf-8")
-    assert "BenchEvidenceModal 1.0" in qmldir_src, (
-        "qmldir must register BenchEvidenceModal 1.0"
-    )
+    assert "BenchEvidenceModal 1.0" in qmldir_src, "qmldir must register BenchEvidenceModal 1.0"
 
     row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
-    assert "property var rowData" in row_src, (
-        "BenchRow.qml must declare `property var rowData`"
-    )
+    assert "property var rowData" in row_src, "BenchRow.qml must declare `property var rowData`"
     assert "signal evidenceRequested" in row_src, (
         "BenchRow.qml must declare `signal evidenceRequested`"
     )
@@ -326,9 +321,9 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
 
 def test_bench_pr_j_modal_wording_contract() -> None:
     """PR J modal disclaimer and forbidden-phrase contract."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     # Mandatory disclaimer must appear verbatim.
     disclaimer = (
@@ -411,9 +406,7 @@ def test_bench_drag_uses_stable_coordinate_mapping() -> None:
     - The previous bug pattern `_pressMouseY = mouseY` must not return.
     """
     row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
-    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(
-        encoding="utf-8"
-    )
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
 
     assert "property Item dragCoordinateItem" in row_src, (
         "BenchRow.qml must declare property Item dragCoordinateItem"
@@ -445,9 +438,7 @@ def test_bench_stable_column_geometry_contract() -> None:
     section header — that is the contract this test enforces.
     """
     row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
-    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(
-        encoding="utf-8"
-    )
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
 
     # Stable column ids must exist in BenchRow — these are the load-bearing
     # anchor targets that future refactors might be tempted to remove.
@@ -504,9 +495,7 @@ def test_bench_stable_column_geometry_contract() -> None:
         "id: headerMaxDD",
         "id: headerSharpe",
     ):
-        assert header_id in surface_src, (
-            f"BenchSurface.qml header must declare {header_id!r}"
-        )
+        assert header_id in surface_src, f"BenchSurface.qml header must declare {header_id!r}"
     assert "anchors.right: headerAction.left" in surface_src
     assert "anchors.right: headerStatus.left" in surface_src
     assert "anchors.right: headerTrades.left" in surface_src
@@ -591,12 +580,8 @@ def test_bench_pr_h_drag_safety_contract() -> None:
     assert "BenchState.demote" not in surface_src, (
         "BenchSurface.qml must not call BenchState.demote"
     )
-    assert "BenchState.promote" not in row_src, (
-        "BenchRow.qml must not call BenchState.promote"
-    )
-    assert "BenchState.demote" not in row_src, (
-        "BenchRow.qml must not call BenchState.demote"
-    )
+    assert "BenchState.promote" not in row_src, "BenchRow.qml must not call BenchState.promote"
+    assert "BenchState.demote" not in row_src, "BenchRow.qml must not call BenchState.demote"
 
 
 def test_bench_pr_k_confirmation_modal_wiring() -> None:
@@ -651,9 +636,9 @@ def test_bench_pr_k_confirmation_modal_wiring() -> None:
 
 def test_bench_pr_k_modal_wording_contract() -> None:
     """PR K confirmation modal disclaimer and forbidden-phrase contract."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     # Mandatory verbatim copy strings — single-line literals in the source.
     assert (
@@ -703,9 +688,7 @@ def test_bench_pr_k_bleed_through_guards() -> None:
     suppressed in the Bench Flickable. The exact OR expression in both handlers
     is asserted so a refactor that drops one modal from the guard fails fast.
     """
-    surface_src = (
-        _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
-    ).read_text(encoding="utf-8")
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
 
     guard = "root.evidenceModalOpen || root.confirmationPreviewOpen"
     assert surface_src.count(guard) >= 2, (
@@ -716,9 +699,9 @@ def test_bench_pr_k_bleed_through_guards() -> None:
 
 def test_bench_pr_l_intent_packet_sections() -> None:
     """PR L: all six ALL-CAPS section labels appear in BenchConfirmationModal.qml."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     for label in (
         '"ACTION"',
@@ -735,9 +718,9 @@ def test_bench_pr_l_intent_packet_sections() -> None:
 
 def test_bench_pr_l_safety_boundary_wording() -> None:
     """PR L: SAFETY BOUNDARY verbatim sentence and its three sub-clauses are present."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     verbatim = (
         "Bench v1 renders this intent packet for review only. "
@@ -754,9 +737,9 @@ def test_bench_pr_l_safety_boundary_wording() -> None:
 
 def test_bench_pr_l_future_record_strings() -> None:
     """PR L: all seven non-executable record label strings appear in _futureRecord."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     for record_label in (
         "promotion_event",
@@ -774,18 +757,14 @@ def test_bench_pr_l_future_record_strings() -> None:
 
 def test_bench_pr_l_capital_live_precision() -> None:
     """PR L: capital-lock-short, paper-start copy, and paper-stage guard are all present."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
-    assert (
-        "Capital-bearing transitions remain locked while ADR 0004 is in force."
-    ) in modal_src, (
+    assert ("Capital-bearing transitions remain locked while ADR 0004 is in force.") in modal_src, (
         "BenchConfirmationModal.qml _COPY_CAPITAL_LOCK_SHORT must match verbatim"
     )
-    assert (
-        "Paper-stage sessions use live feed with no capital exposure."
-    ) in modal_src, (
+    assert ("Paper-stage sessions use live feed with no capital exposure.") in modal_src, (
         "BenchConfirmationModal.qml _COPY_PAPER_START must contain paper-start sentence"
     )
     # _isCapitalBoundary Start Trading guard: paper stage is excluded from capital-bearing.
@@ -797,9 +776,9 @@ def test_bench_pr_l_capital_live_precision() -> None:
 
 def test_bench_pr_l_intent_copy_helpers() -> None:
     """PR L: all five Intent Packet helpers are declared in BenchConfirmationModal.qml."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     # Functions declared with `function` keyword.
     for fn_decl in (
@@ -808,12 +787,84 @@ def test_bench_pr_l_intent_copy_helpers() -> None:
         "function _futureRecord(",
         "function _safetyCopy(",
     ):
-        assert fn_decl in modal_src, (
-            f"BenchConfirmationModal.qml must declare {fn_decl!r} (PR L)"
-        )
+        assert fn_decl in modal_src, f"BenchConfirmationModal.qml must declare {fn_decl!r} (PR L)"
 
     # _requirements is a readonly property var, not a function.
     assert "readonly property var _requirements" in modal_src, (
-        "BenchConfirmationModal.qml must declare "
-        "`readonly property var _requirements` (PR L)"
+        "BenchConfirmationModal.qml must declare `readonly property var _requirements` (PR L)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# PR M (ADR 0049): Evidence Packet read-model contract — QML consumption
+# ---------------------------------------------------------------------------
+
+
+def test_bench_pr_m_evidence_modal_reads_packet() -> None:
+    """BenchEvidenceModal must prefer rowData.evidencePacket fields (PR M)."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml").read_text(
+        encoding="utf-8"
+    )
+
+    # _packet helper is declared and reads from rowData.evidencePacket.
+    assert "rowData.evidencePacket" in modal_src, (
+        "BenchEvidenceModal.qml must read rowData.evidencePacket (PR M)"
+    )
+    for helper in (
+        "_packet",
+        "_pktMetrics",
+        "_pktEvidence",
+        "_pktGate",
+        "_pktStatus",
+        "_pktSession",
+        "_pktJob",
+        "_pktSource",
+    ):
+        assert helper in modal_src, (
+            f"BenchEvidenceModal.qml must declare {helper!r} packet helper (PR M)"
+        )
+
+
+def test_bench_pr_m_confirmation_modal_reads_packet() -> None:
+    """BenchConfirmationModal Current Snapshot must read evidencePacket (PR M)."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "rowData.evidencePacket" in modal_src, (
+        "BenchConfirmationModal.qml must read rowData.evidencePacket (PR M)"
+    )
+    for helper in ("_packet", "_pktMetrics", "_pktEvidence", "_pktStatus"):
+        assert helper in modal_src, (
+            f"BenchConfirmationModal.qml must declare {helper!r} packet helper (PR M)"
+        )
+
+
+def test_bench_pr_m_no_authoritative_freshness_claims() -> None:
+    """PR M must NOT claim authoritative freshness/gate reconstruction in QML."""
+    forbidden_phrases = (
+        # The packet exposes a non-authoritative sentinel; the QML must surface
+        # the sentinel verbatim and never invent reconstructed verdicts.
+        # Phrases here are claim-shaped — existing negative framings like
+        # "never mistakes this snapshot for an authoritative gate result"
+        # are deliberately not matched.
+        "freshness reconstructed",
+        "gate reconstructed",
+        "freshness: pass",
+        "gate: pass",
+        "gate verdict pass",
+    )
+    for filename in ("BenchEvidenceModal.qml", "BenchConfirmationModal.qml"):
+        src = (_MILODEX_QML_DIR / "components" / filename).read_text(encoding="utf-8")
+        for phrase in forbidden_phrases:
+            assert phrase.lower() not in src.lower(), (
+                f"{filename} must not contain authoritative-claim phrase {phrase!r}"
+            )
+    # The non-reconstructed sentinel must appear somewhere on the Evidence
+    # modal so operators see the explicit deferral.
+    evidence_src = (_MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml").read_text(
+        encoding="utf-8"
+    )
+    assert "_pktGate.freshness" in evidence_src and "_pktGate.gateResult" in evidence_src, (
+        "BenchEvidenceModal.qml must render the packet's freshness/gateResult sentinels"
     )

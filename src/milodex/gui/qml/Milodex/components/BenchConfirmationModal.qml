@@ -46,6 +46,14 @@ Item {
 
     signal closeRequested()
 
+    // PR M (ADR 0049): prefer the normalized evidencePacket carried on
+    // rowData when present, otherwise fall back to the flat rowData fields.
+    // Read-only; never mutated here.
+    readonly property var _packet:      (rowData && rowData.evidencePacket) || ({})
+    readonly property var _pktMetrics:  _packet.metrics  || ({})
+    readonly property var _pktEvidence: _packet.evidence || ({})
+    readonly property var _pktStatus:   _packet.status   || ({})
+
     visible: open
     focus: open
 
@@ -304,22 +312,50 @@ Item {
             // ============================================================
             SectionLabel { label: "CURRENT SNAPSHOT" }
 
-            DetailRow { label: "Sharpe";       value: root._fmtSharpe(root.rowData.sharpe) }
-            DetailRow { label: "Max drawdown"; value: root._fmtPct(root.rowData.maxDrawdownPct) }
-            DetailRow { label: "Trade count";  value: root._fmtInt(root.rowData.tradeCount) }
+            DetailRow {
+                label: "Sharpe"
+                value: root._fmtSharpe(root._pktMetrics.sharpe !== undefined
+                                       ? root._pktMetrics.sharpe
+                                       : root.rowData.sharpe)
+            }
+            DetailRow {
+                label: "Max drawdown"
+                value: root._fmtPct(root._pktMetrics.maxDrawdownPct !== undefined
+                                    ? root._pktMetrics.maxDrawdownPct
+                                    : root.rowData.maxDrawdownPct)
+            }
+            DetailRow {
+                label: "Trade count"
+                value: root._fmtInt(root._pktMetrics.tradeCount !== undefined
+                                    ? root._pktMetrics.tradeCount
+                                    : root.rowData.tradeCount)
+            }
             DetailRow {
                 label: "Status"
                 value: {
-                    var w = root.rowData && root.rowData.statusWord || ""
-                    var t = root.rowData && root.rowData.statusTail || ""
+                    var w = (root._pktStatus.word !== undefined
+                             ? root._pktStatus.word
+                             : (root.rowData && root.rowData.statusWord)) || ""
+                    var t = (root._pktStatus.tail !== undefined
+                             ? root._pktStatus.tail
+                             : (root.rowData && root.rowData.statusTail)) || ""
                     if (w.length && t.length) return w + " — " + t
                     if (w.length || t.length) return w + t
                     return "—"
                 }
             }
-            DetailRow { label: "Evidence run"; value: root._or(root.rowData.evidenceRunId) }
-            DetailRow { label: "Evidence label"; value: root._or(root.rowData.metaEvidenceLabel) }
-            DetailRow { label: "Evidence at";  value: root._or(root.rowData.metaEvidenceAt) }
+            DetailRow {
+                label: "Evidence run"
+                value: root._or(root._pktEvidence.runId || root.rowData.evidenceRunId)
+            }
+            DetailRow {
+                label: "Evidence label"
+                value: root._or(root._pktEvidence.label || root.rowData.metaEvidenceLabel)
+            }
+            DetailRow {
+                label: "Evidence at"
+                value: root._or(root._pktEvidence.observedAt || root.rowData.metaEvidenceAt)
+            }
 
             SectionRule {}
 
