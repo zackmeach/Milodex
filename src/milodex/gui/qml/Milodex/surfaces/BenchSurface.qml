@@ -505,16 +505,28 @@ Item {
                                                      Math.round(absY / sectionRoot.rowHeight)))
                                     }
                                     onDragEnded: {
-                                        if (sectionRoot.targetIndex !== sectionRoot.draggingIndex) {
-                                            var newOrder = sectionRoot.rowOrder.slice()
-                                            var item = newOrder.splice(sectionRoot.draggingIndex, 1)[0]
-                                            newOrder.splice(sectionRoot.targetIndex, 0, item)
-                                            sectionRoot.rowOrder = newOrder
-                                        }
+                                        // ORDER MATTERS: snapshot indices, reset all
+                                        // drag state, THEN mutate rowOrder. Mutating
+                                        // rowOrder first causes the Repeater to tear
+                                        // down/recreate delegates — including the one
+                                        // whose handler is still executing — which
+                                        // invalidates the delegate's QML context and
+                                        // makes outer-scope ids (sectionRoot, root)
+                                        // unresolvable for the rest of this handler.
+                                        // Symptom: "ReferenceError: sectionRoot is
+                                        // not defined" on the post-splice reset lines.
+                                        var fromIdx = sectionRoot.draggingIndex
+                                        var toIdx = sectionRoot.targetIndex
                                         sectionRoot.draggingIndex = -1
                                         sectionRoot.targetIndex = -1
                                         sectionRoot.dragYOffset = 0
                                         root.anyDragging = false
+                                        if (toIdx !== fromIdx && fromIdx >= 0 && toIdx >= 0) {
+                                            var newOrder = sectionRoot.rowOrder.slice()
+                                            var item = newOrder.splice(fromIdx, 1)[0]
+                                            newOrder.splice(toIdx, 0, item)
+                                            sectionRoot.rowOrder = newOrder
+                                        }
                                     }
                                 }
                             }

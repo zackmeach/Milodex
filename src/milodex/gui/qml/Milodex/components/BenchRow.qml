@@ -269,20 +269,27 @@ Item {
             property real _pressPointerY: 0
             property bool _activeDrag: false
 
-            onPressed: function(mouse) {
-                if (!root.dragCoordinateItem) { _activeDrag = false; return }
-                _pressPointerY = dragHandle.mapToItem(
+            // Single source of truth for stable-frame pointer mapping.
+            // Falls back to row-local mouse.y only if the coordinate item
+            // was never wired (safety net — won't oscillate because the
+            // fallback is consistent between press and move, but BenchSurface
+            // MUST wire dragCoordinateItem: rowsContainer in production).
+            function pointerYInDragFrame(mouse) {
+                if (root.dragCoordinateItem === null) return mouse.y
+                return dragHandle.mapToItem(
                     root.dragCoordinateItem, mouse.x, mouse.y).y
+            }
+
+            onPressed: (mouse) => {
+                _pressPointerY = pointerYInDragFrame(mouse)
                 _activeDrag = false
                 // Do NOT set root.dragging or emit dragStarted yet —
                 // wait for the threshold check in onPositionChanged.
             }
-            onPositionChanged: function(mouse) {
+            onPositionChanged: (mouse) => {
                 if (!pressed) return
-                if (!root.dragCoordinateItem) return
-                var currentY = dragHandle.mapToItem(
-                    root.dragCoordinateItem, mouse.x, mouse.y).y
-                var delta = currentY - _pressPointerY
+                var currentPointerY = pointerYInDragFrame(mouse)
+                var delta = currentPointerY - _pressPointerY
                 var threshold = (typeof Qt.styleHints !== "undefined" &&
                                  Qt.styleHints.startDragDistance > 0)
                                 ? Qt.styleHints.startDragDistance : 4
