@@ -981,6 +981,85 @@ def test_bench_pr_o_command_draft_preview_ui_copy() -> None:
     ), "commandDraftPreview banner copy must be verbatim (PR O)"
 
 
+def test_bench_pr_o_modal_is_viewport_bounded() -> None:
+    """PR O follow-up: BenchModal must cap its height against parent.height.
+
+    Manual smoke discovered the modal clipped at 1440p because the box height
+    was content-driven. The fix caps box.height at parent.height minus a safe
+    margin and routes overflow through a Flickable. This test guards both
+    halves of that fix so a future refactor can't quietly revert to a
+    content-only height.
+    """
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchModal.qml").read_text(encoding="utf-8")
+
+    # The box height must reference _modalMaxHeight (the parent-bounded cap).
+    assert "_modalMaxHeight" in modal_src, (
+        "BenchModal.qml must declare a parent-bounded _modalMaxHeight cap"
+    )
+    assert "parent.height" in modal_src, (
+        "BenchModal.qml _modalMaxHeight must derive from parent.height"
+    )
+    assert "Math.min(root._modalIntrinsicHeight, root._modalMaxHeight)" in modal_src, (
+        "BenchModal.qml box.height must clamp at _modalMaxHeight"
+    )
+
+
+def test_bench_pr_o_modal_body_is_scrollable() -> None:
+    """PR O follow-up: the modal body must scroll when content overflows."""
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchModal.qml").read_text(encoding="utf-8")
+
+    # A Flickable named bodyScroll holds the scrollable body region.
+    assert "Flickable {" in modal_src, (
+        "BenchModal.qml must wrap body content in a Flickable (PR O follow-up)"
+    )
+    assert "id: bodyScroll" in modal_src, "BenchModal.qml must name its body Flickable bodyScroll"
+    # The Flickable must declare contentWidth/contentHeight + clip true.
+    assert "contentHeight: contentBlock.implicitHeight" in modal_src, (
+        "bodyScroll.contentHeight must track the inner content column"
+    )
+    assert "clip: true" in modal_src, "bodyScroll must clip overflow"
+    # WheelHandler must absorb the event so it does not leak to the Bench.
+    assert "WheelHandler" in modal_src and "event.accepted = true" in modal_src, (
+        "bodyScroll must install a WheelHandler that accepts the wheel event"
+    )
+
+
+def test_bench_pr_o_modal_footer_is_pinned_outside_scroll() -> None:
+    """PR O follow-up: footer/action row must remain visible regardless of scroll.
+
+    Asserts the footerBlock is anchored to the box (parent.bottom) and is
+    NOT nested inside the Flickable. Encoding both halves keeps a future
+    refactor from quietly moving the action row into the scroll container.
+    """
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchModal.qml").read_text(encoding="utf-8")
+
+    # The footer is anchored to the box bottom (not Flickable bottom).
+    assert "id: footerBlock" in modal_src
+    footer_idx = modal_src.index("id: footerBlock")
+    flickable_open_idx = modal_src.index("Flickable {")
+    # Find Flickable's matching closing brace by counting depth.
+    depth = 0
+    flickable_close_idx = -1
+    i = flickable_open_idx + len("Flickable ")
+    while i < len(modal_src):
+        ch = modal_src[i]
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                flickable_close_idx = i
+                break
+        i += 1
+    assert flickable_close_idx > flickable_open_idx, (
+        "could not locate Flickable closing brace — refactor must keep block well-formed"
+    )
+    assert not (flickable_open_idx < footer_idx < flickable_close_idx), (
+        "footerBlock must be a sibling of the Flickable, not a child — "
+        "the action row must stay pinned and always visible"
+    )
+
+
 def test_bench_pr_o_command_draft_preview_no_submit_handler() -> None:
     """PR O: the draft preview must never wire an onClicked submit handler.
 
