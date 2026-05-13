@@ -84,6 +84,16 @@ Item {
     // Populated by the parent BenchSurface delegate from modelData.actions.
     property var actionItems: []
 
+    // Raw as_qml() row dict for this strategy. Set by BenchSurface via
+    // `rowData: modelData`. Read by BenchEvidenceModal when the operator
+    // selects the informational floor item.
+    property var rowData: ({})
+
+    // PR J: emitted when the operator selects the Open Evidence floor item.
+    // BenchSurface owns the (one and only) BenchEvidenceModal instance and
+    // listens for this signal. No other menu item dispatches anything in v1.
+    signal evidenceRequested(var rowData)
+
     // -----------------------------------------------------------------------
     // Internal state
     // -----------------------------------------------------------------------
@@ -437,7 +447,14 @@ Item {
                     }
 
                     onTriggered: {
-                        // no-op per ADR 0049 Decision 2 (no backend mutation in v1)
+                        // PR J: the informational floor item ("Open Evidence",
+                        // verbClass: "informational") opens the read-only
+                        // BenchEvidenceModal owned by BenchSurface. All other
+                        // verbs remain no-op per ADR 0049 Decision 2.
+                        if (modelData.verbClass === "informational" &&
+                                modelData.label === "Open Evidence") {
+                            root.evidenceRequested(root.rowData)
+                        }
                     }
                 }
 
