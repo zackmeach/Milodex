@@ -119,6 +119,7 @@ class _StrategyRow:
             "jobDetail": self.job_detail,
             "visualPriority": self.visual_priority,
             "actions": _compute_bench_action_menu(self),
+            "evidencePacket": _evidence_packet(self),
         }
 
 
@@ -710,6 +711,73 @@ def _compute_bench_action_menu(row: _StrategyRow) -> list[dict[str, Any]]:
         }
         for item in items
     ]
+
+
+def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
+    """Normalized read-only Evidence Packet for a Bench row (PR M, ADR 0049).
+
+    Consolidates the scattered evidence-related fields already carried on
+    _StrategyRow into a single, stable contract for the Evidence modal and
+    the Intent Packet preview.  This is a *shape*, not a reconstruction:
+    freshness and gate verdicts are not authoritative in v1 — the packet
+    only carries what the GUI read-model already exposes.
+
+    Real event-derived freshness and gate reconstruction are deferred
+    (ADR 0049 Decision 5). The ``source.authoritative`` flag MUST stay
+    False and the ``gate.reconstructionDeferred`` flag MUST stay True
+    until real event-derived evidence reconstruction lands; downstream
+    UI uses them to keep the v1 framing explicit.
+    """
+    return {
+        "schemaVersion": 1,
+        "strategyId": row.strategy_id,
+        "strategyName": row.name,
+        "currentStage": row.stage,
+        "source": {
+            "kind": "gui_read_model_snapshot",
+            "authoritative": False,
+            "note": (
+                "Bench v1 evidence is normalized from the current GUI read-model "
+                "snapshot. Real event-derived freshness and gate reconstruction "
+                "are deferred."
+            ),
+        },
+        "metrics": {
+            "sharpe": row.sharpe,
+            "maxDrawdownPct": row.max_drawdown_pct,
+            "tradeCount": row.trade_count,
+        },
+        "evidence": {
+            "runId": row.evidence_run_id,
+            "label": row.meta_evidence_label,
+            "observedAt": row.meta_evidence_at,
+            "promotedAt": row.promoted_at,
+            "promotionType": row.promotion_type,
+        },
+        "gate": {
+            "failures": list(row.gate_failures),
+            "freshness": "not_reconstructed_v1",
+            "gateResult": "not_reconstructed_v1",
+            "reconstructionDeferred": True,
+        },
+        "status": {
+            "kind": row.status_kind,
+            "word": row.status_word,
+            "tail": row.status_tail,
+            "metaLine": row.meta_line,
+        },
+        "session": {
+            "state": row.session_state,
+            "id": row.session_id,
+            "detail": row.session_detail,
+        },
+        "job": {
+            "id": row.job_id,
+            "status": row.job_status,
+            "actionType": row.job_action_type,
+            "detail": row.job_detail,
+        },
+    }
 
 
 def _load_strategy_configs(configs_dir: Path) -> list[StrategyConfig]:

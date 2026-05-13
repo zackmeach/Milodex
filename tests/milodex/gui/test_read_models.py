@@ -619,3 +619,224 @@ def test_kanban_snapshot_surfaces_cancel_requested_job_as_canceling(tmp_path: Pa
 
     assert card["sessionState"] == "canceling"
     assert card["sessionDetail"] == "cancel requested | 2/4 windows complete"
+
+
+# ---------------------------------------------------------------------------
+# PR M (ADR 0049): normalized read-only Evidence Packet contract
+# ---------------------------------------------------------------------------
+
+
+def test_bench_pr_m_evidence_packet_shape(tmp_path: Path) -> None:
+    """Each Bench row exposes a normalized read-only evidencePacket."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    paper = next(s for s in snapshot["sections"] if s["stage"] == "paper")
+    row = paper["strategies"][0]
+
+    assert "evidencePacket" in row, "every Bench row must carry evidencePacket"
+    packet = row["evidencePacket"]
+
+    # Top-level identity
+    assert packet["schemaVersion"] == 1
+    assert packet["strategyId"] == strategy_id
+    assert packet["strategyName"] == row["name"]
+    assert packet["currentStage"] == "paper"
+
+    # Source — explicit non-authoritative framing
+    source = packet["source"]
+    assert source["kind"] == "gui_read_model_snapshot"
+    assert source["authoritative"] is False
+    assert "deferred" in source["note"].lower()
+
+    # Metrics mirror the existing flat fields
+    metrics = packet["metrics"]
+    assert metrics["sharpe"] == row["sharpe"]
+    assert metrics["maxDrawdownPct"] == row["maxDrawdownPct"]
+    # Note: as_qml() coerces trade_count NULL→0; the packet preserves None semantics
+    # via the underlying _StrategyRow field, but for the seeded row both are 120.
+    assert metrics["tradeCount"] == 120
+
+    # Evidence sub-section
+    evidence = packet["evidence"]
+    assert evidence["runId"] == row["evidenceRunId"]
+    assert evidence["label"] == row["metaEvidenceLabel"]
+    assert evidence["observedAt"] == row["metaEvidenceAt"]
+    assert evidence["promotedAt"] == row["promotedAt"]
+    assert evidence["promotionType"] == row["promotionType"]
+
+    # Gate — failures mirror flat, freshness/gateResult are explicit deferral
+    gate = packet["gate"]
+    assert gate["failures"] == row["gateFailures"]
+    assert gate["freshness"] == "not_reconstructed_v1"
+    assert gate["gateResult"] == "not_reconstructed_v1"
+    assert gate["reconstructionDeferred"] is True
+
+    # Status / session / job mirrors
+    status = packet["status"]
+    assert status["kind"] == row["statusKind"]
+    assert status["word"] == row["statusWord"]
+    assert status["tail"] == row["statusTail"]
+    assert status["metaLine"] == row["metaLine"]
+
+    assert packet["session"]["state"] == row["sessionState"]
+    assert packet["session"]["id"] == row["sessionId"]
+    assert packet["session"]["detail"] == row["sessionDetail"]
+
+    assert packet["job"]["id"] == row["jobId"]
+    assert packet["job"]["status"] == row["jobStatus"]
+    assert packet["job"]["actionType"] == row["jobActionType"]
+    assert packet["job"]["detail"] == row["jobDetail"]
+
+
+def test_bench_pr_m_evidence_packet_keys_are_stable(tmp_path: Path) -> None:
+    """Lock the top-level packet key set so future PRs can't silently drop fields."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    row = next(s for s in snapshot["sections"] if s["stage"] == "paper")["strategies"][0]
+    packet = row["evidencePacket"]
+
+    assert set(packet.keys()) == {
+        "schemaVersion",
+        "strategyId",
+        "strategyName",
+        "currentStage",
+        "source",
+        "metrics",
+        "evidence",
+        "gate",
+        "status",
+        "session",
+        "job",
+    }
+    assert set(packet["source"].keys()) == {"kind", "authoritative", "note"}
+    assert set(packet["metrics"].keys()) == {"sharpe", "maxDrawdownPct", "tradeCount"}
+    assert set(packet["evidence"].keys()) == {
+        "runId",
+        "label",
+        "observedAt",
+        "promotedAt",
+        "promotionType",
+    }
+    assert set(packet["gate"].keys()) == {
+        "failures",
+        "freshness",
+        "gateResult",
+        "reconstructionDeferred",
+    }
+    assert set(packet["status"].keys()) == {"kind", "word", "tail", "metaLine"}
+    assert set(packet["session"].keys()) == {"state", "id", "detail"}
+    assert set(packet["job"].keys()) == {"id", "status", "actionType", "detail"}
+
+
+def test_bench_pr_m_packet_is_independent_of_flat_fields(tmp_path: Path) -> None:
+    """The packet is a copy: mutating it must not leak back into flat row keys."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    row = build_bench_snapshot(db, configs)["sections"][2]["strategies"][0]
+    packet = row["evidencePacket"]
+    original_failures = list(packet["gate"]["failures"])
+
+    # Mutate the packet's nested list — the flat gateFailures list must be
+    # unaffected because _evidence_packet() returns a fresh list().
+    packet["gate"]["failures"].append("X")
+    assert row["gateFailures"] == original_failures
+
+
+def test_bench_pr_m_packet_handles_backtest_row_without_evidence(tmp_path: Path) -> None:
+    """Backtest rows with no seeded backtest/promotion still get a well-formed packet."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    # No seed: no backtest, no promotion.
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(s for s in snapshot["sections"] if s["stage"] == "backtest")
+    assert len(backtest["strategies"]) == 1
+    packet = backtest["strategies"][0]["evidencePacket"]
+
+    assert packet["schemaVersion"] == 1
+    assert packet["currentStage"] == "backtest"
+    assert packet["source"]["authoritative"] is False
+    # Metrics are absent → None values; packet still has the keys.
+    assert packet["metrics"]["sharpe"] is None
+    assert packet["metrics"]["maxDrawdownPct"] is None
+    assert packet["metrics"]["tradeCount"] is None
+    # Gate failures may be populated by the empty-metrics path, but
+    # freshness/gateResult must remain explicit non-reconstruction sentinels.
+    assert packet["gate"]["freshness"] == "not_reconstructed_v1"
+    assert packet["gate"]["gateResult"] == "not_reconstructed_v1"
+    assert packet["gate"]["reconstructionDeferred"] is True
+
+
+def test_bench_pr_m_no_command_proposal_keys_in_packet(tmp_path: Path) -> None:
+    """ADR 0049 Decision 2: packet must not introduce command/proposal shapes."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    forbidden = {
+        "commandProposal",
+        "CommandProposal",
+        "submitCommand",
+        "dispatchCommand",
+        "command",
+        "proposal",
+    }
+
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                assert key not in forbidden, (
+                    f"forbidden key '{key}' found in evidencePacket — "
+                    "ADR 0049 Decision 2: Bench v1 is read-only"
+                )
+                _walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    for section in snapshot["sections"]:
+        for row in section["strategies"]:
+            _walk(row.get("evidencePacket"))

@@ -32,6 +32,19 @@ Item {
 
     signal closeRequested()
 
+    // PR M (ADR 0049): prefer the normalized evidencePacket when present.
+    // Fall back to flat rowData fields so the modal remains resilient if a
+    // future read-model rebuild omits the packet.  The packet is read-only
+    // and never mutated here.
+    readonly property var _packet:        (rowData && rowData.evidencePacket) || ({})
+    readonly property var _pktMetrics:    _packet.metrics  || ({})
+    readonly property var _pktEvidence:   _packet.evidence || ({})
+    readonly property var _pktGate:       _packet.gate     || ({})
+    readonly property var _pktStatus:     _packet.status   || ({})
+    readonly property var _pktSession:    _packet.session  || ({})
+    readonly property var _pktJob:        _packet.job      || ({})
+    readonly property var _pktSource:     _packet.source   || ({})
+
     visible: open
     focus: open
 
@@ -125,8 +138,10 @@ Item {
 
                 Text {
                     width: parent.width
-                    text:  root.rowData.name
+                    text:  root._packet.strategyName
+                           || root.rowData.name
                            || root.rowData.displayName
+                           || root._packet.strategyId
                            || root.rowData.strategyId
                            || "(unnamed strategy)"
                     color: Theme.color.text.primary
@@ -207,8 +222,14 @@ Item {
 
                 // ---- IDENTITY ----
                 EvidenceSection { label: "IDENTITY" }
-                EvidenceField { label: "Strategy ID";  value: root._or(root.rowData.strategyId) }
-                EvidenceField { label: "Stage";        value: root._or(root.rowData.stage) }
+                EvidenceField {
+                    label: "Strategy ID"
+                    value: root._or(root._packet.strategyId || root.rowData.strategyId)
+                }
+                EvidenceField {
+                    label: "Stage"
+                    value: root._or(root._packet.currentStage || root.rowData.stage)
+                }
                 EvidenceField { label: "Family";       value: root._or(root.rowData.family) }
                 EvidenceField { label: "Template";     value: root._or(root.rowData.template) }
                 EvidenceField {
@@ -217,47 +238,107 @@ Item {
                     multiLine: true
                 }
 
+                // ---- SOURCE ----
+                EvidenceSection { label: "SOURCE" }
+                EvidenceField { label: "Kind";          value: root._or(root._pktSource.kind) }
+                EvidenceField { label: "Authoritative"; value: root._fmtBool(root._pktSource.authoritative) }
+                EvidenceField {
+                    label: "Source note"
+                    value: root._or(root._pktSource.note)
+                    multiLine: true
+                }
+
                 // ---- GATE METRICS ----
                 EvidenceSection { label: "GATE METRICS" }
-                EvidenceField { label: "Sharpe";        value: root._fmtSharpe(root.rowData.sharpe) }
-                EvidenceField { label: "Max drawdown";  value: root._fmtPct(root.rowData.maxDrawdownPct) }
-                EvidenceField { label: "Trade count";   value: root._fmtInt(root.rowData.tradeCount) }
-                EvidenceField { label: "Evidence run";  value: root._or(root.rowData.evidenceRunId) }
+                EvidenceField {
+                    label: "Sharpe"
+                    value: root._fmtSharpe(root._pktMetrics.sharpe !== undefined
+                                           ? root._pktMetrics.sharpe
+                                           : root.rowData.sharpe)
+                }
+                EvidenceField {
+                    label: "Max drawdown"
+                    value: root._fmtPct(root._pktMetrics.maxDrawdownPct !== undefined
+                                        ? root._pktMetrics.maxDrawdownPct
+                                        : root.rowData.maxDrawdownPct)
+                }
+                EvidenceField {
+                    label: "Trade count"
+                    value: root._fmtInt(root._pktMetrics.tradeCount !== undefined
+                                        ? root._pktMetrics.tradeCount
+                                        : root.rowData.tradeCount)
+                }
+                EvidenceField {
+                    label: "Evidence run"
+                    value: root._or(root._pktEvidence.runId || root.rowData.evidenceRunId)
+                }
                 EvidenceField {
                     label: "Gate failures"
-                    value: root._fmtList(root.rowData.gateFailures)
+                    value: root._fmtList(root._pktGate.failures || root.rowData.gateFailures)
                     multiLine: true
+                }
+                EvidenceField {
+                    label: "Freshness"
+                    value: root._or(root._pktGate.freshness)
+                }
+                EvidenceField {
+                    label: "Gate result"
+                    value: root._or(root._pktGate.gateResult)
                 }
 
                 // ---- EVIDENCE TIMESTAMPS ----
                 EvidenceSection { label: "EVIDENCE TIMESTAMPS" }
-                EvidenceField { label: "Meta label";     value: root._or(root.rowData.metaEvidenceLabel) }
-                EvidenceField { label: "Meta at";        value: root._or(root.rowData.metaEvidenceAt) }
-                EvidenceField { label: "Promoted at";    value: root._or(root.rowData.promotedAt) }
-                EvidenceField { label: "Promotion type"; value: root._or(root.rowData.promotionType) }
+                EvidenceField {
+                    label: "Meta label"
+                    value: root._or(root._pktEvidence.label || root.rowData.metaEvidenceLabel)
+                }
+                EvidenceField {
+                    label: "Meta at"
+                    value: root._or(root._pktEvidence.observedAt || root.rowData.metaEvidenceAt)
+                }
+                EvidenceField {
+                    label: "Promoted at"
+                    value: root._or(root._pktEvidence.promotedAt || root.rowData.promotedAt)
+                }
+                EvidenceField {
+                    label: "Promotion type"
+                    value: root._or(root._pktEvidence.promotionType || root.rowData.promotionType)
+                }
 
                 // ---- STATUS ----
                 EvidenceSection { label: "STATUS" }
-                EvidenceField { label: "Status word"; value: root._or(root.rowData.statusWord) }
+                EvidenceField {
+                    label: "Status word"
+                    value: root._or(root._pktStatus.word || root.rowData.statusWord)
+                }
                 EvidenceField {
                     label: "Status detail"
-                    value: root._or(root.rowData.statusTail)
+                    value: root._or(root._pktStatus.tail || root.rowData.statusTail)
                     multiLine: true
                 }
 
                 // ---- SESSION & JOB ----
                 EvidenceSection { label: "SESSION & JOB" }
-                EvidenceField { label: "Session state";   value: root._or(root.rowData.sessionState) }
+                EvidenceField {
+                    label: "Session state"
+                    value: root._or(root._pktSession.state || root.rowData.sessionState)
+                }
                 EvidenceField {
                     label: "Session detail"
-                    value: root._or(root.rowData.sessionDetail)
+                    value: root._or(root._pktSession.detail || root.rowData.sessionDetail)
                     multiLine: true
                 }
-                EvidenceField { label: "Job status";      value: root._or(root.rowData.jobStatus) }
-                EvidenceField { label: "Job action";      value: root._or(root.rowData.jobActionType) }
+                EvidenceField {
+                    label: "Job status"
+                    value: root._or(root._pktJob.status || root.rowData.jobStatus)
+                }
+                EvidenceField {
+                    label: "Job action"
+                    value: root._or(root._pktJob.actionType || root.rowData.jobActionType)
+                }
                 EvidenceField {
                     label: "Job detail"
-                    value: root._or(root.rowData.jobDetail)
+                    value: root._or(root._pktJob.detail || root.rowData.jobDetail)
                     multiLine: true
                 }
 
@@ -351,6 +432,10 @@ Item {
     function _fmtList(v) {
         if (!v || !v.length) return "—"
         return v.join(", ")
+    }
+    function _fmtBool(v) {
+        if (v === undefined || v === null) return "—"
+        return v ? "true" : "false"
     }
 
     // ------------------------------------------------------------------
