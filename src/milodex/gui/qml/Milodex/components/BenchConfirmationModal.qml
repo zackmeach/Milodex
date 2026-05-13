@@ -54,6 +54,13 @@ Item {
     readonly property var _pktEvidence: _packet.evidence || ({})
     readonly property var _pktStatus:   _packet.status   || ({})
 
+    // PR N (ADR 0049): prefer the normalized actionIntentPreview carried on
+    // the menu item dict when present. The QML helpers below remain as a
+    // fallback path so the modal survives a future read-model rebuild that
+    // temporarily omits the preview. Read-only; never mutated here.
+    readonly property var  _preview:           (actionData && actionData.actionIntentPreview) || ({})
+    readonly property bool _previewAvailable:  !!(actionData && actionData.actionIntentPreview)
+
     visible: open
     focus: open
 
@@ -87,6 +94,12 @@ Item {
     // mentions Live/Micro Live, OR Start Trading is invoked while already
     // at micro_live/live. See _safetyCopy for the matching prose branches.
     readonly property bool _isCapitalBoundary: {
+        // PR N: prefer the normalized preview's capitalBearing flag.
+        if (_previewAvailable && _preview.capitalBearing !== undefined) {
+            return !!_preview.capitalBearing
+        }
+        // Fallback (matches PR L semantics, including paper-stage Start
+        // Trading refinement).
         var label = (actionData && actionData.label) ? actionData.label : ""
         var target = (actionData && actionData.targetStage) ? actionData.targetStage : ""
         var stage = (rowData && rowData.stage) ? rowData.stage : ""
@@ -151,7 +164,15 @@ Item {
     // Coarse verb classification from the action label. Promote/Demote/
     // Return are prefix-matched (multiple target-stage suffixes exist);
     // the four invocation labels are fixed strings.
+    //
+    // PR N: when an `actionIntentPreview` is available on the action dict,
+    // prefer its normalized `actionKind`. The fallback path below preserves
+    // PR L semantics for any future read-model rebuild that omits the
+    // preview.
     function _actionKind(action) {
+        if (action && action.actionIntentPreview && action.actionIntentPreview.actionKind) {
+            return action.actionIntentPreview.actionKind
+        }
         var label = (action && action.label) ? action.label : ""
         if (label.indexOf("Promote to ") === 0)  return "promote"
         if (label.indexOf("Demote to ") === 0)   return "demote"
@@ -164,7 +185,11 @@ Item {
     }
 
     // Plain-language explanation of what the selected action means.
+    // PR N: prefer `actionIntentPreview.intentCopy` when present.
     function _intentCopy(action) {
+        if (action && action.actionIntentPreview && action.actionIntentPreview.intentCopy) {
+            return action.actionIntentPreview.intentCopy
+        }
         var kind = _actionKind(action)
         if (kind === "promote")
             return "Move this strategy forward from its current stage to the next stage after evidence and policy gates are satisfied."
@@ -185,19 +210,33 @@ Item {
 
     // Static enumeration of what a future Milodex would validate before
     // this action could proceed. Copy-only — no real check is performed here.
-    readonly property var _requirements: [
-        "Evidence gate check",
-        "Freshness check",
-        "Operator confirmation",
-        "Policy lock check",
-        "Risk guard check",
-        "Event write after confirmation"
-    ]
+    //
+    // PR N: when the preview carries a `requirements` list, prefer it. The
+    // QML literal below remains as a fallback path.
+    readonly property var _requirements: {
+        if (_previewAvailable
+                && _preview.requirements
+                && _preview.requirements.length !== undefined) {
+            return _preview.requirements
+        }
+        return [
+            "Evidence gate check",
+            "Freshness check",
+            "Operator confirmation",
+            "Policy lock check",
+            "Risk guard check",
+            "Event write after confirmation"
+        ]
+    }
 
     // Non-executable display string identifying the kind of record the
     // future event-store will write. NOT a class name, NOT a function,
     // NOT a payload — purely a label for operator orientation.
+    // PR N: prefer the preview's `futureRecord` field when present.
     function _futureRecord(action) {
+        if (action && action.actionIntentPreview && action.actionIntentPreview.futureRecord) {
+            return action.actionIntentPreview.futureRecord
+        }
         var kind = _actionKind(action)
         if (kind === "promote")            return "promotion_event"
         if (kind === "demote")             return "demotion_event"
@@ -220,6 +259,10 @@ Item {
     readonly property string _COPY_PAPER_START: "Paper-stage sessions use live feed with no capital exposure. Capital-bearing stages remain locked while ADR 0004 is in force."
 
     function _safetyCopy(rowDataIn, action) {
+        // PR N: prefer the preview's pre-rendered safety copy when present.
+        if (action && action.actionIntentPreview && action.actionIntentPreview.safetyCopy) {
+            return action.actionIntentPreview.safetyCopy
+        }
         var base = _COPY_SAFETY_BOUNDARY
         var label = (action && action.label) ? action.label : ""
         var stage = (rowDataIn && rowDataIn.stage) ? rowDataIn.stage : ""
