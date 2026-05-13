@@ -723,10 +723,10 @@ def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
     only carries what the GUI read-model already exposes.
 
     Real event-derived freshness and gate reconstruction are deferred
-    (ADR 0049 Decision 5). The ``source.authoritative`` flag and the
-    ``gate.reconstructionDeferred`` flag MUST stay truthy/false respectively
-    until that work lands; downstream UI uses them to keep the v1 framing
-    explicit.
+    (ADR 0049 Decision 5). The ``source.authoritative`` flag MUST stay
+    False and the ``gate.reconstructionDeferred`` flag MUST stay True
+    until real event-derived evidence reconstruction lands; downstream
+    UI uses them to keep the v1 framing explicit.
     """
     return {
         "schemaVersion": 1,

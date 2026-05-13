@@ -771,8 +771,8 @@ def test_bench_pr_m_packet_is_independent_of_flat_fields(tmp_path: Path) -> None
     assert row["gateFailures"] == original_failures
 
 
-def test_bench_pr_m_packet_handles_idle_row_without_evidence(tmp_path: Path) -> None:
-    """Idle rows with no backtest/promotion still get a well-formed packet."""
+def test_bench_pr_m_packet_handles_backtest_row_without_evidence(tmp_path: Path) -> None:
+    """Backtest rows with no seeded backtest/promotion still get a well-formed packet."""
     from milodex.gui.read_models import build_bench_snapshot
 
     configs = tmp_path / "configs"
