@@ -47,6 +47,16 @@ Item {
     // Each strategy: as_qml() output from _StrategyRow (read_models.py)
     property var benchData: BenchState.sections
 
+    // True while any section has a row drag in progress.
+    // Used to gate keyboard scroll so arrow keys don't fight the drag.
+    property bool anyDragging: false
+
+    // Watchdog: if benchData is rebound mid-drag (e.g. BenchState emits a new
+    // sections snapshot), delegate destruction prevents onDragEnded from firing
+    // and anyDragging would remain true, permanently disabling keyboard scroll.
+    // Force-reset it whenever the data reference changes.
+    onBenchDataChanged: anyDragging = false
+
     // -----------------------------------------------------------------------
     // Formatting helpers
     // -----------------------------------------------------------------------
@@ -133,6 +143,47 @@ Item {
         contentHeight: pageColumn.implicitHeight + Theme.space[7] * 2
         clip: true
         flickableDirection: Flickable.VerticalFlick
+        interactive: false
+        focus: true
+        // When loaded inside a Loader/StackView the parent is not necessarily
+        // an active focus scope, so focus:true alone leaves arrow keys dead until
+        // the user clicks.  forceActiveFocus() requests the active focus chain
+        // immediately, ensuring keyboard scroll works from first render.
+        Component.onCompleted: scroller.forceActiveFocus()
+
+        Keys.onPressed: (event) => {
+            if (root.anyDragging) return
+            var max = Math.max(0, scroller.contentHeight - scroller.height)
+            if (event.key === Qt.Key_Down) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY + 40))
+                event.accepted = true
+            } else if (event.key === Qt.Key_Up) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - 40))
+                event.accepted = true
+            } else if (event.key === Qt.Key_PageDown) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY + scroller.height * 0.9))
+                event.accepted = true
+            } else if (event.key === Qt.Key_PageUp) {
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - scroller.height * 0.9))
+                event.accepted = true
+            } else if (event.key === Qt.Key_Home) {
+                scroller.contentY = 0
+                event.accepted = true
+            } else if (event.key === Qt.Key_End) {
+                scroller.contentY = max
+                event.accepted = true
+            }
+        }
+
+        WheelHandler {
+            target: null
+            onWheel: (event) => {
+                var max = Math.max(0, scroller.contentHeight - scroller.height)
+                var step = event.angleDelta.y / 120 * 40
+                scroller.contentY = Math.max(0, Math.min(max, scroller.contentY - step))
+                event.accepted = true
+            }
+        }
 
         Column {
             id: pageColumn
@@ -431,6 +482,7 @@ Item {
                                         sectionRoot.draggingIndex = index
                                         sectionRoot.targetIndex = index
                                         sectionRoot.dragYOffset = 0
+                                        root.anyDragging = true
                                     }
                                     onMoveRequested: (delta) => {
                                         // delta is cumulative offset from press.
@@ -452,6 +504,7 @@ Item {
                                         sectionRoot.draggingIndex = -1
                                         sectionRoot.targetIndex = -1
                                         sectionRoot.dragYOffset = 0
+                                        root.anyDragging = false
                                     }
                                 }
                             }

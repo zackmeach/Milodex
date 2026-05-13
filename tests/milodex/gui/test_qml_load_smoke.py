@@ -214,12 +214,32 @@ def test_bench_ledger_copy_and_drag_safety_contract() -> None:
     assert "Drag." not in source
     assert "targetStage" not in source
     assert re.search(r"\bstage\s=(?!=)", source) is None
-    # PR F: Action button label is the literal word "Action" per bench-brief §6
-    # (uniform label; variant communicates friction; PR G wires the menu items).
-    # The old "Action ->" QuietAction label was replaced with Button text: "Action".
-    assert 'text: "Action"' in (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(
-        encoding="utf-8"
-    )
+    # PR I: Action button replaced with folio mark affordance.
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    assert 'text: "Action"' not in row_src
+    assert "id: folioMark" in row_src
+    # PR I: Flickable click-drag page scroll is disabled — deterministic desktop
+    # scrolling means mouse-wheel works, click-drag does not. Guards against a
+    # regression that restores interactive scrolling.
+    assert "interactive: false" in source
+    # PR I: drag-handle exclusion from the row-body click area MUST be geometric
+    # (anchors), not z-order. This is the load-bearing safety property: a refactor
+    # that collapses rowClickArea back to anchors.fill: parent would silently let
+    # handle clicks open the menu. The named id "handleSlot" is stable.
+    assert "anchors.left: handleSlot.right" in row_src
+
+
+def test_bench_menu_engine_contract() -> None:
+    """Folio mark affordance still uses the compute_menu_items engine pipeline."""
+    row_src = (_MILODEX_QML_DIR / "components" / "BenchRow.qml").read_text(encoding="utf-8")
+    assert "actionItems" in row_src
+    assert "QQC2.Menu" in row_src
+    assert "Instantiator" in row_src
+    assert "modelData.label" in row_src
+    # v1 visual-prototype contract: menu items remain no-op. Wiring real dispatch
+    # through onTriggered would break ADR 0049; this assertion forces any future
+    # implementer adding a mutation pathway to also touch this test.
+    assert "onTriggered" in row_src
 
 
 def test_bench_pr_h_drag_safety_contract() -> None:

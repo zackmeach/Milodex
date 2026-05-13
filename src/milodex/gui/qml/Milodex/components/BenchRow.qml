@@ -79,10 +79,6 @@ Item {
     // Populated by the parent BenchSurface delegate from modelData.actions.
     property var actionItems: []
 
-    // Action slot signal — emitted when the Action button is clicked.
-    // Connected to open the menu popup below.
-    signal actionClicked()
-
     // -----------------------------------------------------------------------
     // Internal state
     // -----------------------------------------------------------------------
@@ -118,28 +114,43 @@ Item {
         color: Theme.color.brand.accent
     }
 
+    // Shadow — visible only while dragging; sits below the row background
+    Rectangle {
+        anchors.fill: parent
+        anchors.topMargin: 2
+        anchors.leftMargin: 2
+        color: Qt.rgba(0, 0, 0, 0.25)
+        visible: root.dragging
+    }
+
     // Row background — transparent by default; LIVE gets oxblood wash;
-    // hover gets a surface.raised tint at reduced opacity
+    // hover gets a surface.raised tint at reduced opacity;
+    // dragging: opaque surface.raised with 1-px border
     Rectangle {
         anchors.fill: parent
         anchors.leftMargin: liveBorder.width
 
         // LIVE: 5%-alpha oxblood wash; hover: surface.raised at 0.42;
-        // dragging: surface.raised at 0.72
+        // dragging: opaque surface.raised
         color: {
             if (_isLive) {
                 return Qt.rgba(0.49, 0.21, 0.25, 0.05)   // brand.accent ≈ #7d3540 at ~5%
             }
-            if (mouseArea.containsMouse || root.dragging) {
+            if (root.dragging) {
+                return Theme.color.surface.raised
+            }
+            if (mouseArea.containsMouse || rowClickArea.containsMouse) {
                 return Qt.rgba(
                     Theme.color.surface.raised.r,
                     Theme.color.surface.raised.g,
                     Theme.color.surface.raised.b,
-                    root.dragging ? 0.72 : 0.42
+                    0.42
                 )
             }
             return "transparent"
         }
+        border.color: Theme.color.border.regular
+        border.width: root.dragging ? 1 : 0
         Behavior on color { ColorAnimation { duration: Theme.motion.fast } }
     }
 
@@ -150,6 +161,47 @@ Item {
         hoverEnabled: true
         propagateComposedEvents: true
         onClicked: (mouse) => mouse.accepted = false
+    }
+
+    // Row-body click — opens the action menu when the user clicks anywhere on
+    // the row except the drag handle.  Handle is excluded geometrically
+    // (anchors.left: handleSlot.right), not by z-order.
+    // Movement-threshold gating prevents accidental menu-open on press/move/release.
+    MouseArea {
+        id: rowClickArea
+        anchors.left: handleSlot.right
+        anchors.right: parent.right
+        anchors.top: parent.top
+        anchors.bottom: parent.bottom
+        cursorShape: Qt.PointingHandCursor
+        // hoverEnabled must be set explicitly so containsMouse is reliable.
+        // Without this, the PointingHandCursor may still register hover
+        // internally (implicitly enabling it) but containsMouse won't update
+        // consistently, and the cursor intercepts mouseArea's hover events.
+        hoverEnabled: true
+
+        property real _pressX: 0
+        property real _pressY: 0
+        property bool _movedTooFar: false
+
+        onPressed: (mouse) => {
+            _pressX = mouse.x
+            _pressY = mouse.y
+            _movedTooFar = false
+        }
+        onPositionChanged: (mouse) => {
+            if (!pressed) return
+            var threshold = (typeof Qt.styleHints !== "undefined" &&
+                             Qt.styleHints.startDragDistance > 0)
+                            ? Qt.styleHints.startDragDistance : 4
+            if (Math.abs(mouse.x - _pressX) >= threshold ||
+                Math.abs(mouse.y - _pressY) >= threshold) {
+                _movedTooFar = true
+            }
+        }
+        onReleased: {
+            if (!_movedTooFar) actionMenu.open()
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -174,7 +226,7 @@ Item {
             color: Theme.color.text.muted
             // 0.80 while actively dragging from handle; 0.65 on row hover; 0.30 default
             opacity: dragHandle.pressed ? 0.80
-                     : (mouseArea.containsMouse || root.dragging ? 0.65 : 0.30)
+                     : (mouseArea.containsMouse || rowClickArea.containsMouse || root.dragging ? 0.65 : 0.30)
             font.family: Theme.typography.data.sm.family
             font.pixelSize: Theme.typography.data.sm.size
             font.letterSpacing: 1.2
@@ -371,39 +423,55 @@ Item {
         }
 
         // ---- col 7: Action slot -------------------------------------------
-        // PR G: Action button now opens a per-row menu populated from
-        // compute_menu_items() output (bench_v1.py → read_models.py →
-        // modelData.actions → actionItems).  Clicking a menu item is a
-        // visual-prototype no-op per ADR 0049 — no backend mutation occurs.
-        // PR I will wire confirmation modals and Evidence modal.
+        // PR I: Folio mark affordance — a quiet column-rule + glyph that
+        // appears on hover.  Clicking the mark (or anywhere on the row body
+        // via rowClickArea) opens the per-row action menu.
         Item {
+            id: actionSlot
             Layout.preferredWidth: Theme.column.benchAction
             Layout.alignment: Qt.AlignVCenter
-            implicitHeight: actionButton.implicitHeight
+            implicitHeight: 78   // matches BenchRow.implicitHeight
 
-            // Transient "primary" fill — the button shows filled oxblood when
-            // hovered or while its action menu is open.  At rest BenchSurface
-            // provides "secondary" (outlined) for state-changing rows and
-            // "ghost" for evidence-only rows.  Ghost rows are never promoted
-            // to primary — they should stay quiet.
-            readonly property bool _actionActive: actionButtonHover.hovered || actionMenu.opened
+            // Folio mark — 1-px vertical hairline at right edge of slot,
+            // plus a small action-count glyph.  No fill, no border-radius.
+            Item {
+                id: folioMark
+                anchors.fill: parent
 
-            Button {
-                id: actionButton
-                anchors.right: parent.right
-                anchors.verticalCenter: parent.verticalCenter
-                variant: parent._actionActive && root.actionVariant !== "ghost"
-                         ? "primary"
-                         : root.actionVariant
-                text: "Action"
-                onClicked: {
-                    root.actionClicked()
-                    actionMenu.open()
+                // Opacity driven by row hover / menu-open state
+                opacity: {
+                    if (actionMenu.opened || root.activeFocus) return 1.0
+                    if (mouseArea.containsMouse || rowClickArea.containsMouse) return 0.45
+                    return 0
+                }
+                Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
+
+                // 1-px column rule at the right edge of the slot
+                Rectangle {
+                    anchors.right: parent.right
+                    anchors.top: parent.top
+                    anchors.bottom: parent.bottom
+                    width: 1
+                    color: Theme.color.border.regular
                 }
 
-                // HoverHandler coexists with MouseArea — does not intercept
-                // clicks; the Button's own onClicked fires normally.
-                HoverHandler { id: actionButtonHover }
+                // Action-count glyph centered in the slot
+                Text {
+                    anchors.centerIn: parent
+                    text: "· " + root.actionItems.length + " ·"
+                    color: (actionMenu.opened || root.activeFocus)
+                           ? Theme.color.text.secondary
+                           : Theme.color.text.muted
+                    font.family: Theme.typography.label.xs.family
+                    font.pixelSize: Theme.typography.label.xs.size
+                }
+
+                // Folio mark hit area — opens the same menu as the row-body click
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: actionMenu.open()
+                }
             }
 
             // Action menu — visual-prototype only (ADR 0049).
@@ -413,9 +481,9 @@ Item {
             QQC2.Menu {
                 id: actionMenu
                 width: 240
-                // Anchor below-right of the Action button
-                x: actionButton.x + actionButton.width - width
-                y: actionButton.y + actionButton.height + 2
+                // Anchor below-right of the action slot
+                x: actionSlot.width - width
+                y: actionSlot.height + 2
 
                 // Warm-dark surface to match ledger aesthetic.
                 // surface.raised (#1a1611) is the highest defined surface token;
