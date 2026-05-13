@@ -302,6 +302,7 @@ Item {
                 }
                 EvidenceField {
                     label: "Promotion type"
+                    labelWidth: 116
                     value: root._or(root._pktEvidence.promotionType || root.rowData.promotionType)
                 }
 
@@ -325,6 +326,7 @@ Item {
                 }
                 EvidenceField {
                     label: "Session detail"
+                    labelWidth: 116
                     value: root._or(root._pktSession.detail || root.rowData.sessionDetail)
                     multiLine: true
                 }
@@ -464,6 +466,10 @@ Item {
         property string label: ""
         property string value: ""
         property bool   multiLine: false
+        // `labelWidth` overrides the 96 px default for the few 14-char
+        // labels ("Promotion type", "Session detail") that would otherwise
+        // sit flush against the value column.
+        property real   labelWidth: 96
         width: parent ? parent.width : 0
         implicitHeight: fieldRow.implicitHeight
 
@@ -478,7 +484,7 @@ Item {
                 font.family:    Theme.typography.data.xs.family
                 font.pixelSize: Theme.typography.data.xs.size
                 font.features:  Theme.typography.data.xs.features
-                Layout.preferredWidth: 96
+                Layout.preferredWidth: labelWidth
                 Layout.alignment:      Qt.AlignTop
             }
 

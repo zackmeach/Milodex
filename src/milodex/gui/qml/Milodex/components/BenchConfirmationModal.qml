@@ -448,14 +448,17 @@ Item {
             }
             DetailRow {
                 label: "Evidence run"
+                labelWidth: 116
                 value: root._or(root._pktEvidence.runId || root.rowData.evidenceRunId)
             }
             DetailRow {
                 label: "Evidence label"
+                labelWidth: 116
                 value: root._or(root._pktEvidence.label || root.rowData.metaEvidenceLabel)
             }
             DetailRow {
                 label: "Evidence at"
+                labelWidth: 116
                 value: root._or(root._pktEvidence.observedAt || root.rowData.metaEvidenceAt)
             }
 
@@ -497,25 +500,41 @@ Item {
 
             ProseBlock { text: root._COPY_DRAFT_BANNER }
 
-            DetailRow { label: "Submission state"; value: root.commandDraftPreview.submissionState }
-            DetailRow { label: "Validation state"; value: root.commandDraftPreview.validationState }
-            DetailRow { label: "Expected record";  value: root.commandDraftPreview.expectedFutureRecord }
+            DetailRow {
+                label: "Submission state"
+                labelWidth: 124
+                value: root.commandDraftPreview.submissionState
+            }
+            DetailRow {
+                label: "Validation state"
+                labelWidth: 124
+                value: root.commandDraftPreview.validationState
+            }
+            DetailRow {
+                label: "Expected record"
+                labelWidth: 124
+                value: root.commandDraftPreview.expectedFutureRecord
+            }
             DetailRow {
                 label: "Evidence packet v"
+                labelWidth: 124
                 numeric: true
                 value: "" + root.commandDraftPreview.evidencePacketSchemaVersion
             }
             DetailRow {
                 label: "Action preview v"
+                labelWidth: 124
                 numeric: true
                 value: "" + root.commandDraftPreview.actionIntentPreviewSchemaVersion
             }
             DetailRow {
                 label: "Executable"
+                labelWidth: 124
                 value: root.commandDraftPreview.executable ? "true" : "false"
             }
             DetailRow {
                 label: "Wired"
+                labelWidth: 124
                 value: root.commandDraftPreview.wired ? "true" : "false"
             }
 
@@ -710,10 +729,16 @@ Item {
     // crosses a wide gutter for every read. `numeric: true` right-aligns
     // the value so columns of numbers (Sharpe / Max-DD / schema versions)
     // read as a tabular stack instead of a left-aligned string list.
+    //
+    // `labelWidth` overrides the 96 px default for sections whose labels
+    // are visibly longer ("Submission state", "Evidence packet v", etc.) —
+    // applied per-row at the call site so the tight default still holds
+    // wherever it is visibly safe.
     component DetailRow: RowLayout {
         property string label: ""
         property string value: ""
         property bool   numeric: false
+        property real   labelWidth: 96
         width: parent ? parent.width : 0
         spacing: Theme.space[3]
 
@@ -723,7 +748,7 @@ Item {
             font.family:    Theme.typography.data.xs.family
             font.pixelSize: Theme.typography.data.xs.size
             font.features:  Theme.typography.data.xs.features
-            Layout.preferredWidth: 96
+            Layout.preferredWidth: labelWidth
         }
 
         Text {
