@@ -372,6 +372,7 @@ def test_bench_pr_j_no_mutation_guarantee() -> None:
         "config.write",
         "submitCommand",
         "dispatchCommand",
+        "CommandProposal",
     )
     files = {
         "BenchRow.qml": _MILODEX_QML_DIR / "components" / "BenchRow.qml",
@@ -710,4 +711,109 @@ def test_bench_pr_k_bleed_through_guards() -> None:
     assert surface_src.count(guard) >= 2, (
         f"BenchSurface.qml must contain the bleed-through guard "
         f'"{guard}" in at least 2 places (Keys.onPressed and WheelHandler.onWheel)'
+    )
+
+
+def test_bench_pr_l_intent_packet_sections() -> None:
+    """PR L: all six ALL-CAPS section labels appear in BenchConfirmationModal.qml."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    for label in (
+        '"ACTION"',
+        '"INTENT PACKET"',
+        '"CURRENT SNAPSHOT"',
+        '"WOULD EVENTUALLY REQUIRE"',
+        '"FUTURE RECORD"',
+        '"SAFETY BOUNDARY"',
+    ):
+        assert label in modal_src, (
+            f"BenchConfirmationModal.qml must contain section label {label} (PR L)"
+        )
+
+
+def test_bench_pr_l_safety_boundary_wording() -> None:
+    """PR L: SAFETY BOUNDARY verbatim sentence and its three sub-clauses are present."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    verbatim = (
+        "Bench v1 renders this intent packet for review only. "
+        "No command is submitted, no event is written, and no state is changed."
+    )
+    assert verbatim in modal_src, (
+        "BenchConfirmationModal.qml _COPY_SAFETY_BOUNDARY must match verbatim"
+    )
+    # Defense-in-depth: individual clauses checked separately.
+    assert "No command is submitted" in modal_src
+    assert "no event is written" in modal_src
+    assert "no state is changed" in modal_src
+
+
+def test_bench_pr_l_future_record_strings() -> None:
+    """PR L: all seven non-executable record label strings appear in _futureRecord."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    for record_label in (
+        "promotion_event",
+        "demotion_event",
+        "stage_return_event",
+        "session_start_event",
+        "session_stop_event",
+        "backtest_request_event",
+        "backtest_refresh_event",
+    ):
+        assert record_label in modal_src, (
+            f"BenchConfirmationModal.qml _futureRecord must contain {record_label!r} (PR L)"
+        )
+
+
+def test_bench_pr_l_capital_live_precision() -> None:
+    """PR L: capital-lock-short, paper-start copy, and paper-stage guard are all present."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "Capital-bearing transitions remain locked while ADR 0004 is in force."
+    ) in modal_src, (
+        "BenchConfirmationModal.qml _COPY_CAPITAL_LOCK_SHORT must match verbatim"
+    )
+    assert (
+        "Paper-stage sessions use live feed with no capital exposure."
+    ) in modal_src, (
+        "BenchConfirmationModal.qml _COPY_PAPER_START must contain paper-start sentence"
+    )
+    # _isCapitalBoundary Start Trading guard: paper stage is excluded from capital-bearing.
+    assert 'stage === "micro_live" || stage === "live"' in modal_src, (
+        "BenchConfirmationModal.qml _isCapitalBoundary must exclude paper stage "
+        "from Start Trading capital classification (PR L refinement)"
+    )
+
+
+def test_bench_pr_l_intent_copy_helpers() -> None:
+    """PR L: all five Intent Packet helpers are declared in BenchConfirmationModal.qml."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    # Functions declared with `function` keyword.
+    for fn_decl in (
+        "function _actionKind(",
+        "function _intentCopy(",
+        "function _futureRecord(",
+        "function _safetyCopy(",
+    ):
+        assert fn_decl in modal_src, (
+            f"BenchConfirmationModal.qml must declare {fn_decl!r} (PR L)"
+        )
+
+    # _requirements is a readonly property var, not a function.
+    assert "readonly property var _requirements" in modal_src, (
+        "BenchConfirmationModal.qml must declare "
+        "`readonly property var _requirements` (PR L)"
     )
