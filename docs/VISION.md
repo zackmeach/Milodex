@@ -168,8 +168,18 @@ Backtests assume conservative slippage of 0.1–0.2% per trade to avoid overstat
 
 Risk management is not a feature — it's a layer. It sits between every strategy decision and every trade execution, and it has veto power.
 
+### Operator Preferences vs Enforcement
+
+The risk layer is sacred but not arbitrary. Different operators have different risk appetites, and Milodex should eventually let the operator express personal risk tolerance — but the agency lives inside a governed framework, not above it. The load-bearing distinction:
+
+> **The operator owns risk preferences. The risk layer owns enforcement.**
+
+The operator may choose the risk posture from inside an explicit, bounded, auditable policy: safe by default, deliberately opted into for higher risk, human-approved for live-capital effect, logged, visibly active, bounded by non-negotiable account-level guardrails (kill switch, broker live-trade permission, fat-finger protection), and enforceable in code. No strategy, ML model, frontier agent, or feature may modify, weaken, or bypass the risk policy that evaluates it — that includes proposing a looser policy from inside the harness when blocked.
+
+The full thesis — including the framings explicitly refused (*"the user controls the risk layer"*, *"strategies configure their own risk"*, *"risk gates can be weakened when they block a useful feature"*) — lives in [`docs/FOUNDER_INTENT.md`](FOUNDER_INTENT.md) "The Risk Layer — Operator Preferences, System Enforcement." [`docs/PRODUCT.md`](PRODUCT.md) §5b summarizes the same distinction at compass level.
+
 ### Configurable Per Strategy
-Position sizing limits, daily loss caps, and kill switch thresholds are all defined in versioned strategy configs. Different strategies can have different risk profiles.
+Position sizing limits, daily loss caps, and kill switch thresholds are all defined in versioned strategy configs — *authored by the operator*, not mutated by the strategy at runtime. Different strategies can have different risk profiles within the bounds the operator allows.
 
 ### Kill Switch
 When a configurable loss threshold is hit, trading halts immediately. All open orders are cancelled. The system waits for manual review and re-enablement — it does not auto-resume.

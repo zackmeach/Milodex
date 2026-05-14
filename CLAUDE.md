@@ -28,6 +28,7 @@ src-layout Python package (`src/milodex/`). Nine modules:
 ## Key Design Rules
 
 - **Risk layer is sacred.** Every trade passes through `risk/` before execution. Strategy proposes, risk disposes. Never bypass or weaken for convenience.
+- **Operator owns risk preferences; risk layer owns enforcement.** The operator may eventually choose a risk posture from inside explicit, bounded, auditable policy — safe by default, deliberately opted into for higher risk, human-approved for live-capital effect, logged, visibly active, and bounded by non-negotiable account-level guardrails. No strategy, ML model, frontier agent, or feature may modify, weaken, or bypass the risk policy that evaluates it. Do not write code or docs framing this as *"the user controls the risk layer"* or *"strategies configure their own risk"* — both invert the relationship. Full thesis: `docs/FOUNDER_INTENT.md` "The Risk Layer — Operator Preferences, System Enforcement."
 - **Strategies are config-driven.** Strategy parameters live in `configs/*.yaml`, not in code. The code defines behavior; config defines tuning.
 - **Promotion pipeline is mandatory.** Stages: backtest → paper → micro_live → live. No skipping stages. Thresholds: Sharpe > 0.5, max drawdown < 15%, minimum 30 trades.
 - **Kill switch requires manual reset.** When triggered, trading halts. Auto-resume is never acceptable.
