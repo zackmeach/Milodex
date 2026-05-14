@@ -42,7 +42,7 @@ from milodex.commands.bench import (
     CommandResult,
     Precondition,
 )
-from milodex.core.event_store import EventStore
+from milodex.core.event_store import BacktestRunEvent, EventStore
 
 # Canonical id used by every test config. The loader cross-validates
 # strategy.id against family/template/variant/version, so we pin one shape
@@ -598,14 +598,14 @@ def test_propose_demote_refuses_micro_live_and_live_targets(
 # --------------------------------------------------------------------------- #
 
 
-# Phase C1 wired submit_demote; Phase D1 wires submit_freeze_manifest. The
-# remaining three submit methods (backtest, promote_to_paper, start/stop
-# paper runner) are still Phase B stubs. Phases D2 / E / F land them.
+# Phase C1 wired submit_demote; Phase D1 wired submit_freeze_manifest;
+# Phase D2 wires submit_promote_to_paper (backend only). The remaining two
+# submit methods (backtest, start/stop paper runner) are still Phase B stubs.
+# Phase E / F land them.
 @pytest.mark.parametrize(
     "method_name,family",
     [
         ("submit_backtest", ACTION_FAMILY_BACKTEST),
-        ("submit_promote_to_paper", ACTION_FAMILY_PROMOTE_TO_PAPER),
         ("submit_start_paper_runner", ACTION_FAMILY_START_PAPER_RUNNER),
         ("submit_stop_paper_runner", ACTION_FAMILY_STOP_PAPER_RUNNER),
     ],
@@ -1044,6 +1044,406 @@ def test_submit_freeze_manifest_threads_frozen_by_from_inputs(
     manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
     assert manifest is not None
     assert manifest.frozen_by == "operator-cli-override"
+
+
+# --------------------------------------------------------------------------- #
+# Phase D2 — submit_promote_to_paper (backend only)
+# --------------------------------------------------------------------------- #
+
+
+_PROMOTE_DEFAULT_RISKS: list[str] = ["regime-dependent edge"]
+
+
+def _make_promote_to_paper_proposal(
+    *,
+    recommendation: str | None = "OOS Sharpe stable across windows; promote.",
+    known_risks: list[str] | None = None,
+    run_id: str | None = "bt-d2-test",
+    approved_by: str = "operator",
+    lifecycle_exempt: bool = False,
+) -> CommandProposal:
+    """Construct a proposal the way the (future) bridge will: serialize the
+    inputs ``propose_promote_to_paper`` exposes. ``submit_promote_to_paper``
+    re-validates these via ``propose_promote_to_paper`` before dispatching.
+
+    ``known_risks=None`` means "use the default sample risks". Pass an empty
+    list explicitly to exercise the missing-risks refusal path.
+    """
+    risks = list(_PROMOTE_DEFAULT_RISKS) if known_risks is None else list(known_risks)
+    return CommandProposal(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        inputs={
+            "to_stage": "paper",
+            "recommendation": recommendation,
+            "known_risks": risks,
+            "run_id": run_id,
+            "approved_by": approved_by,
+            "lifecycle_exempt": lifecycle_exempt,
+        },
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="phase-d2-test-proposal",
+    )
+
+
+def _append_walk_forward_backtest_run(
+    event_store: EventStore,
+    *,
+    run_id: str,
+    sharpe: float,
+    max_drawdown_pct: float,
+    trade_count: int,
+) -> None:
+    """Insert a synthetic walk-forward backtest run whose OOS aggregate
+    metrics can be read directly by ``_metrics_from_run`` — no need to
+    synthesize real trades. Mirrors the metadata shape the orchestrator
+    writes per ADR 0021."""
+    now = datetime.now()
+    event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id=run_id,
+            strategy_id=STRATEGY_ID,
+            config_path=None,
+            config_hash=None,
+            start_date=now,
+            end_date=now,
+            started_at=now,
+            status="completed",
+            slippage_pct=None,
+            commission_per_trade=None,
+            metadata={
+                "walk_forward": True,
+                "oos_aggregate": {
+                    "sharpe": sharpe,
+                    "max_drawdown_pct": max_drawdown_pct,
+                    "trade_count": trade_count,
+                },
+            },
+            ended_at=now,
+        )
+    )
+
+
+def test_submit_promote_to_paper_lifecycle_exempt_success(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase D2 happy path via the lifecycle-exempt branch (no backtest run
+    needed). Asserts atomic manifest + promotion landing and YAML stage
+    rewrite via the same governance callee the CLI uses."""
+    config_path = _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(
+        recommendation="Regime strategy; lifecycle-exempt per R-PRM-004.",
+        known_risks=["whipsaw"],
+        run_id=None,
+        lifecycle_exempt=True,
+    )
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert result.action_family == ACTION_FAMILY_PROMOTE_TO_PAPER
+    # Durable refs carry the full promotion + manifest identification.
+    assert result.durable_refs["strategy_id"] == STRATEGY_ID
+    assert result.durable_refs["from_stage"] == "backtest"
+    assert result.durable_refs["to_stage"] == "paper"
+    assert result.durable_refs["promotion_type"] == "lifecycle_exempt"
+    assert result.durable_refs["approved_by"] == "operator"
+    assert result.durable_refs.get("promotion_id")
+    assert result.durable_refs.get("manifest_id")
+    assert result.durable_refs.get("manifest_hash")
+    assert result.audit_event_id == result.durable_refs["promotion_id"]
+    assert result.submitted_at is not None
+    # YAML stage line rewritten.
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+    # Auto-frozen manifest at the paper stage.
+    manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
+    assert manifest is not None
+    assert manifest.stage == "paper"
+    assert manifest.config_hash == result.durable_refs["manifest_hash"]
+
+
+def test_submit_promote_to_paper_statistical_success(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase D2: statistical promotion path with a real backtest run whose
+    OOS metrics clear the gate (Sharpe > 0.5, drawdown < 15%, trades >= 30).
+    Asserts metrics propagate into ``durable_refs``."""
+    config_path = _write_strategy(config_dir, stage="backtest")
+    _append_walk_forward_backtest_run(
+        event_store,
+        run_id="bt-d2-pass",
+        sharpe=1.25,
+        max_drawdown_pct=8.5,
+        trade_count=42,
+    )
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(run_id="bt-d2-pass")
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["promotion_type"] == "statistical"
+    assert result.durable_refs.get("backtest_run_id") == "bt-d2-pass"
+    assert result.durable_refs.get("sharpe_ratio")
+    assert result.durable_refs.get("max_drawdown_pct")
+    assert result.durable_refs.get("trade_count") == "42"
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_submit_promote_to_paper_missing_recommendation_refused(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """A blank recommendation must be refused at revalidation, before any
+    governance call. No mutation."""
+    config_path = _write_strategy(config_dir, stage="backtest")
+    yaml_before = config_path.read_text(encoding="utf-8")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(
+        recommendation="   ", lifecycle_exempt=True, run_id=None
+    )
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "missing_recommendation" in codes
+    # No state mutation.
+    assert config_path.read_text(encoding="utf-8") == yaml_before
+    assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper") is None
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
+def test_submit_promote_to_paper_missing_known_risks_refused(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_strategy(config_dir, stage="backtest")
+    yaml_before = config_path.read_text(encoding="utf-8")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(
+        known_risks=[], lifecycle_exempt=True, run_id=None
+    )
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "missing_known_risks" in codes
+    assert config_path.read_text(encoding="utf-8") == yaml_before
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
+def test_submit_promote_to_paper_wrong_source_stage_refused(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """A paper-stage (or other non-backtest) strategy cannot be promoted to
+    paper. Mirrors ``validate_stage_transition`` behavior."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(lifecycle_exempt=True, run_id=None)
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "wrong_source_stage" in codes
+
+
+def test_submit_promote_to_paper_missing_run_id_for_statistical_refused(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Non-lifecycle-exempt promotion requires a backtest run id."""
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(
+        run_id=None, lifecycle_exempt=False
+    )
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "missing_run_id" in codes
+
+
+def test_submit_promote_to_paper_backtest_run_not_found(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """A run_id that does not exist in the event store surfaces as a
+    structured ``backtest_run_not_found`` blocker, not as a raised exception."""
+    config_path = _write_strategy(config_dir, stage="backtest")
+    yaml_before = config_path.read_text(encoding="utf-8")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(run_id="bt-does-not-exist")
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "backtest_run_not_found" in codes
+    assert config_path.read_text(encoding="utf-8") == yaml_before
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
+def test_submit_promote_to_paper_gate_failure_blocks_and_does_not_mutate(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """A backtest whose OOS metrics fail the gate must produce
+    ``gate_check_failed`` blockers per failure reason, with no mutation to
+    YAML, manifest history, or promotion history."""
+    config_path = _write_strategy(config_dir, stage="backtest")
+    yaml_before = config_path.read_text(encoding="utf-8")
+    _append_walk_forward_backtest_run(
+        event_store,
+        run_id="bt-d2-fail",
+        sharpe=0.2,
+        max_drawdown_pct=22.0,
+        trade_count=10,
+    )
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(run_id="bt-d2-fail")
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert codes == {"gate_check_failed"}
+    # Each gate failure is a separate blocker.
+    assert len(result.blockers) >= 3
+    assert config_path.read_text(encoding="utf-8") == yaml_before
+    assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper") is None
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
+def test_submit_promote_to_paper_revalidates_stale_proposal(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """A proposal admissible at propose-time but stale at submit-time (stage
+    drifted away from backtest) must be refused without dispatching."""
+    config_path = _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    proposal = facade.propose_promote_to_paper(
+        STRATEGY_ID,
+        recommendation="OK to promote.",
+        known_risks=["regime-dependent edge"],
+        lifecycle_exempt=True,
+    )
+    assert proposal.admissible, proposal.blockers
+
+    # Drift the YAML so the strategy is no longer at backtest.
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'stage: "backtest"', 'stage: "paper"'
+        ),
+        encoding="utf-8",
+    )
+
+    result = facade.submit_promote_to_paper(proposal)
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "wrong_source_stage" in codes
+    # No promotion event written.
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
+def test_submit_promote_to_paper_refuses_when_facade_lacks_event_store(
+    config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=None,
+    )
+    result = facade.submit_promote_to_paper(_make_promote_to_paper_proposal())
+    assert result.status == "error"
+    assert any(b.reason_code == "event_store_unavailable" for b in result.blockers)
+
+
+def test_submit_promote_to_paper_rejects_proposal_for_different_action_family(
+    make_facade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    wrong = CommandProposal(
+        action_family=ACTION_FAMILY_DEMOTE,  # mismatched
+        strategy_id=STRATEGY_ID,
+        inputs={"to_stage": "paper"},
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="wrong-family",
+    )
+    result = facade.submit_promote_to_paper(wrong)
+    assert result.status == "error"
+    assert any(
+        b.reason_code == "proposal_action_family_mismatch" for b in result.blockers
+    )
+
+
+def test_submit_promote_to_paper_threads_approved_by_from_inputs(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """The CLI default of ``approved_by="operator"`` is overrideable per
+    request. The Bench bridge (Phase D3) will source it via the same
+    ``_resolve_operator_identity()`` helper used for demote/freeze; the
+    backend just threads the value through to the governance event."""
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(
+        approved_by="operator-cli-override",
+        recommendation="lifecycle-exempt",
+        known_risks=["w"],
+        run_id=None,
+        lifecycle_exempt=True,
+    )
+
+    result = facade.submit_promote_to_paper(proposal)
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["approved_by"] == "operator-cli-override"
+    promotions = event_store.list_promotions_for_strategy(STRATEGY_ID)
+    assert len(promotions) == 1
+    assert promotions[0].approved_by == "operator-cli-override"
+
+
+def test_submit_promote_to_paper_does_not_widen_bench_bridge_surface(
+    tmp_path: Path,
+) -> None:
+    """Phase D2 is backend-only. The Bench bridge must NOT yet expose
+    ``proposePromoteToPaper`` / ``submitPromoteToPaper`` slots — GUI wiring
+    lands in Phase D3. The introspection slot must still return the Phase
+    D1 set."""
+    from milodex.gui.bench_command_bridge import BenchCommandBridge
+
+    members = {
+        name for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)
+    }
+    for forbidden in ("proposePromoteToPaper", "submitPromoteToPaper"):
+        assert forbidden not in members, (
+            f"BenchCommandBridge must not expose {forbidden} until Phase D3. "
+            "submit_promote_to_paper is backend-only at Phase D2."
+        )
+
+    # Minimal facade against tmpdir for the introspection check.
+    cfg = tmp_path / "configs"
+    locks = tmp_path / "locks"
+    cfg.mkdir()
+    locks.mkdir()
+    facade = BenchCommandFacade(
+        config_dir=cfg, locks_dir=locks, get_trading_mode=lambda: "paper"
+    )
+    bridge = BenchCommandBridge(facade)
+    assert bridge.submitCapableActionFamilies() == [
+        ACTION_FAMILY_DEMOTE,
+        ACTION_FAMILY_FREEZE_MANIFEST,
+    ]
 
 
 # --------------------------------------------------------------------------- #
