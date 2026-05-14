@@ -301,13 +301,14 @@ def test_pending_order_at_window_boundary_is_dropped():
     result = engine.run(start, end)
 
     trades = store.list_trades_for_backtest_run(result.db_id)
-    assert len(trades) == 0, (
-        f"a decision on the last bar has no T+1 to fill on; expected zero trades, "
-        f"got {len(trades)}: {trades!r}"
+    assert [trade.status for trade in trades] == ["skipped"]
+    assert trades[0].message == (
+        "Skipped backtest buy for SPY: no next bar available before run end."
     )
     assert result.buy_count == 0
     assert result.sell_count == 0
     assert result.trade_count == 0
+    assert result.skipped_count == 1
     # Cash must be unchanged — no fill, no commission, nothing.
     assert result.final_equity == 10_000.0, (
         f"equity must be unchanged when boundary order is dropped; got {result.final_equity}"
