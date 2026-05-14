@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -28,7 +29,27 @@ from milodex.cli._shared import (
     parse_iso_date,
 )
 from milodex.cli.formatter import CommandResult
-from milodex.strategies.loader import load_strategy_config
+from milodex.strategies.loader import build_default_registry, load_strategy_config
+
+
+@dataclass(frozen=True)
+class SkippedConfig:
+    """A config file matched by a screen glob but intentionally not run."""
+
+    path: str
+    reason: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"path": self.path, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class StrategyDiscovery:
+    """Resolved strategy IDs plus audit metadata for glob discovery."""
+
+    strategy_ids: tuple[str, ...]
+    matched_config_count: int
+    skipped_configs: tuple[SkippedConfig, ...] = ()
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -107,11 +128,11 @@ def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if end < start:
         raise ValueError("--end must be on or after --start.")
 
-    strategy_ids = _resolve_strategy_ids(args, ctx)
+    discovery = _resolve_strategy_ids(args, ctx)
 
     parallel = max(1, int(getattr(args, "parallel", 1) or 1))
     result = run_batch(
-        strategy_ids=strategy_ids,
+        strategy_ids=discovery.strategy_ids,
         start_date=start,
         end_date=end,
         ctx=ctx,
@@ -122,14 +143,14 @@ def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     report_path: Path | None = None
     if args.report_out is not None:
-        report_path = _write_report(args.report_out, result)
+        report_path = _write_report(args.report_out, result, discovery=discovery)
 
-    data = _build_data(result, report_path=report_path)
-    lines = _build_human(result, report_path=report_path)
+    data = _build_data(result, report_path=report_path, discovery=discovery)
+    lines = _build_human(result, report_path=report_path, discovery=discovery)
     return CommandResult(command="research.screen", data=data, human_lines=lines)
 
 
-def _resolve_strategy_ids(args: argparse.Namespace, ctx: CommandContext) -> list[str]:
+def _resolve_strategy_ids(args: argparse.Namespace, ctx: CommandContext) -> StrategyDiscovery:
     configs = args.configs
     explicit = list(args.strategy_ids or [])
     if configs and explicit:
@@ -137,38 +158,62 @@ def _resolve_strategy_ids(args: argparse.Namespace, ctx: CommandContext) -> list
     if not configs and not explicit:
         raise ValueError("Specify strategies via --configs <glob> or --strategy-id <id>.")
     if explicit:
-        return explicit
+        return StrategyDiscovery(strategy_ids=tuple(explicit), matched_config_count=0)
     matched = sorted(ctx.config_dir.glob(configs))
     if not matched:
         raise ValueError(f"No configs matched {configs!r} under {ctx.config_dir}.")
     ids: list[str] = []
+    skipped: list[SkippedConfig] = []
+    registry = build_default_registry()
     for path in matched:
         try:
             config = load_strategy_config(path)
         except ValueError:
             # Skip non-strategy YAMLs (e.g. risk_defaults, universe manifests)
             # that don't match the strategy schema.
+            skipped.append(SkippedConfig(path=str(path), reason="not_strategy_config"))
+            continue
+        if registry.resolve(config.family, config.template) is None:
+            skipped.append(SkippedConfig(path=str(path), reason="unregistered_strategy"))
             continue
         ids.append(config.strategy_id)
     if not ids:
         raise ValueError(
-            f"Glob {configs!r} matched {len(matched)} file(s) but none were strategy configs."
+            f"Glob {configs!r} matched {len(matched)} file(s) but none were runnable "
+            "strategy configs."
         )
-    return ids
+    return StrategyDiscovery(
+        strategy_ids=tuple(ids),
+        matched_config_count=len(matched),
+        skipped_configs=tuple(skipped),
+    )
 
 
-def _build_data(result: BatchResult, *, report_path: Path | None) -> dict[str, Any]:
+def _build_data(
+    result: BatchResult,
+    *,
+    report_path: Path | None,
+    discovery: StrategyDiscovery,
+) -> dict[str, Any]:
     return {
         "start_date": result.start_date.isoformat(),
         "end_date": result.end_date.isoformat(),
         "row_count": len(result.rows),
+        "matched_config_count": discovery.matched_config_count,
+        "selected_strategy_ids": list(discovery.strategy_ids),
+        "skipped_configs": [item.as_dict() for item in discovery.skipped_configs],
         "rows": [row.as_dict() for row in result.rows],
         "correlation_matrix": result.correlation_matrix,
         "report_path": str(report_path) if report_path else None,
     }
 
 
-def _build_human(result: BatchResult, *, report_path: Path | None) -> list[str]:
+def _build_human(
+    result: BatchResult,
+    *,
+    report_path: Path | None,
+    discovery: StrategyDiscovery,
+) -> list[str]:
     lines = [
         "Research Screen",
         f"Period:    {result.start_date} to {result.end_date}",
@@ -176,6 +221,7 @@ def _build_human(result: BatchResult, *, report_path: Path | None) -> list[str]:
         "",
     ]
     lines.extend(_format_table(result.rows))
+    lines.extend(_format_skipped_configs(discovery.skipped_configs))
     if report_path:
         lines.append("")
         lines.append(f"Report written: {report_path}")
@@ -230,14 +276,23 @@ def _fmt(value: float | None, spec: str) -> str:
     return "n/a" if value is None else format(value, spec)
 
 
-def _write_report(target: str, result: BatchResult) -> Path:
+def _format_skipped_configs(skipped_configs: tuple[SkippedConfig, ...]) -> list[str]:
+    if not skipped_configs:
+        return []
+    lines = ["", f"Skipped configs: {len(skipped_configs)}"]
+    for item in skipped_configs:
+        lines.append(f"- {item.path} ({item.reason})")
+    return lines
+
+
+def _write_report(target: str, result: BatchResult, *, discovery: StrategyDiscovery) -> Path:
     stem_date = date.today().isoformat()
     if target == "__default__":
         path = Path("docs/reviews") / f"screen_{stem_date}.md"
     else:
         path = Path(target)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(_render_markdown(result), encoding="utf-8")
+    path.write_text(_render_markdown(result, discovery=discovery), encoding="utf-8")
     json_path = path.with_suffix(".json")
     json_path.write_text(
         json.dumps(
@@ -245,6 +300,9 @@ def _write_report(target: str, result: BatchResult) -> Path:
                 "start_date": result.start_date.isoformat(),
                 "end_date": result.end_date.isoformat(),
                 "generated_at": datetime.now().astimezone().isoformat(),
+                "matched_config_count": discovery.matched_config_count,
+                "selected_strategy_ids": list(discovery.strategy_ids),
+                "skipped_configs": [item.as_dict() for item in discovery.skipped_configs],
                 "rows": [row.as_dict() for row in result.rows],
                 "correlation_matrix": result.correlation_matrix,
             },
@@ -255,7 +313,7 @@ def _write_report(target: str, result: BatchResult) -> Path:
     return path
 
 
-def _render_markdown(result: BatchResult) -> str:
+def _render_markdown(result: BatchResult, *, discovery: StrategyDiscovery) -> str:
     header_cells = list(_TABLE_HEADER)
     separator = ["---"] * len(header_cells)
     rows_md: list[str] = []
@@ -286,6 +344,7 @@ def _render_markdown(result: BatchResult) -> str:
         "| " + " | ".join(separator) + " |",
         *rows_md,
         "",
+        *_render_skipped_configs_markdown(discovery.skipped_configs),
         "## OOS Return Correlation Matrix",
         "",
         *_render_correlation_matrix(result),
@@ -315,6 +374,21 @@ def _render_markdown(result: BatchResult) -> str:
         body.append(f"- Run ID: {row.run_id}")
         body.append("")
     return "\n".join(body)
+
+
+def _render_skipped_configs_markdown(skipped_configs: tuple[SkippedConfig, ...]) -> list[str]:
+    if not skipped_configs:
+        return []
+    lines = [
+        "## Skipped configs",
+        "",
+        "| path | reason |",
+        "| --- | --- |",
+    ]
+    for item in skipped_configs:
+        lines.append(f"| `{item.path}` | {item.reason} |")
+    lines.append("")
+    return lines
 
 
 def _render_correlation_matrix(result: BatchResult) -> list[str]:

@@ -96,6 +96,8 @@ def test_screen_glob_resolves_configs_to_strategy_ids(monkeypatch, tmp_path: Pat
     def fake_load(path: Path):
         config = MagicMock()
         config.strategy_id = path.read_text().split("id:", 1)[1].strip()
+        config.family = "meanrev"
+        config.template = "daily.pullback_rsi2"
         return config
 
     monkeypatch.setattr(research, "load_strategy_config", fake_load)
@@ -106,6 +108,63 @@ def test_screen_glob_resolves_configs_to_strategy_ids(monkeypatch, tmp_path: Pat
     research.run(args, ctx)
     resolved = sorted(stub.call_args.kwargs["strategy_ids"])
     assert resolved == ["meanrev.daily.a.v.v1", "meanrev.daily.b.v.v1"]
+
+
+def test_screen_glob_skips_non_runnable_configs(monkeypatch, tmp_path: Path):
+    (tmp_path / "valid.yaml").write_text("strategy:\n  id: meanrev.daily.valid.v1\n")
+    (tmp_path / "risk_defaults.yaml").write_text("portfolio:\n  max_concurrent_positions: 3\n")
+    (tmp_path / "sample_strategy.yaml").write_text("strategy:\n  id: sample.daily.example.v1\n")
+
+    def fake_load(path: Path):
+        if path.name == "risk_defaults.yaml":
+            raise ValueError("not a strategy config")
+        config = MagicMock()
+        config.strategy_id = path.read_text().split("id:", 1)[1].strip()
+        if path.name == "sample_strategy.yaml":
+            config.family = "sample"
+            config.template = "daily.example"
+        else:
+            config.family = "meanrev"
+            config.template = "daily.pullback_rsi2"
+        return config
+
+    monkeypatch.setattr(research, "load_strategy_config", fake_load)
+    stub = _stub_run_batch(monkeypatch, rows=(_row("meanrev.daily.valid.v1"),))
+    ctx = MagicMock()
+    ctx.config_dir = tmp_path
+
+    result = research.run(_make_args(configs="*.yaml"), ctx)
+
+    assert list(stub.call_args.kwargs["strategy_ids"]) == ["meanrev.daily.valid.v1"]
+    assert result.data["matched_config_count"] == 3
+    assert result.data["selected_strategy_ids"] == ["meanrev.daily.valid.v1"]
+    assert result.data["skipped_configs"] == [
+        {"path": str(tmp_path / "risk_defaults.yaml"), "reason": "not_strategy_config"},
+        {"path": str(tmp_path / "sample_strategy.yaml"), "reason": "unregistered_strategy"},
+    ]
+    assert any(line == "Skipped configs: 2" for line in result.human_lines)
+    assert any(
+        "sample_strategy.yaml (unregistered_strategy)" in line for line in result.human_lines
+    )
+
+
+def test_screen_glob_only_skipped_configs_errors(monkeypatch, tmp_path: Path):
+    (tmp_path / "sample_strategy.yaml").write_text("strategy:\n  id: sample.daily.example.v1\n")
+
+    def fake_load(path: Path):
+        config = MagicMock()
+        config.strategy_id = "sample.daily.example.v1"
+        config.family = "sample"
+        config.template = "daily.example"
+        return config
+
+    monkeypatch.setattr(research, "load_strategy_config", fake_load)
+    ctx = MagicMock()
+    ctx.config_dir = tmp_path
+    args = _make_args(configs="*.yaml")
+
+    with pytest.raises(ValueError, match="none were runnable strategy configs"):
+        research.run(args, ctx)
 
 
 def test_screen_glob_no_match_errors(tmp_path: Path):
@@ -177,7 +236,43 @@ def test_screen_report_out_writes_markdown_and_json(monkeypatch, tmp_path: Path)
     assert json_path.exists()
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["rows"][0]["strategy_id"] == "meanrev.daily.a.v.v1"
+    assert payload["selected_strategy_ids"] == ["x"]
+    assert payload["skipped_configs"] == []
     assert result.data["report_path"] == str(md_path)
+
+
+def test_screen_report_out_includes_skipped_configs(monkeypatch, tmp_path: Path):
+    (tmp_path / "valid.yaml").write_text("strategy:\n  id: meanrev.daily.valid.v1\n")
+    (tmp_path / "sample_strategy.yaml").write_text("strategy:\n  id: sample.daily.example.v1\n")
+
+    def fake_load(path: Path):
+        config = MagicMock()
+        config.strategy_id = path.read_text().split("id:", 1)[1].strip()
+        if path.name == "sample_strategy.yaml":
+            config.family = "sample"
+            config.template = "daily.example"
+        else:
+            config.family = "meanrev"
+            config.template = "daily.pullback_rsi2"
+        return config
+
+    monkeypatch.setattr(research, "load_strategy_config", fake_load)
+    _stub_run_batch(monkeypatch, rows=(_row("meanrev.daily.valid.v1"),))
+    ctx = MagicMock()
+    ctx.config_dir = tmp_path
+    md_path = tmp_path / "screen.md"
+
+    result = research.run(_make_args(configs="*.yaml", report_out=str(md_path)), ctx)
+
+    md = md_path.read_text(encoding="utf-8")
+    assert "## Skipped configs" in md
+    assert "sample_strategy.yaml" in md
+    payload = json.loads(md_path.with_suffix(".json").read_text(encoding="utf-8"))
+    assert payload["matched_config_count"] == 2
+    assert payload["skipped_configs"] == [
+        {"path": str(tmp_path / "sample_strategy.yaml"), "reason": "unregistered_strategy"}
+    ]
+    assert result.data["skipped_configs"] == payload["skipped_configs"]
 
 
 def test_screen_report_out_default_path_under_docs_reviews(monkeypatch, tmp_path: Path, chdir):
