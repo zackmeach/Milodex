@@ -268,7 +268,10 @@ def run_walk_forward(
     except DataQualityError as exc:
         engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
             effective_run_id,
-            metadata={"data_quality": exc.report.to_dict()},
+            metadata=engine._metadata_with_data_quality(  # noqa: SLF001
+                effective_run_id,
+                exc.report.to_dict(),
+            ),
         )
         engine._event_store.update_backtest_run_status(  # noqa: SLF001
             effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)

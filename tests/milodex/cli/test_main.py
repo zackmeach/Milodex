@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import UTC, date, datetime
 from io import StringIO
 from pathlib import Path
@@ -481,9 +482,13 @@ def test_cli_reports_data_quality_failures_with_structured_error(monkeypatch):
     )
 
     output = stderr.getvalue()
+    payload = json.loads(output)
     assert exit_code == 1
-    assert "data_quality_failed" in output
-    assert "Data quality failed" in output
+    assert payload["errors"][0]["code"] == "data_quality_failed"
+    assert "Data quality failed" in payload["errors"][0]["message"]
+    assert payload["data"]["data_quality"]["status"] == "fail"
+    assert payload["data"]["data_quality"]["issue_codes"] == ["invalid_ohlc_relationship"]
+    assert payload["data"]["data_quality"]["issues"][0]["symbol"] == "SPY"
 
 
 def test_trade_submit_requires_paper_flag():

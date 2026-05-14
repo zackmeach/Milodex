@@ -407,6 +407,7 @@ def test_engine_data_quality_blocker_fails_before_simulated_mutation():
     run_record = store.get_backtest_run("bad-quality-run")
     assert run_record is not None
     assert run_record.status == "failed"
+    assert run_record.metadata["risk_policy"] == "bypass"
     assert run_record.metadata["data_quality"]["status"] == "fail"
     assert run_record.metadata["data_quality"]["blocker_count"] == 1
     assert store.list_trades() == []

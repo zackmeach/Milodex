@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from enum import Enum
 from typing import Any
 
 import pandas as pd
 
 from milodex.data.models import BarSet
+
+REQUESTED_WINDOW_EDGE_TOLERANCE = timedelta(days=7)
 
 
 class DataQualitySeverity(Enum):
@@ -106,8 +108,17 @@ def scan_backtest_bars(
         requested_mask = (timestamps.dt.date >= requested_start) & (
             timestamps.dt.date <= requested_end
         )
-        requested_dates_by_symbol[symbol] = set(timestamps.loc[requested_mask].dt.date)
+        requested_dates = set(timestamps.loc[requested_mask].dt.date)
+        requested_dates_by_symbol[symbol] = requested_dates
         issues.extend(_structural_issues(symbol, df, timestamps))
+        issues.extend(
+            _requested_window_edge_warnings(
+                symbol,
+                requested_dates,
+                requested_start=requested_start,
+                requested_end=requested_end,
+            )
+        )
 
     expected_dates = (
         set().union(*requested_dates_by_symbol.values()) if requested_dates_by_symbol else set()
@@ -166,7 +177,9 @@ def _structural_issues(
         )
 
     prices = df[["open", "high", "low", "close"]].apply(pd.to_numeric, errors="coerce")
-    invalid_price = prices.map(lambda value: not _is_positive_finite(value)).any(axis=1)
+    invalid_price = prices.apply(
+        lambda column: column.map(lambda value: not _is_positive_finite(value))
+    ).any(axis=1)
     if invalid_price.any():
         issues.append(_blocker(symbol, "invalid_price", f"{symbol} has invalid price values."))
     valid_prices = prices.loc[~invalid_price]
@@ -187,6 +200,50 @@ def _structural_issues(
     if invalid_volume.any():
         issues.append(_blocker(symbol, "invalid_volume", f"{symbol} has invalid volume."))
 
+    return issues
+
+
+def _requested_window_edge_warnings(
+    symbol: str,
+    observed: set[date],
+    *,
+    requested_start: date,
+    requested_end: date,
+) -> list[DataQualityIssue]:
+    if not observed:
+        return []
+
+    issues: list[DataQualityIssue] = []
+    first_bar_date = min(observed)
+    last_bar_date = max(observed)
+    if first_bar_date > requested_start + REQUESTED_WINDOW_EDGE_TOLERANCE:
+        issues.append(
+            DataQualityIssue(
+                code="requested_window_starts_after_requested_start",
+                severity=DataQualitySeverity.WARNING,
+                symbol=symbol,
+                message=f"{symbol} starts materially after the requested backtest window.",
+                context={
+                    "requested_start": requested_start.isoformat(),
+                    "first_bar_date": first_bar_date.isoformat(),
+                    "tolerance_days": REQUESTED_WINDOW_EDGE_TOLERANCE.days,
+                },
+            )
+        )
+    if last_bar_date < requested_end - REQUESTED_WINDOW_EDGE_TOLERANCE:
+        issues.append(
+            DataQualityIssue(
+                code="requested_window_ends_before_requested_end",
+                severity=DataQualitySeverity.WARNING,
+                symbol=symbol,
+                message=f"{symbol} ends materially before the requested backtest window.",
+                context={
+                    "requested_end": requested_end.isoformat(),
+                    "last_bar_date": last_bar_date.isoformat(),
+                    "tolerance_days": REQUESTED_WINDOW_EDGE_TOLERANCE.days,
+                },
+            )
+        )
     return issues
 
 

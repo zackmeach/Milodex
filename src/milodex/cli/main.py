@@ -214,7 +214,12 @@ def main(
         print(formatter.render(result), file=stderr)
         return 1
     except DataQualityError as exc:
-        result = error_result(command_name, str(exc), code="data_quality_failed")
+        result = error_result(
+            command_name,
+            str(exc),
+            code="data_quality_failed",
+            data={"data_quality": exc.report.to_dict()},
+        )
         print(formatter.render(result), file=stderr)
         return 1
     except (BrokerError, ValueError) as exc:

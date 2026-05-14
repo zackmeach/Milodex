@@ -247,7 +247,10 @@ class BacktestEngine:
         except DataQualityError as exc:
             self._event_store.update_backtest_run_metadata(
                 effective_run_id,
-                metadata={"data_quality": exc.report.to_dict()},
+                metadata=self._metadata_with_data_quality(
+                    effective_run_id,
+                    exc.report.to_dict(),
+                ),
             )
             self._event_store.update_backtest_run_status(
                 effective_run_id,
@@ -538,6 +541,12 @@ class BacktestEngine:
         if report.blocker_count:
             raise DataQualityError(report)
         return report.to_dict()
+
+    def _metadata_with_data_quality(self, run_id: str, data_quality: dict) -> dict:
+        run_record = self._event_store.get_backtest_run(run_id)
+        metadata = dict(run_record.metadata) if run_record is not None else {}
+        metadata["data_quality"] = data_quality
+        return metadata
 
     def _simulate(
         self,

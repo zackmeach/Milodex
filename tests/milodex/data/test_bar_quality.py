@@ -158,3 +158,19 @@ def test_gap_longer_than_two_expected_sessions_is_warning():
     codes = [issue.code for issue in report.issues]
     assert report.status == "pass_with_warnings"
     assert "requested_window_gap_over_2_sessions" in codes
+
+
+def test_provider_wide_date_truncation_is_warning_even_when_symbols_match():
+    report = scan_backtest_bars(
+        {
+            "SPY": _barset([_row("2024-07-01"), _row("2024-07-02")]),
+            "QQQ": _barset([_row("2024-07-01"), _row("2024-07-02")]),
+        },
+        requested_start=date(2024, 1, 2),
+        requested_end=date(2024, 12, 31),
+    )
+
+    assert report.status == "pass_with_warnings"
+    codes = [issue.code for issue in report.issues]
+    assert codes.count("requested_window_starts_after_requested_start") == 2
+    assert codes.count("requested_window_ends_before_requested_end") == 2

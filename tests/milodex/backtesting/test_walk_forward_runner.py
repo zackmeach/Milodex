@@ -278,6 +278,9 @@ def test_walk_forward_data_quality_blocker_marks_parent_run_failed():
     stored = store.get_backtest_run("wf-bad-quality")
     assert stored is not None
     assert stored.status == "failed"
+    assert stored.metadata["walk_forward"] is True
+    assert stored.metadata["windows_planned"] == 4
+    assert stored.metadata["risk_policy"] == "bypass"
     assert stored.metadata["data_quality"]["status"] == "fail"
 
 
