@@ -380,14 +380,11 @@ def _seed_meanrev_walk_forward_run(
     store.update_backtest_run_status(run_id, status="completed", ended_at=end + timedelta(days=1))
 
 
-def test_promotion_promote_refuses_meanrev_shape_evidence_through_cli(tmp_path):
-    """End-to-end honest-signal regression — through `milodex promotion promote`.
+def test_promotion_promote_accepts_paper_readiness_evidence_through_cli(tmp_path):
+    """End-to-end paper-readiness regression through `milodex promotion promote`.
 
-    Mirrors meanrev's 2026-04-26 reality: walk-forward Sharpe 0.327 (<0.50),
-    max DD 6.41% (<15.0), 752 trades (>=30). The CLI must refuse with a
-    Sharpe-specific reason, write nothing to the event store, and leave the
-    YAML stage unchanged. ADR 0023's "the platform refused to lie about
-    meanrev" thesis lives on this test.
+    Sharpe 0.327 is below the strict live-capital threshold, but positive
+    enough for paper observation when drawdown and trade count are healthy.
     """
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -408,33 +405,18 @@ def test_promotion_promote_refuses_meanrev_shape_evidence_through_cli(tmp_path):
             "--run-id",
             "bt-meanrev-truthful",
             "--recommendation",
-            "sub-threshold Sharpe; this should refuse",
+            "positive edge ready for paper observation",
             "--risk",
-            "promotion attempted on insufficient evidence",
+            "weak edge could decay during paper trading",
         ],
         tmp_path,
     )
 
-    assert exit_code != 0, (
-        "honest-signal regression: a walk-forward run with Sharpe 0.327 must "
-        "be refused at the promotion gate; passing here means the platform "
-        "lost the property ADR 0023 stands on"
-    )
-    err_text = err.getvalue()
-    assert "BLOCKED" in err_text, "human-facing refusal must surface as BLOCKED"
-    assert "Sharpe" in err_text, (
-        f"refusal must name Sharpe specifically (max DD and trade count both pass); "
-        f"got: {err_text!r}"
-    )
+    assert exit_code == 0, err.getvalue()
     store = EventStore(tmp_path / "data" / "milodex.db")
-    assert store.list_promotions() == [], (
-        "refused promotion must write no PromotionEvent; the audit trail is "
-        "preserved as 'no row' rather than 'rejected row' for now"
-    )
-    assert store.list_strategy_manifests() == [], (
-        "refused promotion must write no StrategyManifestEvent either; "
-        "manifest freezing is gated on a passing gate result"
-    )
-    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8"), (
-        "YAML stage must remain at backtest when the gate refuses"
-    )
+    promotions = store.list_promotions()
+    assert len(promotions) == 1
+    assert promotions[0].to_stage == "paper"
+    assert promotions[0].promotion_type == "statistical"
+    assert store.list_strategy_manifests() != []
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")

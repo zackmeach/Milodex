@@ -203,6 +203,7 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     gate_result = check_gate(
         lifecycle_exempt=args.lifecycle_exempt,
+        to_stage=to_stage,
         sharpe_ratio=sharpe_ratio,
         max_drawdown_pct=max_drawdown_pct,
         trade_count=trade_count,
