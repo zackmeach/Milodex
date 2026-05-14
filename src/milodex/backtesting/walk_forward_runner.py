@@ -37,6 +37,7 @@ from milodex.analytics.metrics import (
 )
 from milodex.backtesting.walk_forward import WalkForwardSplitter
 from milodex.core.event_store import BacktestRunEvent
+from milodex.risk import RiskPolicy
 
 if TYPE_CHECKING:
     from milodex.backtesting.engine import BacktestEngine
@@ -100,6 +101,7 @@ class WalkForwardResult:
     stability: WalkForwardStability
     db_id: int | None = None
     oos_round_trip_count: int = 0
+    risk_policy: RiskPolicy = RiskPolicy.BYPASS
 
 
 def compute_window_spans(
@@ -212,7 +214,11 @@ def run_walk_forward(
             status="running",
             slippage_pct=engine._slippage_pct,  # noqa: SLF001
             commission_per_trade=engine._commission,  # noqa: SLF001
-            metadata={"walk_forward": True, "windows_planned": len(window_dates)},
+            metadata={
+                "walk_forward": True,
+                "windows_planned": len(window_dates),
+                "risk_policy": engine.risk_policy.value,
+            },
         )
     )
 
@@ -291,6 +297,7 @@ def run_walk_forward(
                 "windows_negative": stability.windows_negative,
                 "single_window_dependency": stability.single_window_dependency,
             },
+            "risk_policy": engine.risk_policy.value,
         },
     )
 
@@ -313,6 +320,7 @@ def run_walk_forward(
         stability=stability,
         db_id=db_run_id,
         oos_round_trip_count=aggregate.round_trip_count,
+        risk_policy=engine.risk_policy,
     )
 
 

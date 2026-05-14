@@ -30,6 +30,7 @@ from milodex.cli._shared import (
 )
 from milodex.cli.formatter import CommandResult
 from milodex.cli.rich_views import build_backtest_view, build_walk_forward_view
+from milodex.risk import RiskPolicy
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -66,6 +67,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Explicit run ID (UUID); auto-generated if omitted.",
     )
+    backtest_parser.add_argument(
+        "--risk-policy",
+        choices=("bypass", "enforce"),
+        default="bypass",
+        help=(
+            "Risk policy for simulated submissions: 'bypass' for raw research "
+            "or 'enforce' for structural risk constraints."
+        ),
+    )
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
@@ -76,6 +86,7 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     engine_kwargs: dict[str, Any] = {"initial_equity": args.initial_equity}
     if args.slippage is not None:
         engine_kwargs["slippage_pct"] = args.slippage
+    engine_kwargs["risk_policy"] = RiskPolicy(args.risk_policy)
 
     engine = ctx.get_backtest_engine(args.strategy_id, **engine_kwargs)
 
@@ -105,6 +116,7 @@ def _run_walk_forward(engine, start, end, args) -> CommandResult:
         step_days=step_days,
         initial_equity=args.initial_equity,
         run_id=args.run_id,
+        all_bars=all_bars,
     )
     return _build_walk_forward_result(result)
 
@@ -121,6 +133,7 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
         f"Final equity:   {format_money(result.final_equity)}",
         f"Total return:   {result.total_return_pct:+.2f}%",
         f"Trades:         {trade_summary}",
+        f"Risk policy:   {_risk_policy_label(result.risk_policy)}",
         f"Slippage:       {result.slippage_pct * 100:.2f}%",
         f"Commission:     {format_money(result.commission_per_trade)}/trade",
     ]
@@ -136,6 +149,7 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
         "trade_count": result.trade_count,
         "buy_count": result.buy_count,
         "sell_count": result.sell_count,
+        "risk_policy": result.risk_policy.value,
         "slippage_pct": result.slippage_pct,
         "commission_per_trade": result.commission_per_trade,
     }
@@ -175,6 +189,7 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
         f"Windows:        {len(result.windows)} "
         f"(train={result.train_days}d, test={result.test_days}d, step={result.step_days}d)",
         f"Initial equity: {format_money(result.initial_equity)}",
+        f"Risk policy:   {_risk_policy_label(result.risk_policy)}",
         "",
         "OOS aggregate (metrics the promotion gate evaluates):",
         f"  Trading days: {result.oos_trading_days}",
@@ -215,6 +230,7 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
         "test_days": result.test_days,
         "step_days": result.step_days,
         "initial_equity": result.initial_equity,
+        "risk_policy": result.risk_policy.value,
         "oos_aggregate": {
             "trading_days": result.oos_trading_days,
             "trade_count": result.oos_trade_count,
@@ -297,6 +313,12 @@ def _fmt_optional(value: float | None, spec: str) -> str:
     if value is None:
         return "n/a"
     return format(value, spec)
+
+
+def _risk_policy_label(policy: RiskPolicy) -> str:
+    if policy is RiskPolicy.ENFORCE:
+        return "enforce (structural constraints)"
+    return "bypass (raw research)"
 
 
 # Statistical minimum before a backtest is considered evidence-bearing
