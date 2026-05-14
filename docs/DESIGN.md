@@ -1,6 +1,6 @@
 # Milodex Design Intent
 
-**Status:** Accepted · 2026-05-09 · v0.1
+**Status:** Accepted · 2026-05-13 · v0.2
 **Companion docs:** [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) (tokens, components, theme architecture) · [FOUNDER_INTENT.md](FOUNDER_INTENT.md) (product north star) · [ADR 0035](adr/0035-design-system-and-theme-architecture.md) (design system + theme architecture)
 
 This document is the **narrative half** of Milodex's design. DESIGN_SYSTEM.md tells you *what tokens exist and how to compose them*; this doc tells you *why the surface looks and reads the way it does*, and what claims that look is making. When a surface PR has to make a judgment call the token reference doesn't decide, this doc is the binding answer.
@@ -91,16 +91,16 @@ Milodex's primary nav is `FRONT · BENCH · LEDGER · DESK` (`Main.qml:166-169`)
 | Surface | Role | Voice | Density |
 |---|---|---|---|
 | **FRONT** | Front page / front porch | Conversational, warm-but-factual prose. *"A newspaper does not greet you."* Reports state, never recommends. | One column, generous margins, prose-led |
-| **BENCH** | The strategy bench (active management) | Governed pipeline ledger, typeset. Vertical stage-stacks (idle → backtest → paper → micro-live → live). Action-menu transitions, evidence modals, gate enforcement visible. | Multi-column, stage-stacked, modal-mediated |
+| **BENCH** | The strategy bench (governed lifecycle) | Governed pipeline ledger, typeset. Vertical stage-stacks (idle → backtest → paper → micro-live → live). Action-menu transitions, evidence dossier rail, confirmation modal for gated actions, gate enforcement visible. | Multi-column, stage-stacked, rail- and modal-mediated |
 | **LEDGER** | Paper of record | Mono everywhere, columns aligned, outcomes in bright color (sage / rust). Reads like a printout. | Chronological, monospaced, sparse |
 | **DESK** | The trading desk (dense cockpit) | Newspaper front page: hero band + 3-column body, lettered sections (A through H), italic standfirsts. Maximum density that still reads as edited. | Dense, columnar, typeset-newspaper |
 
 Each surface answers a different question:
 
-- **FRONT** answers *"how is the system, in plain language?"* — the answer a non-expert can read.
-- **BENCH** answers *"what's the state of each strategy and what does it need next?"* — operational management.
+- **FRONT** answers *"how is the system, in plain language?"* — the answer a non-expert can read. The single-column composition is intentional: the empty space left and right of the reading column is editorial negative space, not under-design. Anchor the canvas with a thin running head, a build/timestamp colophon set in mono, or a hairline rule defining the reading column. Do not restructure FRONT into a multi-column dashboard or a stuffed broadsheet — that breaks its role as the prose-led approachable surface and steals the metaphor DESK is meant to inhabit.
+- **BENCH** answers *"what stage is each technique in, what evidence is visible, and what gated actions are available?"* — governed lifecycle management. Phrasing aligned to [PRODUCT.md §6](PRODUCT.md#6-current-product-surfaces): the harness reports state and surfaces gated actions; the operator decides whether to take any of them. Earlier framings that suggested the strategy "needs" something next inverted the harness relationship and should not return.
 - **LEDGER** answers *"what has the system actually done, and why?"* — auditability.
-- **DESK** answers *"what's everything I might need on one fold?"* — power-user cockpit.
+- **DESK** answers *"what's everything I might need on one fold?"* — power-user cockpit. The newspaper-front-page register (hero band, columnar body, lettered sections A through H) is non-negotiable for this surface; equal-weight column smears or sparse landing-page compositions are out of voice for DESK regardless of how well-typeset their interiors are.
 
 The arc is **approachable → operational → auditable → dense**. A new operator lands on FRONT and is oriented in seconds; a sophisticated operator can drive from DESK; a skeptical operator can verify everything in LEDGER. This is the design's structural answer to the founder-intent tension between *approachable for the financially non-literate* and *credible to a serious reader* — the surfaces split that load instead of compromising it on one screen.
 
@@ -112,6 +112,8 @@ A new surface idea should fit one of these four roles, or it should be a strong 
 
 These are the rules a surface PR has to respect even when this doc isn't open. They are derived from §3 and are the most common places drift happens.
 
+**Meta-rule governing this section.** The editorial register is the *default* for content surfaces — prose, data, status, evidence, history. For functional controls — navigation, filters, action menus, dialogs, confirmations — conventional UI affordances may be retained when an editorial alternative would degrade usability. The discipline is "as quiet as possible while remaining affordant," not "editorial purity over function." A red navigation pill is a problem because the *color* is loud; a navigation pill *shape* may be acceptable if it is the most legible affordance. A filter chip with a pill shape is acceptable; a pulsing brand-color filter chip is not. The product is a real instrument, not an editorial art project — these principles must protect against both failure modes.
+
 ### 5.1 Tokens are the contract; raw values are a smell
 
 Components bind to `Theme.<token>` and never to raw colors or sizes (per ADR 0035 Decision 4 and DESIGN_SYSTEM §9.1). If a surface needs a value that isn't in the token set, the answer is to add the token to the token set, not to inline a hex string.
@@ -119,6 +121,8 @@ Components bind to `Theme.<token>` and never to raw colors or sizes (per ADR 003
 ### 5.2 Honest signal over decorative motion
 
 State changes are honest signal, not entertainment. Don't animate the act of switching surfaces. Do animate hover/active color transitions at `motion.fast` (120ms). The `editorial` easing curve is for one-shot transitions that should feel *deliberate*, not bouncy. **No springs, no overshoot.**
+
+**Status indicators do not pulse, breathe, or animate at idle.** A live-status pip that pulses every two seconds is performing aliveness, not reporting it — the consumer-fintech "the system is alive!" tell. Animate a status indicator *only on state change*: a Risk Office stamp swap, a kill-switch fire, a posture transition. Idle status is still. The presence of the indicator is the message; the animation is theater.
 
 ### 5.3 Three voices, never crossed
 
@@ -150,6 +154,8 @@ Tabular data is right-aligned to its column gutter so digits stack. Prose is lef
 
 A missing data feed says *"not wired"* or *"awaits a data-feed read model"*, not *"No data yet — check back soon!"* The surface refuses to fill placeholder space with market-looking numbers. (See `FrontSurface.qml` `marketSummaryText` and `DeskSurface` Today's Tape empty-state copy.) This is a credibility move: a surface that fakes data once is never trusted again.
 
+**This rule also forbids skeleton shimmers and structural placeholders for features that are not yet built.** A skeleton row implies "data is loading" when in fact nothing is wired — the same trust violation as faking numbers, in a different costume. Skeleton placeholders are correct *only* for genuine async loads of real data the surface knows will arrive. For not-yet-implemented capability, italic muted text that names the gap is the right pattern.
+
 ### 5.9 Don't greet, don't congratulate, don't recommend
 
 - **No greetings.** A newspaper does not say "Good morning, Zack." It prints today's date.
@@ -161,6 +167,14 @@ These three are explicit in `FrontSurface.qml` ("Tone: warm but factual. Reports
 ### 5.10 Column reservation is a foundation contract
 
 Tabular rows reserve column width even when a cell is empty, so BLOCKED rows (or any short row) align with the rows above and below them. This is the column-reservation foundation pattern (PR D.5 / ADR-equivalent). It is what makes the bench and ledger feel *bound*, not raggedly assembled.
+
+### 5.11 Modals for safety-critical confirmation; rails for reference
+
+Modals interrupt. They force focus and trivialize cancellation (Escape, click-outside, explicit X). That makes them *correct* for safety-critical confirmation surfaces — the Bench Action-Menu confirmation, kill-switch reset, any operator-approval gate where **forced focus is the feature, not the bug.** PRODUCT.md §5's "preview before action" promise depends on this interruption being unmissable.
+
+Modals are *wrong* for reference and browse content — evidence dossiers, history detail, configuration views. Reference content belongs in **right-rail dossiers** or row-attached drawers so the operator can read it next to the row it describes, with the surrounding context still visible. A modal over reference content collapses the editorial register into a SaaS dialog the moment it opens.
+
+Modal interiors follow the editorial register: small-caps labels with mono or serif values per §5.3, hairline rules between sections, no nested card frames inside the modal frame, and sober typographic treatment for safety banners — small-caps red set in a hairline-ruled band, never a yellow alert bar and never a decorative rubber-stamp graphic. The modal frame is the only enclosure; everything inside is composition.
 
 ---
 
@@ -182,6 +196,10 @@ Naming what's *out of voice* is as load-bearing as naming what's in voice. Each 
 | Iconography as primary signal | Color and language carry the signal. Icons are sparingly used and never load-bearing. (DeskSurface header: "No iconography — color + language carry the signal.") |
 | Light-on-color callout banners ("ℹ Tip:") | Marginalia is *italic in the column*, not in a colored box. |
 | Third-party charting libraries with default styling | A chart that doesn't look hand-set is wrong. The Sparkline component is intentionally minimal — line + optional fill, no axes by default, no tooltip. |
+| Bordered card frames for content blocks (rounded rectangles enclosing data, status, or evidence) | The frame is doing SaaS-dashboard work. Editorial sections are bounded by hairline rules and small-caps section heads, not by container chrome. A surface composed of stacked cards is a dashboard wearing a serif font, not an editorial broadsheet. (Common failure: FRONT's "AT THE GATE" rendered as a card with two CTAs at the bottom.) |
+| Proportional numerics in any tabular column | A column of numbers in proportional sans cannot be scanned vertically — digit widths shift line to line. Mono with `tnum` is non-negotiable for any column of numbers (see §5.3). This is the single most common density violation. |
+| Skeleton shimmers or structural placeholders for features that are not built | Implies an async load is in progress when in fact nothing is wired. Same trust violation as faking data. Italic muted text naming the gap is the right pattern (see §5.8). |
+| Animated status indicators at idle (breathing dots, pulsing pips, slow opacity loops) | Performs aliveness. The indicator's presence is the message; the animation is theater. Animate only on state change (see §5.2). |
 
 The unifying principle: **anything whose purpose is to make the operator feel something about an outcome — rather than to inform them of it — is out of voice.**
 
@@ -222,4 +240,5 @@ The reaction the founder wants — *"this almost seems too easy for what we're d
 
 ## Changelog
 
+- **v0.2 — 2026-05-13** — second-pass audit. No structural rewrite; v0.1 doctrine that survived the second pass is retained verbatim. Folds in: editorial-register-as-default meta-rule (§5 preamble) protecting against both the SaaS-dashboard and the editorial-art-project failure modes; modal/rail philosophy (§5.11) — modals for safety-critical confirmation only, rails for reference content; explicit no-idle-pulse rule for status indicators (§5.2 extension); explicit no-skeleton-shimmer rule for unbuilt features (§5.8 extension); Bench question rewording aligned to PRODUCT.md §6 — "what stage, what evidence, what gated actions," replacing the operator-paternal "what does it need next" (§4); FRONT canvas-anchoring guidance — anchor the reading column with marginalia rather than restructuring to multi-column (§4); DESK lettered-section requirement promoted from "voice" to non-negotiable (§4); four new entries in negative space (§6): bordered card frames for content, proportional numerics in tabular columns, skeleton placeholders for unbuilt features, idle status animations. Token additions surfaced by the second-pass critique are deferred to a companion DESIGN_SYSTEM.md v0.2 update.
 - **v0.1 — 2026-05-09** — initial document. Captures the editorial-broadsheet vibe, the four-surface narrative (FRONT/BENCH/LEDGER/DESK), the operative principles, and the negative space. Companion to DESIGN_SYSTEM.md v0.1.
