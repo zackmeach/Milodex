@@ -1,6 +1,6 @@
 # Milodex Design System
 
-**Status:** Accepted &middot; 2026-05-07 &middot; v0.1
+**Status:** Accepted &middot; 2026-05-13 &middot; v0.2
 **Phase:** 5 (open per [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md))
 **Architecture:** [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md) (PySide6 + Qt Quick), [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md) (observability-first ordering), [ADR 0035](adr/0035-design-system-and-theme-architecture.md) (this design system + theme architecture)
 
@@ -82,6 +82,8 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 | `typography.data.xs` | JetBrains Mono | 12 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
 
 **Tabular figures (`tnum`) are mandatory** for any data role. Strategy Bank rows, Sharpe ratios, trade counts, P&amp;L &mdash; all must align numerically. Set via `font.features: ["tnum"]` in QML. Without this, monospaced numbers still drift across rows in proportional-figure mode.
+
+> **Non-negotiable: mono + tabular for all tabular numerics.** Any column of numbers &mdash; in any surface, in any theme &mdash; renders in `typography.data.*` (JetBrains Mono) with `tnum` on. Proportional sans is forbidden for tabular numerics. This is the single most common density violation and the most damaging to the ledger-typeset register; surface PRs that render numbers in `typography.body.*` for a column will not pass review. The carve-out is hero serif numerics on FRONT and DESK (one number on the page, set in `typography.display.lg`/`xl` Newsreader) &mdash; those are typographic, not tabular. Reinforces [DESIGN.md §5.3](DESIGN.md#53-three-voices-never-crossed) and [DESIGN.md §6](DESIGN.md#6-the-negative-space--what-this-design-rejects) negative-space entry on proportional numerics in tabular columns.
 
 **Italic discipline.** Italic Newsreader is an editorial accent only (e.g., "No. 6 in paper", "Sharpe 0.327", inline citations). Buttons, navigation, dense labels never italicize. Status pills never italicize. Body text rarely italicizes.
 
@@ -284,6 +286,8 @@ QML implements via `Behavior on <property> { NumberAnimation { duration: Theme.m
 - Critical-error dialogs. Open instantly.
 - Strategy-row data updates within a paper session. Numbers update without transition; flicker is honest, smooth interpolation hides what's happening.
 - Theme swap of any P&amp;L number. The number's *position* may animate; the *value* never animates from one number to another &mdash; that risks misreading mid-transition.
+- **Status indicators at idle.** Pulsing pips, breathing dots, slow opacity loops, "live" shimmer on a status rail &mdash; all forbidden. The presence of the indicator is the message; idle animation is theater. Status indicators may animate *only on state change* (a Risk Office stamp swap, a kill-switch fire, a posture transition), using `motion.standard` and `ease.editorial`. Reinforces [DESIGN.md §5.2](DESIGN.md#52-honest-signal-over-decorative-motion) and the no-idle-animation entry in [DESIGN.md §6](DESIGN.md#6-the-negative-space--what-this-design-rejects).
+- **Skeleton shimmers and structural placeholders for unbuilt features.** Skeletons imply "data is loading" when in fact nothing is wired. Skeleton placeholders are correct *only* for genuine async loads of real data the surface knows will arrive; for unbuilt capability, italic muted text naming the gap (`Theme.color.text.muted` on `typography.body.md` italic) is the right pattern. Reinforces [DESIGN.md §5.8](DESIGN.md#58-empty-states-are-honest-not-coy).
 
 ---
 
@@ -461,6 +465,109 @@ First use: `StrategyBankSurface.qml` BLOCKED section (`status.negative` @
 0.06); the kill-switch panel on `AnchorSurface.qml` uses a higher alpha
 (0.10) as an active-alarm indicator, not a section hint.
 
+### 7.6 Modals and dossier rails (component selection)
+
+[DESIGN.md &sect;5.11](DESIGN.md#511-modals-for-safety-critical-confirmation-rails-for-reference) splits content surfaces into two component patterns. This subsection translates that doctrine into token/component contracts.
+
+**Selection rule.** A surface-PR question of the form *"should this be a modal?"* is answered by the role of the content, not by the volume of content:
+
+| Content role | Component | Reason |
+|---|---|---|
+| Safety-critical confirmation, operator-approval gate, kill-switch reset | **Confirmation modal** (full overlay) | Forced focus and trivialized cancellation are functional requirements per [PRODUCT.md &sect;5](PRODUCT.md#5-safety-posture) "Preview before action." |
+| Evidence dossier, history detail, configuration view, any reference content | **Dossier rail** (right-side sheet) or **row drawer** (slide-down attached to the originating row) | Operator should read it *next to* the row it describes, with surrounding context still visible. A modal here collapses the editorial register into a SaaS dialog. |
+
+**Confirmation modal &mdash; interior contract.**
+
+- Container: full-window overlay with `color.surface.canvas` @ 0.72 scrim, modal panel set on `color.surface.raised` with `1px color.border.regular`, `radius.md` (4px &mdash; minimal; not the bento-paradigm `radius.xl`).
+- Header: `typography.display.sm` Newsreader for the action title; `typography.label.xs` Public Sans tracked uppercase for the action kicker ("CONFIRMATION PREVIEW" / "KILL-SWITCH RESET").
+- Body: composed as a [Definition block](#77-definition-block) (see &sect;7.7) &mdash; small-caps labels, `typography.data.md` mono values for IDs / numerics, `typography.body.md` serif italic values for prose. **No nested card frames inside the modal frame.** Hairline rules (`1px color.border.subtle`) separate sections.
+- Safety banner (when applicable): small-caps `typography.label.xs` red set in a band bounded by hairline rules above and below, color `status.negative`. Never a yellow alert bar. Never a rotated rubber-stamp graphic.
+- Footer: action buttons follow &sect;7.1's variant hierarchy; for safety-critical surfaces `critical` + `ghost` cancel is the correct pairing. No "Continue / Next" wizard chrome.
+- Motion: open via `motion.standard` (220ms) `ease.editorial` &mdash; scrim fades independently of the panel's `translate-y[8px] -> 0`. Dismiss is instant on Escape / outside-click; no exit animation needed for safety surfaces.
+
+**Dossier rail &mdash; interior contract.**
+
+- Container: anchored to the right edge of the surface, `color.surface.base` panel, `1px color.border.subtle` on the leading edge only, no radius (sharp vertical edge). Width: 384&ndash;448px range; never full-window.
+- The originating row remains visible and selected (`2px` left border `color.brand.accent` per &sect;7.3); the rail is a column of the page, not a floating box.
+- Header: dossier title set in `typography.display.sm` Newsreader; close-affordance is a ghost button with `typography.label.xs` "CLOSE", not an X glyph.
+- Body: definition-block layout (&sect;7.7) with hairline-ruled sections. Long-form prose (Description, Plot) uses `typography.body.md` serif; IDs and numerics use `typography.data.md` mono. Italic Newsreader for editorial commentary per &sect;6.5.
+- Motion: enter via `motion.standard` slide-in from right; persist until explicit close. No backdrop scrim &mdash; the rail does not interrupt; it accompanies.
+
+A **row drawer** is a horizontal alternative: an attached panel that slides down beneath the originating row, pushing the rows below it. Same typography and structure as the rail; use when the surface is narrow or when the relationship to the originating row should feel inline rather than columnar. Bench is the natural fit for row drawers; Ledger and Desk are natural fits for rails.
+
+### 7.7 Definition block
+
+A typographic content block that replaces SaaS-style bordered card frames for status, evidence, and configuration content. The "AT THE GATE" surface on FRONT, the body of dossier rails, and the body of confirmation modals are all definition blocks.
+
+**Anatomy.**
+
+```
+SMALL-CAPS LABEL              value (mono or serif, per data type)
+SMALL-CAPS LABEL              value
+&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;  hairline rule between groups
+SMALL-CAPS LABEL              value
+```
+
+- Labels: `typography.label.xs` Public Sans, `text.secondary`, tracked uppercase, left-aligned in a reserved gutter (~140&ndash;160px).
+- Values:
+  - Free-text prose / descriptions &mdash; `typography.body.md` Public Sans, `text.primary`.
+  - IDs, hashes, timestamps, numerics &mdash; `typography.data.md` JetBrains Mono with `tnum`, `text.primary`.
+  - Editorial commentary &mdash; `typography.deck` Newsreader italic, `text.muted`, em-dash prefix per &sect;6.5.
+- Inter-row spacing: `space[3]` (12px) vertical; sections separated by hairline rules (`1px color.border.subtle`) with `space[5]` (24px) padding above and below.
+- **No bordered card frame.** The definition block has no container chrome &mdash; it is bounded by the surrounding surface (modal frame, rail edge, or page column), not by its own rectangle.
+
+**Forbidden alternatives.**
+
+- Rounded rectangle with `1px color.border.regular` enclosing the same content (this is the SaaS dashboard tell).
+- Filled-background "card" with `color.surface.raised`.
+- Two-CTA footer pinned to the bottom of the block. Links inline in the prose are correct.
+
+This component is the editorial alternative to the bordered-card pattern. When a surface PR is about to render status or evidence inside a rounded rectangle, the answer is this component.
+
+### 7.8 Navigation (top-level tabs)
+
+The primary nav (`FRONT / BENCH / LEDGER / DESK`) is the most visible recurring control in the application. Its visual contract:
+
+| State | Color | Background | Affordance |
+|---|---|---|---|
+| Active | `color.text.primary` (full-emphasis cream) | transparent | **1px baseline rule in `color.brand.primary` (parchment)** under the label, full label width |
+| Inactive | `color.text.muted` | transparent | none |
+| Hover (inactive) | `color.text.secondary` | transparent | `motion.fast` color transition |
+
+**Forbidden.** Active state must not be rendered as a filled brand-accent (oxblood) pill. Oxblood is reserved for primary buttons, selection rings on data rows, and the period-after-headline typographic accent per &sect;3.1 and &sect;7.1. Using `color.brand.accent` as a nav-active background reads as a loud SaaS tab and dominates the surface; the screenshots in the 2026-05-13 second-pass critique flagged this as the loudest element on the page.
+
+**Why a baseline rule and not a pill shape.** The DESIGN.md &sect;5 meta-rule permits conventional control affordances when they are quieter and more usable than the editorial alternative. A 1px parchment baseline rule is *both* &mdash; it carries clear affordance (the eye reads "this one is selected") at the volume of a printed page's running-section indicator, without the SaaS-dashboard tell of a filled pill. This is the canonical worked example of the controls-stay-quiet rule.
+
+**Typography.** `typography.label.xs` Public Sans tracked uppercase, `space[4]` horizontal padding, `space[3]` vertical padding. The active baseline rule sits `space[1]` (4px) below the label baseline.
+
+### 7.9 Desk-only composition: hero band and lettered sections
+
+[DESIGN.md &sect;4](DESIGN.md#4-the-four-surface-narrative) promotes DESK's "hero band, columnar body, lettered sections (A through H)" from voice to non-negotiable. This subsection defines the token contracts.
+
+**Hero band** (the lead block of DESK).
+
+- One dominant block, occupying 2&times; the column width of the secondary blocks beside it.
+- Lead metric: `typography.display.xl` (64/1.05) Newsreader, hero serif numerics. This is one of the two allowed carve-outs from the mono-numerics rule (&sect;2).
+- Standfirst: `typography.deck` Newsreader italic 14, `text.secondary`, single line.
+- Padding: `space[6]` (32px) all sides; bottom edge is a `1px color.border.subtle` hairline rule, not a card border.
+- Surrounding secondary blocks (1&times; column width) use `typography.display.md` (24/1.20) for their lead values; tertiary sidebars use `typography.display.sm`. The hero/secondary/tertiary type ladder is what carries "front-page composition" instead of equal-weight columns.
+
+**Lettered section header** (sections A through H on DESK).
+
+```
+A.   STRATEGY LEDGER                                 12 configs
+&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;&mdash;
+```
+
+- Letter token: `typography.display.sm` (18/1.30) Newsreader, weight 500, `color.brand.primary` (parchment).
+- Section name: `typography.label.xs` Public Sans tracked uppercase, `text.secondary`.
+- Right-aligned meta (count, timestamp, "no feed"): `typography.data.sm` mono, `text.muted`.
+- Spacing: letter and section-name share a baseline with `space[3]` (12px) between them; right-aligned meta is on the same baseline.
+- Underline: full-width `1px color.border.subtle` hairline rule, `space[2]` (8px) below the header baseline.
+- Section content begins `space[4]` (16px) below the rule.
+
+**Lettered sections are non-negotiable for DESK.** A DESK surface PR that renders sections without the lettered header pattern is out of voice for that surface regardless of its interior quality.
+
 ---
 
 ## 8. Status colors in motion
@@ -468,6 +575,8 @@ First use: `StrategyBankSurface.qml` BLOCKED section (`status.negative` @
 **Color transitions on status changes are forbidden.** When a strategy moves from `paper` to `kill-switch-fired`, the pill changes instantly from `pill-paper` to `pill-killed`. No fade. The instantaneous change is honest signal &mdash; the operator needs to see the state flip the moment it happens, not interpret a color crossfade.
 
 **The kill-switch banner does not pulse, glow, or breathe.** Pulsing kill-switch indicators are an antipattern; they trade urgency for novelty and lose impact within a single session. The banner uses a stable, high-contrast static treatment.
+
+**This rule generalizes to every status indicator on every surface.** The Risk Office strip, posture pips, paper/live mode badges, broker-connection dots &mdash; all stay static at idle. Animation is reserved for state *change*, never for steady state. See &sect;5.3.
 
 ---
 
@@ -576,6 +685,10 @@ Status colors are populated by the active theme like any other token. Components
 
 **5. Components have a single visible source of truth for their visual.** Every component file's top stanza is a comment listing the tokens it consumes and the data it expects. PR review uses this to spot drift.
 
+**6. Editorial register is the default for content; conventional affordances are allowed for controls when quieter and more usable.** This is the [DESIGN.md &sect;5 preamble](DESIGN.md#5-operative-principles) meta-rule applied at the component level. Content components (Strategy row, Definition block, Dossier rail, Hero band, Lettered section header) are editorial &mdash; hairline-ruled, typographically composed, no card chrome. Control components (Navigation, Buttons, Status pills, future filter chips, future action menus) may retain conventional affordances (pill shape on filters, fill on the primary button, dropdown menu shape on action menus) when an editorial alternative would degrade usability. The discipline is *"as quiet as possible while remaining affordant,"* not editorial purity over function. A red navigation pill is a problem because the color is loud; a navigation tab shape is fine when it carries quiet affordance. Compare &sect;7.8: the active baseline rule is the worked example of this principle.
+
+**7. Don't render unbuilt features as skeleton placeholders.** Components rendering an empty state for a not-yet-wired capability use italic muted text (`typography.body.md` italic, `text.muted`) that names the gap &mdash; *"awaits a data-feed read model"*, *"not wired"*. Skeleton shimmers or structural placeholders are reserved for genuine async loads of real data the surface knows will arrive. Implying a load when none is in progress is the same trust violation as faking data &mdash; see &sect;5.3 and [DESIGN.md &sect;5.8](DESIGN.md#58-empty-states-are-honest-not-coy).
+
 ---
 
 ## 11. Maintenance conventions
@@ -610,13 +723,14 @@ When updating: do not silently change token values. Either the change is signifi
 
 ### Versioning
 
-This document is versioned (currently v0.1). The version increments on:
+This document is versioned (currently v0.2). The version increments on:
 - A status-color policy change.
 - A theme being retired.
 - A foundational component being changed in a way that breaks downstream PRs.
 - Any &sect;9 architectural revision.
+- A governance-level addition that constrains future component design (e.g., v0.2's editorial-default-for-content / conventional-for-controls principle and the modal/rail selection rule).
 
-Token additions and component additions are non-breaking; they don't trigger a version bump.
+Token additions and component additions are non-breaking; they don't trigger a version bump on their own. Governance additions that change *which* component a future surface should reach for *do* trigger a version bump, since they alter the spec downstream PRs are built against.
 
 ---
 
@@ -630,3 +744,12 @@ Token additions and component additions are non-breaking; they don't trigger a v
 - [PHASE5_PLANNING.md](PHASE5_PLANNING.md) &mdash; Phase 5 scope and PR sequence
 - [VISION.md](VISION.md) &mdash; "Daily Operator Workflow" (the eight-step loop the GUI surfaces render)
 - [FOUNDER_INTENT.md](FOUNDER_INTENT.md) &mdash; Priority order driving the polish target
+- [DESIGN.md](DESIGN.md) &mdash; the narrative half of Milodex's design (vibe, voice, four-surface arc); this doc's companion. v0.2 of both docs land together.
+- [PRODUCT.md](PRODUCT.md) &mdash; product compass; &sect;6 defines the four-surface roles this doc's components serve.
+
+---
+
+## Changelog
+
+- **v0.2 &mdash; 2026-05-13** &mdash; companion update to [DESIGN.md v0.2](DESIGN.md). Translates the doctrine of editorial-as-default, modal/rail philosophy, no-idle-pulse, no-fake-skeletons, and Bench wording alignment into token and component rules. No token *value* changes; v0.1 token set is retained verbatim. No QML, no production code. Additions: &sect;2 non-negotiable callout for mono + tabular numerics in all tabular columns; &sect;5.3 two new "does not animate" entries (status indicators at idle, skeleton shimmers for unbuilt features); &sect;7.6 (new) modal/rail component selection rule plus interior contracts for confirmation modal and dossier rail; &sect;7.7 (new) Definition block component as the editorial alternative to bordered SaaS card frames (canonical use: FRONT's "AT THE GATE"); &sect;7.8 (new) Navigation tab visual contract &mdash; active state is a 1px parchment baseline rule, not a brand-accent pill; &sect;7.9 (new) DESK-only composition rules &mdash; hero band token sketch and lettered section header contract, both non-negotiable for DESK; &sect;8 generalization &mdash; no-idle-pulse rule extended from the kill-switch banner to every status indicator on every surface; &sect;10 two new component principles &mdash; editorial-default-for-content / conventional-affordances-for-controls (with &sect;7.8 active-baseline-rule as the worked example), and no-skeleton-placeholders-for-unbuilt-features; &sect;11 versioning notes updated to document that governance additions trigger a version bump even when they don't add tokens.
+- **v0.1 &mdash; 2026-05-07** &mdash; initial document. Captures the editorial-press direction, three themes (Editorial Dark, Editorial Light, Bronze), the foundational token set (color, typography, spacing, motion, radius, columns), and the initial four-component set (Buttons, Status pills, Strategy rows, Surface containers) plus the section-wash flourish. Companion to DESIGN.md v0.1.
