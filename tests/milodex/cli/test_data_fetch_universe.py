@@ -38,17 +38,20 @@ def config_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def _make_barset() -> BarSet:
+def _make_barset(
+    timestamps: list[str] | None = None,
+) -> BarSet:
+    timestamps = timestamps or ["2023-01-03", "2023-12-29"]
     return BarSet(
         pd.DataFrame(
             {
-                "timestamp": pd.to_datetime(["2023-01-03"], utc=True),
-                "open": [100.0],
-                "high": [105.0],
-                "low": [99.0],
-                "close": [103.0],
-                "volume": [500_000],
-                "vwap": [102.5],
+                "timestamp": pd.to_datetime(timestamps, utc=True),
+                "open": [100.0] * len(timestamps),
+                "high": [105.0] * len(timestamps),
+                "low": [99.0] * len(timestamps),
+                "close": [103.0] * len(timestamps),
+                "volume": [500_000] * len(timestamps),
+                "vwap": [102.5] * len(timestamps),
             }
         )
     )
@@ -124,6 +127,8 @@ def test_fetch_universe_resolves_and_calls_provider_with_full_symbol_list(
     assert end == date(2023, 12, 31)
     assert result.data["total_requested"] == 5
     assert result.data["symbols_with_data"] == 5
+    assert result.data["requested_start"] == "2023-01-01"
+    assert result.data["requested_end"] == "2023-12-31"
 
 
 def test_fetch_universe_reports_coverage_when_provider_returns_partial_data(
@@ -147,6 +152,9 @@ def test_fetch_universe_reports_coverage_when_provider_returns_partial_data(
     assert result.data["total_requested"] == 5
     assert result.data["symbols_with_data"] == 3
     assert result.data["coverage_pct"] == 60.0
+    assert result.data["symbols_with_full_date_range"] == 3
+    assert result.data["date_range_coverage_pct"] == 60.0
+    assert result.data["date_range_warnings"] == []
     missing = result.data["missing"]
     assert sorted(missing) == ["GOOG", "QQQ"]
     # Human lines surface the missing symbols
@@ -165,8 +173,69 @@ def test_fetch_universe_reports_100_pct_when_complete(config_dir: Path) -> None:
 
     assert result.data["coverage_pct"] == 100.0
     assert result.data["missing"] == []
+    assert result.data["symbols_with_full_date_range"] == 5
+    assert result.data["date_range_coverage_pct"] == 100.0
+    assert result.data["date_range_warnings"] == []
     none_line = next(ln for ln in result.human_lines if "Missing" in ln)
     assert "none" in none_line
+    warning_line = next(ln for ln in result.human_lines if "Date range warnings" in ln)
+    assert "none" in warning_line
+
+
+def test_fetch_universe_warns_when_data_starts_after_requested_window(
+    config_dir: Path,
+) -> None:
+    symbols = ("AAPL", "GOOG", "MSFT", "QQQ", "SPY")
+    provider = StubDataProvider(
+        {
+            **{s: _make_barset() for s in symbols if s != "AAPL"},
+            "AAPL": _make_barset(["2023-02-01", "2023-12-29"]),
+        }
+    )
+    ctx = _FakeCtx(provider)
+    args = _make_args(config_dir)
+
+    result = _run_fetch_universe(args, ctx)
+
+    assert result.data["symbols_with_full_date_range"] == 4
+    assert result.data["date_range_coverage_pct"] == 80.0
+    assert result.data["date_range_warnings"] == [
+        {
+            "symbol": "AAPL",
+            "first_bar_date": "2023-02-01",
+            "last_bar_date": "2023-12-29",
+            "issue": "starts_after_requested_window",
+        }
+    ]
+    assert any("AAPL: starts_after_requested_window" in ln for ln in result.human_lines)
+
+
+def test_fetch_universe_warns_when_data_ends_before_requested_window(
+    config_dir: Path,
+) -> None:
+    symbols = ("AAPL", "GOOG", "MSFT", "QQQ", "SPY")
+    provider = StubDataProvider(
+        {
+            **{s: _make_barset() for s in symbols if s != "SPY"},
+            "SPY": _make_barset(["2023-01-03", "2023-10-01"]),
+        }
+    )
+    ctx = _FakeCtx(provider)
+    args = _make_args(config_dir)
+
+    result = _run_fetch_universe(args, ctx)
+
+    assert result.data["symbols_with_full_date_range"] == 4
+    assert result.data["date_range_coverage_pct"] == 80.0
+    assert result.data["date_range_warnings"] == [
+        {
+            "symbol": "SPY",
+            "first_bar_date": "2023-01-03",
+            "last_bar_date": "2023-10-01",
+            "issue": "ends_before_requested_window",
+        }
+    ]
+    assert any("SPY: ends_before_requested_window" in ln for ln in result.human_lines)
 
 
 def test_fetch_universe_handles_missing_universe_ref_with_clear_error(
@@ -206,3 +275,22 @@ def test_missing_list_truncated_at_10() -> None:
     shown_count = shown.count(",") + 1 if shown.strip() else 0
     # The truncated display shows ≤ 10 symbols + " ..."
     assert "SYM14" not in missing_line or shown_count <= 11  # 10 names + possible ellipsis entry
+
+
+def test_date_range_warning_list_truncated_at_10() -> None:
+    symbols = tuple(f"SYM{i:02d}" for i in range(15))
+    bars = {s: _make_barset(["2023-02-01", "2023-12-29"]) for s in symbols}
+
+    result = _build_fetch_universe_result(
+        "universe.x.v1",
+        "1d",
+        symbols,
+        bars,
+        requested_start=date(2023, 1, 1),
+        requested_end=date(2023, 12, 31),
+    )
+
+    assert len(result.data["date_range_warnings"]) == 15
+    assert any("Date range warnings     : 15" in ln for ln in result.human_lines)
+    assert any(ln.strip() == "..." for ln in result.human_lines)
+    assert not any("SYM14: starts_after_requested_window" in ln for ln in result.human_lines)
