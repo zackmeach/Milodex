@@ -13,6 +13,7 @@ import pytest
 from milodex.backtesting.engine import (
     BacktestEngine,
     BacktestResult,
+    UniverseCoverageError,
     _compute_equity,
     _slice_bars_to_day,
     _trading_days_in_range,
@@ -845,14 +846,8 @@ def test_engine_records_portfolio_snapshot_at_run_end():
     assert any(p["symbol"] == "SPY" and p["quantity"] == 10.0 for p in snapshot.positions)
 
 
-def test_engine_empty_run_records_zero_snapshots():
-    """A backtest with no overlapping trading days writes no snapshot.
-
-    The empty-range early return in `_execute` short-circuits before
-    `_simulate`, so the snapshot path isn't exercised. Locking in this
-    behavior so a future refactor doesn't accidentally write a meaningless
-    initial-equity row when there's no actual run.
-    """
+def test_engine_run_window_without_coverage_fails_before_snapshots():
+    """A backtest with no overlapping bars fails coverage and writes no snapshot."""
     bars_start = date(2024, 3, 1)
     barset = _make_barset([100.0] * 5, start=bars_start)
     provider = MagicMock()
@@ -865,10 +860,15 @@ def test_engine_empty_run_records_zero_snapshots():
 
     store = _make_event_store()
     engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
-    result = engine.run(start, end)
+    run_id = "empty-run-date-coverage"
 
-    assert result.trading_days == 0
-    snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
+    with pytest.raises(UniverseCoverageError):
+        engine.run(start, end, run_id=run_id)
+
+    runs = store.list_backtest_runs()
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
+    snapshots = store.list_portfolio_snapshots_for_session(run_id)
     assert snapshots == []
 
 

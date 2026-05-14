@@ -185,6 +185,46 @@ def test_coverage_below_threshold_empty_barset_counts_as_missing():
     assert "5/10" in msg
 
 
+def test_coverage_counts_only_requested_window_bars():
+    """Warmup-only data must not satisfy coverage for the requested run window."""
+    universe = ("SYMA", "SYMB")
+    loaded = _make_loaded_strategy(universe)
+
+    bars = {
+        "SYMA": _make_barset(20, _START),
+        "SYMB": _make_barset(5, _START - timedelta(days=10)),
+    }
+    provider = MagicMock()
+    provider.get_bars.return_value = bars
+
+    engine = _make_engine(loaded, provider)
+
+    with pytest.raises(UniverseCoverageError) as exc_info:
+        engine.prefetch_bars(_START, _END)
+
+    msg = str(exc_info.value)
+    assert "50.0%" in msg
+    assert "1/2" in msg
+    assert "SYMB" in msg
+
+
+def test_prefetch_keeps_warmup_bars_for_symbols_with_window_coverage():
+    """Coverage hardening should not strip warmup rows needed by indicators."""
+    universe = ("SYMA",)
+    loaded = _make_loaded_strategy(universe)
+
+    bars = {"SYMA": _make_barset(20, _START - timedelta(days=5))}
+    provider = MagicMock()
+    provider.get_bars.return_value = bars
+
+    engine = _make_engine(loaded, provider)
+
+    result = engine.prefetch_bars(_START, _END)
+
+    df = result["SYMA"].to_dataframe()
+    assert df["timestamp"].dt.date.min() < _START
+
+
 # ---------------------------------------------------------------------------
 # Step 6: 100% coverage — no error raised
 # ---------------------------------------------------------------------------
