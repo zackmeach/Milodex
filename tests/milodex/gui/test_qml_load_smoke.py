@@ -217,14 +217,15 @@ def test_main_qml_loads_clean() -> None:
 
 
 def test_bench_command_bridge_resolves_in_qml() -> None:
-    """ADR 0051 Phase C2 review F1: the QML engine must resolve
-    ``Milodex.BenchCommandBridge`` and its slot return must round-trip.
+    """ADR 0051 Phase C2 review F1 (updated for Phase D1): the QML engine
+    must resolve ``Milodex.BenchCommandBridge`` and its slot return must
+    round-trip.
 
     A probe QML component imports ``Milodex 1.0`` and binds
     ``submitCapableActionFamilies()`` to a property. If the singleton is not
     registered, QML emits a warning at component creation; if registration
-    succeeded, the property reads ``["demote"]``. Either failure exits the
-    subprocess non-zero.
+    succeeded, the property reads ``["demote", "freeze_manifest"]`` at Phase
+    D1. Either failure exits the subprocess non-zero.
     """
     probe_qml = (
         "import QtQuick\n"
@@ -259,7 +260,7 @@ def test_bench_command_bridge_resolves_in_qml() -> None:
         "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
         "    sys.exit(4)\n"
         "families = obj.property('families')\n"
-        "if list(families) != ['demote']:\n"
+        "if list(families) != ['demote', 'freeze_manifest']:\n"
         "    print(f'UNEXPECTED_FAMILIES: {families!r}', file=sys.stderr)\n"
         "    sys.exit(5)\n"
         "print('PROBE_OK')\n"
@@ -1255,22 +1256,67 @@ def test_bench_pr_c2_modal_demote_submit_affordance() -> None:
         )
 
 
-def test_bench_pr_c2_other_action_families_remain_not_wired() -> None:
-    """ADR 0051 Phase C2: only demote is submit-capable. The modal must
-    still render the inert "Not wired in v1" primary for every other
-    action family. The boolean gate that selects which primary renders
-    must look at the action kind, not at a global flag.
+def test_bench_pr_d1_modal_freeze_manifest_submit_affordance() -> None:
+    """ADR 0051 Phase D1: BenchConfirmationModal carries an action-aware
+    submit affordance for the freeze_manifest action family alongside the
+    Phase C2 demote affordance.
+
+    Pins:
+
+    * the verbatim "Not wired in v1" inert primary remains in source (it
+      still renders for every non-demote / non-freeze action family);
+    * a "Confirm freeze" submit affordance label is present;
+    * the submit dispatch routes through BenchCommandBridge slots only;
+    * the modal still rejects the literal mutation tokens forbidden by
+      ADR 0049 (covered by test_bench_pr_n_no_mutation_token_drift).
     """
     modal_src = (
         _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
     ).read_text(encoding="utf-8")
 
-    # The submit-capable predicate must be derived from the action kind,
-    # not from a hardcoded "always submit" flag.
-    assert "_actionKind(actionData) === \"demote\"" in modal_src, (
-        "The submit-capable branch must be gated on the demote action kind "
-        "specifically. Other action families remain preview-only."
+    assert "Not wired in v1" in modal_src
+    assert "Confirm freeze" in modal_src
+    assert "_isFreezeManifestSubmit" in modal_src
+    assert "BenchCommandBridge.proposeFreezeManifest(" in modal_src
+    assert "BenchCommandBridge.submitFreezeManifest(" in modal_src
+
+    # Forbidden direct paths: same set as the C2 affordance pin.
+    forbidden_direct = (
+        "from milodex.commands",
+        "BenchCommandFacade",
+        "EventStore.",
+        "AlpacaBrokerClient",
+        "StrategyRunner",
+        "promotion.state_machine",
+        "promotion.manifest",
     )
+    for token in forbidden_direct:
+        assert token not in modal_src, (
+            f"BenchConfirmationModal.qml must not contain {token!r} — the "
+            "bridge is the only command boundary (ADR 0051 §5)."
+        )
+
+
+def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
+    """ADR 0051 Phase D1: only demote (C2) and freeze_manifest (D1) are
+    submit-capable. The modal must still render the inert "Not wired in v1"
+    primary for every other action family. The boolean gate that selects
+    which primary renders must look at the action kind, not at a global
+    flag.
+    """
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    # The submit-capable predicate must be derived from a fixed set of
+    # action kinds, not from a hardcoded "always submit" flag.
+    assert "_submitCapableKinds" in modal_src, (
+        "The submit-capable branch must be gated on a fixed set of action "
+        "kinds (Phase D1: demote + freeze_manifest). Other action families "
+        "remain preview-only."
+    )
+    assert '"demote": true' in modal_src
+    assert '"freeze_manifest": true' in modal_src
 
     # The inert primary block must be visible-gated to the !_isSubmitCapable
     # branch so promote / return / start / stop / initiate / refresh actions

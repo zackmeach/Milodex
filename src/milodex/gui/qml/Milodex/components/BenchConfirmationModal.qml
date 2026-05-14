@@ -57,13 +57,19 @@ Item {
     // and human messages without parsing free text.
     signal submitBlocked(var blockers)
 
-    // Submit affordance is *only* enabled for the demote action family.
-    // Every other action family still routes to the inert "Not wired in v1"
-    // primary button below. The kind comes from the action-intent preview
-    // when present, otherwise from the action label's prefix.
-    readonly property bool _isSubmitCapable: {
-        return _actionKind(actionData) === "demote"
-    }
+    // Submit affordance is enabled for the demote (Phase C2) and
+    // freeze-manifest (Phase D1) action families only. Every other action
+    // family still routes to the inert "Not wired in v1" primary button
+    // below. The kind comes from the action-intent preview when present,
+    // otherwise from the action label's prefix.
+    readonly property var _submitCapableKinds: ({
+        "demote": true,
+        "freeze_manifest": true
+    })
+    readonly property string _currentActionKind: _actionKind(actionData)
+    readonly property bool _isSubmitCapable: !!_submitCapableKinds[_currentActionKind]
+    readonly property bool _isDemoteSubmit: _currentActionKind === "demote"
+    readonly property bool _isFreezeManifestSubmit: _currentActionKind === "freeze_manifest"
 
     // Reason text the operator types into the inline input when the action
     // is submit-capable. The submit button is gated on non-blank reason so
@@ -223,6 +229,75 @@ Item {
         root.closeRequested()
     }
 
+    // ------------------------------------------------------------------
+    // Freeze-manifest submit (ADR 0051 Phase D1).
+    //
+    // Mirrors `_dispatchDemoteSubmit`. Freeze has no `reason` input — the
+    // backend governance callee takes only the strategy config path and a
+    // backend-sourced `frozen_by` (resolved by the bridge). QML must NOT
+    // pass `frozen_by`.
+    // ------------------------------------------------------------------
+    function _dispatchFreezeManifestSubmit() {
+        if (!root._isFreezeManifestSubmit) return
+        if (root._submitInFlight) return
+
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        if (!strategyId) {
+            root._submitErrorMessage = "Strategy id missing — cannot freeze manifest."
+            return
+        }
+
+        root._submitErrorMessage = ""
+        root._submitInFlight = true
+
+        // frozen_by is sourced backend-side by BenchCommandBridge
+        // (_resolve_operator_identity) — QML does not decide identity.
+        var proposal = BenchCommandBridge.proposeFreezeManifest({
+            "strategy_id": strategyId
+        })
+
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return
+        }
+
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root.submitBlocked(proposal.blockers)
+            return
+        }
+
+        var result = BenchCommandBridge.submitFreezeManifest(proposal.proposal_id)
+        root._submitInFlight = false
+
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
+    }
+
+    // Top-level dispatcher: routes the submit button click to the right
+    // action-family dispatch function. Adding a new submit-capable action
+    // family means adding one branch here and one entry in
+    // `_submitCapableKinds` above.
+    function _dispatchSubmit() {
+        if (root._isDemoteSubmit) {
+            _dispatchDemoteSubmit()
+        } else if (root._isFreezeManifestSubmit) {
+            _dispatchFreezeManifestSubmit()
+        }
+    }
+
     Keys.onEscapePressed: (event) => {
         if (open) {
             event.accepted = true
@@ -336,6 +411,7 @@ Item {
         if (label === "Stop Trading")            return "stop_trading"
         if (label === "Initiate Backtest")       return "initiate_backtest"
         if (label === "Refresh Backtest")        return "refresh_backtest"
+        if (label === "Freeze Manifest")         return "freeze_manifest"
         return "unknown"
     }
 
@@ -360,6 +436,8 @@ Item {
             return "Request new backtest evidence for this strategy. In Bench v1 this is preview-only."
         if (kind === "refresh_backtest")
             return "Refresh aging or stale backtest evidence for this strategy. In Bench v1 this is preview-only."
+        if (kind === "freeze_manifest")
+            return "Snapshot this strategy's current YAML config and stage into the event store as an auditable manifest."
         return "Action not recognised by the intent packet renderer."
     }
 
@@ -671,20 +749,23 @@ Item {
             // required reason and surfaces submit/refuse status. Every
             // other action family bypasses this section and renders the
             // existing "Not wired in v1" inert primary action below.
+            // Freeze-manifest (Phase D1) is submit-capable but has no
+            // reason concept (its governance callee takes only the config
+            // path and backend-sourced frozen_by), so it skips this block.
             // ============================================================
             SectionLabel {
-                visible: root._isSubmitCapable
+                visible: root._isDemoteSubmit
                 label: "OPERATOR INPUT"
                 ordinal: "08"
             }
 
             ProseBlock {
-                visible: root._isSubmitCapable
-                text: "Demotion is the first Bench action family wired end-to-end. The reason below is recorded with the append-only promotion event so the audit log can be reconstructed without re-asking the operator."
+                visible: root._isDemoteSubmit
+                text: "Demotion was the first Bench action family wired end-to-end. The reason below is recorded with the append-only promotion event so the audit log can be reconstructed without re-asking the operator."
             }
 
             Rectangle {
-                visible: root._isSubmitCapable
+                visible: root._isDemoteSubmit
                 width: parent.width
                 implicitHeight: reasonField.implicitHeight + Theme.space[3] * 2
                 color: Theme.color.surface.raised
@@ -825,24 +906,33 @@ Item {
                 // contract bug.
             },
 
-            // Submit-capable primary — demote action family only (ADR 0051
-            // Phase C2). The MouseArea routes through the bridge's
-            // proposeDemote + submitDemote slots — the same callee path the
-            // CLI uses. This Item never reaches the event store, broker,
-            // runner, or YAML directly; every governance decision (gate,
-            // stage, audit) lives behind the Python facade.
+            // Submit-capable primary — demote (Phase C2) and
+            // freeze_manifest (Phase D1) action families. The MouseArea
+            // routes through the bridge's per-family propose + submit
+            // slots — the same callee path the CLI uses. This Item never
+            // reaches the event store, broker, runner, or YAML directly;
+            // every governance decision (gate, stage, audit) lives behind
+            // the Python facade.
+            //
+            // Label, color tone, and reason-gate are action-family-aware:
+            // - demote: red, "Confirm demotion", reason required.
+            // - freeze_manifest: muted, "Confirm freeze", no reason input.
             Item {
                 id: submitDemoteItem
                 visible: root._isSubmitCapable
                 implicitWidth:  submitLabel.implicitWidth + Theme.space[4] * 2
                 implicitHeight: 36
 
+                readonly property color _submitTone:
+                    root._isDemoteSubmit ? Theme.status.negative
+                                         : Theme.color.text.primary
+
                 Rectangle {
                     anchors.fill: parent
                     color: submitMa.containsMouse && submitMa.enabled
-                           ? Theme.status.negative
+                           ? submitDemoteItem._submitTone
                            : Theme.color.surface.raised
-                    border.color: Theme.status.negative
+                    border.color: submitDemoteItem._submitTone
                     border.width: 1
                     radius:       Theme.radius.md
                     opacity: submitMa.enabled ? 1.0 : 0.55
@@ -852,10 +942,14 @@ Item {
                 Text {
                     id: submitLabel
                     anchors.centerIn: parent
-                    text:  root._submitInFlight ? "Submitting…" : "Confirm demotion"
+                    text: {
+                        if (root._submitInFlight) return "Submitting…"
+                        if (root._isFreezeManifestSubmit) return "Confirm freeze"
+                        return "Confirm demotion"
+                    }
                     color: submitMa.containsMouse && submitMa.enabled
                            ? Theme.color.text.primary
-                           : Theme.status.negative
+                           : submitDemoteItem._submitTone
                     font.family:    Theme.typography.label.xs.family
                     font.pixelSize: Theme.typography.label.xs.size
                     font.weight:    Theme.typography.label.xs.weight
@@ -868,9 +962,12 @@ Item {
                     anchors.fill: parent
                     hoverEnabled: true
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    // Demote requires a non-blank reason for the audit
+                    // record; freeze_manifest has no reason concept.
                     enabled: !root._submitInFlight
-                             && root._reasonText.trim().length > 0
-                    onClicked: root._dispatchDemoteSubmit()
+                             && (root._isFreezeManifestSubmit
+                                 || root._reasonText.trim().length > 0)
+                    onClicked: root._dispatchSubmit()
                 }
             }
         ]

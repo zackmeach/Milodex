@@ -18,10 +18,11 @@ by the facade and the modules it routes into (``milodex.promotion``,
   reach into ``_PollingReadModel._kick_refresh``), and
 * emits a ``submitCompleted`` signal QML surfaces can listen to.
 
-No other action family is wired in Phase C2. ``proposeBacktest``,
-``submitBacktest``, ``submitFreezeManifest``, ``submitPromoteToPaper``,
-``submitStartPaperRunner``, and ``submitStopPaperRunner`` are intentionally
-absent from this bridge until their respective wiring PRs land.
+No other action family is wired in Phase D1. ``proposeBacktest``,
+``submitBacktest``, ``submitPromoteToPaper``, ``submitStartPaperRunner``,
+and ``submitStopPaperRunner`` are intentionally absent from this bridge
+until their respective wiring PRs land. ``submitFreezeManifest`` lands in
+Phase D1 alongside ``proposeFreezeManifest``.
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from PySide6.QtCore import QObject, Signal, Slot
 
 from milodex.commands.bench import (
     ACTION_FAMILY_DEMOTE,
+    ACTION_FAMILY_FREEZE_MANIFEST,
     BenchCommandFacade,
     CommandProposal,
 )
@@ -56,15 +58,15 @@ def _resolve_operator_identity() -> str:
 
 
 class BenchCommandBridge(QObject):
-    """Qt-side bridge to the Bench command facade (ADR 0051 Phase C2).
+    """Qt-side bridge to the Bench command facade (ADR 0051 Phase D1).
 
-    Only the demotion / walk-back action family is submit-capable. Every
-    other action family remains preview-only and is *not* exposed here.
-    The facade itself still defines ``submit_backtest`` /
-    ``submit_promote_to_paper`` / ``submit_freeze_manifest`` /
+    The demotion / walk-back action family (Phase C2) and the freeze-manifest
+    action family (Phase D1) are submit-capable. Every other action family
+    remains preview-only and is *not* exposed here. The facade itself still
+    defines ``submit_backtest`` / ``submit_promote_to_paper`` /
     ``submit_start_paper_runner`` / ``submit_stop_paper_runner`` as Phase B
-    stubs returning ``not_submit_capable_phase_b``, but the GUI cannot
-    reach them through this bridge.
+    stubs returning ``not_submit_capable_phase_b``, but the GUI cannot reach
+    them through this bridge.
     """
 
     # Emitted after every submit attempt — successful, blocked, or errored.
@@ -176,6 +178,78 @@ class BenchCommandBridge(QObject):
         return payload
 
     # ------------------------------------------------------------------ #
+    # QML-callable slots (freeze-manifest — ADR 0051 Phase D1)
+    # ------------------------------------------------------------------ #
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def proposeFreezeManifest(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
+        """Build a freeze-manifest proposal and return it as a QVariant map.
+
+        The QML caller passes ``{strategy_id}``. ``frozen_by`` is sourced
+        backend-side via ``_resolve_operator_identity()`` so QML cannot decide
+        identity (mirrors the Phase C2 review F4 pattern). The proposal is
+        cached by id; ``submitFreezeManifest`` consumes it.
+        """
+        strategy_id = str(inputs.get("strategy_id", ""))
+        proposal = self._facade.propose_freeze_manifest(
+            strategy_id,
+            frozen_by=_resolve_operator_identity(),
+        )
+        self._proposals[proposal.proposal_id] = proposal
+        return proposal.to_dict()
+
+    @Slot(str, result="QVariantMap")
+    def submitFreezeManifest(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Submit a previously-proposed freeze-manifest by id.
+
+        Mirrors ``submitDemote``: refuses cleanly on an unknown / consumed
+        proposal id, refreshes the Bench read model on success, emits
+        ``submitCompleted`` with the result payload in every branch.
+        """
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            error_payload: dict[str, Any] = {
+                "proposal_id": proposal_id,
+                "action_family": ACTION_FAMILY_FREEZE_MANIFEST,
+                "status": "error",
+                "durable_refs": {},
+                "blockers": [
+                    {
+                        "reason_code": "unknown_proposal_id",
+                        "message": (
+                            "submitFreezeManifest was called with an unknown "
+                            "proposal id. Re-run proposeFreezeManifest and retry."
+                        ),
+                        "context": {"proposal_id": proposal_id},
+                    }
+                ],
+                "warnings": [],
+                "submitted_at": None,
+                "audit_event_id": None,
+            }
+            self.submitCompleted.emit(error_payload)
+            return error_payload
+
+        result = self._facade.submit_freeze_manifest(proposal)
+        payload = result.to_dict()
+
+        if result.status == "submitted" and self._bench_state is not None:
+            # Single permitted private reach (same contract as the demote
+            # path). The next polling tick recovers the read model if this
+            # raises; we log via `logger.exception` so the failure is
+            # auditable. Pinned by
+            # test_submit_freeze_manifest_logs_when_kick_refresh_raises.
+            try:
+                self._bench_state._kick_refresh()  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "BenchState refresh after submit_freeze_manifest failed."
+                )
+
+        self.submitCompleted.emit(payload)
+        return payload
+
+    # ------------------------------------------------------------------ #
     # Introspection (used by tests and operator surfaces)
     # ------------------------------------------------------------------ #
 
@@ -183,7 +257,7 @@ class BenchCommandBridge(QObject):
     def submitCapableActionFamilies(self) -> list[str]:  # noqa: N802
         """Return the list of action families this bridge can submit.
 
-        Phase C2: exactly one — demote. Phase C3+ extend this list as each
-        action-family wiring lands.
+        Phase D1: demote + freeze_manifest. Phase D2+ extend this list as
+        each action-family wiring lands.
         """
-        return [ACTION_FAMILY_DEMOTE]
+        return [ACTION_FAMILY_DEMOTE, ACTION_FAMILY_FREEZE_MANIFEST]

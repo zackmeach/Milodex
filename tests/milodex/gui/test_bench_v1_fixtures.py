@@ -20,6 +20,7 @@ import pytest
 
 from milodex.gui.bench_v1 import (
     LABEL_DEMOTE_TO_BACKTEST,
+    LABEL_FREEZE_MANIFEST,
     LABEL_INITIATE_BACKTEST,
     LABEL_OPEN_EVIDENCE,
     LABEL_REFRESH_BACKTEST,
@@ -306,10 +307,11 @@ class TestAnchorScenarios:
     def test_paper_fresh_pass_session_idle(self) -> None:
         row = _row_by_id("momentum.daily.cross_sectional_rsi.bonds.v1")
         # Directional verbs (Demote, Return to Idle) precede invocation
-        # (Start Trading) per the ordering rule.
+        # (Freeze Manifest, Start Trading) per the ordering rule.
         assert _labels_for(row) == [
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
@@ -319,6 +321,7 @@ class TestAnchorScenarios:
         assert _labels_for(row) == [
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_STOP_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
@@ -326,10 +329,11 @@ class TestAnchorScenarios:
     def test_paper_aging_pass_with_backtest_aging_pass(self) -> None:
         row = _row_by_id("meanrev.daily.zscore_reversion.bonds.v1")
         # Directional (Demote, Return to Idle) → invocation
-        # (Start Trading, Refresh Backtest) → floor.
+        # (Freeze Manifest, Start Trading, Refresh Backtest) → floor.
         assert _labels_for(row) == [
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_REFRESH_BACKTEST,
             LABEL_OPEN_EVIDENCE,
@@ -337,18 +341,22 @@ class TestAnchorScenarios:
 
     def test_micro_live_session_idle(self) -> None:
         row = _row_by_id("regime.daily.adaptive_volatility.spy_iwm.v1")
-        # Directional Return to Idle precedes invocation Start Trading.
+        # Directional Return to Idle precedes invocation Freeze Manifest
+        # then Start Trading.
         assert _labels_for(row) == [
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
 
     def test_live_session_running(self) -> None:
         row = _row_by_id("regime.daily.sma200_rotation.spy_shy.live.v1")
-        # Directional Return to Idle precedes invocation Stop Trading.
+        # Directional Return to Idle precedes invocation Freeze Manifest
+        # then Stop Trading.
         assert _labels_for(row) == [
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_STOP_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
