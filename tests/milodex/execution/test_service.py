@@ -18,7 +18,12 @@ from milodex.broker.models import (
 )
 from milodex.core.event_store import EventStore
 from milodex.data.models import Bar
-from milodex.execution import ExecutionService, ExecutionStatus, TradeIntent
+from milodex.execution import (
+    ExecutionService,
+    ExecutionStatus,
+    TradeIntent,
+    UnsupportedOrderTypeError,
+)
 from milodex.execution.state import KillSwitchStateStore
 
 
@@ -248,10 +253,10 @@ def test_submit_paper_calls_broker(
     assert broker.submit_calls
 
 
-def test_limit_order_requires_limit_price(
+def test_preview_rejects_limit_orders_before_risk_evaluation(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):
-    service, _ = build_service(
+    service, broker = build_service(
         tmp_path,
         risk_defaults_file,
         latest_bar,
@@ -259,13 +264,66 @@ def test_limit_order_requires_limit_price(
         submitted_order,
     )
 
-    with pytest.raises(ValueError, match="Limit price is required"):
+    with pytest.raises(UnsupportedOrderTypeError) as exc_info:
         service.preview(
-            TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.LIMIT)
+            TradeIntent(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=5,
+                order_type=OrderType.LIMIT,
+                limit_price=99.0,
+            )
         )
 
+    assert exc_info.value.order_type == OrderType.LIMIT
+    assert exc_info.value.supported_order_types == (OrderType.MARKET,)
+    assert "market orders only" in str(exc_info.value)
+    assert broker.submit_calls == []
 
-def test_stop_order_requires_stop_price(
+
+@pytest.mark.parametrize(
+    ("order_type", "limit_price", "stop_price"),
+    [
+        (OrderType.LIMIT, 99.0, None),
+        (OrderType.STOP, None, 101.0),
+        (OrderType.STOP_LIMIT, 99.0, 101.0),
+    ],
+)
+def test_submit_paper_rejects_non_market_orders_before_broker_submission(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    order_type,
+    limit_price,
+    stop_price,
+):
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+
+    with pytest.raises(UnsupportedOrderTypeError) as exc_info:
+        service.submit_paper(
+            TradeIntent(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=5,
+                order_type=order_type,
+                limit_price=limit_price,
+                stop_price=stop_price,
+            )
+        )
+
+    assert exc_info.value.order_type == order_type
+    assert broker.submit_calls == []
+
+
+def test_missing_limit_price_still_reports_unsupported_order_type_first(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):
     service, _ = build_service(
@@ -276,9 +334,9 @@ def test_stop_order_requires_stop_price(
         submitted_order,
     )
 
-    with pytest.raises(ValueError, match="Stop price is required"):
+    with pytest.raises(UnsupportedOrderTypeError, match="market orders only"):
         service.preview(
-            TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.STOP)
+            TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.LIMIT)
         )
 
 

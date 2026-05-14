@@ -32,6 +32,7 @@ from milodex.execution.models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
+    UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchState
 from milodex.risk import RiskCheckResult, RiskDecision
@@ -347,6 +348,40 @@ def test_trade_preview_json_output_includes_risk_decision():
     assert payload["command"] == "trade.preview"
     assert payload["data"]["risk_decision"]["allowed"] is True
     assert payload["data"]["request"]["symbol"] == "SPY"
+
+
+def test_trade_preview_json_reports_unsupported_order_type_code():
+    class _RejectingExecutionService(_ExecutionService):
+        def preview(self, intent):
+            raise UnsupportedOrderTypeError(intent.order_type)
+
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        [
+            "trade",
+            "preview",
+            "SPY",
+            "--json",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+            "--order-type",
+            "stop",
+            "--stop-price",
+            "101",
+        ],
+        execution_service_factory=lambda: _RejectingExecutionService(),
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    payload = json.loads(stderr.getvalue())
+    assert exit_code == 1
+    assert payload["status"] == "error"
+    assert payload["errors"][0]["code"] == "unsupported_order_type"
+    assert "market orders only" in payload["errors"][0]["message"]
 
 
 def test_trade_cancel_failure_reports_error_status():

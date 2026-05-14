@@ -23,6 +23,7 @@ from milodex.execution.models import (
     ExecutionResult,
     ExecutionStatus,
     TradeIntent,
+    UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchStateStore
 from milodex.risk import (
@@ -360,6 +361,9 @@ class ExecutionService:
         if intent.quantity <= 0:
             msg = "Quantity must be greater than zero."
             raise ValueError(msg)
+
+        if intent.order_type is not OrderType.MARKET:
+            raise UnsupportedOrderTypeError(intent.order_type)
 
         if (
             intent.order_type in {OrderType.LIMIT, OrderType.STOP_LIMIT}

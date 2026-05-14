@@ -25,6 +25,7 @@ from milodex.execution.models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
+    UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchState
 from milodex.risk import RiskCheckResult, RiskDecision
@@ -409,6 +410,41 @@ def test_trade_preview_renders_execution_result():
     assert service.preview_calls
     assert "Trade Execution" in output
     assert "Decision: allow" in output
+
+
+def test_trade_preview_reports_unsupported_order_type_without_argparse_rejecting():
+    class RejectingExecutionService(StubExecutionService):
+        def preview(self, intent):
+            self.preview_calls.append(intent)
+            raise UnsupportedOrderTypeError(intent.order_type)
+
+    service = RejectingExecutionService()
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        [
+            "trade",
+            "preview",
+            "SPY",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+            "--order-type",
+            "limit",
+            "--limit-price",
+            "99",
+        ],
+        execution_service_factory=lambda: service,
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    output = stderr.getvalue()
+    assert exit_code == 1
+    assert service.preview_calls[0].order_type == OrderType.LIMIT
+    assert "market orders only" in output
+    assert "unsupported" in output.lower()
 
 
 def test_trade_submit_requires_paper_flag():

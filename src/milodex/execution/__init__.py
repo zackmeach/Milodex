@@ -5,6 +5,7 @@ from milodex.execution.models import (
     ExecutionResult,
     ExecutionStatus,
     TradeIntent,
+    UnsupportedOrderTypeError,
 )
 from milodex.execution.service import ExecutionService
 
@@ -14,4 +15,5 @@ __all__ = [
     "ExecutionService",
     "ExecutionStatus",
     "TradeIntent",
+    "UnsupportedOrderTypeError",
 ]
