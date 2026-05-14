@@ -988,11 +988,13 @@ Item {
 
                                     Text {
                                         text: modelData.pid
-                                        color: Theme.color.text.secondary
+                                        color: Theme.color.text.muted
                                         font.family:    Theme.typography.data.sm.family
                                         font.pixelSize: Theme.typography.data.sm.size
                                         font.features:  Theme.typography.data.sm.features
                                         width: 50
+                                        elide: Text.ElideRight
+                                        clip: true
                                     }
                                     Text {
                                         text: modelData.name
@@ -1172,43 +1174,13 @@ Item {
 
                         SectionLabel { letter: "G."; name: "Sector Heat" }
                         Text {
-                            text: "sector instrument status"
-                            color: Theme.color.text.secondary
+                            width: parent.width
+                            text: "Sector heatmap — not wired"
+                            color: Theme.color.text.muted
                             font.family:    Theme.typography.body.md.family
                             font.pixelSize: Theme.typography.body.sm.size
                             font.italic:    true
-                        }
-
-                        Column {
-                            visible: root.tapeRows.length === 0
-                            width: parent.width
-                            spacing: Theme.space[2]
-
-                            Repeater {
-                                model: [
-                                    { l: "Sector model", v: "not wired" },
-                                    { l: "Dependency", v: "market-data read model" }
-                                ]
-                                delegate: RowLayout {
-                                    width: parent.width
-                                    spacing: Theme.space[3]
-
-                                    Text {
-                                        text: modelData.l
-                                        color: Theme.color.text.secondary
-                                        font.family:    Theme.typography.body.md.family
-                                        font.pixelSize: Theme.typography.body.sm.size
-                                        Layout.fillWidth: true
-                                    }
-                                    Text {
-                                        text: modelData.v
-                                        color: Theme.color.text.muted
-                                        font.family:    Theme.typography.data.sm.family
-                                        font.pixelSize: Theme.typography.data.sm.size
-                                        font.features:  Theme.typography.data.sm.features
-                                    }
-                                }
-                            }
+                            wrapMode: Text.WordWrap
                         }
                     }
 
@@ -1220,84 +1192,13 @@ Item {
 
                         SectionLabel { letter: "H."; name: "Today's Calendar" }
                         Text {
-                            text: "economic prints + Fed traffic"
-                            color: Theme.color.text.secondary
+                            width: parent.width
+                            text: "Economic calendar — not wired"
+                            color: Theme.color.text.muted
                             font.family:    Theme.typography.body.md.family
                             font.pixelSize: Theme.typography.body.sm.size
                             font.italic:    true
-                        }
-
-                        RowLayout {
-                            width: parent.width
-                            spacing: Theme.space[3]
-
-                            Text {
-                                text: "Calendar feed"
-                                color: Theme.color.text.secondary
-                                font.family:    Theme.typography.body.md.family
-                                font.pixelSize: Theme.typography.body.sm.size
-                                Layout.fillWidth: true
-                            }
-                            Text {
-                                text: "not wired"
-                                color: Theme.color.text.muted
-                                font.family:    Theme.typography.data.sm.family
-                                font.pixelSize: Theme.typography.data.sm.size
-                                font.features:  Theme.typography.data.sm.features
-                            }
-                        }
-
-                        Repeater {
-                            model: []
-                            delegate: Item {
-                                width: parent.width
-                                height: 30
-
-                                Row {
-                                    spacing: Theme.space[3]
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-
-                                    Text {
-                                        text: modelData.time
-                                        color: Theme.color.text.secondary
-                                        font.family:    Theme.typography.data.sm.family
-                                        font.pixelSize: Theme.typography.data.sm.size
-                                        font.features:  Theme.typography.data.sm.features
-                                        width: 78
-                                    }
-                                    Column {
-                                        spacing: 0
-                                        Text {
-                                            text: modelData.what
-                                            color: modelData.done ? Theme.color.text.muted : Theme.color.text.primary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.weight:    Font.Medium
-                                        }
-                                        Text {
-                                            visible: modelData.result !== ""
-                                            text: modelData.result
-                                            color: Theme.color.text.muted
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                        }
-                                    }
-                                }
-                                Text {
-                                    text: modelData.imp
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    color: modelData.imp === "HIGH" ? Theme.status.warning
-                                         : modelData.imp === "MED"  ? Theme.color.text.secondary
-                                         : Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Font.DemiBold
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                }
-                            }
+                            wrapMode: Text.WordWrap
                         }
                     }
                 }
