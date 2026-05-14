@@ -9,12 +9,12 @@ Statistical strategies (promotion_type='statistical')
   Backtest -> paper:
   Sharpe ratio     > 0.0
   Max drawdown     < 25.0%
-  Trade count      >= 30
+  Trade count      >= strategy backtest.min_trades_required (default 30)
 
   Later capital stages:
   Sharpe ratio     > 0.5          (SRS R-PRM-001)
   Max drawdown     < 15.0%        (SRS R-PRM-002)
-  Trade count      >= 30          (SRS R-PRM-003, R-BKT-003)
+  Trade count      >= strategy backtest.min_trades_required (default 30)
 
 Lifecycle-exempt strategies (promotion_type='lifecycle_exempt')
   Statistical thresholds do not apply (SRS R-PRM-004).
@@ -109,6 +109,7 @@ def check_gate(
     sharpe_ratio: float | None,
     max_drawdown_pct: float | None,
     trade_count: int | None,
+    min_trade_count: int = MIN_TRADES,
 ) -> PromotionCheckResult:
     """Evaluate statistical promotion thresholds.
 
@@ -141,8 +142,10 @@ def check_gate(
             f"(got {_fmt_or_none(max_drawdown_pct)})"
         )
 
-    if trade_count is None or trade_count < MIN_TRADES:
-        failures.append(f"Trade count must be >= {MIN_TRADES} (got {_fmt_or_none(trade_count)})")
+    if trade_count is None or trade_count < min_trade_count:
+        failures.append(
+            f"Trade count must be >= {min_trade_count} (got {_fmt_or_none(trade_count)})"
+        )
 
     return PromotionCheckResult(
         allowed=len(failures) == 0,

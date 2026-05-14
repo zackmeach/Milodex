@@ -148,6 +148,34 @@ def test_gate_fails_at_trade_count_boundary() -> None:
     assert any("Trade count" in f for f in result.failures)
 
 
+def test_gate_accepts_configured_min_trade_count() -> None:
+    result = check_gate(
+        lifecycle_exempt=False,
+        to_stage="paper",
+        sharpe_ratio=0.75,
+        max_drawdown_pct=10.0,
+        trade_count=20,
+        min_trade_count=20,
+    )
+
+    assert result.allowed is True
+    assert result.failures == []
+
+
+def test_gate_fails_configured_min_trade_count_and_names_floor() -> None:
+    result = check_gate(
+        lifecycle_exempt=False,
+        to_stage="paper",
+        sharpe_ratio=0.75,
+        max_drawdown_pct=10.0,
+        trade_count=19,
+        min_trade_count=20,
+    )
+
+    assert result.allowed is False
+    assert any("Trade count" in f and "20" in f for f in result.failures)
+
+
 def test_gate_fails_all_three() -> None:
     result = check_gate(
         lifecycle_exempt=False,

@@ -94,7 +94,10 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _run_walk_forward(engine, start, end, args)
 
     backtest_result = engine.run(start, end, run_id=args.run_id)
-    return _build_backtest_result(backtest_result)
+    return _build_backtest_result(
+        backtest_result,
+        min_trade_count=_min_trade_count_from_engine(engine),
+    )
 
 
 def _run_walk_forward(engine, start, end, args) -> CommandResult:
@@ -118,10 +121,12 @@ def _run_walk_forward(engine, start, end, args) -> CommandResult:
         run_id=args.run_id,
         all_bars=all_bars,
     )
-    return _build_walk_forward_result(result)
+    return _build_walk_forward_result(result, min_trade_count=_min_trade_count_from_engine(engine))
 
 
-def _build_backtest_result(result: BacktestResult) -> CommandResult:
+def _build_backtest_result(
+    result: BacktestResult, *, min_trade_count: int = 30
+) -> CommandResult:
     trade_summary = f"{result.trade_count} ({result.buy_count} buys, {result.sell_count} sells)"
     lines = [
         "Backtest Result",
@@ -158,6 +163,7 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
     _attach_uncertainty_label(
         family=_strategy_family(result.strategy_id),
         trade_count=result.trade_count,
+        min_trade_count=min_trade_count,
         data=data,
         lines=lines,
     )
@@ -181,7 +187,9 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
     return CommandResult(command="backtest", data=data, human_lines=lines, renderable=renderable)
 
 
-def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
+def _build_walk_forward_result(
+    result: WalkForwardResult, *, min_trade_count: int = 30
+) -> CommandResult:
     stability = result.stability
     lines = [
         "Backtest Result (walk-forward)",
@@ -269,6 +277,7 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
     _attach_uncertainty_label(
         family=_strategy_family(result.strategy_id),
         trade_count=result.oos_trade_count,
+        min_trade_count=min_trade_count,
         data=data,
         lines=lines,
     )
@@ -332,19 +341,31 @@ def _risk_policy_label(policy: RiskPolicy) -> str:
 _STATISTICAL_MIN_TRADES = 30
 
 
+def _min_trade_count_from_engine(engine) -> int:
+    loaded = getattr(engine, "_loaded", None)
+    config = getattr(loaded, "config", None)
+    backtest = getattr(config, "backtest", {}) or {}
+    return int(backtest.get("min_trades_required", _STATISTICAL_MIN_TRADES))
+
+
 def _strategy_family(strategy_id: str) -> str:
     return strategy_id.split(".", 1)[0] if strategy_id else ""
 
 
 def _attach_uncertainty_label(
-    *, family: str, trade_count: int, data: dict[str, Any], lines: list[str]
+    *,
+    family: str,
+    trade_count: int,
+    min_trade_count: int,
+    data: dict[str, Any],
+    lines: list[str],
 ) -> None:
     if family == "regime":
         data["evidence_basis"] = "operational"
         lines.append("Evidence basis: operational (regime strategy, R-PRM-004)")
         return
-    if trade_count < _STATISTICAL_MIN_TRADES:
-        reason = f"trade count {trade_count} < {_STATISTICAL_MIN_TRADES} statistical minimum"
+    if trade_count < min_trade_count:
+        reason = f"trade count {trade_count} < {min_trade_count} statistical minimum"
         data["uncertainty_label"] = "insufficient evidence"
         data["uncertainty_reason"] = reason
         lines.append(f"Confidence:     insufficient evidence ({reason})")
