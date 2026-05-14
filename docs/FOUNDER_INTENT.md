@@ -112,6 +112,63 @@ Justified trust is the goal. Blind trust is the failure mode the harness exists 
 
 ---
 
+## The Risk Layer — Operator Preferences, System Enforcement
+
+The risk layer is sacred. It is not, however, arbitrary.
+
+Milodex should not treat risk as a single universal setting that applies identically to every operator, every account, every strategy, every asset class, and every market condition forever. Risk tolerance is personal, contextual, and sometimes changes over time. A system that claims to be trustworthy cannot impose one opaque risk posture and ask the operator to accept it on faith.
+
+But that does **not** mean strategies, models, agents, or features get to control risk. The right distinction — the one the rest of the product must reflect — is:
+
+> **The operator owns risk preferences. The risk layer owns enforcement.**
+
+A strategy may propose an action. A model may generate an intent. An agent may identify an opportunity. None of them may rewrite the rules that judge whether their own action is safe. The risk layer is the **independent boundary** between automation and capital.
+
+### What this lets the operator do
+
+The operator should eventually be able to express personal risk tolerance — but only inside a governed risk framework. The framework must have these properties:
+
+- **Safe defaults.** A fresh installation runs at conservative posture. Higher-risk settings are an explicit choice, not a quiet drift.
+- **Deliberate opt-in for higher risk.** Every step away from the safe default requires an explicit operator action, with the change rendered as a reviewable preview before it takes effect.
+- **Explicit human approval for live-risk changes.** Modifying capital-affecting risk policy is on the human-approval list, every time. There is no "approve once, applies forever" path.
+- **Logged and reviewable.** Every risk-policy change is written to the audit trail. The operator can reconstruct what the posture was on any given day, who changed it, and why.
+- **Visibly active.** The product makes clear at all times what risk posture is currently in force. A risk setting that the operator cannot see is a risk setting Milodex should not have.
+- **Legible.** The operator should be able to read what a risk setting allows, blocks, or changes — in plain product language, not buried in YAML.
+- **Bounded.** Some boundaries are not negotiable. Account-level guardrails (kill switch, broker live-trade permission, fat-finger protection) stay above strategy-specific preferences. The operator cannot disable the floor; they can only choose where they sit above it.
+- **Enforceable.** A risk control is configurable only in ways the system can still enforce. A setting whose value the risk layer cannot honor — for performance, scope, or architectural reasons — is not a setting; it is a lie.
+
+### What this denies — to strategies, models, agents, and features
+
+The risk layer never bends to the thing it is evaluating. In particular:
+
+- **No strategy, ML model, frontier agent, or feature may weaken its own guardrails.** A strategy that finds itself blocked does not get to propose a looser risk policy from inside the harness. The operator may relax the policy from outside the harness, under the governance described above. The strategy may not.
+- **No "the user controls the risk layer" framing.** That sentence is too loose. It implies the operator can disable the safety structure itself rather than choose a posture inside it.
+- **No "strategies configure their own risk."** That is dangerous because it lets the thing being evaluated influence the rules evaluating it.
+- **No "risk gates can be weakened when they block a useful feature."** That is the most common path to compromise on a system like this, and it is the one the harness exists to refuse.
+
+### The strongest version
+
+Captured as one load-bearing sentence so it cannot be flattened by a later edit:
+
+> **Milodex lets the operator define risk preferences within explicit, bounded, auditable policy. The risk layer enforces those preferences and retains veto power. No strategy, model, agent, or feature may modify, weaken, or bypass the risk policy that evaluates it.**
+
+This keeps both halves of the intent intact:
+
+1. The operator is not trapped inside a one-size-fits-all risk posture.
+2. The risk layer remains independent, enforceable, and sacred.
+
+### How this relates to product trust
+
+The point is not to let the operator "turn off safety." The point is to refuse the pretense that one fixed risk profile is right for everyone. A trustworthy system should let the operator say, in a controlled and visible way:
+
+> *"This is my risk tolerance. These are the limits I am willing to allow. Now enforce them consistently — even against strategies I like."*
+
+That is different from letting automation choose its own boundaries. The shortest form of the rule is the one downstream docs should quote:
+
+> **The operator may choose the risk posture. The system must enforce it. The automation must submit to it.**
+
+---
+
 ## Product Tone
 
 Milodex should feel:
@@ -344,7 +401,7 @@ This order matters. Milodex should not chase profit at the cost of trust, usabil
 
 ## Canonical Intent Statement
 
-Milodex is an operator-governed automation harness for investment strategies and automated investing techniques. It is an AI-assisted, safety-conscious, shareable software product meant to demonstrate the founder's ability to architect and ship a real, complex, working system in an unfamiliar domain. The harness moves techniques — rules, configs, ML models, agentic systems — through a disciplined lifecycle of research, backtest, evidence review, paper trading, and controlled live exposure, with preview before action, evidence before promotion, risk veto before execution, and manual gates before capital. It should be trustworthy, polished, easy to start, sober and audit-heavy in register, and legible even to operators with limited financial literacy. While financial effectiveness matters as evidence that the system genuinely works, the deeper goal is to build a credible, well-designed platform that makes disciplined automated investing feel legible, reviewable, bounded, and controlled enough that the operator can develop justified trust in the system before allowing it to affect real capital — and that clearly reflects the founder's technical capability, product judgment, and ability to deliver.
+Milodex is an operator-governed automation harness for investment strategies and automated investing techniques. It is an AI-assisted, safety-conscious, shareable software product meant to demonstrate the founder's ability to architect and ship a real, complex, working system in an unfamiliar domain. The harness moves techniques — rules, configs, ML models, agentic systems — through a disciplined lifecycle of research, backtest, evidence review, paper trading, and controlled live exposure, with preview before action, evidence before promotion, risk veto before execution, and manual gates before capital. Risk preferences belong to the operator; risk enforcement belongs to the risk layer; no strategy, model, agent, or feature may modify, weaken, or bypass the risk policy that evaluates it. It should be trustworthy, polished, easy to start, sober and audit-heavy in register, and legible even to operators with limited financial literacy. While financial effectiveness matters as evidence that the system genuinely works, the deeper goal is to build a credible, well-designed platform that makes disciplined automated investing feel legible, reviewable, bounded, and controlled enough that the operator can develop justified trust in the system before allowing it to affect real capital — and that clearly reflects the founder's technical capability, product judgment, and ability to deliver.
 
 ---
 
@@ -355,6 +412,7 @@ Any future documentation for Milodex should remain consistent with this founder 
 - Frame Milodex as an **operator-governed automation harness for investment techniques**, not as an "AI trading bot" and not as a product that hands the operator's money to a model.
 - Use **"automated investing techniques"** (or "techniques") where the discussion spans rules, configs, ML models, and agentic systems. Reserve **"strategies"** for the specific case.
 - Preserve the four-rule safety posture in every layer that touches it: *preview before action, evidence before promotion, risk veto before execution, manual gates before capital.*
+- Preserve the operator-vs-enforcement split for the risk layer: **the operator owns risk preferences; the risk layer owns enforcement.** Do not write that "the user controls the risk layer" or that "strategies configure their own risk" — both framings invert the relationship the harness depends on.
 - Do **not** imply fiduciary status, financial advice, guaranteed returns, magic-money-machine behavior, or blind delegation of personal finances to an opaque model. Use the "justified trust" framing instead.
 - Do not frame Milodex primarily as a finance-learning project.
 - Do not frame it primarily as a hype-driven autonomous trading system.
