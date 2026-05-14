@@ -690,6 +690,14 @@ Item {
         rowData:    root.confirmationPreviewRow
         actionData: root.confirmationPreviewAction
         onCloseRequested: root.confirmationPreviewOpen = false
+
+        // ADR 0051 Phase C2: the modal now emits `submitted` after a
+        // successful demotion. The bridge already refreshes the BenchState
+        // read model on the Python side; this handler just dismisses the
+        // preview state so the next operator click sees a clean modal.
+        onSubmitted: (result) => {
+            root.confirmationPreviewOpen = false
+        }
     }
 
     // -----------------------------------------------------------------------
