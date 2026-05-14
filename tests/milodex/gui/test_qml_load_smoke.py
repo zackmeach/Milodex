@@ -320,12 +320,26 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
 
 
 def test_bench_pr_j_modal_wording_contract() -> None:
-    """PR J modal disclaimer and forbidden-phrase contract."""
+    """PR J disclaimer and forbidden-phrase contract.
+
+    Updated in PR 4 (post-DESIGN.md v0.2) to reflect the architecture
+    change from centered modal to right-rail dossier. Close-affordance
+    paths are split: BenchEvidenceModal forwards a single
+    `closeRequested()` signal from the rail; the rail itself
+    (RightRailDossier) emits from Escape and the CLOSE button.
+    Outside-click dismissal is intentionally absent per the PR 4 brief
+    — ordinary Bench interactions must not accidentally close the
+    dossier.
+    """
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml").read_text(
         encoding="utf-8"
     )
+    rail_src = (_MILODEX_QML_DIR / "components" / "RightRailDossier.qml").read_text(
+        encoding="utf-8"
+    )
 
-    # Mandatory disclaimer must appear verbatim.
+    # Mandatory disclaimer must appear verbatim (now passed via
+    # RightRailDossier.footerNote — still must be present in the file).
     disclaimer = (
         "Bench v1 evidence is read-only and sourced from the current GUI "
         "read-model snapshot. Real event-derived freshness and gate "
@@ -342,11 +356,18 @@ def test_bench_pr_j_modal_wording_contract() -> None:
             f"BenchEvidenceModal.qml must not contain forbidden phrase {forbidden!r}"
         )
 
-    # Close affordance must be emitted from at least 3 places:
-    # Escape handler, outside-click MouseArea, close glyph MouseArea.
-    assert modal_src.count("root.closeRequested()") >= 3, (
-        "BenchEvidenceModal.qml must emit closeRequested() from at least 3 places "
-        "(Escape, outside-click, close glyph)"
+    # BenchEvidenceModal forwards close from the rail (at least 1 path).
+    assert modal_src.count("root.closeRequested()") >= 1, (
+        "BenchEvidenceModal.qml must forward closeRequested() from the RightRailDossier"
+    )
+
+    # RightRailDossier owns the two close paths: Escape + CLOSE button.
+    # Outside-click is intentionally absent in PR 4 — verify the rail
+    # emits closeRequested from at least 2 places.
+    assert rail_src.count("root.closeRequested()") >= 2, (
+        "RightRailDossier.qml must emit closeRequested() from at least 2 places "
+        "(Escape handler + CLOSE button MouseArea). Outside-click dismissal is "
+        "intentionally absent per the PR 4 dossier brief."
     )
 
 
