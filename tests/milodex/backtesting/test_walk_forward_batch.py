@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
+from milodex.backtesting import walk_forward_batch as batch_module
 from milodex.backtesting.engine import BacktestEngine
 from milodex.backtesting.walk_forward_batch import (
     BatchRow,
@@ -24,6 +25,7 @@ from milodex.backtesting.walk_forward_batch import (
     _rank_rows,
     run_batch,
 )
+from milodex.backtesting.walk_forward_runner import WalkForwardResult, WalkForwardStability
 from milodex.core.event_store import EventStore
 from milodex.data.models import BarSet
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
@@ -54,7 +56,13 @@ def _make_barset(closes: list[float], start: date) -> BarSet:
     return BarSet(pd.DataFrame(rows))
 
 
-def _make_loaded(strategy_id: str, family: str, universe: tuple[str, ...]):
+def _make_loaded(
+    strategy_id: str,
+    family: str,
+    universe: tuple[str, ...],
+    *,
+    min_trades_required: int = 30,
+):
     from milodex.strategies.base import StrategyContext
 
     tmp_dir = Path(tempfile.mkdtemp())
@@ -67,7 +75,11 @@ def _make_loaded(strategy_id: str, family: str, universe: tuple[str, ...]):
     config.stage = "backtest"
     config.path = yaml_path
     config.parameters = {}
-    config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.backtest = {
+        "slippage_pct": 0.0,
+        "commission_per_trade": 0.0,
+        "min_trades_required": min_trades_required,
+    }
     config.universe = universe
 
     context = StrategyContext(
@@ -102,8 +114,14 @@ def _make_engine(
     bars_start: date = date(2024, 1, 2),
     bar_count: int = 30,
     shared_provider: MagicMock | None = None,
+    min_trades_required: int = 30,
 ):
-    loaded = _make_loaded(strategy_id, family, universe)
+    loaded = _make_loaded(
+        strategy_id,
+        family,
+        universe,
+        min_trades_required=min_trades_required,
+    )
     closes = [100.0 + i for i in range(bar_count)]
     barset = _make_barset(closes, start=bars_start)
     provider = shared_provider or MagicMock()
@@ -237,6 +255,90 @@ def test_regime_family_gets_lifecycle_exempt_gate():
     )
     assert result.rows[0].gate_allowed is True
     assert result.rows[0].gate_promotion_type == "lifecycle_exempt"
+
+
+def test_batch_gate_uses_strategy_min_trades_required(monkeypatch):
+    engine, _ = _make_engine(
+        "momentum.daily.dual_absolute.gem_weekly.v1",
+        "momentum",
+        min_trades_required=20,
+    )
+    ctx = _make_ctx({engine._loaded.config.strategy_id: engine})
+
+    def fake_run_walk_forward(*_args, **_kwargs):
+        return WalkForwardResult(
+            run_id="wf-low-cadence",
+            strategy_id=engine._loaded.config.strategy_id,
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 31),
+            initial_equity=100_000.0,
+            train_days=10,
+            test_days=10,
+            step_days=10,
+            windows=[],
+            oos_trade_count=20,
+            oos_skipped_count=0,
+            oos_trading_days=20,
+            oos_total_return_pct=3.0,
+            oos_sharpe=0.66,
+            oos_max_drawdown_pct=18.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+        )
+
+    monkeypatch.setattr(batch_module, "run_walk_forward", fake_run_walk_forward)
+
+    result = run_batch(
+        strategy_ids=[engine._loaded.config.strategy_id],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx,
+    )
+
+    assert result.rows[0].gate_allowed is True
+    assert result.rows[0].gate_failures == ()
+
+
+def test_batch_gate_failure_names_strategy_min_trades_required(monkeypatch):
+    engine, _ = _make_engine(
+        "momentum.daily.dual_absolute.gem_weekly.v1",
+        "momentum",
+        min_trades_required=20,
+    )
+    ctx = _make_ctx({engine._loaded.config.strategy_id: engine})
+
+    def fake_run_walk_forward(*_args, **_kwargs):
+        return WalkForwardResult(
+            run_id="wf-low-cadence-block",
+            strategy_id=engine._loaded.config.strategy_id,
+            start_date=date(2024, 1, 2),
+            end_date=date(2024, 1, 31),
+            initial_equity=100_000.0,
+            train_days=10,
+            test_days=10,
+            step_days=10,
+            windows=[],
+            oos_trade_count=19,
+            oos_skipped_count=0,
+            oos_trading_days=20,
+            oos_total_return_pct=3.0,
+            oos_sharpe=0.66,
+            oos_max_drawdown_pct=18.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+        )
+
+    monkeypatch.setattr(batch_module, "run_walk_forward", fake_run_walk_forward)
+
+    result = run_batch(
+        strategy_ids=[engine._loaded.config.strategy_id],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx,
+    )
+
+    assert result.rows[0].gate_allowed is False
+    assert any("Trade count" in f and "20" in f for f in result.rows[0].gate_failures)
 
 
 # ---------------------------------------------------------------------------

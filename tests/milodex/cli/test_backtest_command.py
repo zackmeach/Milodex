@@ -46,6 +46,26 @@ def test_statistical_strategy_below_threshold_flagged_insufficient():
     assert any("insufficient evidence" in ln for ln in result.human_lines)
 
 
+def test_statistical_strategy_uses_configured_trade_floor_for_uncertainty():
+    result = _build_backtest_result(
+        _result("momentum.daily.dual_absolute.gem_weekly.v1", trade_count=20),
+        min_trade_count=20,
+    )
+
+    assert "uncertainty_label" not in result.data
+    assert not any("insufficient" in ln for ln in result.human_lines)
+
+
+def test_statistical_strategy_configured_trade_floor_appears_in_uncertainty_reason():
+    result = _build_backtest_result(
+        _result("momentum.daily.dual_absolute.gem_weekly.v1", trade_count=19),
+        min_trade_count=20,
+    )
+
+    assert result.data["uncertainty_label"] == "insufficient evidence"
+    assert "19 < 20" in result.data["uncertainty_reason"]
+
+
 def test_statistical_strategy_at_or_above_threshold_not_flagged():
     result = _build_backtest_result(
         _result("meanrev.daily.rsi2pullback.v1", trade_count=30),

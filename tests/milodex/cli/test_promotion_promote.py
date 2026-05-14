@@ -42,9 +42,13 @@ strategy:
 """
 
 
-def _write_config(config_dir: Path, stage: str) -> Path:
+def _write_config(config_dir: Path, stage: str, *, min_trades_required: int = 30) -> Path:
     path = config_dir / "test_strategy.yaml"
-    path.write_text(_YAML.format(strategy_id=_STRATEGY_ID, stage=stage), encoding="utf-8")
+    content = _YAML.format(strategy_id=_STRATEGY_ID, stage=stage).replace(
+        "min_trades_required: 30",
+        f"min_trades_required: {min_trades_required}",
+    )
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -341,6 +345,9 @@ def _seed_meanrev_walk_forward_run(
     *,
     run_id: str,
     strategy_id: str,
+    sharpe: float = 0.327,
+    max_drawdown_pct: float = 6.41,
+    trade_count: int = 752,
 ) -> None:
     """Seed a walk-forward backtest run with meanrev's actual Phase 1 numbers.
 
@@ -369,10 +376,10 @@ def _seed_meanrev_walk_forward_run(
                 "walk_forward": True,
                 "oos_aggregate": {
                     "total_return_pct": 4.34,
-                    "sharpe": 0.327,
-                    "max_drawdown_pct": 6.41,
+                    "sharpe": sharpe,
+                    "max_drawdown_pct": max_drawdown_pct,
                     "trading_days": 752,
-                    "trade_count": 752,
+                    "trade_count": trade_count,
                 },
             },
         )
@@ -420,3 +427,73 @@ def test_promotion_promote_accepts_paper_readiness_evidence_through_cli(tmp_path
     assert promotions[0].promotion_type == "statistical"
     assert store.list_strategy_manifests() != []
     assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_uses_configured_min_trades_required_for_paper(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest", min_trades_required=20)
+    _seed_meanrev_walk_forward_run(
+        tmp_path / "data" / "milodex.db",
+        run_id="bt-low-cadence-pass",
+        strategy_id=_STRATEGY_ID,
+        sharpe=0.66,
+        max_drawdown_pct=18.0,
+        trade_count=20,
+    )
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--run-id",
+            "bt-low-cadence-pass",
+            "--recommendation",
+            "weekly cadence has enough fills for paper",
+            "--risk",
+            "drawdown still needs paper monitoring",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code == 0, err.getvalue()
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_blocks_when_configured_trade_floor_not_met(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest", min_trades_required=30)
+    _seed_meanrev_walk_forward_run(
+        tmp_path / "data" / "milodex.db",
+        run_id="bt-low-cadence-block",
+        strategy_id=_STRATEGY_ID,
+        sharpe=0.66,
+        max_drawdown_pct=18.0,
+        trade_count=20,
+    )
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--run-id",
+            "bt-low-cadence-block",
+            "--recommendation",
+            "weekly cadence under strict floor",
+            "--risk",
+            "trade evidence is sparse",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert "Trade count" in err.getvalue()
+    assert "30" in err.getvalue()
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
