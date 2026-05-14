@@ -10,7 +10,7 @@ This document is the product compass for Milodex. It is shorter than [`docs/FOUN
 
 **Milodex is an operator-governed automation harness for investment strategies and automated investing techniques.**
 
-It runs locally, on the operator's hardware, against the operator's brokerage. It moves techniques — rule-based strategies, config-driven academic strategies, machine-learning models, and eventually frontier-model or agentic decision systems — through a disciplined lifecycle. The technique decides *what* to trade; the harness decides *whether* the decision is allowed to take effect, *under what conditions*, and *with what safeguards in front of it*.
+It runs locally, on the operator's hardware, against the operator's brokerage. **It gives the operator a governed harness in which to move techniques** — rule-based strategies, config-driven academic strategies, machine-learning models, and eventually frontier-model or agentic decision systems — through a disciplined lifecycle. The technique decides *what* to trade; the harness decides *whether* the decision is allowed to take effect, *under what conditions*, and *with what safeguards in front of it*; the operator decides *whether to promote, allocate, or proceed*. Milodex is the harness, not the actor.
 
 Milodex is **not** an "AI trading bot." It is **not** a magic-money-machine. It is **not** a black-box agent handed real capital. The framing of "give your money to a model and let it trade" is the failure mode the harness exists to prevent.
 
@@ -18,11 +18,11 @@ Milodex is **not** an "AI trading bot." It is **not** a magic-money-machine. It 
 
 ## 2. Who It Is For
 
-Milodex is built first for **one technical operator** — a developer with engineering judgment, a brokerage account, and a willingness to take responsibility for the decisions a harness like this makes possible.
+Milodex is built for an **accountable operator** — a single person who owns the brokerage account, owns the consequences, and owns the decisions a harness like this makes possible. The operator is the responsible party; the harness is the discipline around them.
 
-The operator wants disciplined automation without blind delegation. They want the leverage of a system that can run, monitor, and propose; they want the safety of a system that cannot promote, allocate, or execute without their authority.
+The current founder/operator is technical: a developer with engineering judgment, comfortable with config files, capable of reading code when they need to. That is *today's* operator profile, not *the* operator profile. The product intent is broader: **make controlled strategy deployment legible and accessible to operators who lack deep financial or technical expertise** — friends, peers, technically curious non-experts — through *legibility*, not *oversimplification*. The audit-heavy, market-desk register that earns trust from a sophisticated reader is the same register that orients a careful but inexperienced one.
 
-Milodex should also be **approachable to less financially literate operators** — friends, peers, technically curious non-experts — through *legibility*, not *oversimplification*. The audit-heavy, market-desk register that earns trust from a sophisticated reader is the same register that orients a careful but inexperienced one. Lowering the emotional barrier is a goal; lowering the safety posture is not.
+Whoever they are, the accountable operator wants disciplined automation without blind delegation. They want the leverage of a system that can run, monitor, and propose; they want the safety of a system that cannot promote, allocate, or execute without their authority. Lowering the emotional or technical barrier to using the system is a goal; lowering the safety posture is not.
 
 It is not a SaaS, not a managed fund, not a product for sale, not a substitute for a licensed financial professional.
 
@@ -30,11 +30,11 @@ It is not a SaaS, not a managed fund, not a product for sale, not a substitute f
 
 ## 3. Core Product Promise
 
-Milodex helps one technical operator move automated investing techniques through a disciplined lifecycle:
+Milodex gives the accountable operator a governed harness in which to move automated investing techniques through a disciplined lifecycle:
 
 > **idea → research → backtest → evidence review → paper trading → controlled live exposure**
 
-— without skipping safety gates.
+The safety gates along that lifecycle are non-negotiable. Risk *preferences* may evolve by operator choice — different operators have different appetites, and a system that pretends one fixed profile is right for everyone is not trustworthy — but only through explicit, bounded, visible, audited settings enforced by the risk layer. **No strategy, model, agent, or feature may weaken or bypass the policy that evaluates it.** See [§5b Risk Preferences vs Risk Enforcement](#5b-risk-preferences-vs-risk-enforcement).
 
 The deliberate word here is **techniques**, not only "strategies." The long-term product must host different automation forms: rules, configs, ML models, LLM agents, and other decision engines. The lifecycle is the constant. The technique inside it is allowed to vary.
 
@@ -104,7 +104,7 @@ The full thesis — properties of the governed framework, additional rejected fr
 Milodex's primary navigation is a four-surface narrative — `FRONT · BENCH · LEDGER · DESK` — chosen as a publication-and-workshop metaphor rather than a software-tab metaphor. Detailed visual contracts live in [`docs/DESIGN.md`](DESIGN.md); the product-level role of each surface is summarized here.
 
 - **Front.** The front page. Answers *"how is the system, in plain language?"* Conversational, warm-but-factual prose. Reports state; never recommends. The surface a non-expert can read.
-- **Bench.** The strategy bench. Answers *"what's the state of each strategy and what does it need next?"* A governed pipeline ledger of five vertical stage sections — idle, backtest, paper, micro-live, live — with per-row evidence and per-action previews. Operational management of the lifecycle.
+- **Bench.** The strategy bench. Answers *"what stage is each technique in, what evidence is visible, and what gated actions are available?"* A governed pipeline ledger of five vertical stage sections — idle, backtest, paper, micro-live, live — with per-row evidence and per-action previews. The actions are gated; the operator decides whether to take any of them.
 - **Ledger.** The paper of record. Answers *"what has the system actually done, and why?"* Chronological, monospaced, sparse. Reads like a printout. The surface that earns auditability.
 - **Desk.** The trading desk. Answers *"what's everything I might need on one fold?"* Dense cockpit view in newspaper-front-page register: hero band, columnar body, lettered sections. The surface a power user drives from once they trust the system.
 
@@ -144,7 +144,7 @@ Outside Bench, the same posture applies. The risk layer's veto is enforced in co
 
 When a future contributor — human or agent — is deciding what to build, change, or refuse, the following five questions are the compass:
 
-1. **Does this make automation more legible?** Can the operator read what the system did, why, and what it would do next?
+1. **Does this make automation more legible?** Can the operator see what is *proposed*, what is *gated*, what is *blocked*, and what *requires operator review*?
 2. **Does this preserve justified trust?** Does the change earn trust through evidence, gates, and review — or does it ask the operator to trust the model, the codebase, or the contributor on faith?
 3. **Does this keep lifecycle, evidence, risk, and approval boundaries intact?** A change that quietly relaxes a gate, hides a veto, or widens an allowlist without an ADR is a regression even if it ships a feature.
 4. **Does this make the product more usable without making it misleading?** Polish that hides complexity is not polish; it is a trap. Polish that *renders* complexity well is the goal.
