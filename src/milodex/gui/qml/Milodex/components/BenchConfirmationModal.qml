@@ -495,9 +495,18 @@ Item {
             // NO dispatch, NO state change. The visible banner makes the
             // boundary explicit; the rows below show the future-command
             // shape so the operator knows what would be assembled.
+            //
+            // PR 5 (post-DESIGN.md v0.2): the "NOT SUBMITTABLE" banner is
+            // rendered in the sober typeset treatment specified by
+            // DESIGN_SYSTEM.md v0.2 §7.6 — small-caps red bounded by
+            // hairline rules above and below. NOT a yellow alert bar.
+            // NOT a rotated rubber-stamp graphic. The italic prose below
+            // the banner is the verbatim ADR 0049 _COPY_DRAFT_BANNER
+            // sentence.
             // ============================================================
             SectionLabel { label: "COMMAND DRAFT PREVIEW"; ordinal: "06" }
 
+            SafetyBanner { text: "NOT SUBMITTABLE" }
             ProseBlock { text: root._COPY_DRAFT_BANNER }
 
             DetailRow {
@@ -558,33 +567,36 @@ Item {
         }
 
         // ---- Footer actions -------------------------------------------
+        // PR 5 (post-DESIGN.md v0.2): Cancel is rendered as the `ghost`
+        // variant per DESIGN_SYSTEM.md v0.2 §7.1 + §7.6 ("for safety-
+        // critical surfaces critical + ghost cancel is the correct
+        // pairing"). No border chrome, no filled hover; hover is a
+        // text-color shift only.
+        //
+        // The primary button below remains exactly as-is: explicitly
+        // disabled, no MouseArea, verbatim contract comment intact.
+        // Per ADR 0049 Decision 2 and the contract comment, those
+        // properties MUST NOT change in this PR. PR 5 polishes the
+        // interior only; the submission-state plumbing is sacred.
         actionContent: [
-            // Cancel — closes the modal.
+            // Cancel — closes the modal. Ghost variant: no chrome.
             Item {
                 implicitWidth:  cancelLabel.implicitWidth + Theme.space[4] * 2
                 implicitHeight: 36
-
-                Rectangle {
-                    anchors.fill: parent
-                    color: cancelMa.containsMouse
-                           ? Theme.color.surface.raised
-                           : "transparent"
-                    border.color: Theme.color.border.regular
-                    border.width: 1
-                    radius: Theme.radius.md
-                    Behavior on color { ColorAnimation { duration: Theme.motion.fast } }
-                }
 
                 Text {
                     id: cancelLabel
                     anchors.centerIn: parent
                     text:  "Cancel"
-                    color: Theme.color.text.primary
+                    color: cancelMa.containsMouse
+                           ? Theme.color.text.primary
+                           : Theme.color.text.secondary
                     font.family:    Theme.typography.label.xs.family
                     font.pixelSize: Theme.typography.label.xs.size
                     font.weight:    Theme.typography.label.xs.weight
                     font.letterSpacing: Theme.typography.label.xs.letterSpacing
                     font.capitalization: Font.AllUppercase
+                    Behavior on color { ColorAnimation { duration: Theme.motion.fast } }
                 }
 
                 MouseArea {
@@ -686,6 +698,52 @@ Item {
         width: parent ? parent.width : 0
         height: 1
         color: Theme.color.border.subtle
+    }
+
+    // Safety banner — sober typeset stamp, NOT a yellow alert bar or a
+    // rotated rubber-stamp graphic. Per DESIGN_SYSTEM.md v0.2 §7.6's
+    // confirmation-modal interior contract: "Safety banner (when
+    // applicable): small-caps typography.label.xs red set in a band
+    // bounded by hairline rules above and below, color status.negative.
+    // Never a yellow alert bar and never a decorative rubber-stamp
+    // graphic."
+    //
+    // Used by COMMAND DRAFT PREVIEW to render "NOT SUBMITTABLE" as a
+    // typeset stamp band before the verbatim ADR 0049 banner copy.
+    component SafetyBanner: Column {
+        id: safetyBannerRoot
+        property string text: ""
+        width: parent ? parent.width : 0
+        spacing: 0
+
+        Rectangle {
+            width:  parent.width
+            height: 1
+            color:  Theme.status.negative
+        }
+
+        Item {
+            width:  parent.width
+            implicitHeight: bannerText.implicitHeight + Theme.space[3] * 2
+
+            Text {
+                id: bannerText
+                anchors.centerIn: parent
+                text:  safetyBannerRoot.text
+                color: Theme.status.negative
+                font.family:         Theme.typography.label.xs.family
+                font.pixelSize:      Theme.typography.label.xs.size
+                font.weight:         Font.DemiBold
+                font.letterSpacing:  Theme.typography.label.xs.letterSpacing + 0.6
+                font.capitalization: Font.AllUppercase
+            }
+        }
+
+        Rectangle {
+            width:  parent.width
+            height: 1
+            color:  Theme.status.negative
+        }
     }
 
     // Multi-line prose block — used by INTENT PACKET and SAFETY BOUNDARY.
