@@ -187,7 +187,7 @@ Evaluate strategies against historical data honestly, with walk-forward validati
 | ID | Requirement | Acceptance Criteria |
 |----|-------------|---------------------|
 | R-BKT-001 | The backtester **shall** execute strategy logic against cached historical bars. | Test: running a backtest on a known strategy over a known date range produces deterministic output. |
-| R-BKT-002 | The backtester **shall** apply configurable slippage (default 0.1–0.2%) and commission (default 0.0 for Alpaca) to simulated fills. | Test: toggling slippage changes equity curves predictably. |
+| R-BKT-002 | The backtester **shall** apply configurable slippage (tiered by strategy/universe, with a 5 bps fallback when no tier is declared) and commission (default 0.0 for Alpaca) to simulated fills. | Test: toggling slippage changes equity curves predictably. |
 | R-BKT-003 | The backtester **shall** support walk-forward validation with rolling train/test windows and out-of-sample holdout. | Test: walk-forward config produces N non-overlapping evaluation windows as specified. |
 | R-BKT-004 | The backtester **shall** refuse to report "pass" status on any run with fewer than 30 trades. | Test: 29-trade backtest returns `statistically_insufficient: true`. |
 | R-BKT-005 | Backtest output **shall** include equity curve, trade log, and the core metric set (Sharpe, Sortino, max drawdown, win rate, avg win/loss, total return). | Snapshot test of output schema. |
