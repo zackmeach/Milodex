@@ -46,6 +46,32 @@ Item {
 
     signal closeRequested()
 
+    // ADR 0051 Phase C2: emitted after a successful demotion submit. The
+    // surface listens to this so it can clear stale selection state once
+    // the read-model refresh lands. The payload is the CommandResult dict.
+    signal submitted(var result)
+
+    // ADR 0051 Phase C2: emitted when a demotion submit is refused before
+    // dispatch (blank reason, drifted stage, governance refusal). Carries
+    // the structured blocker list so the surface can render reason codes
+    // and human messages without parsing free text.
+    signal submitBlocked(var blockers)
+
+    // Submit affordance is *only* enabled for the demote action family.
+    // Every other action family still routes to the inert "Not wired in v1"
+    // primary button below. The kind comes from the action-intent preview
+    // when present, otherwise from the action label's prefix.
+    readonly property bool _isSubmitCapable: {
+        return _actionKind(actionData) === "demote"
+    }
+
+    // Reason text the operator types into the inline input when the action
+    // is submit-capable. The submit button is gated on non-blank reason so
+    // the audit record always carries one.
+    property string _reasonText: ""
+    property bool   _submitInFlight: false
+    property string _submitErrorMessage: ""
+
     // PR M (ADR 0049): prefer the normalized evidencePacket carried on
     // rowData when present, otherwise fall back to the flat rowData fields.
     // Read-only; never mutated here.
@@ -121,7 +147,80 @@ Item {
     focus: open
 
     onOpenChanged: {
-        if (open) forceActiveFocus()
+        if (open) {
+            // Clear per-open state so each operator session of the modal
+            // starts with an empty reason input and no stale error string.
+            // The reason input is only visible when _isSubmitCapable.
+            root._reasonText = ""
+            root._submitErrorMessage = ""
+            root._submitInFlight = false
+            forceActiveFocus()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // ADR 0051 Phase C2 — demotion submit dispatch
+    //
+    // The MouseArea on the demote-only primary button calls this function.
+    // No other action family reaches the bridge through this modal.
+    //
+    // The function reads the operator-typed reason from `_reasonText`,
+    // builds a proposal via BenchCommandBridge.proposeDemote, refuses if
+    // the proposal carries blockers, otherwise calls submitDemote with the
+    // proposal id. All governance decisions live on the Python side; this
+    // function does not touch broker, event store, runner, or YAML.
+    // ------------------------------------------------------------------
+    function _dispatchDemoteSubmit() {
+        if (!root._isSubmitCapable) return
+        if (root._submitInFlight) return
+
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        var targetStage = (root.actionData && root.actionData.targetStage) || ""
+        var reason = root._reasonText
+        if (!strategyId || !targetStage || !reason || !reason.trim().length) {
+            root._submitErrorMessage = "Reason is required before submitting a demotion."
+            return
+        }
+
+        root._submitErrorMessage = ""
+        root._submitInFlight = true
+
+        // approved_by is sourced backend-side by BenchCommandBridge
+        // (_resolve_operator_identity) — QML does not decide identity.
+        var proposal = BenchCommandBridge.proposeDemote({
+            "strategy_id": strategyId,
+            "to_stage": targetStage,
+            "reason": reason
+        })
+
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return
+        }
+
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root.submitBlocked(proposal.blockers)
+            return
+        }
+
+        var result = BenchCommandBridge.submitDemote(proposal.proposal_id)
+        root._submitInFlight = false
+
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
     }
 
     Keys.onEscapePressed: (event) => {
@@ -564,6 +663,75 @@ Item {
             SectionLabel { label: "SAFETY BOUNDARY"; ordinal: "07" }
 
             ProseBlock { text: root._safetyCopy(root.rowData, root.actionData) }
+
+            // ============================================================
+            // 8. DEMOTION SUBMIT (ADR 0051 Phase C2 — submit-capable branch)
+            //
+            // Visible ONLY when the action is a demote. Collects the
+            // required reason and surfaces submit/refuse status. Every
+            // other action family bypasses this section and renders the
+            // existing "Not wired in v1" inert primary action below.
+            // ============================================================
+            SectionLabel {
+                visible: root._isSubmitCapable
+                label: "OPERATOR INPUT"
+                ordinal: "08"
+            }
+
+            ProseBlock {
+                visible: root._isSubmitCapable
+                text: "Demotion is the first Bench action family wired end-to-end. The reason below is recorded with the append-only promotion event so the audit log can be reconstructed without re-asking the operator."
+            }
+
+            Rectangle {
+                visible: root._isSubmitCapable
+                width: parent.width
+                implicitHeight: reasonField.implicitHeight + Theme.space[3] * 2
+                color: Theme.color.surface.raised
+                border.color: reasonField.activeFocus ? Theme.status.negative : Theme.color.border.subtle
+                border.width: 1
+                radius: Theme.radius.md
+
+                TextInput {
+                    id: reasonField
+                    anchors.fill: parent
+                    anchors.margins: Theme.space[3]
+                    text: root._reasonText
+                    color: Theme.color.text.primary
+                    selectByMouse: true
+                    selectionColor: Theme.status.negative
+                    selectedTextColor: Theme.color.text.primary
+                    clip: true
+                    font.family:    Theme.typography.data.xs.family
+                    font.pixelSize: Theme.typography.data.xs.size
+                    font.features:  Theme.typography.data.xs.features
+                    onTextChanged: root._reasonText = text
+
+                    Text {
+                        visible: reasonField.text.length === 0
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Reason required for the audit record"
+                        color: Theme.color.text.disabled
+                        font.family:    Theme.typography.data.xs.family
+                        font.pixelSize: Theme.typography.data.xs.size
+                        font.features:  Theme.typography.data.xs.features
+                        font.italic: true
+                    }
+                }
+            }
+
+            Text {
+                visible: root._isSubmitCapable && root._submitErrorMessage.length > 0
+                width: parent.width
+                text: root._submitErrorMessage
+                color: Theme.status.negative
+                font.family:    Theme.typography.data.xs.family
+                font.pixelSize: Theme.typography.data.xs.size
+                font.features:  Theme.typography.data.xs.features
+                font.italic: true
+                wrapMode: Text.WordWrap
+            }
         }
 
         // ---- Footer actions -------------------------------------------
@@ -608,16 +776,29 @@ Item {
                 }
             },
 
-            // Primary — explicitly disabled. NEVER wire an onClicked handler
-            // here that calls into any backend, BenchState, broker, event
-            // store, or config write. ADR 0049 Decision 2 holds.
+            // Primary — action-aware. ADR 0051 Phase C2 opens the demote
+            // action family for end-to-end submit. Every other action family
+            // routes to the inert "Not wired in v1" placeholder below.
+            //
+            // The verbatim "Not wired in v1" string and the inert visual
+            // remain in this file (visible only when !_isSubmitCapable) so
+            // operators viewing a non-demote action see the same boundary
+            // copy ADR 0049 established for v1. Forbidden-token tests in
+            // tests/milodex/gui/test_qml_load_smoke.py allow exactly one
+            // MouseArea here (the demote submit) and continue to reject
+            // broker / event-store / direct config writes.
+
+            // Inert primary — preserved for non-demote action families
+            // (Promote / Return / Start Trading / Stop Trading / Initiate
+            // Backtest / Refresh Backtest). Visible only when the current
+            // action is not submit-capable.
             Item {
+                visible: !root._isSubmitCapable
                 implicitWidth:  primaryLabel.implicitWidth + Theme.space[4] * 2
                 implicitHeight: 36
 
                 Rectangle {
                     anchors.fill: parent
-                    // Disabled visual: muted fill, hairline border, no hover.
                     color:        Theme.color.surface.raised
                     border.color: Theme.color.border.subtle
                     border.width: 1
@@ -637,11 +818,60 @@ Item {
                     font.capitalization: Font.AllUppercase
                 }
 
-                // Intentionally no MouseArea — there is no clickable target.
-                // A future PR that wires real commands MUST add the MouseArea
-                // AND its dispatch AND remove this comment AND update
-                // tests/milodex/gui/test_qml_load_smoke.py — failure to
-                // touch all four is a contract bug.
+                // No MouseArea — these action families remain preview-only
+                // until their respective wiring PRs land (ADR 0051 Phases
+                // D / E / F). Adding a dispatch here without an ADR
+                // amendment + the corresponding facade submit method is a
+                // contract bug.
+            },
+
+            // Submit-capable primary — demote action family only (ADR 0051
+            // Phase C2). The MouseArea routes through the bridge's
+            // proposeDemote + submitDemote slots — the same callee path the
+            // CLI uses. This Item never reaches the event store, broker,
+            // runner, or YAML directly; every governance decision (gate,
+            // stage, audit) lives behind the Python facade.
+            Item {
+                id: submitDemoteItem
+                visible: root._isSubmitCapable
+                implicitWidth:  submitLabel.implicitWidth + Theme.space[4] * 2
+                implicitHeight: 36
+
+                Rectangle {
+                    anchors.fill: parent
+                    color: submitMa.containsMouse && submitMa.enabled
+                           ? Theme.status.negative
+                           : Theme.color.surface.raised
+                    border.color: Theme.status.negative
+                    border.width: 1
+                    radius:       Theme.radius.md
+                    opacity: submitMa.enabled ? 1.0 : 0.55
+                    Behavior on color { ColorAnimation { duration: Theme.motion.fast } }
+                }
+
+                Text {
+                    id: submitLabel
+                    anchors.centerIn: parent
+                    text:  root._submitInFlight ? "Submitting…" : "Confirm demotion"
+                    color: submitMa.containsMouse && submitMa.enabled
+                           ? Theme.color.text.primary
+                           : Theme.status.negative
+                    font.family:    Theme.typography.label.xs.family
+                    font.pixelSize: Theme.typography.label.xs.size
+                    font.weight:    Theme.typography.label.xs.weight
+                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                    font.capitalization: Font.AllUppercase
+                }
+
+                MouseArea {
+                    id: submitMa
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    enabled: !root._submitInFlight
+                             && root._reasonText.trim().length > 0
+                    onClicked: root._dispatchDemoteSubmit()
+                }
             }
         ]
     }

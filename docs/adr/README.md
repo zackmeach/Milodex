@@ -77,5 +77,6 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0046](0046-bench-stage-hues-extend-production-tokens.md) | Bench stage hues extend production tokens | Accepted |
 | [0047](0047-bench-action-availability-is-the-validation-surface.md) | Bench action availability is the validation surface | Accepted |
 | [0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md) | Bench uses vertical stage sections with natural scroll | Accepted |
-| [0049](0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) | Phase 6 Bench v1 is a visual prototype with no backend mutation | Accepted |
+| [0049](0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) | Phase 6 Bench v1 is a visual prototype with no backend mutation | Accepted (amended in part by [ADR 0051](0051-bench-command-infrastructure-v1.md)) |
 | [0050](0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) | Strategy evidence has a freshness axis distinct from promotion stage | Accepted |
+| [0051](0051-bench-command-infrastructure-v1.md) | Bench Command Infrastructure v1 — propose / submit lifecycle for the launch paper-lifecycle | Accepted |

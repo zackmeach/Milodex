@@ -75,7 +75,7 @@ def _build_script(qml_path: Path) -> str:
     qml_str = str(qml_path)
 
     return f"""\
-import os, sys
+import os, sys, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from pathlib import Path
@@ -84,6 +84,8 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
+from milodex.commands.bench import BenchCommandFacade
+from milodex.gui.bench_command_bridge import BenchCommandBridge
 from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
@@ -122,6 +124,21 @@ kanban = KanbanState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Pa
 ledger = LedgerState(db_path=Path("/__nonexistent_smoke_test__"))
 desk = DeskState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 
+# Real BenchCommandBridge backed by a real facade over a throwaway tmpdir.
+# The bridge must be registered as a QML singleton instance so QML references
+# to ``Milodex.BenchCommandBridge`` resolve at load time (Phase C2 review F1).
+_smoke_root = Path(tempfile.mkdtemp(prefix="milodex_smoke_"))
+_smoke_configs = _smoke_root / "configs"
+_smoke_locks = _smoke_root / "locks"
+_smoke_configs.mkdir()
+_smoke_locks.mkdir()
+facade = BenchCommandFacade(
+    config_dir=_smoke_configs,
+    locks_dir=_smoke_locks,
+    get_trading_mode=lambda: "paper",
+)
+bench_command_bridge = BenchCommandBridge(facade, bench_state=bench)
+
 register_qml_types(
     theme_manager=tm,
     operational_state=op,
@@ -131,6 +148,7 @@ register_qml_types(
     kanban_state=kanban,
     ledger_state=ledger,
     desk_state=desk,
+    bench_command_bridge=bench_command_bridge,
 )
 
 _warnings: list[str] = []
@@ -196,6 +214,64 @@ def test_main_qml_loads_clean() -> None:
     qml_path = _MILODEX_QML_DIR / _MAIN_QML
     assert qml_path.exists(), f"Main.qml missing: {qml_path}"
     _run_and_assert(_build_script(qml_path), _MAIN_QML)
+
+
+def test_bench_command_bridge_resolves_in_qml() -> None:
+    """ADR 0051 Phase C2 review F1: the QML engine must resolve
+    ``Milodex.BenchCommandBridge`` and its slot return must round-trip.
+
+    A probe QML component imports ``Milodex 1.0`` and binds
+    ``submitCapableActionFamilies()`` to a property. If the singleton is not
+    registered, QML emits a warning at component creation; if registration
+    succeeded, the property reads ``["demote"]``. Either failure exits the
+    subprocess non-zero.
+    """
+    probe_qml = (
+        "import QtQuick\n"
+        "import Milodex 1.0\n"
+        "QtObject {\n"
+        "    property var families: BenchCommandBridge.submitCapableActionFamilies()\n"
+        "}\n"
+    )
+    # Reuse the existing _build_script harness to set up the engine, then
+    # swap out the load step for a QQmlComponent.setData probe. The simplest
+    # way is to write the probe to a tempfile and load it as a normal target.
+    script = _build_script(_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml")
+    # Replace the engine.load(...) block and trailing exit logic with an
+    # inline probe that compiles the QML above and verifies the result.
+    probe_block = (
+        "from PySide6.QtCore import QUrl\n"
+        "from PySide6.QtQml import QQmlComponent\n"
+        f"probe_src = {probe_qml!r}\n"
+        "_warnings = []\n"
+        "engine = QQmlApplicationEngine()\n"
+        "engine.warnings.connect(lambda msgs: _warnings.extend(str(m) for m in msgs))\n"
+        f"engine.addImportPath({str(_QML_IMPORT_ROOT)!r})\n"
+        "component = QQmlComponent(engine)\n"
+        "component.setData(probe_src.encode('utf-8'), QUrl())\n"
+        "obj = component.create()\n"
+        "errors = [w for w in _warnings if w]\n"
+        "if errors:\n"
+        "    for e in errors:\n"
+        "        print(f'QML_WARNING: {e}', file=sys.stderr)\n"
+        "    sys.exit(3)\n"
+        "if obj is None:\n"
+        "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
+        "    sys.exit(4)\n"
+        "families = obj.property('families')\n"
+        "if list(families) != ['demote']:\n"
+        "    print(f'UNEXPECTED_FAMILIES: {families!r}', file=sys.stderr)\n"
+        "    sys.exit(5)\n"
+        "print('PROBE_OK')\n"
+        "sys.exit(0)\n"
+    )
+    # Strip everything from the first occurrence of "_warnings: list[str]"
+    # in the generated script, then append the probe block. This keeps the
+    # full setup (facade, bridge, register_qml_types) intact.
+    marker = "_warnings: list[str] = []"
+    setup, _sep, _rest = script.partition(marker)
+    composed_script = setup + probe_block
+    _run_and_assert(composed_script, "BenchCommandBridge singleton probe")
 
 
 def test_bench_ledger_copy_and_drag_safety_contract() -> None:
@@ -1065,13 +1141,43 @@ def test_bench_pr_p_boundary_doc_exists_and_anchors_to_code() -> None:
     )
 
 
+# ADR 0051 §9 — narrow allowlist of files permitted to declare command
+# infrastructure. Every entry must correspond to a file ADR 0051 explicitly
+# names. Widening this list silently is exactly the failure mode the
+# perimeter exists to prevent; a new entry must arrive with the action-family
+# wiring PR that needs it.
+_ADR_0051_COMMAND_INFRA_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        # The Python facade itself — Phase B.
+        "src/milodex/commands/bench.py",
+        # The package __init__ re-exports the facade dataclasses.
+        "src/milodex/commands/__init__.py",
+        # Phase C2: the Qt bridge over the facade. Exposes ``proposeDemote``
+        # and ``submitDemote`` only — no other action family is wired.
+        # Subsequent action-family wiring PRs must NOT widen this list
+        # without their own ADR; widening it silently is the failure mode
+        # the perimeter exists to prevent.
+        "src/milodex/gui/bench_command_bridge.py",
+    }
+)
+
+
 def test_bench_pr_p_python_has_no_command_infrastructure() -> None:
     """PR P: no Python file may define a CommandProposal class or submit/dispatch entry point.
 
     A grep-level guard: if any future PR adds `class CommandProposal`, a
     `submit_command` function, or a `dispatch_command` function anywhere in
-    the Python codebase, this test fails and forces the contributor to open
-    a new ADR per the BENCH_BOUNDARY.md escalation rail.
+    the Python codebase outside the ADR 0051 allowlist, this test fails and
+    forces the contributor to open a new ADR per the BENCH_BOUNDARY.md
+    escalation rail.
+
+    ADR 0051 (Phase B) amends this perimeter narrowly: ``CommandProposal``,
+    ``CommandResult``, ``Blocker``, ``BenchCommandFacade`` are permitted in
+    the files named in ``_ADR_0051_COMMAND_INFRA_ALLOWLIST``. Submit-shaped
+    dispatch functions (``submit_command``, ``dispatch_command``,
+    ``execute_command``) remain forbidden everywhere — the facade names its
+    submit methods per action family (``submit_backtest``, …) which is the
+    contract Phase C–F wires up.
     """
     repo_root = Path(__file__).resolve().parents[3]
     src_root = repo_root / "src" / "milodex"
@@ -1084,14 +1190,129 @@ def test_bench_pr_p_python_has_no_command_infrastructure() -> None:
     )
 
     for py_path in src_root.rglob("*.py"):
+        rel_posix = py_path.relative_to(repo_root).as_posix()
+        if rel_posix in _ADR_0051_COMMAND_INFRA_ALLOWLIST:
+            continue
         text = py_path.read_text(encoding="utf-8")
         for pattern in forbidden_python_patterns:
             match = pattern.search(text)
             assert match is None, (
                 f"{py_path.relative_to(repo_root)} declares {match.group(0)!r} — "
-                "ADR 0049 Decision 2 forbids Python command infrastructure in v1. "
-                "Open a new ADR before introducing this."
+                "ADR 0049 Decision 2 / ADR 0051 §9 forbid Python command "
+                "infrastructure outside the allowlist. Either open a new ADR "
+                "or add the file to _ADR_0051_COMMAND_INFRA_ALLOWLIST in the "
+                "same PR that wires the corresponding action family."
             )
+
+
+def test_bench_pr_c2_modal_demote_submit_affordance() -> None:
+    """ADR 0051 Phase C2: BenchConfirmationModal carries an action-aware
+    submit affordance for the demote action family only.
+
+    Pins:
+
+    * the verbatim "Not wired in v1" inert primary remains in source
+      (it renders for every non-demote action family);
+    * a "Confirm demotion" submit affordance is wired alongside;
+    * the submit MouseArea calls into the BenchCommandBridge, not directly
+      into the facade, broker, runner, or event store;
+    * the reason input is present and required;
+    * the modal still rejects the literal mutation tokens forbidden by
+      ADR 0049 (covered by test_bench_pr_n_no_mutation_token_drift; this
+      test only adds the C2-specific positive assertions).
+    """
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    # Inert "Not wired in v1" still present — non-demote actions still see it.
+    assert "Not wired in v1" in modal_src
+
+    # Submit affordance — demote-only.
+    assert "Confirm demotion" in modal_src
+    assert "_isSubmitCapable" in modal_src
+    assert "BenchCommandBridge.proposeDemote(" in modal_src
+    assert "BenchCommandBridge.submitDemote(" in modal_src
+
+    # Reason input is wired and gates the submit button.
+    assert "Reason required for the audit record" in modal_src
+    assert "_reasonText" in modal_src
+
+    # The submit MouseArea only routes through the bridge — no facade,
+    # event-store, broker, runner, or config references in the modal.
+    forbidden_direct = (
+        "from milodex.commands",
+        "BenchCommandFacade",
+        "EventStore.",
+        "AlpacaBrokerClient",
+        "StrategyRunner",
+        "promotion.state_machine",
+    )
+    for token in forbidden_direct:
+        assert token not in modal_src, (
+            f"BenchConfirmationModal.qml must not contain {token!r} — the "
+            "bridge is the only command boundary (ADR 0051 §5)."
+        )
+
+
+def test_bench_pr_c2_other_action_families_remain_not_wired() -> None:
+    """ADR 0051 Phase C2: only demote is submit-capable. The modal must
+    still render the inert "Not wired in v1" primary for every other
+    action family. The boolean gate that selects which primary renders
+    must look at the action kind, not at a global flag.
+    """
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    # The submit-capable predicate must be derived from the action kind,
+    # not from a hardcoded "always submit" flag.
+    assert "_actionKind(actionData) === \"demote\"" in modal_src, (
+        "The submit-capable branch must be gated on the demote action kind "
+        "specifically. Other action families remain preview-only."
+    )
+
+    # The inert primary block must be visible-gated to the !_isSubmitCapable
+    # branch so promote / return / start / stop / initiate / refresh actions
+    # continue to see "Not wired in v1".
+    assert "visible: !root._isSubmitCapable" in modal_src
+
+
+def test_bench_pr_c2_surface_listens_for_submitted() -> None:
+    """ADR 0051 Phase C2: BenchSurface listens for the modal's ``submitted``
+    signal so the preview state clears after a successful demotion."""
+    surface_src = (
+        _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
+    ).read_text(encoding="utf-8")
+    assert "onSubmitted" in surface_src, (
+        "BenchSurface.qml must handle BenchConfirmationModal.submitted "
+        "so the preview closes after a successful demotion."
+    )
+
+
+def test_adr_0051_command_infra_allowlist_only_lists_existing_facade_paths() -> None:
+    """Pin the allowlist: every entry must (a) exist on disk and (b) be one
+    of the exact paths ADR 0051 names. Silently widening the allowlist by
+    adding stub files is exactly what the perimeter exists to prevent."""
+    repo_root = Path(__file__).resolve().parents[3]
+    permitted = {
+        "src/milodex/commands/bench.py",
+        "src/milodex/commands/__init__.py",
+        # Phase C2 wiring: the Qt bridge over the facade. ADR 0051 §10 (Phase
+        # C2 status) names this exact path. Subsequent action-family wiring
+        # PRs must NOT widen this set without their own ADR amendment.
+        "src/milodex/gui/bench_command_bridge.py",
+    }
+    assert _ADR_0051_COMMAND_INFRA_ALLOWLIST == frozenset(permitted), (
+        "Changing _ADR_0051_COMMAND_INFRA_ALLOWLIST must land in the same PR "
+        "as the action-family wiring that justifies the new entry, and must "
+        "be cited by the ADR amendment. See ADR 0051 §9."
+    )
+    for rel in _ADR_0051_COMMAND_INFRA_ALLOWLIST:
+        assert (repo_root / rel).exists(), (
+            f"Allowlist entry {rel!r} does not exist on disk. Remove the "
+            "entry or land the file."
+        )
 
 
 def test_bench_pr_o_modal_is_viewport_bounded() -> None:

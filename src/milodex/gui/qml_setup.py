@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from PySide6.QtQml import qmlRegisterSingletonInstance
 
+from milodex.gui.bench_command_bridge import BenchCommandBridge
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.read_models import (
     BenchState,
@@ -54,6 +55,7 @@ _bench_state_instance: BenchState | None = None
 _kanban_state_instance: KanbanState | None = None
 _ledger_state_instance: LedgerState | None = None
 _desk_state_instance: DeskState | None = None
+_bench_command_bridge_instance: BenchCommandBridge | None = None
 
 
 def register_qml_types(
@@ -65,6 +67,7 @@ def register_qml_types(
     kanban_state: KanbanState | None = None,
     ledger_state: LedgerState | None = None,
     desk_state: DeskState | None = None,
+    bench_command_bridge: BenchCommandBridge | None = None,
 ) -> ThemeManager:
     """Register Python QML types and return the :class:`ThemeManager` singleton.
 
@@ -109,7 +112,7 @@ def register_qml_types(
     """
     global _singleton_instance, _operational_state_instance, _strategy_bank_state_instance
     global _front_page_state_instance, _bench_state_instance, _kanban_state_instance
-    global _ledger_state_instance, _desk_state_instance
+    global _ledger_state_instance, _desk_state_instance, _bench_command_bridge_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
     qmlRegisterSingletonInstance(
@@ -198,5 +201,20 @@ def register_qml_types(
             desk_state,
         )
         _desk_state_instance = desk_state
+
+    if bench_command_bridge is not None:
+        # ADR 0051 Phase C2: register the Bench command bridge as a QML
+        # singleton instance. QML files reach the facade only through this
+        # bridge — see src/milodex/gui/bench_command_bridge.py and the
+        # forbidden-token tests in tests/milodex/gui/test_qml_load_smoke.py.
+        qmlRegisterSingletonInstance(
+            BenchCommandBridge,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "BenchCommandBridge",
+            bench_command_bridge,
+        )
+        _bench_command_bridge_instance = bench_command_bridge
 
     return instance
