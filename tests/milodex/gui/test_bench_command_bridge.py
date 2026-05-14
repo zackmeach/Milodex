@@ -27,6 +27,7 @@ import pytest
 
 from milodex.commands.bench import (
     ACTION_FAMILY_DEMOTE,
+    ACTION_FAMILY_FREEZE_MANIFEST,
     BenchCommandFacade,
 )
 from milodex.core.event_store import EventStore
@@ -277,24 +278,25 @@ def test_submit_demote_blocked_proposal_skips_refresh(
 # --------------------------------------------------------------------------- #
 
 
-def test_bridge_exposes_only_demote_action_family() -> None:
-    """ADR 0051 Phase C2: the bridge wires demote only. Every other action
-    family must remain absent from the QML-callable surface."""
+def test_bridge_exposes_only_demote_and_freeze_manifest_action_families() -> None:
+    """ADR 0051 Phase D1: the bridge wires demote (C2) and freeze_manifest
+    (D1). Every other action family must remain absent from the QML-callable
+    surface."""
     members = {
         name
         for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)
     }
-    # Demote slots present.
+    # Submit-capable slots present.
     assert "proposeDemote" in members
     assert "submitDemote" in members
+    assert "proposeFreezeManifest" in members
+    assert "submitFreezeManifest" in members
     # No other action-family slot. Adding one without the corresponding ADR
     # amendment + facade wiring + boundary doc update is exactly the failure
     # mode the perimeter exists to prevent.
     for forbidden in (
         "proposeBacktest",
         "submitBacktest",
-        "proposeFreezeManifest",
-        "submitFreezeManifest",
         "proposePromoteToPaper",
         "submitPromoteToPaper",
         "proposeStartPaperRunner",
@@ -303,16 +305,19 @@ def test_bridge_exposes_only_demote_action_family() -> None:
         "submitStopPaperRunner",
     ):
         assert forbidden not in members, (
-            f"BenchCommandBridge must not expose {forbidden} at Phase C2 "
-            "(ADR 0051 §10). Phase C2 is demote-only."
+            f"BenchCommandBridge must not expose {forbidden} at Phase D1 "
+            "(ADR 0051 §10). Phase D1 is demote + freeze_manifest only."
         )
 
 
-def test_submit_capable_action_families_returns_only_demote(
+def test_submit_capable_action_families_returns_demote_and_freeze_manifest(
     facade: BenchCommandFacade,
 ) -> None:
     bridge = BenchCommandBridge(facade)
-    assert bridge.submitCapableActionFamilies() == [ACTION_FAMILY_DEMOTE]
+    assert bridge.submitCapableActionFamilies() == [
+        ACTION_FAMILY_DEMOTE,
+        ACTION_FAMILY_FREEZE_MANIFEST,
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -519,3 +524,214 @@ def test_submit_demote_succeeds_when_bench_state_is_none(
     result = bridge.submitDemote(proposal["proposal_id"])
     assert result["status"] == "submitted"
     assert result["audit_event_id"]
+
+
+# --------------------------------------------------------------------------- #
+# Phase D1 — freeze_manifest bridge slots
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_freeze_manifest_returns_dict_and_caches_proposal(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+
+    payload = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    assert isinstance(payload, dict)
+    assert payload["action_family"] == ACTION_FAMILY_FREEZE_MANIFEST
+    assert payload["strategy_id"] == STRATEGY_ID
+    assert payload["proposal_id"]
+    assert payload["blockers"] == []
+    # Proposal cached for the matching submit call.
+    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+
+
+def test_propose_freeze_manifest_for_backtest_stage_returns_blocker_payload(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+    payload = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    assert payload["blockers"]
+    codes = {b["reason_code"] for b in payload["blockers"]}
+    assert "stage_not_freezable" in codes
+
+
+def test_submit_freeze_manifest_with_known_id_writes_event_and_refreshes(
+    facade: BenchCommandFacade, config_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    proposal = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    result = bridge.submitFreezeManifest(proposal["proposal_id"])
+
+    assert result["status"] == "submitted"
+    assert result["action_family"] == ACTION_FAMILY_FREEZE_MANIFEST
+    assert result["durable_refs"]["stage"] == "paper"
+    assert result["durable_refs"]["config_hash"]
+    assert result["durable_refs"]["frozen_by"]
+    assert result["audit_event_id"]
+    assert fake_state.refresh_kicks == 1
+    assert len(payloads) == 1
+    assert payloads[0]["status"] == "submitted"
+    manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
+    assert manifest is not None
+
+
+def test_submit_freeze_manifest_unknown_id_returns_structured_error(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    result = bridge.submitFreezeManifest("not-a-real-proposal-id")
+    assert result["status"] == "error"
+    codes = {b["reason_code"] for b in result["blockers"]}
+    assert "unknown_proposal_id" in codes
+    assert result["action_family"] == ACTION_FAMILY_FREEZE_MANIFEST
+    assert fake_state.refresh_kicks == 0
+    assert len(payloads) == 1
+
+
+def test_submit_freeze_manifest_consumes_proposal_so_second_call_fails(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+    proposal = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    first = bridge.submitFreezeManifest(proposal["proposal_id"])
+    assert first["status"] == "submitted"
+    # Second call must error — the proposal was consumed.
+    second = bridge.submitFreezeManifest(proposal["proposal_id"])
+    assert second["status"] == "error"
+    assert any(b["reason_code"] == "unknown_proposal_id" for b in second["blockers"])
+
+
+def test_submit_freeze_manifest_blocked_proposal_skips_refresh(
+    facade: BenchCommandFacade, config_dir: Path, event_store: EventStore
+) -> None:
+    """If the proposal goes stale between propose and submit (stage drifted
+    to backtest), the bridge must not kick a refresh — there's nothing
+    new to show."""
+    config_path = _write_strategy(config_dir, stage="paper")
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+
+    proposal = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'stage: "paper"', 'stage: "backtest"'
+        ),
+        encoding="utf-8",
+    )
+    result = bridge.submitFreezeManifest(proposal["proposal_id"])
+    assert result["status"] == "blocked"
+    assert fake_state.refresh_kicks == 0
+    assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper") is None
+
+
+def test_submit_freeze_manifest_uses_backend_resolved_identity(
+    facade: BenchCommandFacade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase C2 F4 pattern, applied to freeze: any ``frozen_by`` key in the
+    QML payload is ignored; identity is sourced backend-side via
+    ``_resolve_operator_identity``."""
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+
+    proposal = bridge.proposeFreezeManifest(
+        {
+            "strategy_id": STRATEGY_ID,
+            # A malicious / accidental override from QML must be ignored.
+            "frozen_by": "malicious-attempt",
+        }
+    )
+    result = bridge.submitFreezeManifest(proposal["proposal_id"])
+    assert result["status"] == "submitted"
+    manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
+    assert manifest is not None
+    assert manifest.frozen_by == bridge_module._resolve_operator_identity()
+    assert manifest.frozen_by != "malicious-attempt"
+
+
+def test_submit_freeze_manifest_logs_when_kick_refresh_raises(
+    facade: BenchCommandFacade,
+    config_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Refresh-guard parity with demote: a ``_kick_refresh`` exception is
+    logged via ``logger.exception`` and the submit result is still emitted.
+    """
+    _write_strategy(config_dir, stage="paper")
+    raising_state = _RaisingBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=raising_state)
+
+    proposal = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    with caplog.at_level("ERROR", logger="milodex.gui.bench_command_bridge"):
+        result = bridge.submitFreezeManifest(proposal["proposal_id"])
+
+    assert result["status"] == "submitted"
+    matching = [
+        rec
+        for rec in caplog.records
+        if "BenchState refresh after submit_freeze_manifest failed" in rec.getMessage()
+    ]
+    assert matching, (
+        "Expected a logger.exception record when _kick_refresh raises for "
+        f"freeze_manifest; got {[r.getMessage() for r in caplog.records]!r}"
+    )
+    assert any(rec.exc_info is not None for rec in matching)
+
+
+def test_submit_freeze_manifest_succeeds_when_bench_state_is_none(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)  # default bench_state=None
+    proposal = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
+    result = bridge.submitFreezeManifest(proposal["proposal_id"])
+    assert result["status"] == "submitted"
+    assert result["audit_event_id"]
+
+
+def test_qml_modal_does_not_hardcode_frozen_by_literal() -> None:
+    """Phase D1: ``BenchConfirmationModal.qml`` must not decide who is
+    freezing. Identity flows backend-side via ``_resolve_operator_identity``.
+    Bound to the freeze dispatch function so unrelated occurrences in
+    surrounding QML do not false-positive."""
+    modal_path = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "milodex"
+        / "gui"
+        / "qml"
+        / "Milodex"
+        / "components"
+        / "BenchConfirmationModal.qml"
+    )
+    src = modal_path.read_text(encoding="utf-8")
+    start = src.find("function _dispatchFreezeManifestSubmit")
+    assert start != -1, "_dispatchFreezeManifestSubmit function missing from modal"
+    after = src[start:]
+    end_relative = after.find("\n    }")
+    assert end_relative != -1, "could not locate end of _dispatchFreezeManifestSubmit"
+    body = after[: end_relative + len("\n    }")]
+    assert '"frozen_by"' not in body, (
+        "BenchConfirmationModal._dispatchFreezeManifestSubmit must not "
+        "include a frozen_by key in the proposeFreezeManifest payload "
+        "(Phase D1); identity is sourced backend-side by BenchCommandBridge."
+    )
+    assert '"operator"' not in body, (
+        "BenchConfirmationModal._dispatchFreezeManifestSubmit must not "
+        'hardcode "operator" as the freezing identity (Phase D1).'
+    )

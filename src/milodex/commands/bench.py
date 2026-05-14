@@ -45,6 +45,7 @@ from milodex.promotion import (
     MIN_TRADES,
     STAGE_ORDER,
 )
+from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
 from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.strategies.loader import load_strategy_config
 
@@ -307,14 +308,25 @@ class BenchCommandFacade:
             proposal_id=_new_proposal_id(),
         )
 
-    def propose_freeze_manifest(self, strategy_id: str) -> CommandProposal:
+    def propose_freeze_manifest(
+        self,
+        strategy_id: str,
+        *,
+        frozen_by: str = "operator",
+    ) -> CommandProposal:
         """Propose freezing the strategy YAML at its current promoted stage.
 
         Freeze is only valid for promoted stages (``paper``, ``micro_live``,
         ``live``) — matches ``milodex.promotion.manifest._FROZEN_STAGES``.
         A backtest-stage strategy has nothing to snapshot yet.
+
+        ``frozen_by`` is carried on the proposal so ``submit_freeze_manifest``
+        can re-pass it to the governance callee on dispatch. The CLI default
+        of ``"operator"`` matches ``milodex.promotion.manifest.freeze_manifest``;
+        the bridge resolves it backend-side via ``_resolve_operator_identity``
+        (Phase C2 review F4 pattern).
         """
-        inputs: dict[str, Any] = {}
+        inputs: dict[str, Any] = {"frozen_by": frozen_by}
         config, resolve_blocker = self._resolve_config(strategy_id)
         if resolve_blocker is not None:
             return self._blocked_proposal(
@@ -867,7 +879,117 @@ class BenchCommandFacade:
         return self._phase_b_blocked(proposal, ACTION_FAMILY_BACKTEST)
 
     def submit_freeze_manifest(self, proposal: CommandProposal) -> CommandResult:
-        return self._phase_b_blocked(proposal, ACTION_FAMILY_FREEZE_MANIFEST)
+        """Second submit-capable action (ADR 0051 Phase D1).
+
+        Re-validates the proposal against current state, then routes through
+        ``milodex.promotion.manifest.freeze_manifest`` — the same callee the
+        CLI's ``milodex promotion freeze`` uses. The governance path owns:
+
+        * stage eligibility (``paper`` / ``micro_live`` / ``live`` only),
+        * canonical YAML hashing via ``compute_config_hash``,
+        * append-only ``StrategyManifestEvent`` write to the event store.
+
+        The facade does not duplicate those rules; it surfaces refusals as
+        ``Blocker`` records (mirroring ``submit_demote``) and returns durable
+        manifest identifiers on success.
+        """
+        if proposal.action_family != ACTION_FAMILY_FREEZE_MANIFEST:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=proposal.action_family,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="proposal_action_family_mismatch",
+                        message=(
+                            f"submit_freeze_manifest received a proposal for "
+                            f"'{proposal.action_family}'; expected "
+                            f"'{ACTION_FAMILY_FREEZE_MANIFEST}'."
+                        ),
+                        context={
+                            "expected": ACTION_FAMILY_FREEZE_MANIFEST,
+                            "received": proposal.action_family,
+                        },
+                    )
+                ],
+            )
+
+        event_store = self._require_event_store(proposal)
+        if isinstance(event_store, CommandResult):
+            return event_store
+
+        frozen_by = str(proposal.inputs.get("frozen_by", "operator"))
+
+        # Re-validate against the current world. A proposal that was
+        # admissible at propose-time may have gone stale (stage changed,
+        # YAML deleted, …) — refuse cleanly rather than dispatch.
+        revalidation = self.propose_freeze_manifest(
+            proposal.strategy_id,
+            frozen_by=frozen_by,
+        )
+        if not revalidation.admissible:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+                status="blocked",
+                blockers=list(revalidation.blockers),
+            )
+
+        config, resolve_blocker = self._resolve_config(proposal.strategy_id)
+        if resolve_blocker is not None or config is None:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+                status="blocked",
+                blockers=[resolve_blocker] if resolve_blocker is not None else [],
+            )
+
+        try:
+            event = _governance_freeze_manifest(
+                config.path,
+                event_store=event_store,
+                frozen_by=frozen_by,
+                now=self._now(),
+            )
+        except ValueError as exc:
+            # Governance layer raised. Surface as a structured blocker so
+            # the exception does not cross the facade boundary.
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="governance_refused",
+                        message=str(exc),
+                        context={
+                            "callee": "milodex.promotion.manifest.freeze_manifest",
+                        },
+                    )
+                ],
+            )
+
+        durable_refs: dict[str, str] = {
+            "strategy_id": event.strategy_id,
+            "stage": event.stage,
+            "config_hash": event.config_hash,
+            "config_path": event.config_path,
+            "frozen_by": event.frozen_by,
+            "frozen_at": event.frozen_at.isoformat(),
+        }
+        if event.id is not None:
+            durable_refs["manifest_event_id"] = str(event.id)
+
+        return CommandResult(
+            proposal_id=proposal.proposal_id,
+            action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+            status="submitted",
+            durable_refs=durable_refs,
+            blockers=[],
+            warnings=[],
+            submitted_at=event.frozen_at,
+            audit_event_id=str(event.id) if event.id is not None else None,
+        )
 
     def submit_promote_to_paper(self, proposal: CommandProposal) -> CommandResult:
         return self._phase_b_blocked(proposal, ACTION_FAMILY_PROMOTE_TO_PAPER)

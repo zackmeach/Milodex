@@ -220,7 +220,16 @@ LABEL_START_TRADING = "Start Trading"
 LABEL_STOP_TRADING = "Stop Trading"
 LABEL_DEMOTE_TO_BACKTEST = "Demote to Backtest"
 LABEL_RETURN_TO_IDLE = "Return to Idle"
+LABEL_FREEZE_MANIFEST = "Freeze Manifest"
 LABEL_OPEN_EVIDENCE = "Open Evidence"
+
+
+# Stages at which a strategy YAML can be frozen into the event store as a
+# StrategyManifestEvent. Mirrors ``milodex.promotion.manifest._FROZEN_STAGES``;
+# backtest has nothing to snapshot yet. Phase D1 wires the freeze action.
+_FREEZE_MANIFEST_STAGES: frozenset[Stage] = frozenset(
+    {Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE}
+)
 
 
 # ---------------------------------------------------------------------------
@@ -474,7 +483,19 @@ def compute_menu_items(state: BenchStrategyState) -> list[MenuItem]:
 
     # ---- Invocation verbs (operator-driven jobs/sessions) --------------
 
-    # 5. Start Trading / Stop Trading at trading-eligible stages
+    # 5. Freeze Manifest (snapshot YAML at a promoted stage into the event
+    #    store). Invocation verb — no stage transition; produces an audit
+    #    record. ADR 0051 Phase D1 wires this as the second submit-capable
+    #    action family. Backtest stage has nothing to snapshot yet.
+    if state.current_stage in _FREEZE_MANIFEST_STAGES:
+        items.append(
+            MenuItem(
+                label=LABEL_FREEZE_MANIFEST,
+                verb_class="invocation",
+            )
+        )
+
+    # 6. Start Trading / Stop Trading at trading-eligible stages
     if state.current_stage in {Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE}:
         if state.is_session_running:
             items.append(

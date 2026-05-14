@@ -23,6 +23,7 @@ from milodex.gui.bench_v1 import (
     ADR_0004_HIDDEN_PROMOTION_TARGETS,
     ADR_0043_LIVE_LOCKED_DEMOTIONS_FROM,
     LABEL_DEMOTE_TO_BACKTEST,
+    LABEL_FREEZE_MANIFEST,
     LABEL_INITIATE_BACKTEST,
     LABEL_OPEN_EVIDENCE,
     LABEL_REFRESH_BACKTEST,
@@ -639,11 +640,13 @@ class TestComposerPaperRows:
         )
         # Promote to Micro Live hidden (ADR 0004); no re-run verb (no
         # BACKTEST evidence record). Directional verbs (Demote, Return
-        # to Idle) precede invocation (Start Trading) per the ordering
-        # rule.
+        # to Idle) precede invocation (Freeze Manifest, Start Trading)
+        # per the ordering rule. Freeze Manifest (ADR 0051 Phase D1)
+        # surfaces at every _FREEZE_MANIFEST_STAGES row.
         assert _labels(compute_menu_items(state)) == [
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
@@ -659,6 +662,7 @@ class TestComposerPaperRows:
         assert _labels(compute_menu_items(state)) == [
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_STOP_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
@@ -673,11 +677,12 @@ class TestComposerPaperRows:
         )
         # Promote to Micro Live still hidden (ADR 0004); Refresh Backtest
         # now surfaces because BACKTEST evidence is Aging+Pass. Directional
-        # verbs (Demote, Return to Idle) come before invocation (Start
-        # Trading, Refresh Backtest).
+        # verbs (Demote, Return to Idle) come before invocation (Freeze
+        # Manifest, Start Trading, Refresh Backtest).
         assert _labels(compute_menu_items(state)) == [
             LABEL_DEMOTE_TO_BACKTEST,
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_REFRESH_BACKTEST,
             LABEL_OPEN_EVIDENCE,
@@ -696,9 +701,11 @@ class TestComposerCapitalStageRows:
         )
         # Promote to Live hidden by ADR 0004 forward lock.
         # Demote to Backtest hidden by ADR 0043 Decision 3 + ADR 0004.
-        # Directional Return to Idle precedes invocation Start Trading.
+        # Directional Return to Idle precedes invocation Freeze Manifest
+        # then Start Trading.
         assert _labels(compute_menu_items(state)) == [
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]
@@ -713,9 +720,11 @@ class TestComposerCapitalStageRows:
         # No further promotion (LIVE is terminal).
         # Demote and Return to Micro Live both capital-affecting →
         # hidden by ADR 0043 Decision 3 + ADR 0004.
-        # Directional Return to Idle precedes invocation Start Trading.
+        # Directional Return to Idle precedes invocation Freeze Manifest
+        # then Start Trading.
         assert _labels(compute_menu_items(state)) == [
             LABEL_RETURN_TO_IDLE,
+            LABEL_FREEZE_MANIFEST,
             LABEL_START_TRADING,
             LABEL_OPEN_EVIDENCE,
         ]

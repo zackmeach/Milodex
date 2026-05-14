@@ -598,13 +598,13 @@ def test_propose_demote_refuses_micro_live_and_live_targets(
 # --------------------------------------------------------------------------- #
 
 
-# Every submit method except submit_demote is still a Phase B stub. Phase C1
-# wires submit_demote first; the rest land in Phases C2 / D / E / F.
+# Phase C1 wired submit_demote; Phase D1 wires submit_freeze_manifest. The
+# remaining three submit methods (backtest, promote_to_paper, start/stop
+# paper runner) are still Phase B stubs. Phases D2 / E / F land them.
 @pytest.mark.parametrize(
     "method_name,family",
     [
         ("submit_backtest", ACTION_FAMILY_BACKTEST),
-        ("submit_freeze_manifest", ACTION_FAMILY_FREEZE_MANIFEST),
         ("submit_promote_to_paper", ACTION_FAMILY_PROMOTE_TO_PAPER),
         ("submit_start_paper_runner", ACTION_FAMILY_START_PAPER_RUNNER),
         ("submit_stop_paper_runner", ACTION_FAMILY_STOP_PAPER_RUNNER),
@@ -877,6 +877,173 @@ def test_submit_demote_refuses_when_facade_lacks_event_store(
     )
     assert result.status == "error"
     assert any(b.reason_code == "event_store_unavailable" for b in result.blockers)
+
+
+# --------------------------------------------------------------------------- #
+# Phase D1 — submit_freeze_manifest
+# --------------------------------------------------------------------------- #
+
+
+def _make_freeze_manifest_proposal(
+    *,
+    frozen_by: str = "operator",
+) -> CommandProposal:
+    """Construct a proposal the way the bridge eventually will: serialize the
+    inputs `propose_freeze_manifest` exposes. `submit_freeze_manifest`
+    re-validates these via `propose_freeze_manifest` before dispatching."""
+    return CommandProposal(
+        action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        strategy_id=STRATEGY_ID,
+        inputs={"frozen_by": frozen_by},
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="phase-d1-test-proposal",
+    )
+
+
+def test_submit_freeze_manifest_success_on_paper_stage(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase D1: a paper-stage strategy freezes successfully via the GUI
+    submit path — same governance callee the CLI uses."""
+    config_path = _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+
+    result = facade.submit_freeze_manifest(
+        _make_freeze_manifest_proposal(frozen_by="operator")
+    )
+
+    assert result.status == "submitted", result.blockers
+    assert result.action_family == ACTION_FAMILY_FREEZE_MANIFEST
+    # Durable refs carry the strategy_id, stage, config_hash, config_path,
+    # frozen_by, and frozen_at + the manifest_event_id once persisted.
+    assert result.durable_refs["strategy_id"] == STRATEGY_ID
+    assert result.durable_refs["stage"] == "paper"
+    assert result.durable_refs["frozen_by"] == "operator"
+    assert result.durable_refs["config_path"] == str(config_path)
+    assert result.durable_refs["config_hash"]
+    assert result.durable_refs["frozen_at"]
+    assert result.durable_refs.get("manifest_event_id")
+    assert result.submitted_at is not None
+    assert result.audit_event_id == result.durable_refs["manifest_event_id"]
+    # The governance event landed via the existing event store path.
+    manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
+    assert manifest is not None
+    assert manifest.config_hash == result.durable_refs["config_hash"]
+
+
+def test_submit_freeze_manifest_refuses_backtest_stage(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase D1: a backtest-stage strategy must be refused with a structured
+    blocker — backtest has nothing to snapshot yet."""
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+
+    result = facade.submit_freeze_manifest(
+        _make_freeze_manifest_proposal()
+    )
+
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    # The proposal-time stage check fires during re-validation before the
+    # governance call.
+    assert "stage_not_freezable" in codes
+    # No event written on refusal.
+    assert (
+        event_store.get_active_manifest_for_strategy(STRATEGY_ID, "backtest") is None
+    )
+
+
+def test_submit_freeze_manifest_revalidates_stale_proposal(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase D1: a proposal admissible at propose-time but stale at
+    submit-time (stage drifted to backtest) must be refused without
+    dispatching to the governance callee."""
+    config_path = _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = facade.propose_freeze_manifest(STRATEGY_ID)
+    assert proposal.admissible, proposal.blockers
+
+    # Drift the YAML so the strategy is no longer freezable.
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            'stage: "paper"', 'stage: "backtest"'
+        ),
+        encoding="utf-8",
+    )
+
+    result = facade.submit_freeze_manifest(proposal)
+    assert result.status == "blocked"
+    codes = {b.reason_code for b in result.blockers}
+    assert "stage_not_freezable" in codes
+    assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper") is None
+    assert (
+        event_store.get_active_manifest_for_strategy(STRATEGY_ID, "backtest") is None
+    )
+
+
+def test_submit_freeze_manifest_refuses_when_facade_lacks_event_store(
+    config_dir: Path, locks_dir: Path
+) -> None:
+    """A facade constructed without an event_store_factory cannot freeze."""
+    _write_strategy(config_dir, stage="paper")
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=None,
+    )
+    result = facade.submit_freeze_manifest(_make_freeze_manifest_proposal())
+    assert result.status == "error"
+    assert any(b.reason_code == "event_store_unavailable" for b in result.blockers)
+
+
+def test_submit_freeze_manifest_rejects_proposal_for_different_action_family(
+    make_facade, config_dir: Path
+) -> None:
+    """Phase D1: a proposal whose action_family is not freeze_manifest is
+    refused with `proposal_action_family_mismatch`."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    wrong = CommandProposal(
+        action_family=ACTION_FAMILY_DEMOTE,  # mismatched
+        strategy_id=STRATEGY_ID,
+        inputs={"frozen_by": "operator"},
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="wrong-family",
+    )
+    result = facade.submit_freeze_manifest(wrong)
+    assert result.status == "error"
+    assert any(
+        b.reason_code == "proposal_action_family_mismatch" for b in result.blockers
+    )
+
+
+def test_submit_freeze_manifest_threads_frozen_by_from_inputs(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Phase D1: `frozen_by` is carried on the proposal inputs and threaded
+    through to the governance callee — same pattern as `approved_by` on
+    demote. Mirrors the Phase C2 F4 identity-sourcing pattern."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    result = facade.submit_freeze_manifest(
+        _make_freeze_manifest_proposal(frozen_by="operator-cli-override")
+    )
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["frozen_by"] == "operator-cli-override"
+    manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
+    assert manifest is not None
+    assert manifest.frozen_by == "operator-cli-override"
 
 
 # --------------------------------------------------------------------------- #
