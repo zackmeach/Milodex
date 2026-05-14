@@ -987,12 +987,16 @@ Item {
                                     anchors.verticalCenter: parent.verticalCenter
 
                                     Text {
+                                        // Short integer run id (e.g. "1234") —
+                                        // the read model maps strategy_runs.id
+                                        // here, not the UUID-like session_id.
                                         text: modelData.pid
                                         color: Theme.color.text.muted
                                         font.family:    Theme.typography.data.sm.family
                                         font.pixelSize: Theme.typography.data.sm.size
                                         font.features:  Theme.typography.data.sm.features
-                                        width: 50
+                                        width: 40
+                                        horizontalAlignment: Text.AlignRight
                                         elide: Text.ElideRight
                                         clip: true
                                     }
@@ -1003,13 +1007,11 @@ Item {
                                         font.pixelSize: Theme.typography.body.sm.size
                                         font.weight:    Font.Medium
                                     }
-                                    Text {
-                                        text: "· " + modelData.detail
-                                        color: Theme.color.text.muted
-                                        font.family:    Theme.typography.body.md.family
-                                        font.pixelSize: Theme.typography.body.sm.size
-                                        font.italic:    true
-                                    }
+                                    // Mid-line `· detail` removed (PR #126):
+                                    // it duplicated the right-aligned status
+                                    // pill (controlled_stop ≈ STOPPED). The
+                                    // right-aligned pill is now the single
+                                    // authoritative status reading per row.
                                 }
                                 Row {
                                     spacing: 4

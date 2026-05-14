@@ -1124,7 +1124,12 @@ def _runner_rows(db_path: Path) -> list[dict[str, Any]]:
         conn.close()
     return [
         {
-            "pid": row["session_id"],  # session_id is more meaningful than autoincrement rowid
+            # Use the autoincrement run id as the display PID — a short,
+            # human-scannable run sequence number rather than the UUID-like
+            # session_id (which elides to a hash-soup like "85c27...").
+            # The full session_id stays available via sessionId for any
+            # downstream wiring that needs to correlate to the event store.
+            "pid": row["id"],
             "sessionId": row["session_id"],
             "strategyId": row["strategy_id"],
             "name": _short_strategy_name(row["strategy_id"]),
