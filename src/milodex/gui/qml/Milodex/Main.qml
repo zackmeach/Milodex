@@ -64,10 +64,21 @@ Window {
                                         : height
 
     // ------------------------------------------------------------------
-    // Inline component: tab control (mirrors theme switcher in
-    // DesignSystemShowcase.qml).  Hover and active state both use
-    // motion.fast colour transitions.  ADR 0035: state changes are
-    // honest signal, so the tab swap itself does not animate.
+    // Inline component: tab control.
+    //
+    // Active state is rendered as a quiet baseline rule under the label
+    // (1px parchment hairline) rather than a filled pill with an oxblood
+    // left border — per DESIGN_SYSTEM.md §7.8 and §10 principle 6
+    // ("controls stay quiet"). The baseline-rule treatment is the
+    // canonical worked example of editorial-default-for-content +
+    // conventional-affordances-quiet-for-controls: clearly affordant
+    // (the eye reads "this one is selected") without the loud SaaS-tab
+    // dialect of a brand-accent fill. Oxblood is reserved for primary
+    // buttons and row-selection rings, not nav.
+    //
+    // Per ADR 0035, state changes are honest signal — the baseline rule
+    // appears instantly on active flip. Text color animates via
+    // motion.fast within Behavior on color (in-state hover transitions).
     // ------------------------------------------------------------------
 
     component NavTab: Item {
@@ -80,28 +91,16 @@ Window {
         implicitWidth:  tabText.implicitWidth + Theme.space[5] * 2 + 2
         implicitHeight: tabText.implicitHeight + Theme.space[3] * 2
 
+        // Active baseline rule — 1px parchment hairline under the label,
+        // visible width matching the text. DESIGN_SYSTEM.md §7.8.
         Rectangle {
-            anchors.fill: parent
-            color: tabRoot._active
-                    ? Theme.color.surface.raised
-                    : (tabMouse.containsMouse && tabRoot.tabEnabled
-                        ? Theme.color.surface.base
-                        : "transparent")
-            radius: Theme.radius.md
-            Behavior on color {
-                ColorAnimation { duration: Theme.motion.fast }
-            }
-        }
-
-        Rectangle {
-            anchors.left:   parent.left
-            anchors.top:    parent.top
-            anchors.bottom: parent.bottom
-            width:  2
-            color:  tabRoot._active ? Theme.color.brand.accent : "transparent"
-            Behavior on color {
-                ColorAnimation { duration: Theme.motion.fast }
-            }
+            visible: tabRoot._active
+            anchors.top:              tabText.bottom
+            anchors.topMargin:        Theme.space[1]
+            anchors.horizontalCenter: tabText.horizontalCenter
+            width:  tabText.implicitWidth
+            height: 1
+            color:  Theme.color.brand.primary
         }
 
         Text {
@@ -109,12 +108,12 @@ Window {
             anchors.centerIn: parent
             text: tabRoot.label + (tabRoot.tabEnabled ? "" : "  (soon)")
             color: !tabRoot.tabEnabled
-                    ? Theme.color.text.muted
+                    ? Theme.color.text.disabled
                     : (tabRoot._active
                         ? Theme.color.text.primary
                         : (tabMouse.containsMouse
-                            ? Theme.color.text.primary
-                            : Theme.color.text.secondary))
+                            ? Theme.color.text.secondary
+                            : Theme.color.text.muted))
             font.family:        Theme.typography.label.xs.family
             font.pixelSize:     Theme.typography.label.xs.size + 1
             font.weight:        Font.DemiBold
