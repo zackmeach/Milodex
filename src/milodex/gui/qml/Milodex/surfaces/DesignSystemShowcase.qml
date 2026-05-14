@@ -153,6 +153,17 @@ Item {
                         id: tabRoot
                         property string label: ""
                         property string themeId: ""
+                        // Launch scope: initial release is Editorial Dark only.
+                        // Editorial Light and Bronze remain as architectural
+                        // themes (Theme.qml swap mechanism, full token sets,
+                        // contrast tests) but the launch UI does not let the
+                        // operator switch to them. The tabs render in a quiet
+                        // disabled state with a "(post-launch)" suffix so the
+                        // intent is legible.
+                        // TODO(post-launch): remove `tabEnabled` gating once
+                        // Editorial Light + Bronze parity work lands and the
+                        // launch-readiness gate explicitly opens those themes.
+                        property bool   tabEnabled: true
                         readonly property bool _active: ThemeManager.theme === tabRoot.themeId
 
                         implicitWidth:  tabText.implicitWidth + Theme.space[5] * 2 + 2
@@ -163,7 +174,7 @@ Item {
                             anchors.fill: parent
                             color: tabRoot._active
                                     ? Theme.color.surface.raised
-                                    : (tabMouse.containsMouse
+                                    : (tabRoot.tabEnabled && tabMouse.containsMouse
                                         ? Theme.color.surface.base
                                         : "transparent")
                             radius: Theme.radius.md
@@ -189,12 +200,14 @@ Item {
                         Text {
                             id: tabText
                             anchors.centerIn: parent
-                            text: tabRoot.label
-                            color: tabRoot._active
-                                    ? Theme.color.text.primary
-                                    : (tabMouse.containsMouse
+                            text: tabRoot.label + (tabRoot.tabEnabled ? "" : "  (post-launch)")
+                            color: !tabRoot.tabEnabled
+                                    ? Theme.color.text.disabled
+                                    : (tabRoot._active
                                         ? Theme.color.text.primary
-                                        : Theme.color.text.secondary)
+                                        : (tabMouse.containsMouse
+                                            ? Theme.color.text.primary
+                                            : Theme.color.text.secondary))
                             font.family:    Theme.typography.body.md.family
                             font.pixelSize: Theme.typography.body.md.size
                             font.weight:    Font.Medium
@@ -206,14 +219,17 @@ Item {
                         MouseArea {
                             id: tabMouse
                             anchors.fill: parent
-                            hoverEnabled: true
-                            onClicked: ThemeManager.set_theme(tabRoot.themeId)
+                            hoverEnabled: tabRoot.tabEnabled
+                            cursorShape: tabRoot.tabEnabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: {
+                                if (tabRoot.tabEnabled) ThemeManager.set_theme(tabRoot.themeId)
+                            }
                         }
                     }
 
                     ThemeTab { label: "Editorial Dark";  themeId: "editorial-dark" }
-                    ThemeTab { label: "Editorial Light"; themeId: "editorial-light" }
-                    ThemeTab { label: "Bronze";          themeId: "bronze" }
+                    ThemeTab { label: "Editorial Light"; themeId: "editorial-light"; tabEnabled: false }
+                    ThemeTab { label: "Bronze";          themeId: "bronze";          tabEnabled: false }
                 }
             }
 

@@ -209,11 +209,13 @@ The unifying principle: **anything whose purpose is to make the operator feel so
 
 The three themes (Editorial Dark, Editorial Light, Bronze) are three *voices of the same publication*, not three skins of the same app:
 
-- **Editorial Dark** — the default, the night edition. Cream on warm-near-black. The most common reading surface.
-- **Editorial Light** — the day edition. Same publication, paper-side-up. Inverted contrast, identical structure.
-- **Bronze** — a separate aesthetic story (workshop / craft-tool / patinated metal). Not a re-skin; a parallel voice that demonstrates the theme machinery and gives the operator a second register to read in.
+- **Editorial Dark** — the default, the night edition. Cream on warm-near-black. The most common reading surface. **Initial launch supports this theme only.**
+- **Editorial Light** — the day edition. Same publication, paper-side-up. Inverted contrast, identical structure. **Architectural; deferred for post-launch parity.**
+- **Bronze** — a separate aesthetic story (workshop / craft-tool / patinated metal). Not a re-skin; a parallel voice that demonstrates the theme machinery and gives the operator a second register to read in. **Architectural; deferred for post-launch parity.**
 
 Same components, same tokens, different palettes. A surface designed in Editorial Dark must work in all three without per-theme code paths. (DESIGN_SYSTEM §1.2.) If a surface looks correct in only one theme, the surface — not the other themes — is wrong.
+
+**Launch scope (2026-05-14):** Initial launch supports Editorial Dark. Editorial Light and Bronze remain architectural themes — the QML theme files, the `ThemeManager` hot-swap mechanism, the full token sets, and the parity/contrast tests are all preserved. The launch UI does not let the operator switch to them; the design-system showcase renders the Light + Bronze tabs in a disabled state with a `(post-launch)` suffix. Post-launch parity work re-enables them in a dedicated sequence after Editorial Dark is verified in production. The "surface must work in all three themes" doctrine still binds the codebase — surfaces continue to be built against tokens, not theme-specific overrides, so post-launch parity is a verification pass and not a rebuild.
 
 ---
 

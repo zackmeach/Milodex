@@ -39,11 +39,13 @@ Same components, same tokens, three palettes. Hot-swappable at runtime via a pro
 
 | Theme | Role | Surface | Identity |
 |---|---|---|---|
-| **Editorial Dark** | Default | Warm-tinted near-black `#0a0907` | Parchment cream `#e6cf99` + oxblood `#722f37` |
-| **Editorial Light** | Daytime variant | Cream-beige `#f5efe1` | Deep brown `#2a2218` + oxblood `#722f37` |
-| **Bronze** | Alternate direction | Warm-tinted near-black `#0d0c0a` | Patinated bronze `#a68063` + verdigris `#5e8b7e` |
+| **Editorial Dark** | Default — **the only theme shipped at initial launch** | Warm-tinted near-black `#0a0907` | Parchment cream `#e6cf99` + oxblood `#722f37` |
+| **Editorial Light** | Daytime variant — **architectural; deferred for post-launch parity** | Cream-beige `#f5efe1` | Deep brown `#2a2218` + oxblood `#722f37` |
+| **Bronze** | Alternate direction — **architectural; deferred for post-launch parity** | Warm-tinted near-black `#0d0c0a` | Patinated bronze `#a68063` + verdigris `#5e8b7e` |
 
 Editorial Dark and Editorial Light are the same aesthetic in inverted contrast &mdash; literally what publications look like on a screen vs. on paper. Bronze is a separate aesthetic story (workshop / craft-tool / patinated metal) that demonstrates the theme machinery and gives variety without diverging the structural design.
+
+**Launch scope (2026-05-14):** initial launch supports Editorial Dark only. Editorial Light and Bronze remain architectural themes — the full token sets in `Theme.qml`, the QML theme files (`themes/EditorialLight.qml`, `themes/Bronze.qml`), the `ThemeManager` hot-swap mechanism, and the contrast/parity tests are all preserved. The launch UI does not let the operator switch to Light or Bronze; the showcase theme-tabs render those two as disabled with a `(post-launch)` suffix. Post-launch parity work re-enables them in a dedicated sequence after Editorial Dark is verified in production.
 
 ### 1.3 Type pairings
 
