@@ -371,9 +371,9 @@ Item {
                         width: parent.width
                         text: root.riskLine
                         color: root.riskColor
-                        font.family:    Theme.typography.display.sm.family
-                        font.pixelSize: Theme.typography.display.lg.size
-                        font.weight:    Font.Medium
+                        font.family:    Theme.typography.display.md.family
+                        font.pixelSize: Theme.typography.display.md.size
+                        font.weight:    Theme.typography.display.md.weight
                         wrapMode: Text.WordWrap
                     }
                     Text {
@@ -446,9 +446,9 @@ Item {
                         Text {
                             text:  root.formatMoney(root.deskPnl.today)
                             color: Theme.color.brand.primary
-                            font.family:    Theme.typography.display.deskNum.family
-                            font.pixelSize: Theme.typography.display.deskNum.size
-                            font.weight:    Theme.typography.display.deskNum.weight
+                            font.family:    Theme.typography.display.xl.family
+                            font.pixelSize: Theme.typography.display.xl.size
+                            font.weight:    Theme.typography.display.xl.weight
                             font.letterSpacing: -1.0
                         }
                     }
@@ -535,12 +535,11 @@ Item {
                             }
                             Text {
                                 id: regimeLabel
-                                text: root.marketKnown ? root.deskMarket.regime : "NOT WIRED"
+                                text: root.marketKnown ? root.deskMarket.regime : "Not wired"
                                 color: root.marketKnown ? Theme.status.info : Theme.status.warning
-                                font.family:        Theme.typography.label.xs.family
-                                font.pixelSize:     Theme.typography.label.xs.size
-                                font.weight:        Font.DemiBold
-                                font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.4
+                                font.family:    Theme.typography.display.sm.family
+                                font.pixelSize: Theme.typography.display.sm.size
+                                font.weight:    Theme.typography.display.sm.weight
                                 anchors.verticalCenter: parent.verticalCenter
                             }
                         }
