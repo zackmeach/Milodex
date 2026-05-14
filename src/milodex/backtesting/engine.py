@@ -141,7 +141,7 @@ class BacktestEngine:
         data_provider: Market data source (used only to prefetch bars for the run window).
         event_store: Persistent ledger for backtest runs and simulated trades.
         initial_equity: Starting simulated account equity in USD.
-        slippage_pct: Per-trade fill slippage as a fraction (e.g. ``0.001`` = 0.1%).
+        slippage_pct: Per-trade fill slippage as a fraction (e.g. ``0.0005`` = 5 bps).
             Defaults to the value in the strategy config's ``backtest.slippage_pct``.
         commission_per_trade: Fixed commission deducted per executed trade in USD.
             Defaults to the value in the strategy config's ``backtest.commission_per_trade``.
@@ -362,7 +362,7 @@ class BacktestEngine:
            ``universe_*.yaml`` (resolved via the strategy's ``universe_ref``).
         4. Global default: ``backtesting.slippage_pct_default`` in
            ``risk_defaults.yaml``.
-        5. Hardcoded fallback: 0.001 (10 bps).
+        5. Hardcoded fallback: 0.0005 (5 bps).
         """
         # Tier 1: explicit call-site override.
         if override is not None:
@@ -385,7 +385,7 @@ class BacktestEngine:
             return float(global_value)
 
         # Tier 5: hardcoded fallback.
-        return 0.001
+        return 0.0005
 
     def _resolve_universe_slippage(self) -> float | None:
         """Look up ``slippage_pct`` from the universe manifest referenced by this strategy.

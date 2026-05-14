@@ -7,7 +7,7 @@
 
 The broker interface could expose a full order-type menu from day one — market, limit, stop, stop-limit, trailing-stop — or start with a minimum subset and grow. Each additional order type adds surface to `ExecutionService`, risk checks that need to understand partial-fill edge cases, backtest slippage models that must handle unfilled limits, and strategy interfaces that must express which type they want.
 
-Mean reversion on daily swing with sub-$1k capital on liquid US equities/ETFs does not require limit precision to work. A market order at the bar close gets filled at approximately the closing price; slippage is bounded by the conservative 0.1–0.2% assumption baked into backtests.
+Mean reversion on daily swing with sub-$1k capital on liquid US equities/ETFs does not require limit precision to work. A market order at the bar close gets filled at approximately the closing price; slippage is bounded by configurable backtest tiers: 3 bps for highly liquid ETF universes, 5 bps for mixed/large-cap universes, and a 5 bps fallback when no tier is declared.
 
 ## Decision
 
