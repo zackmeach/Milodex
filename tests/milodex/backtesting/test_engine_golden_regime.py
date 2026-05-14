@@ -182,7 +182,9 @@ def test_regime_engine_golden_trade_sequence(tmp_path: Path):
     )
 
     trades = store.list_trades_for_backtest_run(result.db_id)
-    actual = [(t.side, t.symbol, t.quantity, t.estimated_unit_price) for t in trades]
+    filled_trades = [trade for trade in trades if trade.status == "submitted"]
+    skipped_trades = [trade for trade in trades if trade.status == "skipped"]
+    actual = [(t.side, t.symbol, t.quantity, t.estimated_unit_price) for t in filled_trades]
     expected = [
         ("buy", "SPY", 769.0, 8.0),
         ("sell", "SPY", 769.0, 7.0),
@@ -194,7 +196,12 @@ def test_regime_engine_golden_trade_sequence(tmp_path: Path):
     assert result.trade_count == 3
     assert result.buy_count == 2
     assert result.sell_count == 1
+    assert result.skipped_count == 2
     assert result.trading_days == 5
+    assert [trade.message for trade in skipped_trades] == [
+        "Skipped backtest buy for SHY: insufficient cash.",
+        "Skipped backtest buy for SPY: insufficient cash.",
+    ]
 
     # Final equity at close of the last day: cash $481, 1250 SHY @ $7 = $8,750
     # → $9,231.

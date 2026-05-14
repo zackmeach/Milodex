@@ -222,6 +222,8 @@ def test_walk_forward_metadata_contains_oos_aggregate_and_stability():
     assert "stability" in md
     assert "windows" in md
     assert len(md["windows"]) == len(result.windows)
+    assert md["oos_aggregate"]["skipped_count"] == result.oos_skipped_count
+    assert all("skipped_count" in window for window in md["windows"])
 
 
 def test_walk_forward_per_window_initial_equity_resets():
@@ -255,6 +257,7 @@ def _window(
     index: int = 0,
     initial: float = 100.0,
     trade_count: int = 0,
+    skipped_count: int = 0,
 ) -> WalkForwardWindow:
     """Build a WalkForwardWindow whose equity curve realises ``returns_pct``."""
     equity_curve: list[tuple[date, float]] = []
@@ -273,6 +276,7 @@ def _window(
         test_end=d,
         trading_days=len(returns_pct) + 1,
         trade_count=trade_count,
+        skipped_count=skipped_count,
         initial_equity=initial,
         final_equity=equity,
         total_return_pct=(equity - initial) / initial * 100.0,
@@ -297,11 +301,24 @@ def test_aggregate_oos_compounds_windows():
 def test_aggregate_oos_handles_empty_windows():
     aggregate = _aggregate_oos([], initial_equity=100.0)
     assert aggregate.trade_count == 0
+    assert aggregate.skipped_count == 0
     assert aggregate.trading_days == 0
     assert aggregate.total_return_pct == 0.0
     assert aggregate.sharpe is None
     assert aggregate.max_drawdown_pct == 0.0
     assert aggregate.equity_curve == []
+
+
+def test_aggregate_oos_sums_skipped_counts():
+    windows = [
+        _window([1.0], index=0, trade_count=2, skipped_count=3),
+        _window([1.0], index=1, trade_count=4, skipped_count=5),
+    ]
+
+    aggregate = _aggregate_oos(windows, initial_equity=100.0)
+
+    assert aggregate.trade_count == 6
+    assert aggregate.skipped_count == 8
 
 
 def test_aggregate_oos_sharpe_is_on_concatenated_returns():

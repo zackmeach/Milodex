@@ -57,6 +57,10 @@ def _make_barset(closes: list[float], start: date) -> BarSet:
     return BarSet(pd.DataFrame(rows))
 
 
+def _make_barset_from_rows(rows: list[dict]) -> BarSet:
+    return BarSet(pd.DataFrame(rows))
+
+
 _STRATEGY_YAML = """\
 strategy:
   name: "test_strategy"
@@ -139,6 +143,14 @@ def _make_loaded_strategy(
 def _make_event_store() -> EventStore:
     tmp = tempfile.mktemp(suffix=".db")
     return EventStore(Path(tmp))
+
+
+def _skipped_trades(store: EventStore):
+    return [trade for trade in store.list_trades() if trade.status == "skipped"]
+
+
+def _skipped_explanations(store: EventStore):
+    return [event for event in store.list_explanations() if event.status == "skipped"]
 
 
 # ---------------------------------------------------------------------------
@@ -348,13 +360,22 @@ def test_engine_skips_buy_when_insufficient_cash():
     universe = ("SPY",)
     loaded = _make_loaded_strategy("test.strat.v1", universe)
 
-    loaded.strategy.evaluate.return_value = _decision(
-        [
-            TradeIntent(
-                symbol="SPY", side=OrderSide.BUY, quantity=99_999.0, order_type=OrderType.MARKET
+    def fake_evaluate(bars, _context):
+        current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
+        if current_day == start:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.BUY,
+                        quantity=99_999.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
             )
-        ]
-    )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
 
     barset = _make_barset([500.0, 500.0], start=start)
     provider = MagicMock()
@@ -372,6 +393,216 @@ def test_engine_skips_buy_when_insufficient_cash():
     result = engine.run(start, end)
 
     assert result.buy_count == 0
+    assert result.skipped_count == 1
+    skipped = _skipped_trades(store)
+    assert len(skipped) == 1
+    assert skipped[0].status == "skipped"
+    assert skipped[0].source == "backtest"
+    assert skipped[0].backtest_run_id == result.db_id
+    assert skipped[0].message == "Skipped backtest buy for SPY: insufficient cash."
+    explanations = _skipped_explanations(store)
+    assert explanations[0].reason_codes == ["backtest_insufficient_cash"]
+    assert explanations[0].context["cash"] == pytest.approx(1_000.0)
+    assert explanations[0].context["projected_cost"] > explanations[0].context["cash"]
+
+
+def test_engine_audits_duplicate_buy_skip_without_mutating_position():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 4)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+
+    def fake_evaluate(bars, context):
+        current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
+        if current_day in {start, date(2024, 1, 3)}:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.BUY,
+                        quantity=1.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": _make_barset([100.0, 101.0, 102.0], start=start)}
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        initial_equity=1_000.0,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+    result = engine.run(start, end)
+
+    filled = [trade for trade in store.list_trades() if trade.status == "submitted"]
+    skipped = _skipped_trades(store)
+    assert result.buy_count == 1
+    assert result.skipped_count == 1
+    assert len(filled) == 1
+    assert len(skipped) == 1
+    assert skipped[0].message == "Skipped backtest buy for SPY: position already open."
+    assert _skipped_explanations(store)[0].reason_codes == ["backtest_duplicate_position"]
+
+
+def test_engine_audits_sell_without_position_skip():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    def fake_evaluate(bars, _context):
+        current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
+        if current_day == start:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.SELL,
+                        quantity=10.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": _make_barset([100.0, 101.0], start=start)}
+    store = _make_event_store()
+    engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
+
+    result = engine.run(start, end)
+
+    assert result.sell_count == 0
+    assert result.skipped_count == 1
+    assert _skipped_trades(store)[0].message == "Skipped backtest sell for SPY: no open position."
+    assert _skipped_explanations(store)[0].reason_codes == ["backtest_sell_without_position"]
+
+
+def test_engine_audits_missing_next_open_skip():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY", "AAPL"))
+    def fake_evaluate(bars, _context):
+        current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
+        if current_day == start:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="AAPL",
+                        side=OrderSide.BUY,
+                        quantity=1.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+    provider = MagicMock()
+    provider.get_bars.return_value = {
+        "SPY": _make_barset([100.0, 101.0], start=start),
+        "AAPL": _make_barset([200.0], start=start),
+    }
+    store = _make_event_store()
+    engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
+
+    result = engine.run(start, end)
+
+    assert result.trade_count == 0
+    assert result.skipped_count == 1
+    assert _skipped_trades(store)[0].symbol == "AAPL"
+    assert _skipped_explanations(store)[0].reason_codes == ["backtest_missing_next_open"]
+
+
+def test_engine_audits_invalid_next_open_skip():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    def fake_evaluate(bars, _context):
+        current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
+        if current_day == start:
+            return _decision(
+                [
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.BUY,
+                        quantity=1.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ]
+            )
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+    provider = MagicMock()
+    provider.get_bars.return_value = {
+        "SPY": _make_barset_from_rows(
+            [
+                {
+                    "timestamp": pd.Timestamp(start, tz="UTC"),
+                    "open": 100.0,
+                    "high": 100.0,
+                    "low": 100.0,
+                    "close": 100.0,
+                    "volume": 1000,
+                    "vwap": 100.0,
+                },
+                {
+                    "timestamp": pd.Timestamp(end, tz="UTC"),
+                    "open": 0.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0,
+                    "volume": 1000,
+                    "vwap": 100.0,
+                },
+            ]
+        )
+    }
+    store = _make_event_store()
+    engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
+
+    result = engine.run(start, end)
+
+    assert result.skipped_count == 1
+    assert _skipped_explanations(store)[0].reason_codes == ["backtest_invalid_next_open"]
+
+
+def test_engine_audits_no_next_bar_for_end_of_window_pending_order():
+    start = date(2024, 1, 2)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded.strategy.evaluate.return_value = _decision(
+        [
+            TradeIntent(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=1.0,
+                order_type=OrderType.MARKET,
+            )
+        ]
+    )
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": _make_barset([100.0], start=start)}
+    store = _make_event_store()
+    engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
+
+    result = engine.run(start, start)
+
+    assert result.trade_count == 0
+    assert result.skipped_count == 1
+    assert _skipped_trades(store)[0].message == (
+        "Skipped backtest buy for SPY: no next bar available before run end."
+    )
+    assert _skipped_explanations(store)[0].reason_codes == ["backtest_no_next_bar"]
+    run_record = store.get_backtest_run(result.run_id)
+    assert run_record is not None
+    assert run_record.metadata["skipped_count"] == 1
 
 
 def test_engine_status_set_to_completed():
