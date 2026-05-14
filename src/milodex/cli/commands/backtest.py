@@ -140,6 +140,7 @@ def _build_backtest_result(
         f"Trades:         {trade_summary}",
         f"Skipped orders: {result.skipped_count}",
         f"Risk policy:   {_risk_policy_label(result.risk_policy)}",
+        f"Data quality:  {_data_quality_label(result.data_quality)}",
         f"Slippage:       {result.slippage_pct * 100:.2f}%",
         f"Commission:     {format_money(result.commission_per_trade)}/trade",
     ]
@@ -157,6 +158,7 @@ def _build_backtest_result(
         "sell_count": result.sell_count,
         "skipped_count": result.skipped_count,
         "risk_policy": result.risk_policy.value,
+        "data_quality": _data_quality_payload(result.data_quality),
         "slippage_pct": result.slippage_pct,
         "commission_per_trade": result.commission_per_trade,
     }
@@ -200,6 +202,7 @@ def _build_walk_forward_result(
         f"(train={result.train_days}d, test={result.test_days}d, step={result.step_days}d)",
         f"Initial equity: {format_money(result.initial_equity)}",
         f"Risk policy:   {_risk_policy_label(result.risk_policy)}",
+        f"Data quality:  {_data_quality_label(result.data_quality)}",
         "",
         "OOS aggregate (metrics the promotion gate evaluates):",
         f"  Trading days: {result.oos_trading_days}",
@@ -242,6 +245,7 @@ def _build_walk_forward_result(
         "step_days": result.step_days,
         "initial_equity": result.initial_equity,
         "risk_policy": result.risk_policy.value,
+        "data_quality": _data_quality_payload(result.data_quality),
         "oos_aggregate": {
             "trading_days": result.oos_trading_days,
             "trade_count": result.oos_trade_count,
@@ -332,6 +336,27 @@ def _risk_policy_label(policy: RiskPolicy) -> str:
     if policy is RiskPolicy.ENFORCE:
         return "enforce (structural constraints)"
     return "bypass (raw research)"
+
+
+def _data_quality_payload(data_quality: dict | None) -> dict[str, Any]:
+    if data_quality:
+        return dict(data_quality)
+    return {
+        "status": "pass",
+        "blocker_count": 0,
+        "warning_count": 0,
+        "issues": [],
+        "issue_codes": [],
+    }
+
+
+def _data_quality_label(data_quality: dict | None) -> str:
+    payload = _data_quality_payload(data_quality)
+    status = str(payload.get("status", "pass"))
+    warning_count = int(payload.get("warning_count", 0) or 0)
+    if status == "pass_with_warnings":
+        return f"pass with warnings ({warning_count} warning(s))"
+    return status.replace("_", " ")
 
 
 # Statistical minimum before a backtest is considered evidence-bearing

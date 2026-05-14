@@ -26,6 +26,7 @@ from milodex.backtesting.walk_forward_runner import (
     run_walk_forward,
 )
 from milodex.core.event_store import EventStore
+from milodex.data.bar_quality import DataQualityError
 from milodex.data.models import BarSet
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
@@ -224,6 +225,60 @@ def test_walk_forward_metadata_contains_oos_aggregate_and_stability():
     assert len(md["windows"]) == len(result.windows)
     assert md["oos_aggregate"]["skipped_count"] == result.oos_skipped_count
     assert all("skipped_count" in window for window in md["windows"])
+
+
+def test_walk_forward_metadata_contains_data_quality_report():
+    engine, store, bars_start = _make_engine(universe=("SPY", "QQQ"), bar_count=30)
+    qqq_rows = [
+        {
+            "timestamp": pd.Timestamp(bars_start + timedelta(days=i), tz="UTC"),
+            "open": 100.0 + i,
+            "high": 100.0 + i,
+            "low": 100.0 + i,
+            "close": 100.0 + i,
+            "volume": 1000,
+            "vwap": 100.0 + i,
+        }
+        for i in range(29)
+    ]
+    engine._data_provider.get_bars.return_value["QQQ"] = BarSet(pd.DataFrame(qqq_rows))  # noqa: SLF001
+
+    result = run_walk_forward(
+        engine,
+        start_date=bars_start,
+        end_date=bars_start + timedelta(days=29),
+        train_days=10,
+        test_days=5,
+        step_days=5,
+    )
+
+    stored = store.get_backtest_run(result.run_id)
+    assert stored is not None
+    assert result.data_quality["status"] == "pass_with_warnings"
+    assert stored.metadata["data_quality"] == result.data_quality
+
+
+def test_walk_forward_data_quality_blocker_marks_parent_run_failed():
+    engine, store, bars_start = _make_engine(bar_count=30)
+    bad_rows = engine._data_provider.get_bars.return_value["SPY"].to_dataframe()  # noqa: SLF001
+    bad_rows.loc[bad_rows.index[0], "low"] = 999.0
+    engine._data_provider.get_bars.return_value["SPY"] = BarSet(bad_rows)  # noqa: SLF001
+
+    with pytest.raises(DataQualityError):
+        run_walk_forward(
+            engine,
+            start_date=bars_start,
+            end_date=bars_start + timedelta(days=29),
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            run_id="wf-bad-quality",
+        )
+
+    stored = store.get_backtest_run("wf-bad-quality")
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.metadata["data_quality"]["status"] == "fail"
 
 
 def test_walk_forward_per_window_initial_equity_resets():

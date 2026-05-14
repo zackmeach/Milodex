@@ -37,6 +37,7 @@ from milodex.analytics.metrics import (
 )
 from milodex.backtesting.walk_forward import WalkForwardSplitter
 from milodex.core.event_store import BacktestRunEvent
+from milodex.data.bar_quality import DataQualityError
 from milodex.risk import RiskPolicy
 
 if TYPE_CHECKING:
@@ -104,6 +105,7 @@ class WalkForwardResult:
     db_id: int | None = None
     oos_round_trip_count: int = 0
     risk_policy: RiskPolicy = RiskPolicy.BYPASS
+    data_quality: dict = field(default_factory=dict)
 
 
 def compute_window_spans(
@@ -226,6 +228,7 @@ def run_walk_forward(
 
     windows: list[WalkForwardWindow] = []
     try:
+        data_quality = engine._scan_data_quality(all_bars, start_date, end_date)  # noqa: SLF001
         for index, (tr_start, tr_end, te_start, te_end) in enumerate(window_dates):
             window_trading_days = [d for d in trading_days if te_start <= d <= te_end]
             if not window_trading_days:
@@ -262,6 +265,15 @@ def run_walk_forward(
                     round_trip_count=output.round_trip_count,
                 )
             )
+    except DataQualityError as exc:
+        engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
+            effective_run_id,
+            metadata={"data_quality": exc.report.to_dict()},
+        )
+        engine._event_store.update_backtest_run_status(  # noqa: SLF001
+            effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)
+        )
+        raise
     except Exception:
         engine._event_store.update_backtest_run_status(  # noqa: SLF001
             effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)
@@ -302,6 +314,7 @@ def run_walk_forward(
                 "single_window_dependency": stability.single_window_dependency,
             },
             "risk_policy": engine.risk_policy.value,
+            "data_quality": data_quality,
         },
     )
 
@@ -326,6 +339,7 @@ def run_walk_forward(
         db_id=db_run_id,
         oos_round_trip_count=aggregate.round_trip_count,
         risk_policy=engine.risk_policy,
+        data_quality=data_quality,
     )
 
 
