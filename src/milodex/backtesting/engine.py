@@ -7,15 +7,17 @@ dependencies are swapped for the backtest:
 
 - :class:`milodex.broker.simulated.SimulatedBroker` fills at the next
   bar's open (with slippage and commission applied).
-- :class:`milodex.risk.NullRiskEvaluator` makes risk evaluation a no-op.
-  Backtesting is intentionally below the risk layer per ``CLAUDE.md``;
-  the bypass is **declared** (injected), not implicit.
+- The configured :class:`milodex.risk.RiskPolicy` selects the risk path:
+  ``BYPASS`` (the default raw-research mode) injects
+  :class:`milodex.risk.NullRiskEvaluator`, while ``ENFORCE`` injects the
+  backtest structural evaluator for sizing and exposure constraints.
 
 Order timing: decisions made on bar ``T``'s close are queued and fill at
 bar ``T+1``'s open, removing the look-ahead bias of same-bar fills.
 Orders pending at the end of the trading window are dropped — there is
-no T+1 to execute against — and silently discarded. See PR 2.1 in
-docs/reviews/backtest-rejection-analysis.md §6 for the rationale.
+no T+1 to execute against — and recorded as skipped backtest audit events.
+See PR 2.1 in docs/reviews/backtest-rejection-analysis.md §6 for the
+rationale behind not filling them.
 
 The engine still owns cash / position / equity bookkeeping — it
 snapshot-injects the broker's reported account and positions at the

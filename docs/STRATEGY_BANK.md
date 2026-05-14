@@ -118,7 +118,7 @@ Per-window Sharpe instability is a real concern here. The four windows produced:
 
 ## Backtest-stage strategies — blocked
 
-Gate codes: `[S]` = Sharpe < 0.5, `[D]` = MaxDD > 15%, `[N]` = trade count < 30.
+Gate codes: `[S]` = Sharpe < 0.5, `[D]` = MaxDD > 15%, `[N]` = trade count below the strategy's configured `backtest.min_trades_required` floor.
 
 Walk-forward methodology and canonical window 2020-01-01 to 2024-12-31 per ADR 0021 and ADR 0030.
 
@@ -136,7 +136,7 @@ Walk-forward methodology and canonical window 2020-01-01 to 2024-12-31 per ADR 0
 This strategy is different from the others. Its walk-forward Sharpe (0.83, run `41777d12`) would pass the Sharpe gate comfortably. It fails on two gates:
 
 - **`[D]` MaxDD 17.88%** — fails the < 15% threshold.
-- **`[N]` trade count 20** — fails the >= 30 minimum.
+- **`[N]` trade count 20** — fails this strategy's configured minimum of 30.
 
 The trade-count failure is not a tuning problem. The strategy trades weekly. With 4 walk-forward windows of ~223 test days each, a weekly strategy can only accumulate roughly 4–8 trades per window, yielding approximately 16–32 OOS trades total. The current run produced 20. No parameter change resolves this without changing the strategy's fundamental frequency.
 
@@ -154,7 +154,7 @@ Walk-forward validation splits the canonical evaluation window (2020-01-01 to 20
 
 The walk-forward approach is required per ADR 0030, which establishes that backtest runs are exploratory and that whole-period (in-sample) results are inadmissible for promotion gating. The seasonality strategy in this bank is a concrete illustration of why: its whole-period Sharpe was +0.33 while its OOS aggregate was -0.27.
 
-Gates (ADR 0009 / ADR 0020): Sharpe > 0.5, MaxDD < 15%, trade count >= 30. All three gates must pass simultaneously for a statistical promotion. The regime strategy (`sma200_rotation`) is exempt from these gates under policy R-PRM-004 (lifecycle-exempt promotion type), because a regime strategy that trades infrequently by design cannot accumulate 30 OOS trades in a 5-year window. The exemption is explicit in the `promotions` table (`promotion_type = 'lifecycle_exempt'`).
+Gates (ADR 0009 / ADR 0020): Sharpe > 0.5, MaxDD < 15%, and trade count at or above the strategy's configured `backtest.min_trades_required` floor. All three gates must pass simultaneously for a statistical promotion. The regime strategy (`sma200_rotation`) is exempt from these gates under policy R-PRM-004 (lifecycle-exempt promotion type), because a regime strategy that trades infrequently by design cannot accumulate enough OOS trades in a 5-year window for ordinary statistical gates. The exemption is explicit in the `promotions` table (`promotion_type = 'lifecycle_exempt'`).
 
 ---
 

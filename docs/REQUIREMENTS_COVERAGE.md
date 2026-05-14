@@ -8,11 +8,11 @@
 | Metric | Value |
 |--------|-------|
 | Total requirements (SRS.md) | 138 |
-| Test references found | 26 |
-| Requirements with ≥1 test | 14 |
-| **Orphans** (no tests) | **124** |
+| Test references found | 31 |
+| Requirements with ≥1 test | 18 |
+| **Orphans** (no tests) | **120** |
 | Floater test refs | 4 |
-| Coverage | 10.1% |
+| Coverage | 13.0% |
 
 ## B — Coverage Matrix
 
@@ -82,7 +82,7 @@
 | `R-STR-016` | Domain 4 | 0 | — |
 | `R-BKT-001` | Domain 5 | 0 | — |
 | `R-BKT-002` | Domain 5 | 0 | — |
-| `R-BKT-003` | Domain 5 | 0 | — |
+| `R-BKT-003` | Domain 5 | 1 | `milodex\promotion\test_state_machine.py::test_min_trades_is_pinned_to_exactly_thirty` |
 | `R-BKT-004` | Domain 5 | 0 | — |
 | `R-BKT-005` | Domain 5 | 0 | — |
 | `R-BKT-006` | Domain 5 | 0 | — |
@@ -118,10 +118,10 @@
 | `R-CLI-020` | Domain 7 | 1 | `milodex\cli\test_report.py::test_report_strategy_missing_backtest_returns_structured_error` |
 | `R-CLI-021` | Domain 7 | 0 | — |
 | `R-OPS-011` | Domain 7 | 0 | — |
-| `R-PRM-001` | Domain 8 | 0 | — |
-| `R-PRM-002` | Domain 8 | 0 | — |
-| `R-PRM-003` | Domain 8 | 0 | — |
-| `R-PRM-004` | Domain 8 | 1 | `milodex\cli\test_backtest_command.py::module` |
+| `R-PRM-001` | Domain 8 | 2 | `milodex\promotion\test_state_machine.py::test_check_gate_lifecycle_exempt_preserves_metrics`<br>`milodex\promotion\test_state_machine.py::test_min_sharpe_is_pinned_to_exactly_zero_point_five` |
+| `R-PRM-002` | Domain 8 | 1 | `milodex\promotion\test_state_machine.py::test_max_drawdown_pct_is_pinned_to_exactly_fifteen` |
+| `R-PRM-003` | Domain 8 | 1 | `milodex\promotion\test_state_machine.py::test_min_trades_is_pinned_to_exactly_thirty` |
+| `R-PRM-004` | Domain 8 | 2 | `milodex\cli\test_backtest_command.py::module`<br>`milodex\gui\test_read_models.py::test_regime_strategy_has_empty_gate_failures` |
 | `R-PRM-005` | Domain 8 | 0 | — |
 | `R-PRM-006` | Domain 8 | 1 | `milodex\cli\test_promotion_promote.py::test_promotion_promote_json_output` |
 | `R-PRM-007` | Domain 8 | 0 | — |
@@ -221,9 +221,8 @@
 | `R-STR-015` | Domain 4 | The normative meaning of a strategy family (market behavior exploited, semantic invariants, parameter surface, entry/exi |
 | `R-STR-016` | Domain 4 | Phase 1 position sizing shall be simple fixed-percent of current account equity, defaulting to `sizing.per_position_targ |
 | `R-BKT-001` | Domain 5 | The backtester shall execute strategy logic against cached historical bars. |
-| `R-BKT-002` | Domain 5 | The backtester shall apply configurable slippage (default 0.1–0.2%) and commission (default 0.0 for Alpaca) to simulated |
-| `R-BKT-003` | Domain 5 | The backtester shall support walk-forward validation with rolling train/test windows and out-of-sample holdout. |
-| `R-BKT-004` | Domain 5 | The backtester shall refuse to report "pass" status on any run with fewer than 30 trades. |
+| `R-BKT-002` | Domain 5 | The backtester shall apply configurable slippage (tiered by strategy/universe, with a 5 bps fallback when no tier is dec |
+| `R-BKT-004` | Domain 5 | The backtester shall refuse to report "pass" status on any run with fewer than the strategy's configured `backtest.min_t |
 | `R-BKT-005` | Domain 5 | Backtest output shall include equity curve, trade log, and the core metric set (Sharpe, Sortino, max drawdown, win rate, |
 | `R-BKT-006` | Domain 5 | The backtester shall reuse the same `Strategy` interface as paper/live execution. No backtest-specific `Strategy` subcla |
 | `R-ANA-001` | Domain 6 | Every submitted trade shall be persisted to the SQLite event store at `state/milodex.db` (table `trades`) with: client o |
@@ -253,9 +252,6 @@
 | `R-CLI-019` | Domain 7 | Commands in `docs/CLI_UX.md` "Require a confirmation prompt" shall prompt the operator before proceeding and shall be by |
 | `R-CLI-021` | Domain 7 | Before any submit-capable command is allowed to proceed, the CLI shall display the full decision context enumerated in ` |
 | `R-OPS-011` | Domain 7 | The CLI shall offer a `--preview` (or equivalent distinct subcommand) for every command that can change exposure, strate |
-| `R-PRM-001` | Domain 8 | Each strategy config shall declare a `stage` in `{backtest, paper, micro_live, live}`. |
-| `R-PRM-002` | Domain 8 | The risk layer shall reject any order whose strategy stage does not permit that order's destination (e.g., `stage: backt |
-| `R-PRM-003` | Domain 8 | Stage transitions shall be advisory-recorded in a promotion log with timestamp and evidence snapshot (metrics at time of |
 | `R-PRM-005` | Domain 8 | Advancing to `micro_live` or `live` shall require explicit operator confirmation via a distinct CLI command, not just a |
 | `R-PRM-007` | Domain 8 | Every stage transition (promotion, demotion, or reversal) shall attach a promotion review artifact whose contents satisf |
 | `R-PRM-009` | Domain 8 | A strategy may be automatically disabled (set `enabled: false`) or automatically marked for review when any event from " |

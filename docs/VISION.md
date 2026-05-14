@@ -98,7 +98,7 @@ Phase 1 runs two strategies at two distinct purposes, and the docs keep them sep
 
 The **lifecycle-proof strategy** is a long-only daily trend-following regime strategy on SPY with SHY as the defensive fallback. Checks once per trading day after the close: if SPY is above its 200-day moving average, hold SPY; otherwise, rotate to SHY. 100% allocated to one asset at a time. No leverage, no shorting, no intraday trading.
 
-This strategy exists to prove the **platform** can safely carry a strategy through configuration, backtesting, promotion, paper execution, risk enforcement, logging, explainability, and operator approval. It is not expected to produce statistically novel returns. Its promotion evidence is operational — lifecycle milestones reached, controls verified, explanations reviewable — **not** Sharpe- or trade-count-based. Because a 200-DMA regime strategy generates only 1–3 signals per year, the standard 30-trade / Sharpe > 0.5 thresholds cannot be applied to it; its gates are defined separately in the promotion pipeline.
+This strategy exists to prove the **platform** can safely carry a strategy through configuration, backtesting, promotion, paper execution, risk enforcement, logging, explainability, and operator approval. It is not expected to produce statistically novel returns. Its promotion evidence is operational — lifecycle milestones reached, controls verified, explanations reviewable — **not** Sharpe- or trade-count-based. Because a 200-DMA regime strategy generates only 1–3 signals per year, research-target statistical gates cannot be applied mechanically; its gates are defined separately in the promotion pipeline.
 
 ### First Edge Family (Research Target) — Mean Reversion
 
@@ -151,16 +151,16 @@ Strategies do not graduate on gut feeling. There is a defined pipeline with expl
 A backtest is honest enough when it is simple, reproducible, conservative, and free from obvious self-deception. Concretely: data that would actually have been available at the time (no lookahead, no survivorship bias where relevant), realistic slippage / commission / execution-timing assumptions, documented parameters and constraints, and robust behavior across multiple market regimes without fragile tuning. "Trust" in Phase 1 does **not** mean "this will make money." It means "this result is credible enough to justify paper trading."
 
 ### Backtest → Walk-Forward Validation
-Strategies are tested using rolling train/test windows with out-of-sample holdout data. This prevents the classic overfitting trap where a strategy "learns the answer key" from historical data. A minimum of 30 trades is required to draw any statistical conclusions.
+Strategies are tested using rolling train/test windows with out-of-sample holdout data. This prevents the classic overfitting trap where a strategy "learns the answer key" from historical data. Each strategy declares its evidence floor in `backtest.min_trades_required`; the default remains 30 trades, while low-cadence strategies can carry a lower configured floor without weakening Sharpe or drawdown checks.
 
 ### Paper Trading → Statistical Threshold
-Paper trading duration is not time-based — it's evidence-based. A strategy must demonstrate a Sharpe ratio above 0.5, maximum drawdown under 15%, and at least 30 paper trades before it's eligible for live capital. These thresholds are starting points and may be adjusted as the system matures.
+Paper trading duration is not time-based — it's evidence-based. Moving from backtest to paper uses a deliberately lighter paper-readiness gate, because only a paper slot is at risk; moving toward live capital remains strict. A strategy must demonstrate a Sharpe ratio above 0.5, maximum drawdown under 15%, and its configured minimum trade count before it is eligible for live capital. These thresholds are starting points and may be adjusted as the system matures.
 
 ### Micro-Capital Live → Scaled Live
 First live deployment uses a small fraction of total capital. Scaling up requires continued performance against the same statistical thresholds, measured in live conditions.
 
 ### Execution Realism
-Backtests assume conservative slippage of 0.1–0.2% per trade to avoid overstating edge. These estimates are tightened over time as real fill data becomes available for comparison.
+Backtests use configurable, universe-aware slippage to avoid overstating edge: explicit engine or CLI overrides win first, then strategy config, universe manifest, risk defaults, and finally a 5 bps hardcoded fallback. Current universe tiers use 3 bps for highly liquid ETF universes and 5 bps for mixed or large-cap universes. These estimates are tightened over time as real fill data becomes available for comparison.
 
 ---
 
@@ -325,7 +325,7 @@ The strategy engine runs as a **manually-invoked, long-running foreground proces
 Trade log with decision reasoning, daily portfolio snapshots, running SPY benchmark comparison, and the core metrics named in "Observability" (Sharpe, Sortino, max drawdown, win rate, avg win/loss, total return). Exportable reports. Nothing is complete until the operator can answer "is this strategy making money?" from the CLI without opening the code.
 
 ### Phase 1.4 — Promotion Pipeline *(complete)*
-Formal state machine for `backtest → paper → micro_live → live`. Stage transitions require evidence (Sharpe > 0.5, max drawdown < 15%, min 30 trades) and — for `micro_live` and above — explicit operator approval. Stage is enforced at the risk layer: a strategy whose config declares `stage: paper` cannot submit live orders even if the operator edits code by accident.
+Formal state machine for `backtest → paper → micro_live → live`. Stage transitions require evidence: backtest-to-paper uses the paper-readiness gate, later capital stages use the stricter Sharpe > 0.5 / max drawdown < 15% gate, and trade-count evidence comes from each strategy's configured `backtest.min_trades_required`. `micro_live` and above additionally require explicit operator approval. Stage is enforced at the risk layer: a strategy whose config declares `stage: paper` cannot submit live orders even if the operator edits code by accident.
 
 ### Phase 2+ *(Phases 2 and 3 closed; Phase 4 in planning)*
 Phase 2 closed the Phase 1 carry list and locked the honest-signal property (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Phase 4 planning is underway. Longer-horizon items still deferred: Crypto universe, ML-driven signals, sentiment / alternative data, additional brokers, desktop GUI. See `docs/SRS.md` Phase 2+ appendix and [`docs/PHASE4_PLANNING.md`](PHASE4_PLANNING.md) for details.
