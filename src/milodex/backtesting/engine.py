@@ -43,6 +43,7 @@ from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker.models import AccountInfo, OrderSide, Position
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import BacktestRunEvent, EventStore, ExplanationEvent, TradeEvent
+from milodex.data.bar_quality import DataQualityError, scan_backtest_bars
 from milodex.data.models import BarSet, Timeframe
 from milodex.data.simulated import SimulatedDataProvider
 from milodex.execution.models import ExecutionStatus, TradeIntent
@@ -91,6 +92,7 @@ class BacktestResult:
     round_trip_count: int = 0
     risk_policy: RiskPolicy = RiskPolicy.BYPASS
     skipped_count: int = 0
+    data_quality: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -242,6 +244,17 @@ class BacktestEngine:
                 run_id=effective_run_id,
                 db_run_id=db_run_id,
             )
+        except DataQualityError as exc:
+            self._event_store.update_backtest_run_metadata(
+                effective_run_id,
+                metadata={"data_quality": exc.report.to_dict()},
+            )
+            self._event_store.update_backtest_run_status(
+                effective_run_id,
+                status="failed",
+                ended_at=datetime.now(tz=UTC),
+            )
+            raise
         except Exception:
             self._event_store.update_backtest_run_status(
                 effective_run_id,
@@ -266,6 +279,7 @@ class BacktestEngine:
                 "trading_days": result.trading_days,
                 "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
                 "risk_policy": self._risk_policy.value,
+                "data_quality": result.data_quality,
             },
         )
         return result
@@ -458,6 +472,7 @@ class BacktestEngine:
         db_run_id: int,
     ) -> BacktestResult:
         all_bars = self.prefetch_bars(start_date, end_date)
+        data_quality = self._scan_data_quality(all_bars, start_date, end_date)
 
         trading_days = _trading_days_in_range(all_bars, start_date, end_date)
         if not trading_days:
@@ -479,6 +494,7 @@ class BacktestEngine:
                 db_id=db_run_id,
                 risk_policy=self._risk_policy,
                 skipped_count=0,
+                data_quality=data_quality,
             )
 
         output = self._simulate(
@@ -508,7 +524,20 @@ class BacktestEngine:
             round_trip_count=output.round_trip_count,
             risk_policy=self._risk_policy,
             skipped_count=output.skipped_count,
+            data_quality=data_quality,
         )
+
+    def _scan_data_quality(
+        self, all_bars: dict[str, BarSet], start_date: date, end_date: date
+    ) -> dict:
+        report = scan_backtest_bars(
+            all_bars,
+            requested_start=start_date,
+            requested_end=end_date,
+        )
+        if report.blocker_count:
+            raise DataQualityError(report)
+        return report.to_dict()
 
     def _simulate(
         self,

@@ -20,6 +20,7 @@ from milodex.backtesting.engine import (
 )
 from milodex.broker.models import OrderSide, OrderType
 from milodex.core.event_store import EventStore
+from milodex.data.bar_quality import DataQualityError
 from milodex.data.models import BarSet
 from milodex.execution import UnsupportedOrderTypeError
 from milodex.execution.models import TradeIntent
@@ -351,6 +352,97 @@ def test_engine_fails_loudly_when_strategy_emits_non_market_order():
     assert store.list_explanations() == []
 
 
+def test_engine_data_quality_blocker_fails_before_simulated_mutation():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded.strategy.evaluate.return_value = _decision(
+        [
+            TradeIntent(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=1.0,
+                order_type=OrderType.MARKET,
+            )
+        ]
+    )
+    provider = MagicMock()
+    provider.get_bars.return_value = {
+        "SPY": _make_barset_from_rows(
+            [
+                {
+                    "timestamp": pd.Timestamp(start, tz="UTC"),
+                    "open": 100.0,
+                    "high": 99.0,
+                    "low": 101.0,
+                    "close": 100.0,
+                    "volume": 1000,
+                    "vwap": 100.0,
+                },
+                {
+                    "timestamp": pd.Timestamp(end, tz="UTC"),
+                    "open": 101.0,
+                    "high": 102.0,
+                    "low": 100.0,
+                    "close": 101.0,
+                    "volume": 1000,
+                    "vwap": 101.0,
+                },
+            ]
+        )
+    }
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+    with pytest.raises(DataQualityError) as excinfo:
+        engine.run(start, end, run_id="bad-quality-run")
+
+    assert excinfo.value.report.status == "fail"
+    run_record = store.get_backtest_run("bad-quality-run")
+    assert run_record is not None
+    assert run_record.status == "failed"
+    assert run_record.metadata["data_quality"]["status"] == "fail"
+    assert run_record.metadata["data_quality"]["blocker_count"] == 1
+    assert store.list_trades() == []
+    assert store.list_explanations() == []
+    assert store.list_portfolio_snapshots_for_session("bad-quality-run") == []
+
+
+def test_engine_data_quality_warning_allows_run_and_persists_metadata():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 5)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY", "QQQ"))
+    loaded.strategy.evaluate.return_value = _decision([])
+    provider = MagicMock()
+    provider.get_bars.return_value = {
+        "SPY": _make_barset([100.0, 101.0, 102.0, 103.0], start=start),
+        "QQQ": _make_barset([100.0, 101.0, 102.0], start=start),
+    }
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+    result = engine.run(start, end, run_id="warning-quality-run")
+
+    assert result.data_quality["status"] == "pass_with_warnings"
+    assert result.data_quality["warning_count"] == 1
+    run_record = store.get_backtest_run("warning-quality-run")
+    assert run_record is not None
+    assert run_record.status == "completed"
+    assert run_record.metadata["data_quality"] == result.data_quality
+
+
 def test_engine_skips_buy_when_insufficient_cash():
     """Strategy asks to buy more than cash allows — trade should be skipped."""
     from milodex.broker.models import OrderSide, OrderType
@@ -521,7 +613,7 @@ def test_engine_audits_missing_next_open_skip():
     assert _skipped_explanations(store)[0].reason_codes == ["backtest_missing_next_open"]
 
 
-def test_engine_audits_invalid_next_open_skip():
+def test_engine_blocks_non_positive_next_open_as_data_quality_failure():
     start = date(2024, 1, 2)
     end = date(2024, 1, 3)
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
@@ -569,10 +661,15 @@ def test_engine_audits_invalid_next_open_skip():
     store = _make_event_store()
     engine = BacktestEngine(loaded=loaded, data_provider=provider, event_store=store)
 
-    result = engine.run(start, end)
+    with pytest.raises(DataQualityError) as excinfo:
+        engine.run(start, end, run_id="invalid-next-open-quality")
 
-    assert result.skipped_count == 1
-    assert _skipped_explanations(store)[0].reason_codes == ["backtest_invalid_next_open"]
+    assert excinfo.value.report.status == "fail"
+    assert excinfo.value.report.issues[0].code == "invalid_price"
+    run_record = store.get_backtest_run("invalid-next-open-quality")
+    assert run_record is not None
+    assert run_record.status == "failed"
+    assert _skipped_explanations(store) == []
 
 
 def test_engine_audits_no_next_bar_for_end_of_window_pending_order():

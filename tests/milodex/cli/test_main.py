@@ -20,6 +20,12 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.cli.main import main as cli_entrypoint
+from milodex.data.bar_quality import (
+    DataQualityError,
+    DataQualityIssue,
+    DataQualityReport,
+    DataQualitySeverity,
+)
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.execution.models import (
     ExecutionRequest,
@@ -445,6 +451,39 @@ def test_trade_preview_reports_unsupported_order_type_without_argparse_rejecting
     assert service.preview_calls[0].order_type == OrderType.LIMIT
     assert "market orders only" in output
     assert "unsupported" in output.lower()
+
+
+def test_cli_reports_data_quality_failures_with_structured_error(monkeypatch):
+    def rejecting_status(_args, _ctx):
+        raise DataQualityError(
+            DataQualityReport(
+                requested_start=date(2024, 1, 1),
+                requested_end=date(2024, 1, 31),
+                scanned_symbols=("SPY",),
+                issues=(
+                    DataQualityIssue(
+                        code="invalid_ohlc_relationship",
+                        severity=DataQualitySeverity.BLOCKER,
+                        symbol="SPY",
+                        message="bad bar",
+                    ),
+                ),
+            )
+        )
+
+    monkeypatch.setattr(cli_main_module.status, "run", rejecting_status)
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["status", "--json"],
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    output = stderr.getvalue()
+    assert exit_code == 1
+    assert "data_quality_failed" in output
+    assert "Data quality failed" in output
 
 
 def test_trade_submit_requires_paper_flag():

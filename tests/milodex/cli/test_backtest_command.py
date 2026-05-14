@@ -123,6 +123,24 @@ def test_backtest_output_exposes_skipped_count():
     assert any("Skipped orders: 3" in line for line in result.human_lines)
 
 
+def test_backtest_output_exposes_data_quality_report():
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.data_quality = {
+        "status": "pass_with_warnings",
+        "blocker_count": 0,
+        "warning_count": 2,
+        "issues": [],
+    }
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["data_quality"]["status"] == "pass_with_warnings"
+    assert any(
+        "Data quality:  pass with warnings (2 warning(s))" in line
+        for line in result.human_lines
+    )
+
+
 def test_backtest_cli_passes_enforce_risk_policy():
     captured = {}
     ctx = MagicMock()
@@ -263,6 +281,45 @@ def test_walk_forward_output_exposes_skipped_count(monkeypatch):
 
     assert result.data["oos_aggregate"]["skipped_count"] == 2
     assert any("Skipped:     2" in line for line in result.human_lines)
+
+
+def test_walk_forward_output_exposes_data_quality_report():
+    from milodex.backtesting.walk_forward_runner import (
+        WalkForwardResult,
+        WalkForwardStability,
+    )
+
+    result = backtest_command._build_walk_forward_result(
+        WalkForwardResult(
+            run_id="wf-1",
+            strategy_id="meanrev.daily.rsi2pullback.v1",
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 1, 31),
+            initial_equity=10_000.0,
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            windows=[],
+            oos_trade_count=30,
+            oos_skipped_count=0,
+            oos_trading_days=10,
+            oos_total_return_pct=1.0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+            risk_policy=RiskPolicy.BYPASS,
+            data_quality={
+                "status": "pass",
+                "blocker_count": 0,
+                "warning_count": 0,
+                "issues": [],
+            },
+        )
+    )
+
+    assert result.data["data_quality"]["status"] == "pass"
+    assert any("Data quality:  pass" in line for line in result.human_lines)
 
 
 def _args(*, risk_policy: str) -> argparse.Namespace:
