@@ -709,6 +709,7 @@ Item {
             color: Theme.color.text.muted
             font.family:    Theme.typography.data.xs.family
             font.pixelSize: Theme.typography.data.xs.size
+            font.features:  Theme.typography.data.xs.features
         }
 
         Text {
