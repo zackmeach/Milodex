@@ -191,29 +191,74 @@ Item {
     // Reusable inline components
     // ------------------------------------------------------------------
 
-    component SectionLabel: Row {
+    // Lettered section header per DESIGN_SYSTEM.md v0.2 §7.9.
+    //
+    // Letter (A. / B. / C. …) in display-serif Newsreader, parchment
+    // (color.brand.primary), weight 500 — not italic, not muted.
+    // Section name in label.xs tracked uppercase, text.secondary.
+    // Optional right-aligned meta in data.sm mono with tnum, text.muted —
+    // baseline-aligned with the letter.
+    // Full-width 1px border.subtle hairline rule below the header,
+    // space[2] (8px) below the header bottom edge per §7.9 spacing
+    // contract. Section content begins below the rule with the parent
+    // Column's spacing.
+    //
+    // Replaces the v0.1 pattern (text.muted italic 14px letter, no
+    // hairline rule, separately-anchored right-meta Text per call site).
+    component SectionLabel: Column {
+        id: sectionLabelRoot
         property string letter: ""
         property string name: ""
         property string meta: ""
-        spacing: Theme.space[3]
-        Text {
-            text:  parent.letter
-            color: Theme.color.text.muted
-            font.family:    Theme.typography.display.sm.family
-            font.pixelSize: Theme.typography.body.md.size
-            font.italic:    true
+        width: parent ? parent.width : 0
+        spacing: Theme.space[2]
+
+        Item {
+            width: parent.width
+            implicitHeight: letterText.implicitHeight
+
+            Text {
+                id: letterText
+                anchors.left: parent.left
+                anchors.top:  parent.top
+                text:  sectionLabelRoot.letter
+                color: Theme.color.brand.primary
+                font.family:    Theme.typography.display.sm.family
+                font.pixelSize: Theme.typography.display.sm.size
+                font.weight:    Theme.typography.display.sm.weight
+            }
+
+            Text {
+                id: nameText
+                anchors.left:       letterText.right
+                anchors.leftMargin: Theme.space[3]
+                anchors.baseline:   letterText.baseline
+                text:  sectionLabelRoot.name
+                color: Theme.color.text.secondary
+                font.family:         Theme.typography.label.xs.family
+                font.pixelSize:      Theme.typography.label.xs.size
+                font.weight:         Theme.typography.label.xs.weight
+                font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+                font.capitalization: Font.AllUppercase
+            }
+
+            Text {
+                visible: sectionLabelRoot.meta !== ""
+                text:    sectionLabelRoot.meta
+                color:   Theme.color.text.muted
+                font.family:    Theme.typography.data.sm.family
+                font.pixelSize: Theme.typography.data.sm.size
+                font.features:  Theme.typography.data.sm.features
+                anchors.right:    parent.right
+                anchors.baseline: letterText.baseline
+            }
         }
-        Text {
-            text: parent.name
-            color: Theme.color.text.primary
-            font.family:        Theme.typography.label.xs.family
-            font.pixelSize:     Theme.typography.label.xs.size
-            font.weight:        Font.DemiBold
-            font.letterSpacing: 2.0
-            font.capitalization: Font.AllUppercase
-            anchors.verticalCenter: parent.children[0].verticalCenter
+
+        Rectangle {
+            width:  parent.width
+            height: 1
+            color:  Theme.color.border.subtle
         }
-        Item { width: 1; height: 1 }  // spacer
     }
 
     // ------------------------------------------------------------------
@@ -600,25 +645,11 @@ Item {
                         width: parent.width
                         spacing: Theme.space[3]
 
-                        Item {
-                            width: parent.width
-                            height: ladderHead.implicitHeight
-
-                            SectionLabel {
-                                id: ladderHead
-                                letter: "A."
-                                name: "Strategy Ladder"
-                                anchors.left: parent.left
-                            }
-                            Text {
-                                text: root.strategyTotal + " configs"
-                                color: Theme.color.text.secondary
-                                font.family:    Theme.typography.data.sm.family
-                                font.pixelSize: Theme.typography.data.sm.size
-                                font.features:  Theme.typography.data.sm.features
-                                anchors.right: parent.right
-                                anchors.verticalCenter: ladderHead.verticalCenter
-                            }
+                        SectionLabel {
+                            id: ladderHead
+                            letter: "A."
+                            name: "Strategy Ladder"
+                            meta: root.strategyTotal + " configs"
                         }
                         Text {
                             text: "how the bench stacks today, by promotion stage"
@@ -814,25 +845,11 @@ Item {
                         width: parent.width
                         spacing: Theme.space[3]
 
-                        Item {
-                            width: parent.width
-                            height: pqHead.implicitHeight
-
-                            SectionLabel {
-                                id: pqHead
-                                letter: "C."
-                                name: "Promotion Queue"
-                                anchors.left: parent.left
-                            }
-                            Text {
-                                text: root.queueRows.length + " ready"
-                                color: Theme.color.text.secondary
-                                font.family:    Theme.typography.data.sm.family
-                                font.pixelSize: Theme.typography.data.sm.size
-                                font.features:  Theme.typography.data.sm.features
-                                anchors.right: parent.right
-                                anchors.verticalCenter: pqHead.verticalCenter
-                            }
+                        SectionLabel {
+                            id: pqHead
+                            letter: "C."
+                            name: "Promotion Queue"
+                            meta: root.queueRows.length + " ready"
                         }
                         Text {
                             text: "strategies whose gates have passed and now wait at the next stage's door"
@@ -945,24 +962,11 @@ Item {
                         width: parent.width
                         spacing: Theme.space[3]
 
-                        Item {
-                            width: parent.width
-                            height: runHead.implicitHeight
-                            SectionLabel {
-                                id: runHead
-                                letter: "D."
-                                name: "Runners"
-                                anchors.left: parent.left
-                            }
-                            Text {
-                                text: root.runnerRows.length + " observed"
-                                color: Theme.color.text.secondary
-                                font.family:    Theme.typography.data.sm.family
-                                font.pixelSize: Theme.typography.data.sm.size
-                                font.features:  Theme.typography.data.sm.features
-                                anchors.right: parent.right
-                                anchors.verticalCenter: runHead.verticalCenter
-                            }
+                        SectionLabel {
+                            id: runHead
+                            letter: "D."
+                            name: "Runners"
+                            meta: root.runnerRows.length + " observed"
                         }
                         Text {
                             text: "processes alive in the current session"
