@@ -124,6 +124,36 @@ Item {
                 spacing: Theme.space[6]
 
                 // ====================================================
+                // RUNNING HEAD — canvas-anchoring marginalia
+                //
+                // Per DESIGN.md v0.2 §4 (FRONT canvas-anchoring), a
+                // single mono running head pins the page to its edition
+                // and date. Hairline rule below separates it from the
+                // editorial body.
+                // ====================================================
+                Column {
+                    width: parent.width
+                    spacing: Theme.space[2]
+
+                    Text {
+                        width: parent.width
+                        text:  "MILODEX · NO. 1" + (root.asOf ? "  —  " + root.asOf : "")
+                        color: Theme.color.text.muted
+                        font.family:    Theme.typography.data.xs.family
+                        font.pixelSize: Theme.typography.data.xs.size
+                        font.features:  Theme.typography.data.xs.features
+                        font.capitalization: Font.AllUppercase
+                        font.letterSpacing: 0.6
+                        elide: Text.ElideRight
+                    }
+                    Rectangle {
+                        width:  parent.width
+                        height: 1
+                        color:  Theme.color.border.subtle
+                    }
+                }
+
+                // ====================================================
                 // HEADLINE — eyebrow + date
                 // ====================================================
                 Column {
@@ -503,10 +533,13 @@ Item {
 
                     // Section hairline — DESIGN_SYSTEM.md §7.7 definition-block
                     // pattern: sections bounded by hairline rules, not card chrome.
+                    // border.regular (vs border.subtle) for legible separation at
+                    // editorial body sizes — the subtle weight read as ambiguous
+                    // in the 2026-05-13 visual smoke.
                     Rectangle {
                         width:  parent.width
                         height: 1
-                        color:  Theme.color.border.subtle
+                        color:  Theme.color.border.regular
                     }
 
                     Column {
@@ -802,45 +835,38 @@ Item {
                     color:  Theme.color.border.subtle
                 }
 
+                // Colophon — running edition mark + session state.
+                // Replaces the prior italic close-out filler ("that's the
+                // whole picture.") with a real mono colophon that pins
+                // the page to its edition and market context.
                 Item {
                     width: parent.width
-                    height: footerCaption.implicitHeight + Theme.space[3]
+                    height: colophonLeft.implicitHeight + Theme.space[3]
 
                     Text {
-                        id: footerCaption
+                        id: colophonLeft
                         anchors.left: parent.left
                         anchors.top:  parent.top
                         anchors.topMargin: Theme.space[3]
-                        text:  "that's the whole picture."
+                        text:  "MILODEX · NO. 1"
                         color: Theme.color.text.muted
-                        font.family:    Theme.typography.body.md.family
-                        font.pixelSize: Theme.typography.body.sm.size
-                        font.italic:    true
+                        font.family:    Theme.typography.data.xs.family
+                        font.pixelSize: Theme.typography.data.xs.size
+                        font.features:  Theme.typography.data.xs.features
+                        font.capitalization: Font.AllUppercase
+                        font.letterSpacing: 0.6
                     }
-                    Row {
+                    Text {
                         anchors.right: parent.right
                         anchors.top:   parent.top
                         anchors.topMargin: Theme.space[3]
-                        spacing: Theme.space[3]
-
-                        Text {
-                            text: "Open the bench"
-                            color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                        }
-                        Text {
-                            text: "·"
-                            color: Theme.color.text.muted
-                        }
-                        Text {
-                            text: "Detailed view"
-                            color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                        }
+                        text:  "Filed " + (root.asOf || "—") + " · Market " + (OperationalState.marketOpen ? "open" : "closed")
+                        color: Theme.color.text.muted
+                        font.family:    Theme.typography.data.xs.family
+                        font.pixelSize: Theme.typography.data.xs.size
+                        font.features:  Theme.typography.data.xs.features
+                        font.capitalization: Font.AllUppercase
+                        font.letterSpacing: 0.6
                     }
                 }
 
