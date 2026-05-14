@@ -45,7 +45,12 @@ from milodex.data.simulated import SimulatedDataProvider
 from milodex.execution.models import ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.execution.state import KillSwitchStateStore
-from milodex.risk import NullRiskEvaluator, load_backtesting_defaults
+from milodex.risk import (
+    BacktestStructuralRiskEvaluator,
+    NullRiskEvaluator,
+    RiskPolicy,
+    load_backtesting_defaults,
+)
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
@@ -81,6 +86,7 @@ class BacktestResult:
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
     db_id: int | None = None
     round_trip_count: int = 0
+    risk_policy: RiskPolicy = RiskPolicy.BYPASS
 
 
 @dataclass
@@ -140,12 +146,14 @@ class BacktestEngine:
         slippage_pct: float | None = None,
         commission_per_trade: float | None = None,
         risk_defaults_path: Path | None = None,
+        risk_policy: RiskPolicy = RiskPolicy.BYPASS,
     ) -> None:
         self._loaded = loaded
         self._data_provider = data_provider
         self._event_store = event_store
         self._initial_equity = initial_equity
         self._risk_defaults_path: Path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+        self._risk_policy = risk_policy
         # Populated lazily on first call to _load_backtesting_defaults; avoids
         # re-reading on every walk-forward window.
         self._backtesting_defaults: dict | None = None
@@ -155,6 +163,11 @@ class BacktestEngine:
             if commission_per_trade is not None
             else float(loaded.config.backtest.get("commission_per_trade", 0.0))
         )
+
+    @property
+    def risk_policy(self) -> RiskPolicy:
+        """Return the risk policy used for simulated order submissions."""
+        return self._risk_policy
 
     def run(
         self,
@@ -199,7 +212,7 @@ class BacktestEngine:
                 status="running",
                 slippage_pct=self._slippage_pct,
                 commission_per_trade=self._commission,
-                metadata={},
+                metadata={"risk_policy": self._risk_policy.value},
             )
         )
 
@@ -232,6 +245,7 @@ class BacktestEngine:
                 "trade_count": result.trade_count,
                 "trading_days": result.trading_days,
                 "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
+                "risk_policy": self._risk_policy.value,
             },
         )
         return result
@@ -438,6 +452,7 @@ class BacktestEngine:
                 trading_days=0,
                 equity_curve=[],
                 db_id=db_run_id,
+                risk_policy=self._risk_policy,
             )
 
         output = self._simulate(
@@ -465,6 +480,7 @@ class BacktestEngine:
             equity_curve=output.equity_curve,
             db_id=db_run_id,
             round_trip_count=output.round_trip_count,
+            risk_policy=self._risk_policy,
         )
 
     def _simulate(
@@ -499,7 +515,8 @@ class BacktestEngine:
             broker_client=sim_broker,
             data_provider=sim_data_provider,
             kill_switch_store=KillSwitchStateStore(event_store=self._event_store),
-            risk_evaluator=NullRiskEvaluator(),
+            risk_defaults_path=self._risk_defaults_path,
+            risk_evaluator=self._build_risk_evaluator(),
             event_store=self._event_store,
         )
 
@@ -785,7 +802,33 @@ class BacktestEngine:
             stop_price=intent.stop_price,
             strategy_config_path=self._loaded.config.path,
             submitted_by="backtest_engine",
+            expected_stage=self._loaded.config.stage,
+            expected_max_positions=self._strategy_risk_int("max_positions"),
+            expected_max_position_pct=self._strategy_risk_float("max_position_pct"),
+            expected_daily_loss_cap_pct=self._strategy_risk_float("daily_loss_cap_pct"),
         )
+
+    def _build_risk_evaluator(self):
+        if self._risk_policy is RiskPolicy.BYPASS:
+            return NullRiskEvaluator()
+        if self._risk_policy is RiskPolicy.ENFORCE:
+            return BacktestStructuralRiskEvaluator()
+        msg = f"Unsupported backtest risk policy: {self._risk_policy}"
+        raise ValueError(msg)
+
+    def _strategy_risk_float(self, key: str) -> float | None:
+        risk = getattr(self._loaded.config, "risk", None)
+        if not isinstance(risk, dict):
+            return None
+        value = risk.get(key)
+        return None if value is None else float(value)
+
+    def _strategy_risk_int(self, key: str) -> int | None:
+        risk = getattr(self._loaded.config, "risk", None)
+        if not isinstance(risk, dict):
+            return None
+        value = risk.get(key)
+        return None if value is None else int(value)
 
     def _sync_broker_state(
         self,

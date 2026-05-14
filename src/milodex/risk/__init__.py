@@ -15,6 +15,7 @@ from milodex.risk.evaluator import EvaluationContext, RiskEvaluator
 from milodex.risk.models import RiskCheckResult, RiskDecision
 from milodex.risk.policy import (
     BYPASS_SUMMARY,
+    BacktestStructuralRiskEvaluator,
     NullRiskEvaluator,
     RiskPolicy,
     synthetic_bypass_decision,
@@ -22,6 +23,7 @@ from milodex.risk.policy import (
 
 __all__ = [
     "BYPASS_SUMMARY",
+    "BacktestStructuralRiskEvaluator",
     "EvaluationContext",
     "NullRiskEvaluator",
     "RiskCheckResult",

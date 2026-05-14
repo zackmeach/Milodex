@@ -53,3 +53,33 @@ class NullRiskEvaluator(RiskEvaluator):
 
     def evaluate(self, context: EvaluationContext) -> RiskDecision:  # noqa: ARG002
         return synthetic_bypass_decision()
+
+
+class BacktestStructuralRiskEvaluator(RiskEvaluator):
+    """Risk evaluator for policy-constrained historical replay.
+
+    Enforces structural sizing and exposure checks using simulated account
+    state. It intentionally skips wall-clock/runtime checks that would make
+    historical bars depend on today's market state.
+    """
+
+    def evaluate(self, context: EvaluationContext) -> RiskDecision:
+        checks = [
+            self._check_order_value(context),
+            self._check_single_position_limit(context),
+            self._check_total_exposure(context),
+            self._check_concurrent_positions(context),
+            self._check_strategy_concurrent_positions(context),
+        ]
+
+        allowed = all(check.passed for check in checks)
+        reason_codes = [
+            check.reason_code for check in checks if not check.passed and check.reason_code
+        ]
+        summary = "Allowed" if allowed else "Blocked by structural backtest risk checks"
+        return RiskDecision(
+            allowed=allowed,
+            summary=summary,
+            checks=checks,
+            reason_codes=reason_codes,
+        )
