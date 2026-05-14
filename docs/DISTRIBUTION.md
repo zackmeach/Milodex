@@ -127,7 +127,7 @@ The key: even before a full installer exists, the project should already feel **
 Milodex remains **openly personal and opinionated** in the areas below. These are the founder's deliberate choices, not claimed universal truth. Presenting them honestly as one reasonable worldview makes the product more credible, not less.
 
 - strategy-family selection and ordering (mean reversion first, then momentum, then breakout — per `docs/strategy-families.md`)
-- promotion thresholds and evidence standards (Sharpe ≥ 0.5, max drawdown ≤ 15%, ≥ 30 trades — per R-PRM-004)
+- promotion thresholds and evidence standards (stage-aware Sharpe/drawdown gates plus each strategy's configured trade-count floor — per R-PRM-004)
 - risk tolerance defaults (10% / 50% / 20% sector — per `docs/RISK_POLICY.md`)
 - curated universe choices (Phase 1 universe in `configs/universe_phase1_v1.yaml`)
 - reporting preferences and trust-summary design
