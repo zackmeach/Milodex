@@ -24,7 +24,12 @@ from milodex.broker.models import (
 )
 from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.models import Bar
-from milodex.execution import ExecutionService, ExecutionStatus, TradeIntent
+from milodex.execution import (
+    ExecutionService,
+    ExecutionStatus,
+    TradeIntent,
+    UnsupportedOrderTypeError,
+)
 from milodex.execution.state import KillSwitchStateStore
 from milodex.risk import BYPASS_SUMMARY, NullRiskEvaluator
 
@@ -209,6 +214,34 @@ def test_submit_backtest_consults_null_evaluator_not_real_risk(tmp_path, risk_de
         backtest_run_id=run_row_id,
     )
     assert evaluator.calls == 1
+
+
+def test_submit_backtest_rejects_non_market_orders_before_simulated_broker_mutates(
+    tmp_path, risk_defaults_file
+):
+    evaluator = _SpyEvaluator()
+    service, broker, store = _make_service(tmp_path, risk_defaults_file, evaluator=evaluator)
+    run_row_id = _seed_backtest_run(store)
+
+    with pytest.raises(UnsupportedOrderTypeError) as exc_info:
+        service.submit_backtest(
+            TradeIntent(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=5,
+                order_type=OrderType.STOP_LIMIT,
+                limit_price=99.0,
+                stop_price=101.0,
+            ),
+            session_id="bt-session",
+            backtest_run_id=run_row_id,
+        )
+
+    assert exc_info.value.order_type == OrderType.STOP_LIMIT
+    assert evaluator.calls == 0
+    assert broker.submit_calls == []
+    assert store.list_explanations() == []
+    assert store.list_trades() == []
 
 
 def test_submit_backtest_without_reasoning_omits_rule_placeholder(tmp_path, risk_defaults_file):

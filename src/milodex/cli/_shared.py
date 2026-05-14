@@ -96,7 +96,10 @@ def add_trade_arguments(parser: argparse.ArgumentParser, *, require_paper_flag: 
         "--order-type",
         required=True,
         choices=tuple(ORDER_TYPE_CHOICES),
-        help="Order type.",
+        help=(
+            "Order type. Phase 1 execution supports market orders only; "
+            "non-market values return a structured unsupported-order error."
+        ),
     )
     parser.add_argument(
         "--time-in-force",

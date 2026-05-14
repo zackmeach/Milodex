@@ -17,8 +17,11 @@ from milodex.backtesting.engine import (
     _slice_bars_to_day,
     _trading_days_in_range,
 )
+from milodex.broker.models import OrderSide, OrderType
 from milodex.core.event_store import EventStore
 from milodex.data.models import BarSet
+from milodex.execution import UnsupportedOrderTypeError
+from milodex.execution.models import TradeIntent
 from milodex.strategies.base import DecisionReasoning, StrategyContext, StrategyDecision
 
 
@@ -295,6 +298,44 @@ def test_engine_buy_sell_round_trip():
     assert all(e.backtest_run_id == result.db_id for e in explanations), (
         "every backtest_engine explanation must carry backtest_run_id"
     )
+
+
+def test_engine_fails_loudly_when_strategy_emits_non_market_order():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 3)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded.strategy.evaluate.return_value = _decision(
+        [
+            TradeIntent(
+                symbol="SPY",
+                side=OrderSide.BUY,
+                quantity=10.0,
+                order_type=OrderType.LIMIT,
+                limit_price=100.0,
+            )
+        ]
+    )
+
+    barset = _make_barset([100.0, 101.0], start=start)
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": barset}
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+    with pytest.raises(UnsupportedOrderTypeError):
+        engine.run(start, end, run_id="non-market-run")
+
+    run_record = store.get_backtest_run("non-market-run")
+    assert run_record is not None
+    assert run_record.status == "failed"
+    assert store.list_trades() == []
+    assert store.list_explanations() == []
 
 
 def test_engine_skips_buy_when_insufficient_cash():
