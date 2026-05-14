@@ -37,6 +37,12 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from milodex.cli.commands.promotion import (
+    _compute_post_update_hash as _cli_compute_post_update_hash,
+)
+from milodex.cli.commands.promotion import (
+    _metrics_from_run as _cli_metrics_from_run,
+)
 from milodex.cli.commands.strategy import _ALLOWED_STAGES_BY_MODE
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.promotion import (
@@ -44,10 +50,24 @@ from milodex.promotion import (
     MIN_SHARPE,
     MIN_TRADES,
     STAGE_ORDER,
+    assemble_evidence_package,
+    check_gate,
+    validate_stage_transition,
 )
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
 from milodex.promotion.state_machine import demote as _governance_demote
+from milodex.promotion.state_machine import transition as _governance_transition
 from milodex.strategies.loader import load_strategy_config
+
+# Phase D2 (backend `submit_promote_to_paper`) reuses two private helpers from
+# the CLI promotion module — `_metrics_from_run` (resolves OOS metrics from a
+# backtest run id) and `_compute_post_update_hash` (computes the canonical
+# YAML hash AFTER the stage is rewritten, which `transition()` then verifies).
+# This is the same fragility shape already noted for `_ALLOWED_STAGES_BY_MODE`
+# (Phase C2 review finding E1): the CLI module is the de-facto source of
+# truth for inputs the facade also needs. A future refactor should graduate
+# both helpers to a public `milodex.promotion` surface; until then, reusing
+# the CLI internals beats duplicating the logic and risking drift.
 
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
@@ -992,7 +1012,257 @@ class BenchCommandFacade:
         )
 
     def submit_promote_to_paper(self, proposal: CommandProposal) -> CommandResult:
-        return self._phase_b_blocked(proposal, ACTION_FAMILY_PROMOTE_TO_PAPER)
+        """Third submit-capable action (ADR 0051 Phase D2).
+
+        Routes through ``milodex.promotion.state_machine.transition`` — the
+        same atomic governance callee the CLI's ``milodex promotion promote
+        --to paper`` uses. ``transition()`` owns the full sequence:
+
+        * builds the post-update ``StrategyManifestEvent``,
+        * appends manifest + ``PromotionEvent`` (with embedded evidence) in a
+          single event-store transaction,
+        * rewrites the YAML ``stage:`` line in-place.
+
+        The facade does not duplicate any of those rules; it threads the
+        operator-supplied evidence inputs (recommendation, known_risks,
+        run_id, lifecycle_exempt) into the same gate + evidence pipeline the
+        CLI uses, surfaces refusals as structured ``Blocker`` records, and
+        returns durable identifiers on success.
+
+        Phase D2 is backend-only: this method is not yet reachable from QML.
+        The bridge still exposes only ``proposeDemote`` / ``submitDemote`` /
+        ``proposeFreezeManifest`` / ``submitFreezeManifest``. GUI wiring
+        lands in Phase D3.
+        """
+        if proposal.action_family != ACTION_FAMILY_PROMOTE_TO_PAPER:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=proposal.action_family,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="proposal_action_family_mismatch",
+                        message=(
+                            f"submit_promote_to_paper received a proposal for "
+                            f"'{proposal.action_family}'; expected "
+                            f"'{ACTION_FAMILY_PROMOTE_TO_PAPER}'."
+                        ),
+                        context={
+                            "expected": ACTION_FAMILY_PROMOTE_TO_PAPER,
+                            "received": proposal.action_family,
+                        },
+                    )
+                ],
+            )
+
+        event_store = self._require_event_store(proposal)
+        if isinstance(event_store, CommandResult):
+            return event_store
+
+        # Extract operator-supplied inputs. These are the same fields the CLI's
+        # `--recommendation` / `--risk` / `--run-id` / `--lifecycle-exempt` /
+        # `--approved-by` flags populate.
+        recommendation = proposal.inputs.get("recommendation")
+        known_risks_raw = proposal.inputs.get("known_risks") or []
+        known_risks = [str(r) for r in known_risks_raw if r and str(r).strip()]
+        run_id = proposal.inputs.get("run_id")
+        approved_by = str(proposal.inputs.get("approved_by", "operator"))
+        lifecycle_exempt = bool(proposal.inputs.get("lifecycle_exempt", False))
+
+        # Stale-proposal revalidation: a proposal that was admissible at
+        # propose-time may have gone stale (stage drifted, YAML deleted, …)
+        # — refuse cleanly rather than dispatch. Mirrors submit_demote /
+        # submit_freeze_manifest.
+        revalidation = self.propose_promote_to_paper(
+            proposal.strategy_id,
+            recommendation=recommendation,
+            known_risks=list(known_risks_raw),
+            run_id=run_id,
+            approved_by=approved_by,
+            lifecycle_exempt=lifecycle_exempt,
+        )
+        if not revalidation.admissible:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=list(revalidation.blockers),
+            )
+
+        config, resolve_blocker = self._resolve_config(proposal.strategy_id)
+        if resolve_blocker is not None or config is None:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=[resolve_blocker] if resolve_blocker is not None else [],
+            )
+
+        from_stage = config.stage
+        to_stage = "paper"
+
+        # validate_stage_transition is also called by the governance path; we
+        # surface its `ValueError` shape as a structured blocker so the
+        # exception does not cross the facade boundary. The proposal-time
+        # `stage_is_backtest` precondition already covered the canonical case;
+        # this is the belt-and-braces re-check.
+        try:
+            validate_stage_transition(from_stage, to_stage)
+        except ValueError as exc:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="invalid_stage_transition",
+                        message=str(exc),
+                        context={"from_stage": from_stage, "to_stage": to_stage},
+                    )
+                ],
+            )
+
+        # Resolve OOS metrics from the backtest run. `_cli_metrics_from_run`
+        # raises ValueError when the run id is unknown — convert to a blocker.
+        # For lifecycle_exempt promotions, `run_id` may be None and
+        # `_cli_metrics_from_run` returns (None, None, None), which
+        # `check_gate(lifecycle_exempt=True, …)` accepts.
+        try:
+            sharpe_ratio, max_drawdown_pct, trade_count = _cli_metrics_from_run(
+                run_id, event_store
+            )
+        except ValueError as exc:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="backtest_run_not_found",
+                        message=str(exc),
+                        context={"run_id": run_id},
+                    )
+                ],
+            )
+
+        gate_result = check_gate(
+            lifecycle_exempt=lifecycle_exempt,
+            sharpe_ratio=sharpe_ratio,
+            max_drawdown_pct=max_drawdown_pct,
+            trade_count=trade_count,
+        )
+        if not gate_result.allowed:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="gate_check_failed",
+                        message=failure,
+                        context={
+                            "promotion_type": gate_result.promotion_type,
+                            "sharpe_ratio": gate_result.sharpe_ratio,
+                            "max_drawdown_pct": gate_result.max_drawdown_pct,
+                            "trade_count": gate_result.trade_count,
+                        },
+                    )
+                    for failure in gate_result.failures
+                ],
+            )
+
+        # Manifest hash MUST match the canonical YAML AFTER the stage line is
+        # rewritten — `transition()` re-derives this and raises ValueError on
+        # mismatch. We use the same CLI helper to keep the two derivations in
+        # lockstep.
+        manifest_hash = _cli_compute_post_update_hash(config.raw_data, to_stage)
+
+        evidence = assemble_evidence_package(
+            strategy_id=config.strategy_id,
+            from_stage=from_stage,
+            to_stage=to_stage,
+            manifest_hash=manifest_hash,
+            backtest_run_id=run_id,
+            recommendation=str(recommendation) if recommendation else "",
+            known_risks=known_risks,
+            promotion_type=gate_result.promotion_type,
+            gate_check_outcome={
+                "allowed": gate_result.allowed,
+                "promotion_type": gate_result.promotion_type,
+                "failures": list(gate_result.failures),
+            },
+            metrics_snapshot={
+                "sharpe_ratio": sharpe_ratio,
+                "max_drawdown_pct": max_drawdown_pct,
+                "trade_count": trade_count,
+            },
+            event_store=event_store,
+            now=self._now(),
+        )
+
+        try:
+            event = _governance_transition(
+                config_path=config.path,
+                to_stage=to_stage,
+                gate_result=gate_result,
+                evidence=evidence,
+                approved_by=approved_by,
+                event_store=event_store,
+                backtest_run_id=run_id,
+                now=self._now(),
+            )
+        except ValueError as exc:
+            # Governance layer raised — surface as structured blocker so the
+            # exception does not cross the facade boundary. transition()
+            # raises here for failed gate (already filtered above), manifest
+            # hash mismatch, or load_strategy_config failure.
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="governance_refused",
+                        message=str(exc),
+                        context={
+                            "callee": "milodex.promotion.state_machine.transition",
+                        },
+                    )
+                ],
+            )
+
+        durable_refs: dict[str, str] = {
+            "strategy_id": event.strategy_id,
+            "from_stage": event.from_stage,
+            "to_stage": event.to_stage,
+            "promotion_type": event.promotion_type,
+            "approved_by": event.approved_by,
+            "recorded_at": event.recorded_at.isoformat(),
+            "manifest_hash": manifest_hash,
+        }
+        if event.id is not None:
+            durable_refs["promotion_id"] = str(event.id)
+        if event.manifest_id is not None:
+            durable_refs["manifest_id"] = str(event.manifest_id)
+        if event.backtest_run_id is not None:
+            durable_refs["backtest_run_id"] = event.backtest_run_id
+        if event.sharpe_ratio is not None:
+            durable_refs["sharpe_ratio"] = f"{event.sharpe_ratio:.6f}"
+        if event.max_drawdown_pct is not None:
+            durable_refs["max_drawdown_pct"] = f"{event.max_drawdown_pct:.6f}"
+        if event.trade_count is not None:
+            durable_refs["trade_count"] = str(event.trade_count)
+
+        return CommandResult(
+            proposal_id=proposal.proposal_id,
+            action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+            status="submitted",
+            durable_refs=durable_refs,
+            blockers=[],
+            warnings=[],
+            submitted_at=event.recorded_at,
+            audit_event_id=str(event.id) if event.id is not None else None,
+        )
 
     def submit_demote(
         self, proposal: CommandProposal, *, gui_submit: bool = False
