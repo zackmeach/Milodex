@@ -119,6 +119,20 @@ class _PendingOrder:
     reasoning: object
 
 
+def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -> bool:
+    """Return whether ``barset`` contains at least one row in the requested window."""
+    if len(barset) == 0:
+        return False
+
+    df = barset.to_dataframe()
+    if df.empty or "timestamp" not in df.columns:
+        return False
+
+    timestamps = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    in_range = timestamps.dt.date.between(start_date, end_date)
+    return bool(in_range.any())
+
+
 class BacktestEngine:
     """Replay a loaded strategy over historical bar data.
 
@@ -265,8 +279,9 @@ class BacktestEngine:
         windows, avoiding N×warmup fetches for N windows.
 
         Raises :class:`UniverseCoverageError` when fewer than the configured
-        fraction of declared-universe symbols have bars.  An empty barset (the
-        provider returned the symbol but with zero rows) counts as missing.
+        fraction of declared-universe symbols have bars inside the requested
+        run window.  An empty barset, absent symbol, or warmup-only barset
+        counts as missing for coverage purposes.
 
         Threshold resolution order (first match wins):
         1. ``loaded.config.risk["min_universe_coverage_pct"]`` — per-strategy
@@ -287,7 +302,11 @@ class BacktestEngine:
             end=end_date,
         )
 
-        covered = [s for s in universe if s in bars and len(bars[s]) > 0]
+        covered = [
+            s
+            for s in universe
+            if s in bars and _barset_has_bar_in_range(bars[s], start_date, end_date)
+        ]
         coverage = len(covered) / len(universe)
         threshold = self._resolve_coverage_threshold()
         if coverage < threshold:
@@ -296,7 +315,7 @@ class BacktestEngine:
             suffix = "..." if len(missing) > 10 else ""
             msg = (
                 f"Universe coverage {coverage:.1%} < {threshold:.1%} "
-                f"({len(covered)}/{len(universe)} symbols available). "
+                f"({len(covered)}/{len(universe)} symbols available in requested window). "
                 f"Missing: {shown}{suffix}"
             )
             raise UniverseCoverageError(msg)
