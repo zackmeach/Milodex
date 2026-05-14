@@ -11,6 +11,8 @@ from milodex.promotion import (
     MAX_DRAWDOWN_PCT,
     MIN_SHARPE,
     MIN_TRADES,
+    PAPER_MAX_DRAWDOWN_PCT,
+    PAPER_MIN_SHARPE,
     STAGE_ORDER,
     check_gate,
     validate_stage_transition,
@@ -222,6 +224,48 @@ def test_gate_refuses_meanrev_shape_evidence_on_sharpe_alone() -> None:
     assert result.trade_count == 752
 
 
+def test_paper_readiness_gate_passes_positive_sharpe_below_live_threshold() -> None:
+    """Backtest->paper uses a permissive readiness gate, not the live-capital gate."""
+    result = check_gate(
+        lifecycle_exempt=False,
+        to_stage="paper",
+        sharpe_ratio=0.327,
+        max_drawdown_pct=6.41,
+        trade_count=752,
+    )
+
+    assert result.allowed is True
+    assert result.failures == []
+
+
+def test_paper_readiness_gate_fails_non_positive_sharpe() -> None:
+    result = check_gate(
+        lifecycle_exempt=False,
+        to_stage="paper",
+        sharpe_ratio=0.0,
+        max_drawdown_pct=6.41,
+        trade_count=752,
+    )
+
+    assert result.allowed is False
+    assert any("Sharpe" in f for f in result.failures)
+    assert any(str(PAPER_MIN_SHARPE) in f for f in result.failures)
+
+
+def test_paper_readiness_gate_uses_twenty_five_percent_drawdown_cap() -> None:
+    result = check_gate(
+        lifecycle_exempt=False,
+        to_stage="paper",
+        sharpe_ratio=0.327,
+        max_drawdown_pct=PAPER_MAX_DRAWDOWN_PCT,
+        trade_count=752,
+    )
+
+    assert result.allowed is False
+    assert any("drawdown" in f.lower() for f in result.failures)
+    assert any(str(PAPER_MAX_DRAWDOWN_PCT) in f for f in result.failures)
+
+
 # ---------------------------------------------------------------------------
 # check_gate — lifecycle-exempt path
 # ---------------------------------------------------------------------------
@@ -302,6 +346,10 @@ def test_min_sharpe_is_pinned_to_exactly_zero_point_five() -> None:
     assert MIN_SHARPE == 0.5
 
 
+def test_paper_min_sharpe_is_pinned_to_exactly_zero() -> None:
+    assert PAPER_MIN_SHARPE == 0.0
+
+
 def test_max_drawdown_pct_is_pinned_to_exactly_fifteen() -> None:
     """Kills mutation: state_machine.py:44 ``MAX_DRAWDOWN_PCT: float = 15.0``
     -> any other literal (e.g. 16.0).
@@ -310,6 +358,10 @@ def test_max_drawdown_pct_is_pinned_to_exactly_fifteen() -> None:
     threshold. A relaxation would silently widen the acceptable drawdown.
     """
     assert MAX_DRAWDOWN_PCT == 15.0
+
+
+def test_paper_max_drawdown_pct_is_pinned_to_exactly_twenty_five() -> None:
+    assert PAPER_MAX_DRAWDOWN_PCT == 25.0
 
 
 def test_min_trades_is_pinned_to_exactly_thirty() -> None:

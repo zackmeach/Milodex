@@ -6,6 +6,12 @@ Stage progression order: backtest → paper → micro_live → live.
 No stage may be skipped; no downgrade is allowed.
 
 Statistical strategies (promotion_type='statistical')
+  Backtest -> paper:
+  Sharpe ratio     > 0.0
+  Max drawdown     < 25.0%
+  Trade count      >= 30
+
+  Later capital stages:
   Sharpe ratio     > 0.5          (SRS R-PRM-001)
   Max drawdown     < 15.0%        (SRS R-PRM-002)
   Trade count      >= 30          (SRS R-PRM-003, R-BKT-003)
@@ -43,6 +49,8 @@ PHASE_ONE_BLOCKED_STAGES: frozenset[str] = frozenset({"micro_live", "live"})
 MIN_SHARPE: float = 0.5
 MAX_DRAWDOWN_PCT: float = 15.0
 MIN_TRADES: int = 30
+PAPER_MIN_SHARPE: float = 0.0
+PAPER_MAX_DRAWDOWN_PCT: float = 25.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +105,7 @@ def validate_stage_transition(from_stage: str, to_stage: str) -> None:
 def check_gate(
     *,
     lifecycle_exempt: bool,
+    to_stage: str = "micro_live",
     sharpe_ratio: float | None,
     max_drawdown_pct: float | None,
     trade_count: int | None,
@@ -116,17 +125,19 @@ def check_gate(
             trade_count=trade_count,
         )
 
+    min_sharpe, max_drawdown_pct_threshold = _thresholds_for_stage(to_stage)
     failures: list[str] = []
 
-    if sharpe_ratio is None or sharpe_ratio <= MIN_SHARPE:
+    if sharpe_ratio is None or sharpe_ratio <= min_sharpe:
         failures.append(
-            f"Sharpe {_fmt_or_none(sharpe_ratio)} must be > {MIN_SHARPE} "
+            f"Sharpe {_fmt_or_none(sharpe_ratio)} must be > {min_sharpe} "
             f"(got {_fmt_or_none(sharpe_ratio)})"
         )
 
-    if max_drawdown_pct is None or max_drawdown_pct >= MAX_DRAWDOWN_PCT:
+    if max_drawdown_pct is None or max_drawdown_pct >= max_drawdown_pct_threshold:
         failures.append(
-            f"Max drawdown {_fmt_or_none(max_drawdown_pct)}% must be < {MAX_DRAWDOWN_PCT}% "
+            f"Max drawdown {_fmt_or_none(max_drawdown_pct)}% must be < "
+            f"{max_drawdown_pct_threshold}% "
             f"(got {_fmt_or_none(max_drawdown_pct)})"
         )
 
@@ -141,6 +152,15 @@ def check_gate(
         max_drawdown_pct=max_drawdown_pct,
         trade_count=trade_count,
     )
+
+
+def _thresholds_for_stage(to_stage: str) -> tuple[float, float]:
+    if to_stage == "paper":
+        return PAPER_MIN_SHARPE, PAPER_MAX_DRAWDOWN_PCT
+    if to_stage in {"micro_live", "live"}:
+        return MIN_SHARPE, MAX_DRAWDOWN_PCT
+    msg = f"Unknown to_stage '{to_stage}'. Valid stages: {STAGE_ORDER}."
+    raise ValueError(msg)
 
 
 def _fmt_or_none(value: float | int | None) -> str:

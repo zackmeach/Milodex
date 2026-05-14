@@ -444,6 +444,7 @@ def _screen_one(
 
     gate = check_gate(
         lifecycle_exempt=(family == "regime"),
+        to_stage="paper",
         sharpe_ratio=result.oos_sharpe,
         max_drawdown_pct=result.oos_max_drawdown_pct,
         trade_count=result.oos_trade_count,
