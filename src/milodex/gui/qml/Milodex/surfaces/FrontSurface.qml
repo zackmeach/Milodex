@@ -460,7 +460,16 @@ Item {
                 }
 
                 // ====================================================
-                // AT THE GATE — featured strategy card
+                // AT THE GATE — featured strategy as definition block
+                //
+                // Per DESIGN.md v0.2 §6 (negative space — bordered card
+                // frames for content blocks) and DESIGN_SYSTEM.md v0.2 §7.7
+                // (Definition block): no bordered card chrome around the
+                // content. Section bounded by a hairline rule below the
+                // small-caps section head; content rendered as a
+                // definition list (small-caps labels in left gutter, mono
+                // values right). Actions are inline text links, not
+                // pinned-bottom CTA buttons.
                 // ====================================================
                 Column {
                     width: parent.width
@@ -492,171 +501,186 @@ Item {
                         }
                     }
 
-                    // Featured card — outlined panel
+                    // Section hairline — DESIGN_SYSTEM.md §7.7 definition-block
+                    // pattern: sections bounded by hairline rules, not card chrome.
                     Rectangle {
                         width:  parent.width
-                        height: featureCardCol.implicitHeight + Theme.space[5] * 2
-                        color:  "transparent"
-                        border.color: Theme.color.border.regular
-                        border.width: 1
-                        radius: Theme.radius.md
+                        height: 1
+                        color:  Theme.color.border.subtle
+                    }
 
-                        Column {
-                            id: featureCardCol
-                            anchors.left:        parent.left
-                            anchors.right:       parent.right
-                            anchors.top:         parent.top
-                            anchors.leftMargin:  Theme.space[5]
-                            anchors.rightMargin: Theme.space[5]
-                            anchors.topMargin:   Theme.space[5]
-                            spacing: Theme.space[3]
+                    Column {
+                        id: featureCardCol
+                        width: parent.width
+                        spacing: Theme.space[3]
+
+                        Text {
+                            text: root.feature.name || "No strategy needs attention"
+                            color: Theme.color.brand.primary
+                            font.family:    Theme.typography.display.sm.family
+                            font.pixelSize: Theme.typography.display.lg.size - 12
+                            font.weight:    Theme.typography.display.sm.weight
+                        }
+
+                        // 2-column "facts" grid — labels in left gutter, values right-aligned
+                        GridLayout {
+                            width: parent.width
+                            columns: 2
+                            rowSpacing:    Theme.space[2]
+                            columnSpacing: Theme.space[6]
+
+                            // Stage / Sharpe
+                            Text {
+                                text: "Stage"
+                                color: Theme.color.text.muted
+                                font.family:        Theme.typography.label.xs.family
+                                font.pixelSize:     Theme.typography.label.xs.size
+                                font.weight:        Theme.typography.label.xs.weight
+                                font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                                font.capitalization: Font.AllUppercase
+                                Layout.preferredWidth: 140
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                                implicitHeight:   factRow1.implicitHeight
+                                Row {
+                                    id: factRow1
+                                    anchors.right: parent.right
+                                    spacing: Theme.space[6]
+
+                                    Text {
+                                        text: root.feature.stage || "idle"
+                                        color: Theme.color.text.primary
+                                        font.family:    Theme.typography.data.md.family
+                                        font.pixelSize: Theme.typography.data.md.size
+                                        font.features:  Theme.typography.data.md.features
+                                    }
+                                    Text {
+                                        text: "sharpe"
+                                        color: Theme.color.text.muted
+                                        font.family:        Theme.typography.label.xs.family
+                                        font.pixelSize:     Theme.typography.label.xs.size
+                                        font.weight:        Theme.typography.label.xs.weight
+                                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                                        font.capitalization: Font.AllUppercase
+                                    }
+                                    Text {
+                                        text: root.feature.sharpe === undefined || root.feature.sharpe === null ? "—" : Number(root.feature.sharpe).toFixed(2)
+                                        color: Theme.color.text.primary
+                                        font.family:    Theme.typography.data.md.family
+                                        font.pixelSize: Theme.typography.data.md.size
+                                        font.features:  Theme.typography.data.md.features
+                                    }
+                                }
+                            }
+
+                            // Max drawdown / Trades
+                            Text {
+                                text: "Max drawdown"
+                                color: Theme.color.text.muted
+                                font.family:        Theme.typography.label.xs.family
+                                font.pixelSize:     Theme.typography.label.xs.size
+                                font.weight:        Theme.typography.label.xs.weight
+                                font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                                font.capitalization: Font.AllUppercase
+                                Layout.preferredWidth: 140
+                            }
+                            Item {
+                                Layout.fillWidth: true
+                                implicitHeight:   factRow2.implicitHeight
+                                Row {
+                                    id: factRow2
+                                    anchors.right: parent.right
+                                    spacing: Theme.space[6]
+
+                                    Text {
+                                        text: root.feature.maxDrawdownPct === undefined || root.feature.maxDrawdownPct === null ? "—" : Number(root.feature.maxDrawdownPct).toFixed(1) + "%"
+                                        color: Theme.color.text.primary
+                                        font.family:    Theme.typography.data.md.family
+                                        font.pixelSize: Theme.typography.data.md.size
+                                        font.features:  Theme.typography.data.md.features
+                                    }
+                                    Text {
+                                        text: "trades"
+                                        color: Theme.color.text.muted
+                                        font.family:        Theme.typography.label.xs.family
+                                        font.pixelSize:     Theme.typography.label.xs.size
+                                        font.weight:        Theme.typography.label.xs.weight
+                                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                                        font.capitalization: Font.AllUppercase
+                                    }
+                                    Text {
+                                        text: root.feature.tradeCount || 0
+                                        color: Theme.color.text.primary
+                                        font.family:    Theme.typography.data.md.family
+                                        font.pixelSize: Theme.typography.data.md.size
+                                        font.features:  Theme.typography.data.md.features
+                                    }
+                                }
+                            }
+
+                            // Gates for next stage — derived from feature.stage via JS map
+                            // (_StrategyRow.as_qml() exports `stage`, not `gatesFor`)
+                            Text {
+                                text: "Gates for " + ({"backtest": "paper", "paper": "micro_live", "micro_live": "live"}[root.feature.stage] || root.feature.stage || "next")
+                                color: Theme.color.text.muted
+                                font.family:        Theme.typography.label.xs.family
+                                font.pixelSize:     Theme.typography.label.xs.size
+                                font.weight:        Theme.typography.label.xs.weight
+                                font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                                font.capitalization: Font.AllUppercase
+                                Layout.preferredWidth: 140
+                            }
+                            Text {
+                                text: root.feature.statusWord || "watching"
+                                color: root.feature.statusKind === "warning" ? Theme.status.warning
+                                     : root.feature.statusKind === "positive" ? Theme.status.positive
+                                     : Theme.status.info
+                                horizontalAlignment: Text.AlignRight
+                                font.family:    Theme.typography.data.md.family
+                                font.pixelSize: Theme.typography.data.md.size
+                                font.features:  Theme.typography.data.md.features
+                                font.weight:    Font.Medium
+                                Layout.fillWidth: true
+                            }
+                        }
+
+                        // Spacer + inline action links — DESIGN_SYSTEM.md §7.7:
+                        // no pinned-bottom CTAs, no bordered-button chrome.
+                        // Actions render as inline editorial text links.
+                        Item { width: parent.width; height: Theme.space[2] }
+
+                        Row {
+                            spacing: Theme.space[5]
 
                             Text {
-                                text: root.feature.name || "No strategy needs attention"
-                                color: Theme.color.brand.primary
-                                font.family:    Theme.typography.display.sm.family
-                                font.pixelSize: Theme.typography.display.lg.size - 12
-                                font.weight:    Theme.typography.display.sm.weight
-                            }
-
-                            // 2-column "facts" grid
-                            GridLayout {
-                                width: parent.width
-                                columns: 2
-                                rowSpacing:    Theme.space[2]
-                                columnSpacing: Theme.space[6]
-
-                                // Stage / Sharpe
-                                Text {
-                                    text: "Stage"
-                                    color: Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Theme.typography.label.xs.weight
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
-                                    Layout.preferredWidth: 140
+                                id: openInBenchLink
+                                text: "open in bench →"
+                                color: openInBenchMouse.containsMouse
+                                        ? Theme.color.text.primary
+                                        : Theme.color.text.secondary
+                                font.family:    Theme.typography.body.md.family
+                                font.pixelSize: Theme.typography.body.md.size
+                                Behavior on color {
+                                    ColorAnimation { duration: Theme.motion.fast }
                                 }
-                                Item {
-                                    Layout.fillWidth: true
-                                    implicitHeight:   factRow1.implicitHeight
-                                    Row {
-                                        id: factRow1
-                                        anchors.right: parent.right
-                                        spacing: Theme.space[6]
-
-                                        Text {
-                                            text: root.feature.stage || "idle"
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.data.md.family
-                                            font.pixelSize: Theme.typography.data.md.size
-                                            font.features:  Theme.typography.data.md.features
-                                        }
-                                        Text {
-                                            text: "sharpe"
-                                            color: Theme.color.text.muted
-                                            font.family:        Theme.typography.label.xs.family
-                                            font.pixelSize:     Theme.typography.label.xs.size
-                                            font.weight:        Theme.typography.label.xs.weight
-                                            font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                            font.capitalization: Font.AllUppercase
-                                        }
-                                        Text {
-                                            text: root.feature.sharpe === undefined || root.feature.sharpe === null ? "—" : Number(root.feature.sharpe).toFixed(2)
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.data.md.family
-                                            font.pixelSize: Theme.typography.data.md.size
-                                            font.features:  Theme.typography.data.md.features
-                                        }
-                                    }
-                                }
-
-                                // Max drawdown / Trades
-                                Text {
-                                    text: "Max drawdown"
-                                    color: Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Theme.typography.label.xs.weight
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
-                                    Layout.preferredWidth: 140
-                                }
-                                Item {
-                                    Layout.fillWidth: true
-                                    implicitHeight:   factRow2.implicitHeight
-                                    Row {
-                                        id: factRow2
-                                        anchors.right: parent.right
-                                        spacing: Theme.space[6]
-
-                                        Text {
-                                            text: root.feature.maxDrawdownPct === undefined || root.feature.maxDrawdownPct === null ? "—" : Number(root.feature.maxDrawdownPct).toFixed(1) + "%"
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.data.md.family
-                                            font.pixelSize: Theme.typography.data.md.size
-                                            font.features:  Theme.typography.data.md.features
-                                        }
-                                        Text {
-                                            text: "trades"
-                                            color: Theme.color.text.muted
-                                            font.family:        Theme.typography.label.xs.family
-                                            font.pixelSize:     Theme.typography.label.xs.size
-                                            font.weight:        Theme.typography.label.xs.weight
-                                            font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                            font.capitalization: Font.AllUppercase
-                                        }
-                                        Text {
-                                            text: root.feature.tradeCount || 0
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.data.md.family
-                                            font.pixelSize: Theme.typography.data.md.size
-                                            font.features:  Theme.typography.data.md.features
-                                        }
-                                    }
-                                }
-
-                                // Gates for next stage — derived from feature.stage via JS map
-                                // (_StrategyRow.as_qml() exports `stage`, not `gatesFor`)
-                                Text {
-                                    text: "Gates for " + ({"backtest": "paper", "paper": "micro_live", "micro_live": "live"}[root.feature.stage] || root.feature.stage || "next")
-                                    color: Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Theme.typography.label.xs.weight
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
-                                    Layout.preferredWidth: 140
-                                }
-                                Text {
-                                    text: root.feature.statusWord || "watching"
-                                    color: root.feature.statusKind === "warning" ? Theme.status.warning
-                                         : root.feature.statusKind === "positive" ? Theme.status.positive
-                                         : Theme.status.info
-                                    horizontalAlignment: Text.AlignRight
-                                    font.family:    Theme.typography.data.md.family
-                                    font.pixelSize: Theme.typography.data.md.size
-                                    font.features:  Theme.typography.data.md.features
-                                    font.weight:    Font.Medium
-                                    Layout.fillWidth: true
-                                }
-                            }
-
-                            // Spacer + actions row
-                            Item { width: parent.width; height: Theme.space[2] }
-
-                            Row {
-                                spacing: Theme.space[5]
-
-                                QuietAction {
-                                    text: "Open in bench →"
+                                MouseArea {
+                                    id: openInBenchMouse
+                                    anchors.fill: parent
+                                    hoverEnabled: true
+                                    cursorShape: Qt.PointingHandCursor
                                     onClicked: Window.window.activeSurface = "bench"
                                 }
+                            }
 
-                                QuietAction {
-                                    text: "Strategy detail →"
-                                    enabled: false
-                                }
+                            // Disabled link: muted color, no hover, no MouseArea.
+                            // Companion PR will enable this once a strategy-detail
+                            // surface exists.
+                            Text {
+                                text: "strategy detail →"
+                                color: Theme.color.text.disabled
+                                font.family:    Theme.typography.body.md.family
+                                font.pixelSize: Theme.typography.body.md.size
                             }
                         }
                     }
