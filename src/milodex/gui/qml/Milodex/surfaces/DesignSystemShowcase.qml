@@ -90,6 +90,7 @@ Item {
                 color: Theme.color.text.primary
                 font.family:    Theme.typography.data.xs.family
                 font.pixelSize: Theme.typography.data.xs.size
+                font.features:  Theme.typography.data.xs.features
                 elide: Text.ElideRight
             }
 
@@ -99,6 +100,7 @@ Item {
                 color: Theme.color.text.muted
                 font.family:    Theme.typography.data.xs.family
                 font.pixelSize: Theme.typography.data.xs.size
+                font.features:  Theme.typography.data.xs.features
                 elide: Text.ElideRight
             }
         }
@@ -428,6 +430,7 @@ Item {
                         font.family:    Theme.typography.data.md.family
                         font.pixelSize: Theme.typography.data.md.size
                         font.weight:    Theme.typography.data.md.weight
+                        font.features:  Theme.typography.data.md.features
                     }
                 }
 
@@ -447,6 +450,7 @@ Item {
                         font.family:    Theme.typography.data.sm.family
                         font.pixelSize: Theme.typography.data.sm.size
                         font.weight:    Theme.typography.data.sm.weight
+                        font.features:  Theme.typography.data.sm.features
                     }
                 }
 
@@ -466,6 +470,7 @@ Item {
                         font.family:    Theme.typography.data.xs.family
                         font.pixelSize: Theme.typography.data.xs.size
                         font.weight:    Theme.typography.data.xs.weight
+                        font.features:  Theme.typography.data.xs.features
                     }
                 }
             }

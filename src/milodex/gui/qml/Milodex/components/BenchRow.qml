@@ -258,6 +258,7 @@ Item {
                      : (mouseArea.containsMouse || rowClickArea.containsMouse || root.dragging ? 0.65 : 0.30)
             font.family: Theme.typography.data.sm.family
             font.pixelSize: Theme.typography.data.sm.size
+            font.features: Theme.typography.data.sm.features
             font.letterSpacing: 1.2
             rotation: 90
             Behavior on opacity { NumberAnimation { duration: Theme.motion.fast } }
