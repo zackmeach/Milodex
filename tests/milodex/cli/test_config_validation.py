@@ -8,9 +8,10 @@ from milodex.cli.config_validation import validate_config_file
 
 
 def test_validate_sample_strategy_config():
-    lines = validate_config_file(Path("configs/sample_strategy.yaml"))
+    path = Path("configs/sample_strategy.yaml")
+    lines = validate_config_file(path)
 
-    assert "Config validation passed: configs\\sample_strategy.yaml" in lines
+    assert f"Config validation passed: {path}" in lines
     assert "Detected kind: strategy" in lines
 
 

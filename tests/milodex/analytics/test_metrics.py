@@ -228,7 +228,12 @@ def test_compute_metrics_flat_equity():
 
 def test_compute_metrics_positive_return():
     start = date(2024, 1, 1)
-    equity = _equity_curve([100_000.0 * (1.001**i) for i in range(252)], start=start)
+    # Upward trend with real day-to-day variance — a perfectly smooth
+    # curve has zero return variance and an undefined (None) Sharpe.
+    equity = _equity_curve(
+        [100_000.0 * (1.001**i) * (1.0 + 0.01 * ((-1) ** i)) for i in range(252)],
+        start=start,
+    )
     m = compute_metrics(
         run_id="run1",
         strategy_id="s.v1",

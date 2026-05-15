@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from datetime import UTC, date, datetime
+from datetime import UTC, datetime
 from io import StringIO
 
 import pandas as pd
@@ -27,7 +27,7 @@ from milodex.cli.formatter import (
     get_formatter,
 )
 from milodex.cli.main import main as cli_entrypoint
-from milodex.data.models import Bar, BarSet, Timeframe
+from milodex.data.models import Bar, BarSet
 from milodex.execution.models import (
     ExecutionRequest,
     ExecutionResult,
@@ -473,9 +473,3 @@ def test_json_flag_accepted_before_or_after_command(monkeypatch, argv):
     assert exit_code == 0
     payload = json.loads(stdout.getvalue())
     assert payload["command"] == "status"
-
-
-def test_Timeframe_used_to_silence_unused_import():  # noqa: N802
-    # Timeframe is referenced so imports remain stable across linters.
-    assert Timeframe.DAY_1
-    assert date(2025, 1, 1) < date(2025, 2, 1)

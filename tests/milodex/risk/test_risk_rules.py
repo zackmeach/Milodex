@@ -23,7 +23,6 @@ from milodex.broker.models import (
     AccountInfo,
     Order,
     OrderSide,
-    OrderStatus,
     OrderType,
     Position,
     TimeInForce,
@@ -1516,9 +1515,3 @@ def test_regime_can_enter_when_meanrev_holds_unrelated_positions(tmp_path):
     )
     assert "max_strategy_positions_exceeded" not in decision.reason_codes
     assert "max_concurrent_positions_exceeded" not in decision.reason_codes
-
-
-# --- sanity: reference the pytest and Order/OrderStatus imports so ruff
-#     does not flag them unused if tests are trimmed. The pytest import
-#     stays available for future parametrization.
-_ = (pytest, Order, OrderStatus)

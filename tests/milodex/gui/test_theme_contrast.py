@@ -34,10 +34,12 @@ _THEMES_DIR: Path = (
     Path(__file__).resolve().parents[3] / "src" / "milodex" / "gui" / "qml" / "Milodex" / "themes"
 )
 
+# Launch scope is Editorial Dark only (#132); Light + Bronze are deferred
+# post-launch and unreachable in the UI, so gating shippable work on their
+# contrast would be testing colors no operator can select. Re-add them here
+# when they are un-deferred.
 _THEME_FILES: dict[str, Path] = {
     "editorial-dark": _THEMES_DIR / "EditorialDark.qml",
-    "editorial-light": _THEMES_DIR / "EditorialLight.qml",
-    "bronze": _THEMES_DIR / "Bronze.qml",
 }
 
 

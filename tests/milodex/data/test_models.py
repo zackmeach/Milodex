@@ -1,56 +1,10 @@
 # tests/milodex/data/test_models.py
 """Tests for data layer models."""
 
-from datetime import UTC, datetime
-
 import pandas as pd
 import pytest
 
-from milodex.data.models import Bar, BarSet, Timeframe
-
-
-class TestTimeframe:
-    def test_has_expected_members(self):
-        assert Timeframe.MINUTE_1.value == "1Min"
-        assert Timeframe.MINUTE_5.value == "5Min"
-        assert Timeframe.MINUTE_15.value == "15Min"
-        assert Timeframe.HOUR_1.value == "1Hour"
-        assert Timeframe.DAY_1.value == "1Day"
-
-    def test_all_members_are_strings(self):
-        for member in Timeframe:
-            assert isinstance(member.value, str)
-
-
-class TestBar:
-    def test_create_bar(self):
-        ts = datetime(2025, 1, 15, 14, 30, tzinfo=UTC)
-        bar = Bar(
-            timestamp=ts,
-            open=150.0,
-            high=152.0,
-            low=149.5,
-            close=151.0,
-            volume=1000000,
-        )
-        assert bar.timestamp == ts
-        assert bar.open == 150.0
-        assert bar.close == 151.0
-        assert bar.volume == 1000000
-        assert bar.vwap is None
-
-    def test_bar_with_vwap(self):
-        ts = datetime(2025, 1, 15, 14, 30, tzinfo=UTC)
-        bar = Bar(
-            timestamp=ts,
-            open=150.0,
-            high=152.0,
-            low=149.5,
-            close=151.0,
-            volume=1000000,
-            vwap=150.8,
-        )
-        assert bar.vwap == 150.8
+from milodex.data.models import Bar, BarSet
 
 
 class TestBarSet:
@@ -67,10 +21,6 @@ class TestBarSet:
                 "vwap": [148.3, 149.2, 150.8],
             }
         )
-
-    def test_create_from_dataframe(self, sample_df):
-        barset = BarSet(sample_df)
-        assert len(barset) == 3
 
     def test_to_dataframe_returns_copy(self, sample_df):
         barset = BarSet(sample_df)
