@@ -49,7 +49,7 @@ from milodex.commands.bench import (
     CommandResult,
     Precondition,
 )
-from milodex.core.event_store import BacktestRunEvent, EventStore
+from milodex.core.event_store import BacktestRunEvent, EventStore, StrategyRunEvent
 from milodex.data.models import BarSet
 from milodex.risk.policy import RiskPolicy
 
@@ -117,6 +117,33 @@ def _seed_runner_lock(locks_dir: Path) -> Path:
     return holder_path
 
 
+class _FakePaperRunnerControl:
+    def __init__(self, locks_dir: Path) -> None:
+        self.starts: list[str] = []
+        self.stops: list[tuple[str, dict]] = []
+        self.locks_dir = locks_dir
+
+    def start(self, strategy_id: str):
+        self.starts.append(strategy_id)
+        return SimpleNamespace(
+            strategy_id=strategy_id,
+            pid=4242,
+            command=("python", "-m", "milodex.cli.main", "strategy", "run", strategy_id),
+            stop_request_path=self.locks_dir / f"{strategy_id}.controlled_stop.json",
+            launched_at=datetime(2026, 5, 15, 12, 0, 0),
+            session_id="session-from-fake-control",
+        )
+
+    def request_controlled_stop(self, strategy_id: str, *, holder: dict):
+        self.stops.append((strategy_id, holder))
+        return SimpleNamespace(
+            strategy_id=strategy_id,
+            request_path=self.locks_dir / f"{strategy_id}.controlled_stop.json",
+            requested_at=datetime(2026, 5, 15, 12, 1, 0),
+            holder=holder,
+        )
+
+
 @pytest.fixture
 def config_dir(tmp_path: Path) -> Path:
     d = tmp_path / "configs"
@@ -143,6 +170,7 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
         trading_mode: str = "paper",
         with_event_store: bool = True,
         backtest_engine_factory=None,
+        paper_runner_control=None,
     ) -> BenchCommandFacade:
         return BenchCommandFacade(
             config_dir=config_dir,
@@ -150,6 +178,7 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
             get_trading_mode=lambda: trading_mode,
             event_store_factory=(lambda: event_store) if with_event_store else None,
             backtest_engine_factory=backtest_engine_factory,
+            paper_runner_control=paper_runner_control,
         )
 
     return _make
@@ -606,27 +635,97 @@ def test_propose_demote_refuses_micro_live_and_live_targets(
 
 
 # --------------------------------------------------------------------------- #
-# Submit methods: Phase B is uniformly blocked
+# PR 15 - paper runner submit
 # --------------------------------------------------------------------------- #
 
 
-# Phase C1 wired submit_demote; Phase D1 wired submit_freeze_manifest;
-# Phase D2 wires submit_promote_to_paper (backend only); PR 13 wires
-# submit_backtest. The runner start/stop actions remain Phase B stubs.
-@pytest.mark.parametrize(
-    "method_name,family",
-    [
-        ("submit_start_paper_runner", ACTION_FAMILY_START_PAPER_RUNNER),
-        ("submit_stop_paper_runner", ACTION_FAMILY_STOP_PAPER_RUNNER),
-    ],
-)
-def test_submit_returns_phase_b_blocker(
-    method_name: str, family: str, make_facade, config_dir: Path
+def test_submit_start_paper_runner_launches_control_and_returns_refs(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_start_paper_runner(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert control.starts == [STRATEGY_ID]
+    assert result.durable_refs["strategy_id"] == STRATEGY_ID
+    assert result.durable_refs["runner_pid"] == "4242"
+    assert result.durable_refs["session_id"] == "session-from-fake-control"
+    assert result.data["command"][-1] == STRATEGY_ID
+
+
+def test_submit_start_paper_runner_blocks_when_revalidation_fails(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    path = _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+    path.write_text(
+        path.read_text(encoding="utf-8").replace('stage: "paper"', 'stage: "backtest"'),
+        encoding="utf-8",
+    )
+
+    result = facade.submit_start_paper_runner(proposal)
+
+    assert result.status == "blocked"
+    assert control.starts == []
+    assert any(b.reason_code == "stage_incompatible_with_mode" for b in result.blockers)
+
+
+def test_submit_start_paper_runner_requires_runner_control(
+    make_facade, config_dir: Path
 ) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_start_paper_runner(proposal)
+
+    assert result.status == "error"
+    assert result.blockers[0].reason_code == "paper_runner_control_unavailable"
+
+
+def test_submit_stop_paper_runner_writes_controlled_stop_request(
+    make_facade, config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    _seed_runner_lock(locks_dir)
+    event_store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="active-session",
+            strategy_id=STRATEGY_ID,
+            started_at=datetime(2026, 5, 15, 11, 0, 0),
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
+    proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_stop_paper_runner(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert control.stops[0][0] == STRATEGY_ID
+    assert result.durable_refs["exit_reason"] == "controlled_stop"
+    assert result.durable_refs["kill_switch"] == "false"
+    assert result.durable_refs["session_id"] == "active-session"
+    assert result.data["kill_switch"] is False
+
+
+def test_submit_stop_paper_runner_blocks_without_active_runner(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
     dummy = CommandProposal(
-        action_family=family,
+        action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
         strategy_id=STRATEGY_ID,
         inputs={},
         state_snapshot={},
@@ -636,13 +735,12 @@ def test_submit_returns_phase_b_blocker(
         proposed_at=datetime.now(),
         proposal_id="dummy-proposal",
     )
-    result: CommandResult = getattr(facade, method_name)(dummy)
+
+    result = facade.submit_stop_paper_runner(dummy)
+
     assert result.status == "blocked"
-    assert result.action_family == family
-    assert result.proposal_id == "dummy-proposal"
-    assert any(b.reason_code == "not_submit_capable_phase_b" for b in result.blockers)
-    assert result.submitted_at is None
-    assert result.audit_event_id is None
+    assert control.stops == []
+    assert result.blockers[0].reason_code == "no_active_runner"
 
 
 # --------------------------------------------------------------------------- #
@@ -1680,6 +1778,8 @@ def test_submit_promote_to_paper_is_exposed_by_bench_bridge(
         ACTION_FAMILY_FREEZE_MANIFEST,
         ACTION_FAMILY_BACKTEST,
         ACTION_FAMILY_PROMOTE_TO_PAPER,
+        ACTION_FAMILY_START_PAPER_RUNNER,
+        ACTION_FAMILY_STOP_PAPER_RUNNER,
     ]
 
 

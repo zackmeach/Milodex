@@ -260,7 +260,8 @@ def test_bench_command_bridge_resolves_in_qml() -> None:
         "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
         "    sys.exit(4)\n"
         "families = obj.property('families')\n"
-        "if list(families) != ['demote', 'freeze_manifest', 'backtest', 'promote_to_paper']:\n"
+        "if list(families) != ['demote', 'freeze_manifest', 'backtest', "
+        "'promote_to_paper', 'start_paper_runner', 'stop_paper_runner']:\n"
         "    print(f'UNEXPECTED_FAMILIES: {families!r}', file=sys.stderr)\n"
         "    sys.exit(5)\n"
         "print('PROBE_OK')\n"
@@ -745,9 +746,9 @@ def test_bench_pr_k_modal_wording_contract() -> None:
     ) in modal_src, "BenchConfirmationModal.qml _COPY_DIRECTIONAL must match verbatim"
 
     assert (
-        "This preview shows the confirmation Milodex will require before starting, "
-        "stopping, initiating, or refreshing an operational process. "
-        "Command execution is not wired in Bench v1."
+        "This confirmation sends operational process requests through the Bench "
+        "command bridge. Paper runner start and controlled stop are validated "
+        "again before submit."
     ) in modal_src, "BenchConfirmationModal.qml _COPY_INVOCATION must match verbatim"
 
     assert (

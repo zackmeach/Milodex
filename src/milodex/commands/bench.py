@@ -61,6 +61,7 @@ from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.promotion.state_machine import transition as _governance_transition
 from milodex.risk.policy import RiskPolicy
 from milodex.strategies.loader import load_strategy_config
+from milodex.strategies.paper_runner_control import runner_lock_name
 
 # Phase D2 (backend `submit_promote_to_paper`) reuses two private helpers from
 # the CLI promotion module — `_metrics_from_run` (resolves OOS metrics from a
@@ -232,6 +233,7 @@ class BenchCommandFacade:
         get_trading_mode: Callable[[], str],
         event_store_factory: Callable[[], EventStore] | None = None,
         backtest_engine_factory: Callable[..., Any] | None = None,
+        paper_runner_control: Any | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._config_dir = Path(config_dir)
@@ -239,6 +241,7 @@ class BenchCommandFacade:
         self._get_trading_mode = get_trading_mode
         self._event_store_factory = event_store_factory
         self._backtest_engine_factory = backtest_engine_factory
+        self._paper_runner_control = paper_runner_control
         self._now = now or (lambda: datetime.now(tz=UTC))
 
     # ------------------------------------------------------------------ #
@@ -867,7 +870,7 @@ class BenchCommandFacade:
                         f"No active paper-runner session for '{strategy_id}'. "
                         "Controlled stop requires an active runner; nothing to stop."
                     ),
-                    context={"lock_name": _runner_lock_name(strategy_id)},
+                    context={"lock_name": runner_lock_name(strategy_id)},
                 )
             )
             preconditions.append(Precondition("runner_active", passed=False))
@@ -1545,10 +1548,209 @@ class BenchCommandFacade:
         )
 
     def submit_start_paper_runner(self, proposal: CommandProposal) -> CommandResult:
-        return self._phase_b_blocked(proposal, ACTION_FAMILY_START_PAPER_RUNNER)
+        """Launch a non-blocking paper runner for a Bench-approved proposal."""
+        if proposal.action_family != ACTION_FAMILY_START_PAPER_RUNNER:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=proposal.action_family,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="proposal_action_family_mismatch",
+                        message=(
+                            f"submit_start_paper_runner received a proposal for "
+                            f"'{proposal.action_family}'; expected "
+                            f"'{ACTION_FAMILY_START_PAPER_RUNNER}'."
+                        ),
+                        context={
+                            "expected": ACTION_FAMILY_START_PAPER_RUNNER,
+                            "received": proposal.action_family,
+                        },
+                    )
+                ],
+            )
+
+        revalidation = self.propose_start_paper_runner(proposal.strategy_id)
+        if not revalidation.admissible:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+                status="blocked",
+                blockers=list(revalidation.blockers),
+            )
+
+        if self._paper_runner_control is None:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="paper_runner_control_unavailable",
+                        message=(
+                            "BenchCommandFacade was constructed without a "
+                            "paper_runner_control; runner submits require one."
+                        ),
+                        context={},
+                    )
+                ],
+            )
+        control = self._paper_runner_control
+        try:
+            result = control.start(proposal.strategy_id)
+        except Exception as exc:  # noqa: BLE001 - facade returns structured failures.
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="paper_runner_start_failed",
+                        message=f"Paper runner start failed: {exc}",
+                        context={"error_type": exc.__class__.__name__},
+                    )
+                ],
+                submitted_at=self._now(),
+            )
+
+        session_id = (
+            str(getattr(result, "session_id", "") or "")
+            or self._latest_open_session_id(proposal.strategy_id)
+        )
+        durable_refs = {
+            "strategy_id": proposal.strategy_id,
+            "runner_pid": str(getattr(result, "pid", "")),
+            "stop_request_path": str(getattr(result, "stop_request_path", "")),
+            "action": "start_paper_runner",
+        }
+        if session_id:
+            durable_refs["session_id"] = session_id
+        command = tuple(getattr(result, "command", ()))
+        return CommandResult(
+            proposal_id=proposal.proposal_id,
+            action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+            status="submitted",
+            durable_refs=durable_refs,
+            data={
+                "strategy_id": proposal.strategy_id,
+                "runner_pid": getattr(result, "pid", None),
+                "session_id": session_id,
+                "command": list(command),
+            },
+            submitted_at=getattr(result, "launched_at", self._now()),
+            audit_event_id=session_id or None,
+        )
 
     def submit_stop_paper_runner(self, proposal: CommandProposal) -> CommandResult:
-        return self._phase_b_blocked(proposal, ACTION_FAMILY_STOP_PAPER_RUNNER)
+        """Request controlled stop for an active paper runner."""
+        if proposal.action_family != ACTION_FAMILY_STOP_PAPER_RUNNER:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=proposal.action_family,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="proposal_action_family_mismatch",
+                        message=(
+                            f"submit_stop_paper_runner received a proposal for "
+                            f"'{proposal.action_family}'; expected "
+                            f"'{ACTION_FAMILY_STOP_PAPER_RUNNER}'."
+                        ),
+                        context={
+                            "expected": ACTION_FAMILY_STOP_PAPER_RUNNER,
+                            "received": proposal.action_family,
+                        },
+                    )
+                ],
+            )
+
+        revalidation = self.propose_stop_paper_runner(proposal.strategy_id)
+        if not revalidation.admissible:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                status="blocked",
+                blockers=list(revalidation.blockers),
+            )
+
+        holder = self._peek_runner_lock(proposal.strategy_id)
+        if holder is None:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="no_active_runner",
+                        message=(
+                            f"No active paper-runner session for "
+                            f"'{proposal.strategy_id}'."
+                        ),
+                        context={"lock_name": runner_lock_name(proposal.strategy_id)},
+                    )
+                ],
+            )
+
+        if self._paper_runner_control is None:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="paper_runner_control_unavailable",
+                        message=(
+                            "BenchCommandFacade was constructed without a "
+                            "paper_runner_control; runner submits require one."
+                        ),
+                        context={},
+                    )
+                ],
+            )
+        control = self._paper_runner_control
+        try:
+            result = control.request_controlled_stop(proposal.strategy_id, holder=holder)
+        except Exception as exc:  # noqa: BLE001 - facade returns structured failures.
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="paper_runner_stop_failed",
+                        message=f"Controlled-stop request failed: {exc}",
+                        context={"error_type": exc.__class__.__name__},
+                    )
+                ],
+                submitted_at=self._now(),
+            )
+
+        session_id = self._latest_open_session_id(proposal.strategy_id)
+        durable_refs = {
+            "strategy_id": proposal.strategy_id,
+            "stop_request_path": str(getattr(result, "request_path", "")),
+            "requested_pid": str(holder.get("pid", "")),
+            "exit_reason": "controlled_stop",
+            "kill_switch": "false",
+            "action": "stop_paper_runner",
+        }
+        if session_id:
+            durable_refs["session_id"] = session_id
+        return CommandResult(
+            proposal_id=proposal.proposal_id,
+            action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+            status="submitted",
+            durable_refs=durable_refs,
+            data={
+                "strategy_id": proposal.strategy_id,
+                "session_id": session_id,
+                "holder": dict(holder),
+                "controlled_stop": True,
+                "kill_switch": False,
+            },
+            submitted_at=getattr(result, "requested_at", self._now()),
+            audit_event_id=session_id,
+        )
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -1681,7 +1883,7 @@ class BenchCommandFacade:
         the holder dict if held, ``None`` if free.
         """
         lock = AdvisoryLock(
-            _runner_lock_name(strategy_id),
+            runner_lock_name(strategy_id),
             locks_dir=self._locks_dir,
             holder_name="bench.facade.peek",
         )
@@ -1694,6 +1896,22 @@ class BenchCommandFacade:
             "holder_name": holder.holder_name,
             "started_at": holder.started_at.isoformat(),
         }
+
+    def _latest_open_session_id(self, strategy_id: str) -> str | None:
+        if self._event_store_factory is None:
+            return None
+        try:
+            runs = self._event_store_factory().list_strategy_runs()
+        except Exception:  # noqa: BLE001 - best-effort durable ref enrichment.
+            return None
+        open_runs = [
+            run
+            for run in runs
+            if run.strategy_id == strategy_id and run.ended_at is None
+        ]
+        if not open_runs:
+            return None
+        return str(open_runs[-1].session_id)
 
     def _blocked_proposal(
         self,
@@ -1747,11 +1965,6 @@ _FROZEN_STAGES: frozenset[str] = frozenset({"paper", "micro_live", "live"})
 assert set(_FROZEN_STAGES).issubset(set(STAGE_ORDER)), (
     "_FROZEN_STAGES must be a subset of promotion.STAGE_ORDER."
 )
-
-
-def _runner_lock_name(strategy_id: str) -> str:
-    """Per-strategy advisory-lock name (ADR 0026, strategy.py:120-124)."""
-    return f"milodex.runtime.strategy.{strategy_id}"
 
 
 def _new_proposal_id() -> str:

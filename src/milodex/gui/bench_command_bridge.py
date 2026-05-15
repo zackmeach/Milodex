@@ -19,8 +19,9 @@ by the facade and the modules it routes into (``milodex.promotion``,
 * emits a ``submitCompleted`` signal QML surfaces can listen to.
 
 Backtest evidence generation is wired through ``proposeBacktest`` /
-``submitBacktest``. Runner start/stop action families remain absent until
-their respective wiring PRs land.
+``submitBacktest``. Paper runner controls are wired through
+``proposeStartPaperRunner`` / ``submitStartPaperRunner`` and
+``proposeStopPaperRunner`` / ``submitStopPaperRunner``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ from milodex.commands.bench import (
     ACTION_FAMILY_DEMOTE,
     ACTION_FAMILY_FREEZE_MANIFEST,
     ACTION_FAMILY_PROMOTE_TO_PAPER,
+    ACTION_FAMILY_START_PAPER_RUNNER,
+    ACTION_FAMILY_STOP_PAPER_RUNNER,
     BenchCommandFacade,
     CommandProposal,
 )
@@ -62,13 +65,10 @@ class BenchCommandBridge(QObject):
     """Qt-side bridge to the Bench command facade (ADR 0051 Phase D1).
 
     The demotion / walk-back action family (Phase C2) and the freeze-manifest
-    action family (Phase D1), and canonical backtest evidence generation
-    are submit-capable. Every other action family
-    remains preview-only and is *not* exposed here. The facade itself still
-    defines ``submit_promote_to_paper`` /
-    ``submit_start_paper_runner`` / ``submit_stop_paper_runner`` as Phase B
-    stubs returning ``not_submit_capable_phase_b``, but the GUI cannot reach
-    them through this bridge.
+    action family (Phase D1), canonical backtest evidence generation,
+    promote-to-paper, and paper runner start/controlled-stop are
+    submit-capable. Every other action family remains preview-only and is
+    *not* exposed here.
     """
 
     # Emitted after every submit attempt — successful, blocked, or errored.
@@ -385,6 +385,68 @@ class BenchCommandBridge(QObject):
         return payload
 
     # ------------------------------------------------------------------ #
+    # QML-callable slots (paper runner controls)
+    # ------------------------------------------------------------------ #
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def proposeStartPaperRunner(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
+        """Build a start-paper-runner proposal and cache it by id."""
+        strategy_id = str(inputs.get("strategy_id", ""))
+        proposal = self._facade.propose_start_paper_runner(strategy_id)
+        self._proposals[proposal.proposal_id] = proposal
+        return proposal.to_dict()
+
+    @Slot(str, result="QVariantMap")
+    def submitStartPaperRunner(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Submit a previously-proposed start-paper-runner request."""
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            return self._unknown_proposal_payload(
+                proposal_id,
+                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+                submit_method="submitStartPaperRunner",
+                propose_method="proposeStartPaperRunner",
+            )
+
+        result = self._facade.submit_start_paper_runner(proposal)
+        payload = result.to_dict()
+
+        if result.status == "submitted":
+            self._refresh_after_submit("submit_start_paper_runner")
+
+        self.submitCompleted.emit(payload)
+        return payload
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def proposeStopPaperRunner(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
+        """Build a stop-paper-runner proposal and cache it by id."""
+        strategy_id = str(inputs.get("strategy_id", ""))
+        proposal = self._facade.propose_stop_paper_runner(strategy_id)
+        self._proposals[proposal.proposal_id] = proposal
+        return proposal.to_dict()
+
+    @Slot(str, result="QVariantMap")
+    def submitStopPaperRunner(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Submit a previously-proposed controlled-stop request."""
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            return self._unknown_proposal_payload(
+                proposal_id,
+                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                submit_method="submitStopPaperRunner",
+                propose_method="proposeStopPaperRunner",
+            )
+
+        result = self._facade.submit_stop_paper_runner(proposal)
+        payload = result.to_dict()
+
+        if result.status == "submitted":
+            self._refresh_after_submit("submit_stop_paper_runner")
+
+        self.submitCompleted.emit(payload)
+        return payload
+
+    # ------------------------------------------------------------------ #
     # Introspection (used by tests and operator surfaces)
     # ------------------------------------------------------------------ #
 
@@ -400,6 +462,8 @@ class BenchCommandBridge(QObject):
             ACTION_FAMILY_FREEZE_MANIFEST,
             ACTION_FAMILY_BACKTEST,
             ACTION_FAMILY_PROMOTE_TO_PAPER,
+            ACTION_FAMILY_START_PAPER_RUNNER,
+            ACTION_FAMILY_STOP_PAPER_RUNNER,
         ]
 
 

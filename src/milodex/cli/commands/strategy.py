@@ -11,6 +11,10 @@ from milodex.config import get_locks_dir
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.execution.models import ExecutionResult, ExecutionStatus
 from milodex.strategies.loader import load_strategy_config
+from milodex.strategies.paper_runner_control import (
+    controlled_stop_request_path,
+    runner_lock_name,
+)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -117,12 +121,18 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     # each other but do not block runners. Account-state arbitration falls to
     # the broker via the risk evaluator's per-call position query (ADR 0024),
     # not to inter-process file locks.
+    locks_dir = ctx.locks_dir or get_locks_dir()
     with AdvisoryLock(
-        f"milodex.runtime.strategy.{args.strategy_id}",
-        locks_dir=ctx.locks_dir or get_locks_dir(),
+        runner_lock_name(args.strategy_id),
+        locks_dir=locks_dir,
         holder_name=f"milodex strategy run {args.strategy_id}",
     ):
         runner = ctx.get_strategy_runner(args.strategy_id)
+        if getattr(runner, "_controlled_stop_request_path", None) is None:
+            runner._controlled_stop_request_path = controlled_stop_request_path(  # noqa: SLF001
+                locks_dir,
+                args.strategy_id,
+            )
         as_json = bool(getattr(args, "json_output", False))
 
         if not as_json:

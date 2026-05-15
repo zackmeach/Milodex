@@ -72,6 +72,7 @@ class _StrategyRow:
     session_state: str = "not_running"
     session_id: str = ""
     session_detail: str = ""
+    paper_evidence: dict[str, Any] = field(default_factory=dict)
     job_id: str = ""
     job_status: str = ""
     job_action_type: str = ""
@@ -113,6 +114,7 @@ class _StrategyRow:
             "sessionState": self.session_state,
             "sessionId": self.session_id,
             "sessionDetail": self.session_detail,
+            "paperEvidence": dict(self.paper_evidence),
             "jobId": self.job_id,
             "jobStatus": self.job_status,
             "jobActionType": self.job_action_type,
@@ -616,6 +618,7 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
                 session_state=activity["state"],
                 session_id=activity["session_id"],
                 session_detail=activity["detail"],
+                paper_evidence=_paper_evidence(session),
                 job_id=str(job.get("job_id") or ""),
                 job_status=str(job.get("status") or ""),
                 job_action_type=str(job.get("action_type") or ""),
@@ -739,11 +742,11 @@ _ACTION_INTENT_COPY: dict[str, str] = {
         "Restore this strategy to a previously eligible stage or return it to the idle shelf."
     ),
     "start_trading": (
-        "Start an operational session for this strategy at its current stage. "
-        "In Bench v1 this is preview-only."
+        "Start a paper trading session for this strategy through the controlled "
+        "runner boundary."
     ),
     "stop_trading": (
-        "Stop the current operational session for this strategy. In Bench v1 this is preview-only."
+        "Request a controlled stop for the current paper session. This is not the kill switch."
     ),
     "initiate_backtest": (
         "Run canonical walk-forward backtest evidence for this strategy."
@@ -789,8 +792,8 @@ _ACTION_FUTURE_RECORD: dict[str, str] = {
 # Verbatim source-note string for every actionIntentPreview. Single-line
 # literal so static grep-based safety tests can match substring-exactly.
 _ACTION_PREVIEW_SOURCE_NOTE: str = (
-    "Bench v1 action intent previews are read-only. "
-    "No command is submitted, no event is written, and no state is changed."
+    "Bench action intent previews are display metadata. Submit-capable actions "
+    "must still validate through the Bench command bridge before state changes."
 )
 
 # Verbatim safety copy strings. These match the PR L QML _COPY_* constants
@@ -798,8 +801,8 @@ _ACTION_PREVIEW_SOURCE_NOTE: str = (
 # preview or the QML fallback. The strings MUST remain single-line literals
 # so static grep-based safety tests continue to match substring-exactly.
 _COPY_SAFETY_BOUNDARY: str = (
-    "Bench v1 renders this intent packet for review only. "
-    "No command is submitted, no event is written, and no state is changed."
+    "Bench renders this intent packet for review before any submit-capable action "
+    "is validated through the command bridge."
 )
 _COPY_CAPITAL_LOCK_SHORT: str = (
     "Capital-bearing transitions remain locked while ADR 0004 is in force."
@@ -831,6 +834,8 @@ def _action_kind(label: str) -> str:
         return "initiate_backtest"
     if label == "Refresh Backtest":
         return "refresh_backtest"
+    if label == "Freeze Manifest":
+        return "freeze_manifest"
     if label == "Open Evidence":
         return "open_evidence"
     return "unknown"
@@ -861,6 +866,21 @@ def _safety_copy(label: str, current_stage: str, capital_bearing: bool) -> str:
     return base
 
 
+def _is_submit_capable_action(kind: str, target_stage: str, current_stage: str) -> bool:
+    if kind in {
+        "demote",
+        "freeze_manifest",
+        "initiate_backtest",
+        "refresh_backtest",
+    }:
+        return True
+    if kind == "promote":
+        return target_stage == "paper"
+    if kind in {"start_trading", "stop_trading"}:
+        return current_stage == "paper"
+    return False
+
+
 def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
     """Normalized read-only Action Intent Preview (PR N, ADR 0049).
 
@@ -881,6 +901,7 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
     target_stage = item.target_stage or ""
     kind = _action_kind(label)
     capital_bearing = _is_capital_bearing(label, target_stage, row.stage)
+    submit_capable = _is_submit_capable_action(kind, target_stage, row.stage)
     return {
         "schemaVersion": 1,
         "source": {
@@ -900,8 +921,8 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
         "futureRecord": _ACTION_FUTURE_RECORD.get(kind, "—"),
         "capitalBearing": capital_bearing,
         "safetyCopy": _safety_copy(label, row.stage, capital_bearing),
-        "executable": False,
-        "wired": False,
+        "executable": submit_capable,
+        "wired": submit_capable,
     }
 
 
@@ -963,6 +984,7 @@ def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
             "id": row.session_id,
             "detail": row.session_detail,
         },
+        "paperEvidence": dict(row.paper_evidence),
         "job": {
             "id": row.job_id,
             "status": row.job_status,
@@ -1140,7 +1162,7 @@ def _runner_rows(db_path: Path) -> list[dict[str, Any]]:
     ]
 
 
-def _latest_session_states(db_path: Path) -> dict[str, dict[str, str]]:
+def _latest_session_states(db_path: Path) -> dict[str, dict[str, Any]]:
     if not db_path.exists():
         return {}
     conn = sqlite3.connect(str(db_path))
@@ -1148,7 +1170,13 @@ def _latest_session_states(db_path: Path) -> dict[str, dict[str, str]]:
     try:
         rows = conn.execute(
             """
-            SELECT sr.*
+            SELECT sr.*,
+                   (
+                       SELECT COUNT(*)
+                       FROM trades t
+                       WHERE t.session_id = sr.session_id
+                         AND t.source = 'paper'
+                   ) AS trade_count
             FROM strategy_runs sr
             INNER JOIN (
                 SELECT strategy_id, MAX(id) AS max_id
@@ -1161,7 +1189,7 @@ def _latest_session_states(db_path: Path) -> dict[str, dict[str, str]]:
         return {}
     finally:
         conn.close()
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, Any]] = {}
     failure_reasons = {"crashed", "failed", "kill_switch", "orphan_recovered", "error"}
     for row in rows:
         exit_reason = str(row["exit_reason"] or "")
@@ -1177,6 +1205,10 @@ def _latest_session_states(db_path: Path) -> dict[str, dict[str, str]]:
         result[row["strategy_id"]] = {
             "state": state,
             "session_id": str(row["session_id"]),
+            "started_at": str(row["started_at"] or ""),
+            "ended_at": str(row["ended_at"] or ""),
+            "exit_reason": exit_reason,
+            "trade_count": int(row["trade_count"] or 0),
             "detail": detail,
         }
     return result
@@ -1413,7 +1445,7 @@ def _kanban_lane(row: _StrategyRow) -> str:
     return row.stage if row.stage in _VISIBLE_STAGES else "idle"
 
 
-def _card_activity(session: dict[str, str], job: dict[str, str]) -> dict[str, str]:
+def _card_activity(session: dict[str, Any], job: dict[str, Any]) -> dict[str, str]:
     if job:
         state = (
             "canceling" if job.get("cancel_requested_at") else str(job.get("status") or "queued")
@@ -1429,6 +1461,35 @@ def _card_activity(session: dict[str, str], job: dict[str, str]) -> dict[str, st
     return {
         "state": str(session.get("state") or "not_running"),
         "session_id": str(session.get("session_id") or ""),
+        "detail": str(session.get("detail") or ""),
+    }
+
+
+def _paper_evidence(session: dict[str, Any]) -> dict[str, Any]:
+    if not session:
+        return {
+            "available": False,
+            "status": "missing",
+            "tradeCount": 0,
+        }
+    state = str(session.get("state") or "not_running")
+    exit_reason = str(session.get("exit_reason") or "")
+    if state == "running":
+        status = "running"
+    elif exit_reason in {"controlled_stop", "interrupted"}:
+        status = "completed"
+    elif exit_reason in {"kill_switch", "orphan_recovered"} or exit_reason.startswith("crashed:"):
+        status = "warning"
+    else:
+        status = "completed" if state == "stopped" else state
+    return {
+        "available": True,
+        "status": status,
+        "sessionId": str(session.get("session_id") or ""),
+        "startedAt": str(session.get("started_at") or ""),
+        "endedAt": str(session.get("ended_at") or ""),
+        "exitReason": exit_reason,
+        "tradeCount": int(session.get("trade_count") or 0),
         "detail": str(session.get("detail") or ""),
     }
 
