@@ -5,6 +5,9 @@ Rules
 Stage progression order: backtest → paper → micro_live → live.
 No stage may be skipped; no downgrade is allowed.
 
+Gate-decision policy lives in milodex.promotion.policy (ADR 0052); this
+module owns structural transition legality and mechanics.
+
 Statistical strategies (promotion_type='statistical')
   Backtest -> paper:
   Sharpe ratio     > 0.0
@@ -12,8 +15,8 @@ Statistical strategies (promotion_type='statistical')
   Trade count      >= strategy backtest.min_trades_required (default 30)
 
   Later capital stages:
-  Sharpe ratio     > 0.5          (SRS R-PRM-001)
-  Max drawdown     < 15.0%        (SRS R-PRM-002)
+  Sharpe ratio     > 0.5          (SRS R-PRM-004)
+  Max drawdown     < 15.0%        (SRS R-PRM-004)
   Trade count      >= strategy backtest.min_trades_required (default 30)
 
 Lifecycle-exempt strategies (promotion_type='lifecycle_exempt')
@@ -26,12 +29,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from milodex.core.event_store import PromotionEvent, StrategyManifestEvent
+from milodex.promotion.policy import (
+    ACTIVE_PROMOTION_POLICY,
+    PromotionCheckResult,
+)
 from milodex.strategies.loader import canonicalize_config_data, load_strategy_config
 
 if TYPE_CHECKING:
@@ -46,23 +52,16 @@ STAGE_ORDER: list[str] = ["backtest", "paper", "micro_live", "live"]
 # validate_stage_transition — in the future ADR that lifts the live-lock.
 PHASE_ONE_BLOCKED_STAGES: frozenset[str] = frozenset({"micro_live", "live"})
 
-MIN_SHARPE: float = 0.5
-MAX_DRAWDOWN_PCT: float = 15.0
-MIN_TRADES: int = 30
-PAPER_MIN_SHARPE: float = 0.0
-PAPER_MAX_DRAWDOWN_PCT: float = 25.0
-
-
-@dataclass(frozen=True)
-class PromotionCheckResult:
-    """Gate check outcome for a single promotion request."""
-
-    allowed: bool
-    promotion_type: str
-    failures: list[str] = field(default_factory=list)
-    sharpe_ratio: float | None = None
-    max_drawdown_pct: float | None = None
-    trade_count: int | None = None
+# Backward-compatible aliases. The source of truth is
+# milodex.promotion.policy.ACTIVE_PROMOTION_POLICY (ADR 0052). These names are
+# public (re-exported by promotion/__init__.py; imported by gui/read_models.py
+# and gui/strategy_bank_state.py) so they are retained as policy-derived
+# aliases, not deleted — values are identical.
+MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.capital_gate.min_sharpe
+MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.capital_gate.max_drawdown_pct
+MIN_TRADES: int = ACTIVE_PROMOTION_POLICY.default_trade_floor
+PAPER_MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.paper_gate.min_sharpe
+PAPER_MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.paper_gate.max_drawdown_pct
 
 
 def validate_stage_transition(from_stage: str, to_stage: str) -> None:
@@ -113,8 +112,10 @@ def check_gate(
 ) -> PromotionCheckResult:
     """Evaluate statistical promotion thresholds.
 
-    When ``lifecycle_exempt=True`` the thresholds are bypassed and the check
-    always passes (promotion_type='lifecycle_exempt').
+    Thin adapter over ``ACTIVE_PROMOTION_POLICY`` (ADR 0052). When
+    ``lifecycle_exempt=True`` the thresholds are bypassed and the check
+    always passes (promotion_type='lifecycle_exempt') — define-only; the
+    lifecycle operational gate is intentionally NOT enforced here.
     """
     if lifecycle_exempt:
         return PromotionCheckResult(
@@ -125,49 +126,13 @@ def check_gate(
             max_drawdown_pct=max_drawdown_pct,
             trade_count=trade_count,
         )
-
-    min_sharpe, max_drawdown_pct_threshold = _thresholds_for_stage(to_stage)
-    failures: list[str] = []
-
-    if sharpe_ratio is None or sharpe_ratio <= min_sharpe:
-        failures.append(
-            f"Sharpe {_fmt_or_none(sharpe_ratio)} must be > {min_sharpe} "
-            f"(got {_fmt_or_none(sharpe_ratio)})"
-        )
-
-    if max_drawdown_pct is None or max_drawdown_pct >= max_drawdown_pct_threshold:
-        failures.append(
-            f"Max drawdown {_fmt_or_none(max_drawdown_pct)}% must be < "
-            f"{max_drawdown_pct_threshold}% "
-            f"(got {_fmt_or_none(max_drawdown_pct)})"
-        )
-
-    if trade_count is None or trade_count < min_trade_count:
-        failures.append(
-            f"Trade count must be >= {min_trade_count} (got {_fmt_or_none(trade_count)})"
-        )
-
-    return PromotionCheckResult(
-        allowed=len(failures) == 0,
-        promotion_type="statistical",
-        failures=failures,
+    return ACTIVE_PROMOTION_POLICY.evaluate_research_target(
         sharpe_ratio=sharpe_ratio,
         max_drawdown_pct=max_drawdown_pct,
         trade_count=trade_count,
+        target_stage=to_stage,
+        min_trade_count=min_trade_count,
     )
-
-
-def _thresholds_for_stage(to_stage: str) -> tuple[float, float]:
-    if to_stage == "paper":
-        return PAPER_MIN_SHARPE, PAPER_MAX_DRAWDOWN_PCT
-    if to_stage in {"micro_live", "live"}:
-        return MIN_SHARPE, MAX_DRAWDOWN_PCT
-    msg = f"Unknown to_stage '{to_stage}'. Valid stages: {STAGE_ORDER}."
-    raise ValueError(msg)
-
-
-def _fmt_or_none(value: float | int | None) -> str:
-    return "None" if value is None else str(value)
 
 
 def transition(

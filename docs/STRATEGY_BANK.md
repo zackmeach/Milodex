@@ -23,6 +23,8 @@ Stages and metrics are unchanged from the 2026-05-07 baseline (commit `8fe357c`)
 
 The authoritative data source is `data/milodex.db`. The tables that drive this document are `promotions` and `backtest_runs`. The promotion records are the binding source for stage; backtest run metadata is the source for all Sharpe, drawdown, and trade-count figures.
 
+Paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052.
+
 ### How to refresh
 
 Run both queries against `data/milodex.db` to regenerate the tables in this document.

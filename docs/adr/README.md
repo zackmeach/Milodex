@@ -80,3 +80,4 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0049](0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) | Phase 6 Bench v1 is a visual prototype with no backend mutation | Accepted (amended in part by [ADR 0051](0051-bench-command-infrastructure-v1.md)) |
 | [0050](0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) | Strategy evidence has a freshness axis distinct from promotion stage | Accepted |
 | [0051](0051-bench-command-infrastructure-v1.md) | Bench Command Infrastructure v1 — propose / submit lifecycle for the launch paper-lifecycle | Accepted |
+| [0052](0052-promotion-policy-is-a-typed-governance-source-of-truth.md) | Promotion policy is a typed governance source of truth | Accepted |
