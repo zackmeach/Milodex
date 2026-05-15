@@ -17,7 +17,9 @@ Six strategies remain at backtest stage and are blocked from promotion. See the 
 
 ## As of date and source of truth
 
-This document reflects master at commit `8fe357c` (2026-05-07).
+This document reflects master at commit `ecd437f` (2026-05-15).
+
+Stages and metrics are unchanged from the 2026-05-07 baseline (commit `8fe357c`): six strategies at paper, six blocked at backtest. The only event-store change since is a fresh `lifecycle_exempt` paper record for `regime.daily.sma200_rotation.spy_shy.v1` (`recorded_at = 2026-05-15T19:06:35Z`, from the phase-one paper-lifecycle work in PR #146). It re-affirms the existing regime paper status under policy R-PRM-004 — it does not change the strategy's stage, evidence run, or walk-forward metrics, which remain as listed in the paper-stage table below.
 
 The authoritative data source is `data/milodex.db`. The tables that drive this document are `promotions` and `backtest_runs`. The promotion records are the binding source for stage; backtest run metadata is the source for all Sharpe, drawdown, and trade-count figures.
 
