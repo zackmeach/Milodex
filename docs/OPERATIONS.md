@@ -10,6 +10,11 @@ Phase 1 intent: Milodex aligns to a **daily market rhythm**, not an intraday dec
 
 Milodex is a **scheduled daily workflow** with **light continuous monitoring** in Phase 1. The core trading cycle runs once per trading day around the end-of-day and next-session execution windows. Optional background monitoring may remain active for status, reconciliation, and incident detection, but there is no always-on autonomous service requirement. A daemon/supervisor runtime is explicitly Phase 2+ (per the SRS Phase 2 appendix).
 
+For the GUI-driven Phase 1 paper lifecycle, use
+[`PAPER_WORKFLOW.md`](PAPER_WORKFLOW.md). It is the operator runbook for:
+Bench backtest evidence, promote to paper, Start Trading, controlled Stop
+Trading, paper-evidence inspection, and demotion/walk-back.
+
 ---
 
 ## Daily Schedule

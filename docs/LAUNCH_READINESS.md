@@ -13,10 +13,10 @@
 
 ---
 
-## 0. Current lifecycle target (2026-05-15)
+## 0. Phase 1 paper lifecycle acceptance (2026-05-15)
 
-Bench is no longer a read-only prototype for the paper lifecycle. The launch
-walk now treats the normal operator path as:
+Bench is no longer a read-only prototype for the paper lifecycle. The normal
+operator path is now:
 
 `backtest evidence -> promote to paper -> start paper runner -> controlled stop -> inspect paper evidence -> demote/walk back`
 
@@ -25,19 +25,59 @@ canonical backtest evidence, promote-to-paper, start paper runner, and stop
 paper runner. Paper-runner Stop Trading is controlled-stop only; the kill
 switch remains a separate Anchor/Risk Office affordance.
 
-Before release, rerun the manual operator walk with the GUI as the primary
-surface and verify:
+**Lifecycle walk result:** PASS on `master` at merge commit `2fc6a42`
+(`2026-05-15`). The walk used the lifecycle-proof strategy
+`regime.daily.sma200_rotation.spy_shy.v1`: it was walked back to `backtest`,
+given canonical Bench backtest evidence, promoted back to `paper` with a
+lifecycle-exempt evidence package, started as a paper runner, then stopped via
+controlled stop.
 
-- canonical Bench backtest writes a completed `backtest_runs` row;
-- promote-to-paper writes the manifest / promotion event and updates YAML stage;
-- Start Trading launches a paper runner without blocking the GUI;
-- Bench shows the active `strategy_runs` session;
-- Stop Trading writes a controlled-stop request, and the runner closes with
-  `exit_reason="controlled_stop"`;
-- Bench paper evidence shows session status, timestamps, exit reason, and paper
-  trade count;
-- QML still does not import or call broker, event-store, runner, or facade code
-  directly; all submits route through `BenchCommandBridge`.
+Evidence captured:
+
+- artifact root:
+  `artifacts/gui-screenshots/20260515-150357/lifecycle-walk/`
+- backtest/promote bridge transcript:
+  `lifecycle-step1-backtest-promote.json`
+- start-runner bridge transcript:
+  `lifecycle-step2-start-runner.json`
+- stop-request transcript:
+  `lifecycle-step3-stop-request.json`
+- controlled-stop assertion:
+  `lifecycle-step4-controlled-stop.json`
+- final DB/read-model assertions:
+  `lifecycle-final-db-read-model-assertions.json`
+- screenshots: `before-start/`, `active-session/`, `stop-requested/`,
+  `stopped-session/`, and `paper-evidence/`
+
+Acceptance assertions:
+
+- canonical Bench backtest wrote completed `backtest_runs.id=89`;
+- run id:
+  `0733d4d1-b00a-4550-bdf8-0f7cce9cad20`;
+- promote-to-paper wrote promotion event `id=12` with
+  `promotion_type="lifecycle_exempt"`;
+- YAML ended at `stage: "paper"`;
+- Start Trading launched a paper session
+  `8aee4efb-596e-4801-bb0b-5469ca1c5d12`;
+- Stop Trading wrote a controlled-stop request which was consumed;
+- `strategy_runs.exit_reason="controlled_stop"`;
+- Bench read model shows paper evidence with status `completed`, session
+  timestamps, exit reason `controlled_stop`, and paper trade count `0`;
+- QML still routes submits through `BenchCommandBridge`; no direct broker,
+  event-store, runner, or facade imports are exposed to QML.
+
+Verification around the merged PR stack:
+
+- PR #141 before merge: `ruff` clean; full suite
+  `1421 passed, 5 skipped, 4 xfailed`.
+- PR #144 before merge: `ruff` clean; full suite
+  `1416 passed, 4 xfailed`.
+- PR #145 before merge: `ruff` clean; full suite
+  `1427 passed, 4 xfailed`.
+- Docs closeout branch verification: `ruff` clean, `git diff --check` clean,
+  full suite `1427 passed, 4 xfailed`.
+
+No lifecycle-blocking patch PR was needed from this walk.
 
 ---
 
@@ -48,6 +88,7 @@ surface and verify:
 | Lint (ruff) | ✅ | — | clean |
 | Full test suite (1259 passed, 4 xfailed) | ✅ | — | clean |
 | Coverage gate (fail_under = 89) | ✅ | — | 89.00% (exact gate hit) |
+| Phase 1 Bench paper lifecycle | ✅ | — | completed on `master` (`2fc6a42`) |
 | CLI smoke | ✅ | — | clean (commands corrected from initial checklist) |
 | GUI offscreen render (4 surfaces) | ✅ | — | captured |
 | Bench interactive (Evidence rail + Confirmation modal) | ✅ | — | captured |
@@ -260,9 +301,12 @@ Headless capture scripts do not currently surface DesignSystemShowcase or kill-s
 
 ---
 
-## 5. Manual operator walk — exact steps still required
+## 5. Remaining manual non-lifecycle checks
 
-Run these on the launch machine, save screenshots into the `20260514-102413/` artifacts dir alongside the headless ones, then mark this section complete.
+The Phase 1 paper lifecycle walk is complete in §0. The remaining manual checks
+are broader launch-readiness checks that still need a human on the launch
+machine. Save screenshots beside the lifecycle artifacts, then mark this
+section complete.
 
 ### 5.1 First-run with no prior data
 
@@ -320,7 +364,7 @@ Maps to §1.7.
 - ✅ §1.12 CLI smoke (with corrected subcommand list)
 - ✅ §1.13 pytest (1259 passed, 4 xfailed), ruff (clean), coverage 89.00% (exact gate).
 
-**Manual operator walk still required — three flows:**
+**Manual non-lifecycle checks still required:**
 
 1. First-run with no prior `data/` and missing `.env` (§1.1, §1.7).
 2. DesignSystemShowcase visual gating of Light + Bronze tabs (§1.5).

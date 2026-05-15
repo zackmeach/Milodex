@@ -1,11 +1,19 @@
 # Bench v1 — checkpoint
 
-**Status:** Read-only visual prototype, shippable, no command wiring.
-**Last update:** end of PR P (PRs F–P merged).
-**Binding policy:** [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) Decision 2.
+**Status:** Historical checkpoint. Bench is no longer purely read-only for the
+Phase 1 paper lifecycle.
+**Last update:** superseded on 2026-05-15 by ADR 0051 Phase E/F lifecycle
+wiring.
+**Binding policy:** [ADR 0051](../adr/0051-bench-command-infrastructure-v1.md)
+for submit-capable lifecycle actions; [ADR 0049](../adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md)
+for all remaining preview-only boundaries.
 **Architecture walkthrough:** [`docs/BENCH_BOUNDARY.md`](../BENCH_BOUNDARY.md).
+**Operator workflow:** [`docs/PAPER_WORKFLOW.md`](../PAPER_WORKFLOW.md).
 
-This document is a checkpoint. It captures what the Bench surface does today, what it deliberately does not do, and the recommended sequence for any future work — ordered by safety, not by feature value.
+This document is kept for the design/boundary rationale from PRs F-P. Current
+Bench behavior is: QML remains a read-model surface with no direct broker,
+event-store, runner, or YAML write access, while specific lifecycle actions
+submit through `BenchCommandBridge -> BenchCommandFacade`.
 
 ## What PRs F–P accomplished
 
@@ -29,8 +37,8 @@ This document is a checkpoint. It captures what the Bench surface does today, wh
 - **Row affordances:** Folio mark, row-body click selection, drag-to-reorder within a section, per-row Action menu derived from `compute_menu_items(state)`.
 - **Action menu:** Promote / Demote / Return / Start Trading / Stop Trading / Initiate Backtest / Refresh Backtest / Open Evidence — items appear only when the menu engine deems them applicable. Open Evidence is the always-present informational floor.
 - **Open Evidence:** Opens `BenchEvidenceModal` — a read-only snapshot of the row's `evidencePacket` (identity, source, gate metrics, evidence timestamps, status, session/job, available actions).
-- **Non-Open-Evidence actions:** Open `BenchConfirmationModal`, which renders a seven-section Intent Packet preview: ACTION, INTENT PACKET, CURRENT SNAPSHOT, WOULD EVENTUALLY REQUIRE, FUTURE RECORD, **COMMAND DRAFT PREVIEW**, SAFETY BOUNDARY.
-- **Modal layout:** Viewport-bounded with a scrollable body and a pinned footer (PR O follow-up). The primary action button is permanently `Not wired in v1`.
+- **Non-Open-Evidence actions:** Open `BenchConfirmationModal`, which renders a seven-section Intent Packet preview. Submit-capable families use action-specific bridge slots; preview-only families keep the inert primary.
+- **Modal layout:** Viewport-bounded with a scrollable body and a pinned footer (PR O follow-up). The primary action button reflects the selected action family: submit-capable lifecycle actions can be approved, while preview-only actions remain not wired.
 - **Wheel/keyboard:** Modal scrolls its own body; wheel/arrow events do not leak to the Bench Flickable underneath. Escape, ✕, outside-click, and Cancel all close.
 - **Drag reorder:** Survives the modal lifecycle but is not persisted across application restarts (PR H scope).
 
@@ -38,24 +46,31 @@ This document is a checkpoint. It captures what the Bench surface does today, wh
 
 The full walkthrough lives in [`docs/BENCH_BOUNDARY.md`](../BENCH_BOUNDARY.md). The headline:
 
-- **No `CommandProposal` class anywhere in the Python codebase** — enforced by a static grep guard.
+- **`CommandProposal` and `CommandResult` are allowed only inside the command boundary** (`src/milodex/commands/bench.py`, `src/milodex/gui/bench_command_bridge.py`, and tests/docs that pin the boundary).
 - **No `submitCommand`, `dispatchCommand`, or `executeOrder` function or call** — enforced by forbidden-token guards across all Bench QML files.
 - **No broker call, no event-store write, no read-model mutation, no config write, no `BenchState.<mutation>`** — same guards.
 - **`evidencePacket.source.authoritative is False`**, `gate.reconstructionDeferred is True`, `freshness == "not_reconstructed_v1"`, `gateResult == "not_reconstructed_v1"` — enforced by Python tests.
-- **`actionIntentPreview.executable is False`** and **`wired is False`** — enforced by Python tests at every preview; key-walker test rejects `command*` / `proposal*` keys at every depth.
-- **`commandDraftPreview.submissionState == "not_submittable_v1"`**, **`validationState == "not_validated_v1"`**, banner copy `Milodex can render this draft for review, but Bench v1 cannot submit it.` — enforced by QML smoke tests.
+- **`actionIntentPreview.executable` and `wired` mirror the action family.** Submit-capable actions route through the bridge; preview-only actions remain inert.
+- **`commandDraftPreview` remains a QML-local review object.** It is not the persisted command, not the facade proposal, and not allowed to call business logic directly.
 - **Modal primary button has no `MouseArea`** — guarded by tests rejecting `onSubmit`, `submitDraft`, `submit(`, `dispatch(`, `executeDraft`.
 - **The string `commandDraftPreview` is the *single* allowed `command*` token in Bench QML.** Any rename or addition trips the layout/safety tests.
 
+## What Bench still cannot do directly
+
+- No direct QML command submission. Wired actions submit only through `BenchCommandBridge`.
+- No QML broker call.
+- No QML event-store write.
+- No QML strategy runner construction.
+- No QML config file write.
+
 ## What is explicitly not implemented yet
 
-- No command submission of any kind. Every Bench action surfaces a preview and stops.
 - No authoritative gate reconstruction. The `evidencePacket.gate` carries `not_reconstructed_v1` sentinels; freshness and pass/fail are deferred to a future ADR.
 - No real freshness derivation from the event store.
 - No persisted row-order. Drag reorder is local-session only.
-- No risk/policy validation triggered from the UI.
-- No backtest job creation, no session start/stop, no promotion/demotion writes.
-- No `CommandProposal` Python class, no `submit_command` / `dispatch_command` / `execute_command` function. (Statically forbidden.)
+- No capital-bearing micro-live/live submit path.
+- No kill-switch trigger from Bench Stop Trading; stop is controlled-stop only.
+- No ML/LLM trader lifecycle. Their contracts are deferred until trader mechanics and decision artifacts are specified.
 
 ## Recommended future PRs, ordered by safety
 
