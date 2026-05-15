@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-05-15-promotion-policy-source-of-truth-design.md`
 
+**Shell note:** This environment is Windows/PowerShell-first. The `git`, `grep`, `sed`, `test`, `mkdir -p`, `touch`, and `pytest`/`ruff` commands in this plan are POSIX — run them via the **Bash tool**, not PowerShell.
+
 ---
 
 ## Behavior-preservation contract (read before starting)
@@ -223,6 +225,11 @@ class PromotionPolicy:
             return self.paper_tier
         if target_stage in CAPITAL_STAGES:
             return self.capital_tier
+        # The valid-stage list is kept as a deliberate byte-identical literal
+        # matching state_machine.STAGE_ORDER's f-string repr, so the error
+        # text does not silently desync if STAGE_ORDER is ever reordered, and
+        # so policy stays decoupled from state_machine. Pre-consolidation
+        # check_gate produced this exact string.
         msg = (
             f"Unknown to_stage '{target_stage}'. "
             "Valid stages: ['backtest', 'paper', 'micro_live', 'live']."
@@ -355,9 +362,9 @@ PAPER_MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.paper_tier.min_sharpe
 PAPER_MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.paper_tier.max_drawdown_pct
 ```
 
-- [ ] **Step 3: Edit `state_machine.py` imports — add policy import, drop now-unused `field`**
+- [ ] **Step 3: Edit `state_machine.py` imports — add policy import, delete dataclass import**
 
-At the import block (around line 29), ensure these exist:
+Add to the import block:
 
 ```python
 from milodex.promotion.policy import (
@@ -366,7 +373,10 @@ from milodex.promotion.policy import (
 )
 ```
 
-Remove the local `PromotionCheckResult` dataclass (lines 56–65) entirely — it now lives in `policy.py` and is imported above (re-export: keeping it importable from `state_machine`). Remove `_fmt_or_none` (169–170) if no longer referenced after Step 4. Keep `from dataclasses import dataclass, field` only if still used elsewhere in the file (it is not after removal — change to no dataclass import if nothing else needs it; `ruff` will flag unused).
+Then:
+- Remove the local `PromotionCheckResult` dataclass (lines 56–65) entirely — it now lives in `policy.py` and is imported above (this import IS the re-export: it keeps `from milodex.promotion.state_machine import PromotionCheckResult` working).
+- Remove `_fmt_or_none` (169–170) — it moves to `policy.py`.
+- **Delete line 29 `from dataclasses import dataclass, field` entirely.** Verified: `state_machine.py` uses `@dataclass`/`field` ONLY for the `PromotionCheckResult` being removed — nothing else in the file uses them. Leaving the import will fail `ruff check` (F401) at Step 9.
 
 - [ ] **Step 4: Edit `check_gate` (105–157) to delegate; delete `_thresholds_for_stage` (160–166)**
 
@@ -415,9 +425,9 @@ Note: `min_trade_count: int = MIN_TRADES` keeps the identical default value (30)
 
 In the module docstring, change the two wrong citations: `(SRS R-PRM-001)` and `(SRS R-PRM-002)` on the capital-stage Sharpe/drawdown lines both become `(SRS R-PRM-004)`. Add one line under the header: `Gate-decision policy lives in milodex.promotion.policy (ADR 0052); this module owns structural transition legality and mechanics.`
 
-- [ ] **Step 6: Edit `src/milodex/promotion/__init__.py`**
+- [ ] **Step 6: Verify `src/milodex/promotion/__init__.py` — no change expected**
 
-The `from milodex.promotion.state_machine import (...)` block still resolves all names (constants are aliases, `PromotionCheckResult`/`check_gate` re-exported). No change needed to names or `__all__`. Verify by import only — do not restructure. If `ruff` reports the state_machine import of `PromotionCheckResult` as a re-export needing `__all__`, add `# noqa: F401` is NOT allowed — instead ensure `state_machine.py` lists re-exported names in its own `__all__` if one exists, or leave as direct import (it is used in annotations, so it is "used").
+The `from milodex.promotion.state_machine import (...)` block still resolves all names (constants are policy-derived aliases; `PromotionCheckResult`/`check_gate` re-exported from `state_machine`). `__init__.py` already lists every imported name in `__all__` (verified, current lines 30–45), so ruff treats it as an explicit re-export and F401 will not fire. **Expected outcome: zero edits to `__init__.py`.** Verify by import (Step 8), do not restructure.
 
 - [ ] **Step 7: Run the regression guard — MUST be identical to Step 1**
 
@@ -568,7 +578,7 @@ git commit -m "docs(promotion): point doctrine at the policy SoT; add CLAUDE.md 
 - [ ] **Step 1: Full test suite**
 
 Run: `python -m pytest -q`
-Expected: all pass + the pre-existing 4 xfailed; total = prior baseline (1427) + new policy/doc tests, 0 failures, 0 unexpected xpass.
+Expected: 0 failures, 0 unexpected xpass, pre-existing xfails still xfail. Total = the baseline count recorded in Task 2 Step 1 (run `python -m pytest -q` once at the start to record it; do not assume a literal number) **+** the new `test_policy.py` and `test_claude_md_policy_pointer.py` cases. The regression suites `test_state_machine.py` / `test_transition.py` must contribute the same count as the baseline (unedited).
 
 - [ ] **Step 2: Full lint**
 
