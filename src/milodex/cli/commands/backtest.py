@@ -30,6 +30,7 @@ from milodex.cli._shared import (
 )
 from milodex.cli.formatter import CommandResult
 from milodex.cli.rich_views import build_backtest_view, build_walk_forward_view
+from milodex.risk import RiskPolicy
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -66,6 +67,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default=None,
         help="Explicit run ID (UUID); auto-generated if omitted.",
     )
+    backtest_parser.add_argument(
+        "--risk-policy",
+        choices=("bypass", "enforce"),
+        default="bypass",
+        help=(
+            "Risk policy for simulated submissions: 'bypass' for raw research "
+            "or 'enforce' for structural risk constraints."
+        ),
+    )
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
@@ -76,6 +86,7 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     engine_kwargs: dict[str, Any] = {"initial_equity": args.initial_equity}
     if args.slippage is not None:
         engine_kwargs["slippage_pct"] = args.slippage
+    engine_kwargs["risk_policy"] = RiskPolicy(args.risk_policy)
 
     engine = ctx.get_backtest_engine(args.strategy_id, **engine_kwargs)
 
@@ -83,7 +94,10 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _run_walk_forward(engine, start, end, args)
 
     backtest_result = engine.run(start, end, run_id=args.run_id)
-    return _build_backtest_result(backtest_result)
+    return _build_backtest_result(
+        backtest_result,
+        min_trade_count=_min_trade_count_from_engine(engine),
+    )
 
 
 def _run_walk_forward(engine, start, end, args) -> CommandResult:
@@ -105,11 +119,14 @@ def _run_walk_forward(engine, start, end, args) -> CommandResult:
         step_days=step_days,
         initial_equity=args.initial_equity,
         run_id=args.run_id,
+        all_bars=all_bars,
     )
-    return _build_walk_forward_result(result)
+    return _build_walk_forward_result(result, min_trade_count=_min_trade_count_from_engine(engine))
 
 
-def _build_backtest_result(result: BacktestResult) -> CommandResult:
+def _build_backtest_result(
+    result: BacktestResult, *, min_trade_count: int = 30
+) -> CommandResult:
     trade_summary = f"{result.trade_count} ({result.buy_count} buys, {result.sell_count} sells)"
     lines = [
         "Backtest Result",
@@ -121,6 +138,9 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
         f"Final equity:   {format_money(result.final_equity)}",
         f"Total return:   {result.total_return_pct:+.2f}%",
         f"Trades:         {trade_summary}",
+        f"Skipped orders: {result.skipped_count}",
+        f"Risk policy:   {_risk_policy_label(result.risk_policy)}",
+        f"Data quality:  {_data_quality_label(result.data_quality)}",
         f"Slippage:       {result.slippage_pct * 100:.2f}%",
         f"Commission:     {format_money(result.commission_per_trade)}/trade",
     ]
@@ -136,12 +156,17 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
         "trade_count": result.trade_count,
         "buy_count": result.buy_count,
         "sell_count": result.sell_count,
+        "skipped_count": result.skipped_count,
+        "risk_policy": result.risk_policy.value,
+        "data_quality": _data_quality_payload(result.data_quality),
+        "run_manifest": _run_manifest_payload(result.run_manifest),
         "slippage_pct": result.slippage_pct,
         "commission_per_trade": result.commission_per_trade,
     }
     _attach_uncertainty_label(
         family=_strategy_family(result.strategy_id),
         trade_count=result.trade_count,
+        min_trade_count=min_trade_count,
         data=data,
         lines=lines,
     )
@@ -165,7 +190,9 @@ def _build_backtest_result(result: BacktestResult) -> CommandResult:
     return CommandResult(command="backtest", data=data, human_lines=lines, renderable=renderable)
 
 
-def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
+def _build_walk_forward_result(
+    result: WalkForwardResult, *, min_trade_count: int = 30
+) -> CommandResult:
     stability = result.stability
     lines = [
         "Backtest Result (walk-forward)",
@@ -175,10 +202,13 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
         f"Windows:        {len(result.windows)} "
         f"(train={result.train_days}d, test={result.test_days}d, step={result.step_days}d)",
         f"Initial equity: {format_money(result.initial_equity)}",
+        f"Risk policy:   {_risk_policy_label(result.risk_policy)}",
+        f"Data quality:  {_data_quality_label(result.data_quality)}",
         "",
         "OOS aggregate (metrics the promotion gate evaluates):",
         f"  Trading days: {result.oos_trading_days}",
         f"  Trades:       {result.oos_trade_count}",
+        f"  Skipped:     {result.oos_skipped_count}",
         f"  Total return: {result.oos_total_return_pct:+.2f}%",
         f"  Sharpe:       {_fmt_optional(result.oos_sharpe, '.2f')}",
         f"  Max drawdown: {result.oos_max_drawdown_pct:.2f}%",
@@ -215,9 +245,13 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
         "test_days": result.test_days,
         "step_days": result.step_days,
         "initial_equity": result.initial_equity,
+        "risk_policy": result.risk_policy.value,
+        "data_quality": _data_quality_payload(result.data_quality),
+        "run_manifest": _run_manifest_payload(result.run_manifest),
         "oos_aggregate": {
             "trading_days": result.oos_trading_days,
             "trade_count": result.oos_trade_count,
+            "skipped_count": result.oos_skipped_count,
             "total_return_pct": result.oos_total_return_pct,
             "sharpe": result.oos_sharpe,
             "max_drawdown_pct": result.oos_max_drawdown_pct,
@@ -249,6 +283,7 @@ def _build_walk_forward_result(result: WalkForwardResult) -> CommandResult:
     _attach_uncertainty_label(
         family=_strategy_family(result.strategy_id),
         trade_count=result.oos_trade_count,
+        min_trade_count=min_trade_count,
         data=data,
         lines=lines,
     )
@@ -299,6 +334,37 @@ def _fmt_optional(value: float | None, spec: str) -> str:
     return format(value, spec)
 
 
+def _risk_policy_label(policy: RiskPolicy) -> str:
+    if policy is RiskPolicy.ENFORCE:
+        return "enforce (structural constraints)"
+    return "bypass (raw research)"
+
+
+def _data_quality_payload(data_quality: dict | None) -> dict[str, Any]:
+    if data_quality:
+        return dict(data_quality)
+    return {
+        "status": "pass",
+        "blocker_count": 0,
+        "warning_count": 0,
+        "issues": [],
+        "issue_codes": [],
+    }
+
+
+def _data_quality_label(data_quality: dict | None) -> str:
+    payload = _data_quality_payload(data_quality)
+    status = str(payload.get("status", "pass"))
+    warning_count = int(payload.get("warning_count", 0) or 0)
+    if status == "pass_with_warnings":
+        return f"pass with warnings ({warning_count} warning(s))"
+    return status.replace("_", " ")
+
+
+def _run_manifest_payload(run_manifest: dict | None) -> dict[str, Any]:
+    return dict(run_manifest) if run_manifest else {}
+
+
 # Statistical minimum before a backtest is considered evidence-bearing
 # per ROADMAP promotion thresholds. Regime-family strategies are
 # exempt (R-PRM-004) because rotation can't produce trade counts at
@@ -306,19 +372,31 @@ def _fmt_optional(value: float | None, spec: str) -> str:
 _STATISTICAL_MIN_TRADES = 30
 
 
+def _min_trade_count_from_engine(engine) -> int:
+    loaded = getattr(engine, "_loaded", None)
+    config = getattr(loaded, "config", None)
+    backtest = getattr(config, "backtest", {}) or {}
+    return int(backtest.get("min_trades_required", _STATISTICAL_MIN_TRADES))
+
+
 def _strategy_family(strategy_id: str) -> str:
     return strategy_id.split(".", 1)[0] if strategy_id else ""
 
 
 def _attach_uncertainty_label(
-    *, family: str, trade_count: int, data: dict[str, Any], lines: list[str]
+    *,
+    family: str,
+    trade_count: int,
+    min_trade_count: int,
+    data: dict[str, Any],
+    lines: list[str],
 ) -> None:
     if family == "regime":
         data["evidence_basis"] = "operational"
         lines.append("Evidence basis: operational (regime strategy, R-PRM-004)")
         return
-    if trade_count < _STATISTICAL_MIN_TRADES:
-        reason = f"trade count {trade_count} < {_STATISTICAL_MIN_TRADES} statistical minimum"
+    if trade_count < min_trade_count:
+        reason = f"trade count {trade_count} < {min_trade_count} statistical minimum"
         data["uncertainty_label"] = "insufficient evidence"
         data["uncertainty_reason"] = reason
         lines.append(f"Confidence:     insufficient evidence ({reason})")

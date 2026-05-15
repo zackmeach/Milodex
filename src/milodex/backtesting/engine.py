@@ -7,15 +7,17 @@ dependencies are swapped for the backtest:
 
 - :class:`milodex.broker.simulated.SimulatedBroker` fills at the next
   bar's open (with slippage and commission applied).
-- :class:`milodex.risk.NullRiskEvaluator` makes risk evaluation a no-op.
-  Backtesting is intentionally below the risk layer per ``CLAUDE.md``;
-  the bypass is **declared** (injected), not implicit.
+- The configured :class:`milodex.risk.RiskPolicy` selects the risk path:
+  ``BYPASS`` (the default raw-research mode) injects
+  :class:`milodex.risk.NullRiskEvaluator`, while ``ENFORCE`` injects the
+  backtest structural evaluator for sizing and exposure constraints.
 
 Order timing: decisions made on bar ``T``'s close are queued and fill at
 bar ``T+1``'s open, removing the look-ahead bias of same-bar fills.
 Orders pending at the end of the trading window are dropped — there is
-no T+1 to execute against — and silently discarded. See PR 2.1 in
-docs/reviews/backtest-rejection-analysis.md §6 for the rationale.
+no T+1 to execute against — and recorded as skipped backtest audit events.
+See PR 2.1 in docs/reviews/backtest-rejection-analysis.md §6 for the
+rationale behind not filling them.
 
 The engine still owns cash / position / equity bookkeeping — it
 snapshot-injects the broker's reported account and positions at the
@@ -27,6 +29,7 @@ historical and live with no branches" guarantee.
 
 from __future__ import annotations
 
+import math
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
@@ -37,15 +40,25 @@ import pandas as pd
 import yaml
 
 from milodex.analytics.snapshots import record_daily_snapshot
+from milodex.backtesting.run_manifest import (
+    BacktestRunManifestInput,
+    build_backtest_run_manifest,
+)
 from milodex.broker.models import AccountInfo, OrderSide, Position
 from milodex.broker.simulated import SimulatedBroker
-from milodex.core.event_store import BacktestRunEvent, EventStore
+from milodex.core.event_store import BacktestRunEvent, EventStore, ExplanationEvent, TradeEvent
+from milodex.data.bar_quality import DataQualityError, scan_backtest_bars
 from milodex.data.models import BarSet, Timeframe
 from milodex.data.simulated import SimulatedDataProvider
 from milodex.execution.models import ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.execution.state import KillSwitchStateStore
-from milodex.risk import NullRiskEvaluator, load_backtesting_defaults
+from milodex.risk import (
+    BacktestStructuralRiskEvaluator,
+    NullRiskEvaluator,
+    RiskPolicy,
+    load_backtesting_defaults,
+)
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
@@ -81,6 +94,10 @@ class BacktestResult:
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
     db_id: int | None = None
     round_trip_count: int = 0
+    risk_policy: RiskPolicy = RiskPolicy.BYPASS
+    skipped_count: int = 0
+    data_quality: dict = field(default_factory=dict)
+    run_manifest: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -99,6 +116,7 @@ class _SimulationOutput:
     sell_count: int
     final_equity: float
     round_trip_count: int = 0
+    skipped_count: int = 0
 
 
 @dataclass
@@ -110,6 +128,20 @@ class _PendingOrder:
     reasoning: object
 
 
+def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -> bool:
+    """Return whether ``barset`` contains at least one row in the requested window."""
+    if len(barset) == 0:
+        return False
+
+    df = barset.to_dataframe()
+    if df.empty or "timestamp" not in df.columns:
+        return False
+
+    timestamps = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
+    in_range = timestamps.dt.date.between(start_date, end_date)
+    return bool(in_range.any())
+
+
 class BacktestEngine:
     """Replay a loaded strategy over historical bar data.
 
@@ -118,7 +150,7 @@ class BacktestEngine:
         data_provider: Market data source (used only to prefetch bars for the run window).
         event_store: Persistent ledger for backtest runs and simulated trades.
         initial_equity: Starting simulated account equity in USD.
-        slippage_pct: Per-trade fill slippage as a fraction (e.g. ``0.001`` = 0.1%).
+        slippage_pct: Per-trade fill slippage as a fraction (e.g. ``0.0005`` = 5 bps).
             Defaults to the value in the strategy config's ``backtest.slippage_pct``.
         commission_per_trade: Fixed commission deducted per executed trade in USD.
             Defaults to the value in the strategy config's ``backtest.commission_per_trade``.
@@ -140,12 +172,14 @@ class BacktestEngine:
         slippage_pct: float | None = None,
         commission_per_trade: float | None = None,
         risk_defaults_path: Path | None = None,
+        risk_policy: RiskPolicy = RiskPolicy.BYPASS,
     ) -> None:
         self._loaded = loaded
         self._data_provider = data_provider
         self._event_store = event_store
         self._initial_equity = initial_equity
         self._risk_defaults_path: Path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+        self._risk_policy = risk_policy
         # Populated lazily on first call to _load_backtesting_defaults; avoids
         # re-reading on every walk-forward window.
         self._backtesting_defaults: dict | None = None
@@ -155,6 +189,11 @@ class BacktestEngine:
             if commission_per_trade is not None
             else float(loaded.config.backtest.get("commission_per_trade", 0.0))
         )
+
+    @property
+    def risk_policy(self) -> RiskPolicy:
+        """Return the risk policy used for simulated order submissions."""
+        return self._risk_policy
 
     def run(
         self,
@@ -199,7 +238,7 @@ class BacktestEngine:
                 status="running",
                 slippage_pct=self._slippage_pct,
                 commission_per_trade=self._commission,
-                metadata={},
+                metadata={"risk_policy": self._risk_policy.value},
             )
         )
 
@@ -210,6 +249,24 @@ class BacktestEngine:
                 run_id=effective_run_id,
                 db_run_id=db_run_id,
             )
+        except DataQualityError as exc:
+            data_quality = exc.report.to_dict()
+            self._event_store.update_backtest_run_metadata(
+                effective_run_id,
+                metadata=self._metadata_with_run_manifest(
+                    effective_run_id,
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_equity=self._initial_equity,
+                    data_quality=data_quality,
+                ),
+            )
+            self._event_store.update_backtest_run_status(
+                effective_run_id,
+                status="failed",
+                ended_at=datetime.now(tz=UTC),
+            )
+            raise
         except Exception:
             self._event_store.update_backtest_run_status(
                 effective_run_id,
@@ -230,8 +287,12 @@ class BacktestEngine:
                 "final_equity": result.final_equity,
                 "total_return_pct": result.total_return_pct,
                 "trade_count": result.trade_count,
+                "skipped_count": result.skipped_count,
                 "trading_days": result.trading_days,
                 "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
+                "risk_policy": self._risk_policy.value,
+                "data_quality": result.data_quality,
+                "run_manifest": result.run_manifest,
             },
         )
         return result
@@ -247,8 +308,9 @@ class BacktestEngine:
         windows, avoiding N×warmup fetches for N windows.
 
         Raises :class:`UniverseCoverageError` when fewer than the configured
-        fraction of declared-universe symbols have bars.  An empty barset (the
-        provider returned the symbol but with zero rows) counts as missing.
+        fraction of declared-universe symbols have bars inside the requested
+        run window.  An empty barset, absent symbol, or warmup-only barset
+        counts as missing for coverage purposes.
 
         Threshold resolution order (first match wins):
         1. ``loaded.config.risk["min_universe_coverage_pct"]`` — per-strategy
@@ -269,7 +331,11 @@ class BacktestEngine:
             end=end_date,
         )
 
-        covered = [s for s in universe if s in bars and len(bars[s]) > 0]
+        covered = [
+            s
+            for s in universe
+            if s in bars and _barset_has_bar_in_range(bars[s], start_date, end_date)
+        ]
         coverage = len(covered) / len(universe)
         threshold = self._resolve_coverage_threshold()
         if coverage < threshold:
@@ -278,7 +344,7 @@ class BacktestEngine:
             suffix = "..." if len(missing) > 10 else ""
             msg = (
                 f"Universe coverage {coverage:.1%} < {threshold:.1%} "
-                f"({len(covered)}/{len(universe)} symbols available). "
+                f"({len(covered)}/{len(universe)} symbols available in requested window). "
                 f"Missing: {shown}{suffix}"
             )
             raise UniverseCoverageError(msg)
@@ -325,7 +391,7 @@ class BacktestEngine:
            ``universe_*.yaml`` (resolved via the strategy's ``universe_ref``).
         4. Global default: ``backtesting.slippage_pct_default`` in
            ``risk_defaults.yaml``.
-        5. Hardcoded fallback: 0.001 (10 bps).
+        5. Hardcoded fallback: 0.0005 (5 bps).
         """
         # Tier 1: explicit call-site override.
         if override is not None:
@@ -348,7 +414,7 @@ class BacktestEngine:
             return float(global_value)
 
         # Tier 5: hardcoded fallback.
-        return 0.001
+        return 0.0005
 
     def _resolve_universe_slippage(self) -> float | None:
         """Look up ``slippage_pct`` from the universe manifest referenced by this strategy.
@@ -419,6 +485,13 @@ class BacktestEngine:
         db_run_id: int,
     ) -> BacktestResult:
         all_bars = self.prefetch_bars(start_date, end_date)
+        data_quality = self._scan_data_quality(all_bars, start_date, end_date)
+        run_manifest = self._build_run_manifest(
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=self._initial_equity,
+            data_quality=data_quality,
+        )
 
         trading_days = _trading_days_in_range(all_bars, start_date, end_date)
         if not trading_days:
@@ -438,6 +511,10 @@ class BacktestEngine:
                 trading_days=0,
                 equity_curve=[],
                 db_id=db_run_id,
+                risk_policy=self._risk_policy,
+                skipped_count=0,
+                data_quality=data_quality,
+                run_manifest=run_manifest,
             )
 
         output = self._simulate(
@@ -465,7 +542,67 @@ class BacktestEngine:
             equity_curve=output.equity_curve,
             db_id=db_run_id,
             round_trip_count=output.round_trip_count,
+            risk_policy=self._risk_policy,
+            skipped_count=output.skipped_count,
+            data_quality=data_quality,
+            run_manifest=run_manifest,
         )
+
+    def _scan_data_quality(
+        self, all_bars: dict[str, BarSet], start_date: date, end_date: date
+    ) -> dict:
+        report = scan_backtest_bars(
+            all_bars,
+            requested_start=start_date,
+            requested_end=end_date,
+        )
+        if report.blocker_count:
+            raise DataQualityError(report)
+        return report.to_dict()
+
+    def _build_run_manifest(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        initial_equity: float,
+        data_quality: dict,
+    ) -> dict:
+        return build_backtest_run_manifest(
+            BacktestRunManifestInput(
+                loaded=self._loaded,
+                data_provider=self._data_provider,
+                requested_start=start_date,
+                requested_end=end_date,
+                warmup_start=start_date - timedelta(days=self._warmup_calendar_days()),
+                risk_policy=self._risk_policy.value,
+                slippage_pct=self._slippage_pct,
+                commission_per_trade=self._commission,
+                initial_equity=initial_equity,
+                data_quality=data_quality,
+                coverage_threshold=self._resolve_coverage_threshold(),
+            )
+        )
+
+    def _metadata_with_run_manifest(
+        self,
+        run_id: str,
+        *,
+        start_date: date,
+        end_date: date,
+        initial_equity: float,
+        data_quality: dict,
+    ) -> dict:
+        run_record = self._event_store.get_backtest_run(run_id)
+        metadata = dict(run_record.metadata) if run_record is not None else {}
+        metadata["data_quality"] = data_quality
+        metadata["run_manifest"] = self._build_run_manifest(
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=initial_equity,
+            data_quality=data_quality,
+        )
+        return metadata
 
     def _simulate(
         self,
@@ -488,6 +625,7 @@ class BacktestEngine:
                 sell_count=0,
                 final_equity=initial_equity,
                 round_trip_count=0,
+                skipped_count=0,
             )
 
         sim_broker = SimulatedBroker(
@@ -499,7 +637,8 @@ class BacktestEngine:
             broker_client=sim_broker,
             data_provider=sim_data_provider,
             kill_switch_store=KillSwitchStateStore(event_store=self._event_store),
-            risk_evaluator=NullRiskEvaluator(),
+            risk_defaults_path=self._risk_defaults_path,
+            risk_evaluator=self._build_risk_evaluator(),
             event_store=self._event_store,
         )
 
@@ -511,6 +650,7 @@ class BacktestEngine:
         buy_count = 0
         sell_count = 0
         trade_count = 0
+        skipped_count = 0
         # Per-symbol fill counters used to compute round_trip_count at end.
         # round_trip_count = sum(min(s["buys"], s["sells"]) for s in _sym_fills.values())
         _sym_fills: dict[str, dict[str, int]] = {}
@@ -521,7 +661,7 @@ class BacktestEngine:
                 entry_state[sym]["held_days"] = int(entry_state[sym]["held_days"]) + 1
 
             bars_by_symbol = _slice_bars_to_day(all_bars, day)
-            latest_opens = _latest_opens(bars_by_symbol)
+            fill_opens = _opens_on_day(bars_by_symbol, day)
             latest_closes = _latest_closes(bars_by_symbol)
 
             # Drain any orders enqueued on the previous decision day. Fills
@@ -531,9 +671,9 @@ class BacktestEngine:
             # primary universe symbol has no bars (multi-symbol universes
             # with mismatched calendars).
             if pending:
-                cash, drained_buys, drained_sells = self._drain_pending(
+                cash, drained_buys, drained_sells, drained_skips = self._drain_pending(
                     pending=pending,
-                    opens=latest_opens,
+                    opens=fill_opens,
                     cash=cash,
                     positions=positions,
                     entry_state=entry_state,
@@ -548,6 +688,7 @@ class BacktestEngine:
                 buy_count += drained_buys
                 sell_count += drained_sells
                 trade_count += drained_buys + drained_sells
+                skipped_count += drained_skips
                 pending = []
 
             primary_bars = bars_by_symbol.get(universe[0])
@@ -608,6 +749,36 @@ class BacktestEngine:
 
         final_equity = equity_curve[-1][1] if equity_curve else initial_equity
 
+        if pending and trading_days:
+            last_day = trading_days[-1]
+            last_bars = _slice_bars_to_day(all_bars, last_day)
+            last_closes = _latest_closes(last_bars)
+            final_equity_for_skips = _compute_equity(cash, positions, last_closes)
+            for p in pending:
+                sym = p.intent.normalized_symbol()
+                latest_price = last_closes.get(sym)
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_no_next_bar",
+                    message=(
+                        f"Skipped backtest {p.intent.side.value} for {sym}: "
+                        "no next bar available before run end."
+                    ),
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=last_day,
+                    cash=cash,
+                    equity=final_equity_for_skips,
+                    latest_price=latest_price,
+                    unit_price=latest_price,
+                    context={
+                        "decision_day": p.decision_day.isoformat(),
+                        "reason_code": "backtest_no_next_bar",
+                    },
+                )
+                skipped_count += 1
+            pending = []
+
         # Final broker re-sync so the simulated account reflects post-buy state,
         # then record one portfolio_snapshots row per simulation. The snapshot
         # is keyed on `session_id` (= run_id for whole-period, window-id for
@@ -646,6 +817,7 @@ class BacktestEngine:
             sell_count=sell_count,
             final_equity=final_equity,
             round_trip_count=round_trip_count,
+            skipped_count=skipped_count,
         )
 
     def _drain_pending(
@@ -663,13 +835,11 @@ class BacktestEngine:
         session_id: str,
         db_run_id: int,
         sym_fills: dict[str, dict[str, int]],
-    ) -> tuple[float, int, int]:
+    ) -> tuple[float, int, int, int]:
         """Fill ``pending`` orders at today's opens. SELLs first to free cash.
 
         Mutates ``positions`` and ``entry_state`` in place; returns the new
-        cash balance and per-side fill counts. Orders that no longer make
-        sense (selling a position that's gone, missing open, or insufficient
-        cash for a buy) are silently skipped.
+        cash balance, per-side fill counts, and skipped-order count.
 
         The simulated broker's ``set_simulation_day`` carries the prices used
         for fills, so we pass ``opens`` as the broker's "current closes" for
@@ -691,11 +861,57 @@ class BacktestEngine:
         )
 
         sell_count = 0
+        skipped_count = 0
         for p in sells:
             sym = p.intent.symbol.upper()
             if sym not in positions:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_sell_without_position",
+                    message=f"Skipped backtest sell for {sym}: no open position.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=equity_pre_drain,
+                    latest_price=opens.get(sym),
+                    unit_price=opens.get(sym),
+                    context={"reason_code": "backtest_sell_without_position"},
+                )
+                skipped_count += 1
                 continue
-            if opens.get(sym, 0.0) <= 0:
+            latest_open = opens.get(sym)
+            if latest_open is None:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_missing_next_open",
+                    message=f"Skipped backtest sell for {sym}: missing next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=equity_pre_drain,
+                    latest_price=None,
+                    unit_price=None,
+                    context={"reason_code": "backtest_missing_next_open"},
+                )
+                skipped_count += 1
+                continue
+            if not math.isfinite(latest_open) or latest_open <= 0:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_invalid_next_open",
+                    message=f"Skipped backtest sell for {sym}: invalid next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=equity_pre_drain,
+                    latest_price=latest_open,
+                    unit_price=latest_open,
+                    context={"reason_code": "backtest_invalid_next_open"},
+                )
+                skipped_count += 1
                 continue
 
             qty, _ = positions[sym]
@@ -733,16 +949,78 @@ class BacktestEngine:
         for p in buys:
             sym = p.intent.symbol.upper()
             if sym in positions:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_duplicate_position",
+                    message=f"Skipped backtest buy for {sym}: position already open.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=opens.get(sym),
+                    unit_price=opens.get(sym),
+                    context={"reason_code": "backtest_duplicate_position"},
+                )
+                skipped_count += 1
                 continue
             qty = float(p.intent.quantity)
             if qty <= 0:
                 continue
             latest_open = opens.get(sym)
-            if latest_open is None or latest_open <= 0:
+            if latest_open is None:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_missing_next_open",
+                    message=f"Skipped backtest buy for {sym}: missing next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=None,
+                    unit_price=None,
+                    context={"reason_code": "backtest_missing_next_open"},
+                )
+                skipped_count += 1
+                continue
+            if not math.isfinite(latest_open) or latest_open <= 0:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_invalid_next_open",
+                    message=f"Skipped backtest buy for {sym}: invalid next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=latest_open,
+                    unit_price=latest_open,
+                    context={"reason_code": "backtest_invalid_next_open"},
+                )
+                skipped_count += 1
                 continue
             projected_fill = latest_open * (1.0 + self._slippage_pct)
             cost = projected_fill * qty + self._commission
             if cash < cost:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_insufficient_cash",
+                    message=f"Skipped backtest buy for {sym}: insufficient cash.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=latest_open,
+                    unit_price=projected_fill,
+                    context={
+                        "reason_code": "backtest_insufficient_cash",
+                        "cash": cash,
+                        "projected_cost": cost,
+                    },
+                )
+                skipped_count += 1
                 continue
 
             decorated = self._decorate_intent(p.intent)
@@ -763,7 +1041,82 @@ class BacktestEngine:
             buy_count += 1
             sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["buys"] += 1
 
-        return cash, buy_count, sell_count
+        return cash, buy_count, sell_count, skipped_count
+
+    def _record_skipped_order(
+        self,
+        *,
+        intent: TradeIntent,
+        reason_code: str,
+        message: str,
+        session_id: str,
+        db_run_id: int,
+        day: date,
+        cash: float,
+        equity: float,
+        latest_price: float | None,
+        unit_price: float | None,
+        context: dict[str, object],
+    ) -> None:
+        decorated = self._decorate_intent(intent)
+        recorded_at = _day_to_dt(day)
+        estimated_unit_price = 0.0 if unit_price is None else float(unit_price)
+        estimated_order_value = estimated_unit_price * decorated.quantity
+        explanation_id = self._event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=recorded_at,
+                decision_type="backtest_skip",
+                status="skipped",
+                strategy_name=self._loaded.config.strategy_id,
+                strategy_stage=self._loaded.config.stage,
+                strategy_config_path=str(self._loaded.config.path),
+                config_hash=self._loaded.context.config_hash,
+                symbol=decorated.normalized_symbol(),
+                side=decorated.side.value,
+                quantity=decorated.quantity,
+                order_type=decorated.order_type.value,
+                time_in_force=decorated.time_in_force.value,
+                submitted_by="backtest_engine",
+                market_open=True,
+                latest_bar_timestamp=recorded_at,
+                latest_bar_close=latest_price,
+                account_equity=equity,
+                account_cash=cash,
+                account_portfolio_value=equity,
+                account_daily_pnl=0.0,
+                risk_allowed=True,
+                risk_summary="Backtest order skipped before execution.",
+                reason_codes=[reason_code],
+                risk_checks=[],
+                context={"message": message, **context},
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+            )
+        )
+        self._event_store.append_trade(
+            TradeEvent(
+                explanation_id=explanation_id,
+                recorded_at=recorded_at,
+                status="skipped",
+                source="backtest",
+                symbol=decorated.normalized_symbol(),
+                side=decorated.side.value,
+                quantity=decorated.quantity,
+                order_type=decorated.order_type.value,
+                time_in_force=decorated.time_in_force.value,
+                estimated_unit_price=estimated_unit_price,
+                estimated_order_value=estimated_order_value,
+                strategy_name=self._loaded.config.strategy_id,
+                strategy_stage=self._loaded.config.stage,
+                strategy_config_path=str(self._loaded.config.path),
+                submitted_by="backtest_engine",
+                broker_order_id=None,
+                broker_status=None,
+                message=message,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+            )
+        )
 
     def _decorate_intent(
         self, intent: TradeIntent, *, quantity_override: float | None = None
@@ -785,7 +1138,33 @@ class BacktestEngine:
             stop_price=intent.stop_price,
             strategy_config_path=self._loaded.config.path,
             submitted_by="backtest_engine",
+            expected_stage=self._loaded.config.stage,
+            expected_max_positions=self._strategy_risk_int("max_positions"),
+            expected_max_position_pct=self._strategy_risk_float("max_position_pct"),
+            expected_daily_loss_cap_pct=self._strategy_risk_float("daily_loss_cap_pct"),
         )
+
+    def _build_risk_evaluator(self):
+        if self._risk_policy is RiskPolicy.BYPASS:
+            return NullRiskEvaluator()
+        if self._risk_policy is RiskPolicy.ENFORCE:
+            return BacktestStructuralRiskEvaluator()
+        msg = f"Unsupported backtest risk policy: {self._risk_policy}"
+        raise ValueError(msg)
+
+    def _strategy_risk_float(self, key: str) -> float | None:
+        risk = getattr(self._loaded.config, "risk", None)
+        if not isinstance(risk, dict):
+            return None
+        value = risk.get(key)
+        return None if value is None else float(value)
+
+    def _strategy_risk_int(self, key: str) -> int | None:
+        risk = getattr(self._loaded.config, "risk", None)
+        if not isinstance(risk, dict):
+            return None
+        value = risk.get(key)
+        return None if value is None else int(value)
 
     def _sync_broker_state(
         self,
@@ -895,6 +1274,21 @@ def _latest_opens(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
         df = barset.to_dataframe()
         if not df.empty:
             opens[sym] = float(df["open"].iloc[-1])
+    return opens
+
+
+def _opens_on_day(bars_by_symbol: dict[str, BarSet], day: date) -> dict[str, float]:
+    """Return each symbol's open only when it has a bar exactly on ``day``."""
+    opens: dict[str, float] = {}
+    for sym, barset in bars_by_symbol.items():
+        df = barset.to_dataframe()
+        if df.empty or "timestamp" not in df.columns:
+            continue
+        timestamps = pd.to_datetime(df["timestamp"], utc=True)
+        mask = timestamps.dt.date == day
+        rows = df.loc[mask]
+        if not rows.empty:
+            opens[sym] = float(rows["open"].iloc[-1])
     return opens
 
 

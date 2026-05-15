@@ -18,21 +18,21 @@ by the facade and the modules it routes into (``milodex.promotion``,
   reach into ``_PollingReadModel._kick_refresh``), and
 * emits a ``submitCompleted`` signal QML surfaces can listen to.
 
-No other action family is wired in Phase D1. ``proposeBacktest``,
-``submitBacktest``, ``submitPromoteToPaper``, ``submitStartPaperRunner``,
-and ``submitStopPaperRunner`` are intentionally absent from this bridge
-until their respective wiring PRs land. ``submitFreezeManifest`` lands in
-Phase D1 alongside ``proposeFreezeManifest``.
+Backtest evidence generation is wired through ``proposeBacktest`` /
+``submitBacktest``. Runner start/stop action families remain absent until
+their respective wiring PRs land.
 """
 
 from __future__ import annotations
 
 import logging
+from datetime import date
 from typing import TYPE_CHECKING, Any
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from milodex.commands.bench import (
+    ACTION_FAMILY_BACKTEST,
     ACTION_FAMILY_DEMOTE,
     ACTION_FAMILY_FREEZE_MANIFEST,
     BenchCommandFacade,
@@ -61,9 +61,10 @@ class BenchCommandBridge(QObject):
     """Qt-side bridge to the Bench command facade (ADR 0051 Phase D1).
 
     The demotion / walk-back action family (Phase C2) and the freeze-manifest
-    action family (Phase D1) are submit-capable. Every other action family
+    action family (Phase D1), and canonical backtest evidence generation
+    are submit-capable. Every other action family
     remains preview-only and is *not* exposed here. The facade itself still
-    defines ``submit_backtest`` / ``submit_promote_to_paper`` /
+    defines ``submit_promote_to_paper`` /
     ``submit_start_paper_runner`` / ``submit_stop_paper_runner`` as Phase B
     stubs returning ``not_submit_capable_phase_b``, but the GUI cannot reach
     them through this bridge.
@@ -88,6 +89,40 @@ class BenchCommandBridge(QObject):
         # the dataclass. Each proposal is consumed exactly once; stale ids
         # produce a structured error result.
         self._proposals: dict[str, CommandProposal] = {}
+
+    def _unknown_proposal_payload(
+        self, proposal_id: str, *, action_family: str, submit_method: str, propose_method: str
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "proposal_id": proposal_id,
+            "action_family": action_family,
+            "status": "error",
+            "durable_refs": {},
+            "data": {},
+            "blockers": [
+                {
+                    "reason_code": "unknown_proposal_id",
+                    "message": (
+                        f"{submit_method} was called with an unknown proposal id. "
+                        f"Re-run {propose_method} and retry."
+                    ),
+                    "context": {"proposal_id": proposal_id},
+                }
+            ],
+            "warnings": [],
+            "submitted_at": None,
+            "audit_event_id": None,
+        }
+        self.submitCompleted.emit(payload)
+        return payload
+
+    def _refresh_after_submit(self, operation: str) -> None:
+        if self._bench_state is None:
+            return
+        try:
+            self._bench_state._kick_refresh()  # noqa: SLF001
+        except Exception:  # noqa: BLE001
+            logger.exception("BenchState refresh after %s failed.", operation)
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (demotion / walk-back only — ADR 0051 Phase C2)
@@ -140,6 +175,7 @@ class BenchCommandBridge(QObject):
                 "action_family": ACTION_FAMILY_DEMOTE,
                 "status": "error",
                 "durable_refs": {},
+                "data": {},
                 "blockers": [
                     {
                         "reason_code": "unknown_proposal_id",
@@ -213,6 +249,7 @@ class BenchCommandBridge(QObject):
                 "action_family": ACTION_FAMILY_FREEZE_MANIFEST,
                 "status": "error",
                 "durable_refs": {},
+                "data": {},
                 "blockers": [
                     {
                         "reason_code": "unknown_proposal_id",
@@ -250,6 +287,57 @@ class BenchCommandBridge(QObject):
         return payload
 
     # ------------------------------------------------------------------ #
+    # QML-callable slots (canonical backtest evidence)
+    # ------------------------------------------------------------------ #
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def proposeBacktest(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
+        """Build a canonical Bench backtest proposal and cache it by id."""
+        strategy_id = str(inputs.get("strategy_id", ""))
+        start = _date_from_qvariant(inputs.get("start"), date(2020, 1, 1))
+        end = _date_from_qvariant(inputs.get("end"), date(2024, 12, 31))
+        walk_forward = bool(inputs.get("walk_forward", True))
+        initial_equity = float(inputs.get("initial_equity", 1_000.0))
+        slippage_raw = inputs.get("slippage")
+        slippage = float(slippage_raw) if slippage_raw not in (None, "") else None
+        run_id_raw = inputs.get("run_id")
+        run_id = str(run_id_raw) if run_id_raw else None
+
+        proposal = self._facade.propose_backtest(
+            strategy_id,
+            start=start,
+            end=end,
+            walk_forward=walk_forward,
+            initial_equity=initial_equity,
+            slippage=slippage,
+            run_id=run_id,
+            risk_policy=str(inputs.get("risk_policy", "bypass")),
+        )
+        self._proposals[proposal.proposal_id] = proposal
+        return proposal.to_dict()
+
+    @Slot(str, result="QVariantMap")
+    def submitBacktest(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Submit a previously-proposed canonical backtest evidence run."""
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            return self._unknown_proposal_payload(
+                proposal_id,
+                action_family=ACTION_FAMILY_BACKTEST,
+                submit_method="submitBacktest",
+                propose_method="proposeBacktest",
+            )
+
+        result = self._facade.submit_backtest(proposal)
+        payload = result.to_dict()
+
+        if result.status == "submitted":
+            self._refresh_after_submit("submit_backtest")
+
+        self.submitCompleted.emit(payload)
+        return payload
+
+    # ------------------------------------------------------------------ #
     # Introspection (used by tests and operator surfaces)
     # ------------------------------------------------------------------ #
 
@@ -257,7 +345,19 @@ class BenchCommandBridge(QObject):
     def submitCapableActionFamilies(self) -> list[str]:  # noqa: N802
         """Return the list of action families this bridge can submit.
 
-        Phase D1: demote + freeze_manifest. Phase D2+ extend this list as
-        each action-family wiring lands.
+        Bench submit-capable families are exposed here so QML can keep its
+        modal affordances in sync with the bridge.
         """
-        return [ACTION_FAMILY_DEMOTE, ACTION_FAMILY_FREEZE_MANIFEST]
+        return [
+            ACTION_FAMILY_DEMOTE,
+            ACTION_FAMILY_FREEZE_MANIFEST,
+            ACTION_FAMILY_BACKTEST,
+        ]
+
+
+def _date_from_qvariant(value: Any, default: date) -> date:
+    if value in (None, ""):
+        return default
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))

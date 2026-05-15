@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 from datetime import UTC, date, datetime
 from io import StringIO
 from pathlib import Path
@@ -20,11 +21,18 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.cli.main import main as cli_entrypoint
+from milodex.data.bar_quality import (
+    DataQualityError,
+    DataQualityIssue,
+    DataQualityReport,
+    DataQualitySeverity,
+)
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.execution.models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
+    UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchState
 from milodex.risk import RiskCheckResult, RiskDecision
@@ -409,6 +417,78 @@ def test_trade_preview_renders_execution_result():
     assert service.preview_calls
     assert "Trade Execution" in output
     assert "Decision: allow" in output
+
+
+def test_trade_preview_reports_unsupported_order_type_without_argparse_rejecting():
+    class RejectingExecutionService(StubExecutionService):
+        def preview(self, intent):
+            self.preview_calls.append(intent)
+            raise UnsupportedOrderTypeError(intent.order_type)
+
+    service = RejectingExecutionService()
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        [
+            "trade",
+            "preview",
+            "SPY",
+            "--side",
+            "buy",
+            "--quantity",
+            "5",
+            "--order-type",
+            "limit",
+            "--limit-price",
+            "99",
+        ],
+        execution_service_factory=lambda: service,
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    output = stderr.getvalue()
+    assert exit_code == 1
+    assert service.preview_calls[0].order_type == OrderType.LIMIT
+    assert "market orders only" in output
+    assert "unsupported" in output.lower()
+
+
+def test_cli_reports_data_quality_failures_with_structured_error(monkeypatch):
+    def rejecting_status(_args, _ctx):
+        raise DataQualityError(
+            DataQualityReport(
+                requested_start=date(2024, 1, 1),
+                requested_end=date(2024, 1, 31),
+                scanned_symbols=("SPY",),
+                issues=(
+                    DataQualityIssue(
+                        code="invalid_ohlc_relationship",
+                        severity=DataQualitySeverity.BLOCKER,
+                        symbol="SPY",
+                        message="bad bar",
+                    ),
+                ),
+            )
+        )
+
+    monkeypatch.setattr(cli_main_module.status, "run", rejecting_status)
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["status", "--json"],
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    output = stderr.getvalue()
+    payload = json.loads(output)
+    assert exit_code == 1
+    assert payload["errors"][0]["code"] == "data_quality_failed"
+    assert "Data quality failed" in payload["errors"][0]["message"]
+    assert payload["data"]["data_quality"]["status"] == "fail"
+    assert payload["data"]["data_quality"]["issue_codes"] == ["invalid_ohlc_relationship"]
+    assert payload["data"]["data_quality"]["issues"][0]["symbol"] == "SPY"
 
 
 def test_trade_submit_requires_paper_flag():

@@ -5,7 +5,7 @@ PR 2.2: slippage resolution order is:
   2. Per-strategy config (``strategy.backtest.slippage_pct`` in the YAML)
   3. Universe manifest (``universe.slippage_pct`` in the matching universe YAML)
   4. Global default (``backtesting.slippage_pct_default`` in risk_defaults.yaml)
-  5. Hardcoded fallback 0.001
+  5. Hardcoded fallback 0.0005
 """
 
 from __future__ import annotations
@@ -281,7 +281,7 @@ def test_tier5_hardcoded_fallback():
 
     engine = _make_engine(loaded, risk_defaults_path=nonexistent)
 
-    assert engine._slippage_pct == pytest.approx(0.001)
+    assert engine._slippage_pct == pytest.approx(0.0005)
 
 
 # ---------------------------------------------------------------------------

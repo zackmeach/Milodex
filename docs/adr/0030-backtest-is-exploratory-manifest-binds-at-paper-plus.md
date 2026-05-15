@@ -1,6 +1,7 @@
 # ADR 0030 — Backtest is Exploratory; Manifest Discipline Binds at Paper+
 
 **Status:** Accepted · 2026-05-06
+**Implementation update (2026-05):** `milodex backtest` now has explicit risk-policy modes. The default remains raw exploratory `RiskPolicy.BYPASS` with `NullRiskEvaluator`; `--risk-policy enforce` opts into structural sizing and exposure checks. Manifest drift remains outside historical replay in both modes.
 **Related:** [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md) (clarified scope, not superseded), [ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) (authorizes this work), [ADR 0009](0009-promotion-pipeline-stage-model.md) (stage definitions), [ADR 0011](0011-sqlite-event-store.md) (run-id audit trail), [VISION.md](../VISION.md) §Research Discipline
 
 ## Context
@@ -33,7 +34,7 @@ Manifest-drift enforcement applies exclusively to the promoted stages: `paper`, 
 
 When the operator invokes `milodex backtest <strategy_id> ...` against a strategy that is currently at `paper` stage, the engine reads the YAML on disk **at invocation time** and runs the backtest against that config. No manifest comparison occurs. The operator does not need to demote the strategy before running the backtest.
 
-This is a deliberate scope relaxation for the backtest path only. The alternative — refusing to backtest a paper-stage strategy unless it has been demoted first — would preserve the existing five-command ceremony without adding any safety property. Backtesting is a read-only simulation; it cannot place a real or paper order (the engine uses `NullRiskEvaluator` and `SimulatedBroker` throughout). There is no risk to production evidence: the frozen manifest for the paper-stage strategy is untouched; no run appended by the backtest engine changes the strategy's stage or replaces the frozen hash. The operator's explore-and-decide loop is protected by audit, not by ceremony.
+This is a deliberate scope relaxation for the backtest path only. The alternative — refusing to backtest a paper-stage strategy unless it has been demoted first — would preserve the existing five-command ceremony without adding any safety property. Backtesting is a read-only simulation; it cannot place a real or paper order (the engine uses `SimulatedBroker` and an explicit backtest risk policy). There is no risk to production evidence: the frozen manifest for the paper-stage strategy is untouched; no run appended by the backtest engine changes the strategy's stage or replaces the frozen hash. The operator's explore-and-decide loop is protected by audit, not by ceremony.
 
 ### Decision 3 — Implementation hook: `is_backtest` flag on `EvaluationContext`
 
@@ -43,7 +44,7 @@ When `is_backtest=True`, `_check_manifest_drift` returns immediately with a pass
 
 When `is_backtest=False` (the default), `_check_manifest_drift` behaves exactly as today: exempt `backtest`-stage strategies via effective-stage check, require hash match for `paper`/`micro_live`/`live`.
 
-**Wiring scope for PR #41:** The existing `BacktestEngine` already injects `NullRiskEvaluator` (not `RiskEvaluator`) as the evaluator, so `_check_manifest_drift` is never reached during a backtest simulation today — `NullRiskEvaluator` short-circuits the entire risk evaluation before any check method is called. As a result, no existing production call site sets `is_backtest=True`; none is needed to fix the current behavior.
+**Wiring scope for PR #41:** At the time this ADR was accepted, `BacktestEngine` injected `NullRiskEvaluator` (not `RiskEvaluator`) as the evaluator, so `_check_manifest_drift` was never reached during a backtest simulation. The current implementation keeps that behavior as the default `RiskPolicy.BYPASS` path and adds an opt-in structural `RiskPolicy.ENFORCE` path that still exempts runtime/current-time checks such as manifest drift. As a result, no existing production call site sets `is_backtest=True`; none is needed to fix the current behavior.
 
 PR #41 should add the field and the fast-path bypass as a clean architectural hook for future research-mode paths (e.g., a preview runner that uses the full evaluator for all checks except manifest enforcement). The production call site is a placeholder for that future path; it must not be force-wired to any existing call site today.
 
@@ -95,7 +96,7 @@ These questions are genuine design choices that belong to implementation; the AD
 
 ## Rationale
 
-**Why Decision 2(a) — bypass — over 2(b) — require demotion.** The purpose of the manifest-drift check is to prevent silent config drift from corrupting a production evidence package. A backtest invocation cannot corrupt that package: it writes to `backtest_runs`, not to the promotion log, and uses `NullRiskEvaluator` + `SimulatedBroker` — it cannot touch the broker. The five-command demotion ceremony imposes real operator cost (and a promotion re-ceremony on the other side) in exchange for zero safety improvement. Every unit of friction applied to a zero-risk operation is friction that could discourage a useful one. FOUNDER_INTENT's research-discipline principle treats exploration as a first-class value; gating it behind ceremony inverts that priority.
+**Why Decision 2(a) — bypass — over 2(b) — require demotion.** The purpose of the manifest-drift check is to prevent silent config drift from corrupting a production evidence package. A backtest invocation cannot corrupt that package: it writes to `backtest_runs`, not to the promotion log, and uses `SimulatedBroker` with an explicit backtest risk-policy mode — it cannot touch the broker. The five-command demotion ceremony imposes real operator cost (and a promotion re-ceremony on the other side) in exchange for zero safety improvement. Every unit of friction applied to a zero-risk operation is friction that could discourage a useful one. FOUNDER_INTENT's research-discipline principle treats exploration as a first-class value; gating it behind ceremony inverts that priority.
 
 **Why a flag on `EvaluationContext` rather than a separate code path.** The evaluator's `_check_manifest_drift` already reads `EvaluationContext` fields to make its decision. Adding one more field keeps the decision logic in one place: if you want to understand how manifest drift is handled, you read `_check_manifest_drift`. A separate code path (e.g., a different evaluator subclass for backtest-adjacent previews) would scatter the logic and create two surfaces to keep consistent. The `NullRiskEvaluator` is already the primary backtest bypass; `is_backtest` is the precision instrument for paths that use the full evaluator but need to communicate their evaluation context.
 

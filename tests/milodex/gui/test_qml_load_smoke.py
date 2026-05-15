@@ -217,15 +217,15 @@ def test_main_qml_loads_clean() -> None:
 
 
 def test_bench_command_bridge_resolves_in_qml() -> None:
-    """ADR 0051 Phase C2 review F1 (updated for Phase D1): the QML engine
+    """ADR 0051 Phase C2 review F1 (updated for Bench backtest submit): the QML engine
     must resolve ``Milodex.BenchCommandBridge`` and its slot return must
     round-trip.
 
     A probe QML component imports ``Milodex 1.0`` and binds
     ``submitCapableActionFamilies()`` to a property. If the singleton is not
     registered, QML emits a warning at component creation; if registration
-    succeeded, the property reads ``["demote", "freeze_manifest"]`` at Phase
-    D1. Either failure exits the subprocess non-zero.
+    succeeded, the property includes the current submit-capable Bench actions.
+    Either failure exits the subprocess non-zero.
     """
     probe_qml = (
         "import QtQuick\n"
@@ -260,7 +260,7 @@ def test_bench_command_bridge_resolves_in_qml() -> None:
         "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
         "    sys.exit(4)\n"
         "families = obj.property('families')\n"
-        "if list(families) != ['demote', 'freeze_manifest']:\n"
+        "if list(families) != ['demote', 'freeze_manifest', 'backtest']:\n"
         "    print(f'UNEXPECTED_FAMILIES: {families!r}', file=sys.stderr)\n"
         "    sys.exit(5)\n"
         "print('PROBE_OK')\n"
@@ -845,8 +845,7 @@ def test_bench_pr_l_future_record_strings() -> None:
         "stage_return_event",
         "session_start_event",
         "session_stop_event",
-        "backtest_request_event",
-        "backtest_refresh_event",
+        "backtest_run",
     ):
         assert record_label in modal_src, (
             f"BenchConfirmationModal.qml _futureRecord must contain {record_label!r} (PR L)"
@@ -1028,18 +1027,18 @@ def test_bench_pr_o_command_draft_preview_section_present() -> None:
 
 
 def test_bench_pr_o_command_draft_preview_shape() -> None:
-    """PR O: commandDraftPreview must carry the required display-only fields."""
+    """commandDraftPreview must carry proposal-state fields."""
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
         encoding="utf-8"
     )
     for needle in (
         '"schemaVersion": 1',
         '"source":',
-        '"submissionState": "not_submittable_v1"',
-        '"validationState": "not_validated_v1"',
+        '"submissionState": root._isSubmitCapable ? "submit_capable" : "not_submittable_v1"',
+        '"validationState": root._isSubmitCapable ? "validated_on_submit" : "not_validated_v1"',
         '"blockedBy":',
-        '"executable": false',
-        '"wired": false',
+        '"executable": root._isSubmitCapable',
+        '"wired": root._isSubmitCapable',
     ):
         assert needle in modal_src, f"commandDraftPreview must declare {needle!r} (PR O)"
 
@@ -1077,6 +1076,10 @@ def test_bench_pr_o_command_draft_preview_ui_copy() -> None:
     assert (
         "Milodex can render this draft for review, but Bench v1 cannot submit it." in modal_src
     ), "commandDraftPreview banner copy must be verbatim (PR O)"
+    assert (
+        "Milodex will validate this proposal through the command bridge before submitting it."
+        in modal_src
+    ), "submit-capable command preview banner copy must be present (PR 13)"
 
 
 def test_bench_pr_p_boundary_doc_exists_and_anchors_to_code() -> None:
@@ -1297,8 +1300,26 @@ def test_bench_pr_d1_modal_freeze_manifest_submit_affordance() -> None:
         )
 
 
+def test_bench_pr13_modal_backtest_submit_affordance() -> None:
+    """PR 13: backtest evidence actions route through the command bridge."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "Run backtest" in modal_src
+    assert "_isBacktestSubmit" in modal_src
+    assert "BenchCommandBridge.proposeBacktest(" in modal_src
+    assert "BenchCommandBridge.submitBacktest(" in modal_src
+    assert '"start": "2020-01-01"' in modal_src
+    assert '"end": "2024-12-31"' in modal_src
+    assert '"walk_forward": true' in modal_src
+    assert '"initial_equity": 1000' in modal_src
+    assert '"risk_policy": "bypass"' in modal_src
+    assert "Run canonical walk-forward backtest evidence" in modal_src
+
+
 def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
-    """ADR 0051 Phase D1: only demote (C2) and freeze_manifest (D1) are
+    """ADR 0051: only demote, freeze_manifest, and backtest are
     submit-capable. The modal must still render the inert "Not wired in v1"
     primary for every other action family. The boolean gate that selects
     which primary renders must look at the action kind, not at a global
@@ -1312,11 +1333,12 @@ def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
     # action kinds, not from a hardcoded "always submit" flag.
     assert "_submitCapableKinds" in modal_src, (
         "The submit-capable branch must be gated on a fixed set of action "
-        "kinds (Phase D1: demote + freeze_manifest). Other action families "
-        "remain preview-only."
+        "kinds. Other action families remain preview-only."
     )
     assert '"demote": true' in modal_src
     assert '"freeze_manifest": true' in modal_src
+    assert '"initiate_backtest": true' in modal_src
+    assert '"refresh_backtest": true' in modal_src
 
     # The inert primary block must be visible-gated to the !_isSubmitCapable
     # branch so promote / return / start / stop / initiate / refresh actions

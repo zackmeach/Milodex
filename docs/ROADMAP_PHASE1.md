@@ -133,11 +133,11 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 
 #### 5.1.1 Backtest Engine
 - [x] `src/milodex/backtesting/engine.py` — `BacktestEngine`:
-  - Replays historical bars day-by-day through the **same** `Strategy.evaluate()` code path used live. No divergent branches (per VISION §1.2). *Structural guarantee landed 2026-04-23: engine now rides `ExecutionService.submit_backtest()` with `SimulatedBroker` + `NullRiskEvaluator` injected; no parallel loop exists.*
-  - Applies slippage (default 0.1% per [RISK_POLICY.md](RISK_POLICY.md)) and commission (0 for Phase 1 Alpaca per ADR 0016).
+  - Replays historical bars day-by-day through the **same** `Strategy.evaluate()` code path used live. No divergent branches (per VISION §1.2). *Structural guarantee landed 2026-04-23: engine now rides `ExecutionService.submit_backtest()` with `SimulatedBroker` and an explicit backtest risk policy; no parallel loop exists.*
+  - Applies configurable, universe-aware slippage (3 bps for highly liquid ETF universes, 5 bps for mixed/large-cap universes and unknown fallback) and commission (0 for Phase 1 Alpaca per ADR 0016).
   - Writes backtest trades to the event store under `trades` with a `source=backtest` tag plus a `backtest_runs` row.
 - [x] `src/milodex/backtesting/walk_forward.py` — rolling train/test window splitter per `R-BKT-002`. Parameters: window length, step size, holdout tail. *Orchestrator landed 2026-04-24 via `walk_forward_runner.py`: each OOS window runs an independent simulation and the reported Sharpe / maxDD / total return are OOS-aggregate, not whole-period. See [ADR 0021](adr/0021-walk-forward-metrics-are-oos-aggregate.md) — prior `[x]` claim covered only the splitter math, not the evaluation semantics.*
-- [x] Minimum-trade enforcement per `R-BKT-003`: statistical metrics for meanrev require ≥30 trades; regime is exempt per `R-PRM-004`. *Implemented as a CLI-layer label (`insufficient evidence` / `evidence_basis=operational`), not an engine-side gate — presentation-layer concern.*
+- [x] Minimum-trade enforcement per `R-BKT-004`: statistical metrics require the strategy's configured `backtest.min_trades_required` value (default 30); regime is exempt per `R-PRM-004`. *Implemented as a CLI-layer label (`insufficient evidence` / `evidence_basis=operational`), not an engine-side gate — presentation-layer concern.*
 - [x] CLI command: `milodex backtest <strategy_id> --start YYYY-MM-DD --end YYYY-MM-DD [--walk-forward]`.
 - [x] CLI command: `milodex research screen --configs <glob> --start ... --end ...` — batch walk-forward evaluator that runs the OOS harness across many strategy configs and prints a ranked comparison table (per-row gate status is advisory; promotion remains a separate operator action). Backed by `src/milodex/backtesting/walk_forward_batch.py`. See [CLI_UX.md](CLI_UX.md#research-screen).
 - [x] Tests: walk-forward window math, per-window OOS simulation + aggregate stitching ([test_walk_forward_runner.py](../tests/milodex/backtesting/test_walk_forward_runner.py)), slippage applied correctly, regime strategy backtest matches hand-computed golden output ([test_engine_golden_regime.py](../tests/milodex/backtesting/test_engine_golden_regime.py)), minimum-trade gate produces a clearly-flagged low-evidence result instead of a garbage Sharpe.
@@ -190,8 +190,8 @@ Regime strategy precedes meanrev throughout: it's simpler (single-asset rotation
 #### 6.1.2 Promotion State Machine
 - [x] `src/milodex/promotion/state_machine.py` — legal transitions only: `backtest → paper → micro_live → live`. No skipping. No downgrades except to `disabled`. (Slice 2, 2026-04-23.)
 - [x] Evidence gates per `R-PRM-001..007`:
-  - `backtest → paper`: ≥30 trades in walk-forward (except regime), Sharpe > 0.5, max DD < 15% (except regime which uses operational-correctness gates: "ran cleanly for N sessions, zero unexplained errors")
-  - `paper → micro_live`: ≥30 paper trades or ≥N weeks paper runtime; same statistical thresholds
+  - `backtest → paper`: paper-readiness evidence for research-target strategies (Sharpe > 0.0, max DD < 25%, configured trade-count floor), except regime which uses operational-correctness gates: "ran cleanly for N sessions, zero unexplained errors"
+  - `paper → micro_live`: configured trade-count floor or ≥N weeks paper runtime; strict statistical thresholds
   - `micro_live → live`: explicit operator approval + kill-switch reset-count zero during micro_live *(live-stage refusal hook deferred to slice 3 per R-PRM-006)*
 - [x] Evidence-package assembly: bundles backtest metrics, paper-run trades, risk rejections, and explanation records into one promotion-decision record per `R-PRM-003`. (`promotion/evidence.py`, `promotions.evidence_json`.)
 

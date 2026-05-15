@@ -444,9 +444,11 @@ def _screen_one(
 
     gate = check_gate(
         lifecycle_exempt=(family == "regime"),
+        to_stage="paper",
         sharpe_ratio=result.oos_sharpe,
         max_drawdown_pct=result.oos_max_drawdown_pct,
         trade_count=result.oos_trade_count,
+        min_trade_count=int(loaded.config.backtest.get("min_trades_required", 30)),
     )
 
     # Look up the universe's declared survivorship-correction status. A

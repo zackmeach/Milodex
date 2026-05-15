@@ -1,6 +1,7 @@
 # ADR 0029 — Per-Strategy Position Attribution at the Risk Layer
 
 **Status:** Accepted · 2026-05-06
+**Implementation update (2026-05):** Backtests now expose explicit risk-policy modes. The default `RiskPolicy.BYPASS` mode preserves this ADR's original raw-research behavior with `NullRiskEvaluator`; opt-in `RiskPolicy.ENFORCE` applies backtest structural sizing and exposure checks.
 **Related:** [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) (extended, not superseded), [ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) (authorizes this work), [PHASE2_PLANNING.md §3.2 CS-1](../PHASE2_PLANNING.md), [ADR 0022](0022-strategy-rotation-scope-is-the-declared-universe.md) (intent-side discipline that complements this execution-side discipline), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (concurrency model this enables), [ADR 0011](0011-sqlite-event-store.md) (the source of truth for attribution data), [ADR 0008](0008-risk-layer-veto-architecture.md) ("strategy proposes, risk disposes"), [CLAUDE.md](../../CLAUDE.md) "Risk layer is sacred"
 
 ## Context
@@ -72,7 +73,7 @@ This ADR articulates the eight architectural decisions PR #39 will implement.
 - This ADR does **not** change broker-side semantics. Alpaca still sees positions as account-level. Per-strategy attribution is a Milodex-internal layer over a flat broker view.
 - This ADR does **not** pre-commit specific implementation code. PR #39 is the implementation; the helper's location, signature, and exact query shape are PR-#7-owned within the constraints stated in Decisions 1–8.
 - This ADR does **not** alter [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md)'s per-process model. Two runners writing to the same `data/milodex.db` continue to read each other's `trades` rows when reconstructing attribution — the durable shared state model is what makes per-process attribution coherent across processes.
-- This ADR does **not** change the backtest path. `NullRiskEvaluator` ([src/milodex/risk/policy.py](../../src/milodex/risk/policy.py)) still bypasses the entire risk layer in backtest simulation per [CLAUDE.md](../../CLAUDE.md) "risk is enforced at promotion, not simulation."
+- This ADR does **not** change the default backtest path. `RiskPolicy.BYPASS` still uses `NullRiskEvaluator` ([src/milodex/risk/policy.py](../../src/milodex/risk/policy.py)) for raw research simulation; `RiskPolicy.ENFORCE` is a later, explicit backtest structural policy path.
 - This ADR does **not** define per-strategy *notional* caps. Decision 6 pins per-strategy enforcement to **position count**, consistent with the `max_positions` field's existing semantic. A separate per-strategy notional cap is a Phase 5+ candidate, not a Phase 4 commitment.
 
 ## Open questions surfaced for PR #39 implementation

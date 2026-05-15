@@ -25,6 +25,25 @@ class ExecutionStatus(Enum):
     CANCELLED = "cancelled"
 
 
+class UnsupportedOrderTypeError(ValueError):
+    """Raised when Phase 1 execution receives a non-market order type."""
+
+    def __init__(
+        self,
+        order_type: OrderType,
+        *,
+        supported_order_types: tuple[OrderType, ...] = (OrderType.MARKET,),
+    ) -> None:
+        self.order_type = order_type
+        self.supported_order_types = supported_order_types
+        supported = ", ".join(item.value for item in supported_order_types)
+        super().__init__(
+            f"Unsupported order type '{order_type.value}': "
+            f"Phase 1 execution supports market orders only. "
+            f"Supported order types: {supported}."
+        )
+
+
 @dataclass(frozen=True)
 class TradeIntent:
     """Initial user- or strategy-originated trade proposal."""

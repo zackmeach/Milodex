@@ -26,6 +26,7 @@ from milodex.backtesting.walk_forward_runner import (
     run_walk_forward,
 )
 from milodex.core.event_store import EventStore
+from milodex.data.bar_quality import DataQualityError
 from milodex.data.models import BarSet
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
@@ -222,6 +223,68 @@ def test_walk_forward_metadata_contains_oos_aggregate_and_stability():
     assert "stability" in md
     assert "windows" in md
     assert len(md["windows"]) == len(result.windows)
+    assert md["oos_aggregate"]["skipped_count"] == result.oos_skipped_count
+    assert all("skipped_count" in window for window in md["windows"])
+
+
+def test_walk_forward_metadata_contains_data_quality_report():
+    engine, store, bars_start = _make_engine(universe=("SPY", "QQQ"), bar_count=30)
+    qqq_rows = [
+        {
+            "timestamp": pd.Timestamp(bars_start + timedelta(days=i), tz="UTC"),
+            "open": 100.0 + i,
+            "high": 100.0 + i,
+            "low": 100.0 + i,
+            "close": 100.0 + i,
+            "volume": 1000,
+            "vwap": 100.0 + i,
+        }
+        for i in range(29)
+    ]
+    engine._data_provider.get_bars.return_value["QQQ"] = BarSet(pd.DataFrame(qqq_rows))  # noqa: SLF001
+
+    result = run_walk_forward(
+        engine,
+        start_date=bars_start,
+        end_date=bars_start + timedelta(days=29),
+        train_days=10,
+        test_days=5,
+        step_days=5,
+    )
+
+    stored = store.get_backtest_run(result.run_id)
+    assert stored is not None
+    assert result.data_quality["status"] == "pass_with_warnings"
+    assert stored.metadata["data_quality"] == result.data_quality
+    assert stored.metadata["run_manifest"] == result.run_manifest
+    assert result.run_manifest["data"]["quality"]["status"] == "pass_with_warnings"
+
+
+def test_walk_forward_data_quality_blocker_marks_parent_run_failed():
+    engine, store, bars_start = _make_engine(bar_count=30)
+    bad_rows = engine._data_provider.get_bars.return_value["SPY"].to_dataframe()  # noqa: SLF001
+    bad_rows.loc[bad_rows.index[0], "low"] = 999.0
+    engine._data_provider.get_bars.return_value["SPY"] = BarSet(bad_rows)  # noqa: SLF001
+
+    with pytest.raises(DataQualityError):
+        run_walk_forward(
+            engine,
+            start_date=bars_start,
+            end_date=bars_start + timedelta(days=29),
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            run_id="wf-bad-quality",
+        )
+
+    stored = store.get_backtest_run("wf-bad-quality")
+    assert stored is not None
+    assert stored.status == "failed"
+    assert stored.metadata["walk_forward"] is True
+    assert stored.metadata["windows_planned"] == 4
+    assert stored.metadata["risk_policy"] == "bypass"
+    assert stored.metadata["data_quality"]["status"] == "fail"
+    assert stored.metadata["run_manifest"]["data"]["quality"]["status"] == "fail"
 
 
 def test_walk_forward_per_window_initial_equity_resets():
@@ -255,6 +318,7 @@ def _window(
     index: int = 0,
     initial: float = 100.0,
     trade_count: int = 0,
+    skipped_count: int = 0,
 ) -> WalkForwardWindow:
     """Build a WalkForwardWindow whose equity curve realises ``returns_pct``."""
     equity_curve: list[tuple[date, float]] = []
@@ -273,6 +337,7 @@ def _window(
         test_end=d,
         trading_days=len(returns_pct) + 1,
         trade_count=trade_count,
+        skipped_count=skipped_count,
         initial_equity=initial,
         final_equity=equity,
         total_return_pct=(equity - initial) / initial * 100.0,
@@ -297,11 +362,24 @@ def test_aggregate_oos_compounds_windows():
 def test_aggregate_oos_handles_empty_windows():
     aggregate = _aggregate_oos([], initial_equity=100.0)
     assert aggregate.trade_count == 0
+    assert aggregate.skipped_count == 0
     assert aggregate.trading_days == 0
     assert aggregate.total_return_pct == 0.0
     assert aggregate.sharpe is None
     assert aggregate.max_drawdown_pct == 0.0
     assert aggregate.equity_curve == []
+
+
+def test_aggregate_oos_sums_skipped_counts():
+    windows = [
+        _window([1.0], index=0, trade_count=2, skipped_count=3),
+        _window([1.0], index=1, trade_count=4, skipped_count=5),
+    ]
+
+    aggregate = _aggregate_oos(windows, initial_equity=100.0)
+
+    assert aggregate.trade_count == 6
+    assert aggregate.skipped_count == 8
 
 
 def test_aggregate_oos_sharpe_is_on_concatenated_returns():

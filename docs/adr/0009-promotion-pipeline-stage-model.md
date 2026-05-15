@@ -3,9 +3,11 @@
 **Status:** Accepted
 **Date:** 2026-04-16
 
+**Implementation update (2026-05):** Later promotion work made the evidence gates stage-aware. Backtest-to-paper uses a paper-readiness gate, later capital stages use the stricter Sharpe > 0.5 / max drawdown < 15% gate, and trade-count evidence is sourced from each strategy's configured `backtest.min_trades_required` value. The enforced stage model in this ADR remains unchanged; see SRS R-PRM-004 for the current thresholds.
+
 ## Context
 
-The VISION document defines a four-stage lifecycle: `backtest → paper → micro_live → live`. Promotion between stages is gated by evidence (Sharpe > 0.5, max drawdown < 15%, min 30 trades) and, for later stages, by explicit operator approval. This lifecycle could be implemented as a convention (the operator watches metrics and moves strategies by hand), as advisory metadata (the config has a `stage` field that's ignored at runtime), or as enforced state that the risk layer honors.
+The VISION document defines a four-stage lifecycle: `backtest → paper → micro_live → live`. Promotion between stages is gated by stage-aware evidence and, for later stages, by explicit operator approval. This lifecycle could be implemented as a convention (the operator watches metrics and moves strategies by hand), as advisory metadata (the config has a `stage` field that's ignored at runtime), or as enforced state that the risk layer honors.
 
 ## Decision
 

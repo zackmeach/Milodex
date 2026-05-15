@@ -46,7 +46,8 @@ from milodex.config import (
 from milodex.core.advisory_lock import AdvisoryLockError
 from milodex.core.event_store import EventStore
 from milodex.data.alpaca_provider import AlpacaDataProvider
-from milodex.execution import ExecutionService
+from milodex.data.bar_quality import DataQualityError
+from milodex.execution import ExecutionService, UnsupportedOrderTypeError
 from milodex.execution.state import KillSwitchStateStore
 from milodex.strategies.loader import StrategyLoader
 from milodex.strategies.runner import StrategyRunner
@@ -206,6 +207,19 @@ def main(
         result = module.run(args, ctx)
     except AdvisoryLockError as exc:
         result = error_result(command_name, str(exc), code="advisory_lock_held")
+        print(formatter.render(result), file=stderr)
+        return 1
+    except UnsupportedOrderTypeError as exc:
+        result = error_result(command_name, str(exc), code="unsupported_order_type")
+        print(formatter.render(result), file=stderr)
+        return 1
+    except DataQualityError as exc:
+        result = error_result(
+            command_name,
+            str(exc),
+            code="data_quality_failed",
+            data={"data_quality": exc.report.to_dict()},
+        )
         print(formatter.render(result), file=stderr)
         return 1
     except (BrokerError, ValueError) as exc:

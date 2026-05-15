@@ -203,9 +203,11 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     gate_result = check_gate(
         lifecycle_exempt=args.lifecycle_exempt,
+        to_stage=to_stage,
         sharpe_ratio=sharpe_ratio,
         max_drawdown_pct=max_drawdown_pct,
         trade_count=trade_count,
+        min_trade_count=int(config.backtest.get("min_trades_required", 30)),
     )
     if not gate_result.allowed:
         return _promote_blocked_result(args.strategy_id, from_stage, to_stage, gate_result)

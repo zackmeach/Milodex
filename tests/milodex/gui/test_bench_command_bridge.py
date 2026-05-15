@@ -25,7 +25,9 @@ from pathlib import Path
 
 import pytest
 
+from milodex.backtesting.engine import BacktestResult
 from milodex.commands.bench import (
+    ACTION_FAMILY_BACKTEST,
     ACTION_FAMILY_DEMOTE,
     ACTION_FAMILY_FREEZE_MANIFEST,
     BenchCommandFacade,
@@ -33,6 +35,7 @@ from milodex.commands.bench import (
 from milodex.core.event_store import EventStore
 from milodex.gui import bench_command_bridge as bridge_module
 from milodex.gui.bench_command_bridge import BenchCommandBridge
+from milodex.risk.policy import RiskPolicy
 
 # Reuse the canonical strategy_id pattern from the facade tests.
 STRATEGY_ID = "sample.daily.example.curated.v1"
@@ -111,6 +114,30 @@ class _FakeBenchState:
 
     def _kick_refresh(self) -> None:  # noqa: N802 — mirrors _PollingReadModel
         self.refresh_kicks += 1
+
+
+class _FakeSingleBacktestEngine:
+    def run(self, start, end, *, run_id=None):  # noqa: ANN001
+        return BacktestResult(
+            run_id=run_id or "bench-bridge-run",
+            strategy_id=STRATEGY_ID,
+            start_date=start,
+            end_date=end,
+            initial_equity=1_000.0,
+            final_equity=1_050.0,
+            total_return_pct=5.0,
+            trade_count=2,
+            buy_count=1,
+            sell_count=1,
+            slippage_pct=0.0005,
+            commission_per_trade=0.0,
+            trading_days=5,
+            db_id=303,
+            risk_policy=RiskPolicy.BYPASS,
+            skipped_count=0,
+            data_quality={"status": "pass"},
+            run_manifest={"schema_version": 1},
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -278,10 +305,8 @@ def test_submit_demote_blocked_proposal_skips_refresh(
 # --------------------------------------------------------------------------- #
 
 
-def test_bridge_exposes_only_demote_and_freeze_manifest_action_families() -> None:
-    """ADR 0051 Phase D1: the bridge wires demote (C2) and freeze_manifest
-    (D1). Every other action family must remain absent from the QML-callable
-    surface."""
+def test_bridge_exposes_submit_capable_action_family_slots() -> None:
+    """The bridge exposes only the action families wired through the facade."""
     members = {
         name
         for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)
@@ -291,12 +316,12 @@ def test_bridge_exposes_only_demote_and_freeze_manifest_action_families() -> Non
     assert "submitDemote" in members
     assert "proposeFreezeManifest" in members
     assert "submitFreezeManifest" in members
+    assert "proposeBacktest" in members
+    assert "submitBacktest" in members
     # No other action-family slot. Adding one without the corresponding ADR
     # amendment + facade wiring + boundary doc update is exactly the failure
     # mode the perimeter exists to prevent.
     for forbidden in (
-        "proposeBacktest",
-        "submitBacktest",
         "proposePromoteToPaper",
         "submitPromoteToPaper",
         "proposeStartPaperRunner",
@@ -310,14 +335,92 @@ def test_bridge_exposes_only_demote_and_freeze_manifest_action_families() -> Non
         )
 
 
-def test_submit_capable_action_families_returns_demote_and_freeze_manifest(
+def test_submit_capable_action_families_returns_wired_families(
     facade: BenchCommandFacade,
 ) -> None:
     bridge = BenchCommandBridge(facade)
     assert bridge.submitCapableActionFamilies() == [
         ACTION_FAMILY_DEMOTE,
         ACTION_FAMILY_FREEZE_MANIFEST,
+        ACTION_FAMILY_BACKTEST,
     ]
+
+
+# --------------------------------------------------------------------------- #
+# Backtest submit bridge
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_backtest_returns_dict_and_caches_proposal(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+
+    payload = bridge.proposeBacktest({"strategy_id": STRATEGY_ID})
+
+    assert payload["action_family"] == ACTION_FAMILY_BACKTEST
+    assert payload["inputs"]["start"] == "2020-01-01"
+    assert payload["inputs"]["end"] == "2024-12-31"
+    assert payload["inputs"]["walk_forward"] is True
+    assert payload["inputs"]["initial_equity"] == 1000.0
+    assert payload["inputs"]["risk_policy"] == "bypass"
+    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+
+
+def test_submit_backtest_with_known_id_submits_and_refreshes(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        backtest_engine_factory=lambda _strategy_id, **_kwargs: _FakeSingleBacktestEngine(),
+    )
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    proposal = bridge.proposeBacktest(
+        {
+            "strategy_id": STRATEGY_ID,
+            "start": "2020-01-01",
+            "end": "2020-01-05",
+            "walk_forward": False,
+            "initial_equity": 1000,
+        }
+    )
+    result = bridge.submitBacktest(proposal["proposal_id"])
+
+    assert result["status"] == "submitted"
+    assert result["durable_refs"]["run_id"] == "bench-bridge-run"
+    assert result["durable_refs"]["backtest_run_db_id"] == "303"
+    assert result["data"]["metrics"]["trade_count"] == 2
+    assert fake_state.refresh_kicks == 1
+    assert len(payloads) == 1
+    assert payloads[0]["status"] == "submitted"
+
+
+def test_submit_backtest_unknown_or_consumed_id_returns_structured_error(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+
+    unknown = bridge.submitBacktest("missing-proposal")
+    assert unknown["status"] == "error"
+    assert unknown["action_family"] == ACTION_FAMILY_BACKTEST
+    assert unknown["blockers"][0]["reason_code"] == "unknown_proposal_id"
+
+    proposal = bridge.proposeBacktest({"strategy_id": STRATEGY_ID, "walk_forward": False})
+    first = bridge.submitBacktest(proposal["proposal_id"])
+    assert first["status"] == "error"
+    second = bridge.submitBacktest(proposal["proposal_id"])
+    assert second["status"] == "error"
+    assert second["blockers"][0]["reason_code"] == "unknown_proposal_id"
 
 
 # --------------------------------------------------------------------------- #

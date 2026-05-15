@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,8 @@ from milodex.cli._shared import (
 from milodex.cli.formatter import CommandResult
 from milodex.data import BarSet
 from milodex.strategies.loader import resolve_universe_ref
+
+_DATE_RANGE_TOLERANCE = timedelta(days=7)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -167,7 +170,14 @@ def _run_fetch_universe(args: argparse.Namespace, ctx: CommandContext) -> Comman
 
     bars_by_symbol = provider.get_bars(list(symbols), timeframe, start, end)
 
-    return _build_fetch_universe_result(args.universe_ref, args.timeframe, symbols, bars_by_symbol)
+    return _build_fetch_universe_result(
+        args.universe_ref,
+        args.timeframe,
+        symbols,
+        bars_by_symbol,
+        requested_start=start,
+        requested_end=end,
+    )
 
 
 def _build_fetch_universe_result(
@@ -175,18 +185,34 @@ def _build_fetch_universe_result(
     timeframe_label: str,
     symbols: tuple[str, ...],
     bars_by_symbol: dict[str, BarSet],
+    *,
+    requested_start: date | None = None,
+    requested_end: date | None = None,
 ) -> CommandResult:
     total = len(symbols)
     with_data = {s for s in symbols if bars_by_symbol.get(s) is not None}
     hit = len(with_data)
     missing = sorted(set(symbols) - with_data)
     coverage_pct = (hit / total * 100) if total > 0 else 0.0
+    date_range_warnings = _date_range_warnings(
+        symbols=symbols,
+        bars_by_symbol=bars_by_symbol,
+        requested_start=requested_start,
+        requested_end=requested_end,
+    )
+    warned_symbols = {item["symbol"] for item in date_range_warnings}
+    symbols_with_full_date_range = max(0, hit - len(warned_symbols))
+    date_range_coverage_pct = (symbols_with_full_date_range / total * 100) if total > 0 else 0.0
 
     lines: list[str] = [
         f"fetch-universe: {universe_ref} ({timeframe_label})",
         f"  Total symbols requested : {total}",
         f"  Symbols with data       : {hit}",
         f"  Coverage                : {hit}/{total} ({coverage_pct:.1f}%)",
+        (
+            "  Date range coverage     : "
+            f"{symbols_with_full_date_range}/{total} ({date_range_coverage_pct:.1f}%)"
+        ),
     ]
 
     missing_cap = 10
@@ -197,12 +223,68 @@ def _build_fetch_universe_result(
     else:
         lines.append("  Missing                 : none")
 
+    warning_cap = 10
+    if date_range_warnings:
+        lines.append(f"  Date range warnings     : {len(date_range_warnings)}")
+        for warning in date_range_warnings[:warning_cap]:
+            first = warning["first_bar_date"] or "none"
+            last = warning["last_bar_date"] or "none"
+            lines.append(
+                "    "
+                f"{warning['symbol']}: {warning['issue']} "
+                f"(first={first}, last={last})"
+            )
+        if len(date_range_warnings) > warning_cap:
+            lines.append("    ...")
+    else:
+        lines.append("  Date range warnings     : none")
+
     data: dict[str, Any] = {
         "universe_ref": universe_ref,
         "timeframe": timeframe_label,
+        "requested_start": requested_start.isoformat() if requested_start else None,
+        "requested_end": requested_end.isoformat() if requested_end else None,
         "total_requested": total,
         "symbols_with_data": hit,
         "coverage_pct": round(coverage_pct, 1),
         "missing": missing,
+        "symbols_with_full_date_range": symbols_with_full_date_range,
+        "date_range_coverage_pct": round(date_range_coverage_pct, 1),
+        "date_range_warnings": date_range_warnings,
     }
     return CommandResult(command="data.fetch-universe", data=data, human_lines=lines)
+
+
+def _date_range_warnings(
+    *,
+    symbols: tuple[str, ...],
+    bars_by_symbol: dict[str, BarSet],
+    requested_start: date | None,
+    requested_end: date | None,
+) -> list[dict[str, str | None]]:
+    if requested_start is None or requested_end is None:
+        return []
+
+    warnings: list[dict[str, str | None]] = []
+    for symbol in symbols:
+        barset = bars_by_symbol.get(symbol)
+        if barset is None:
+            continue
+        dataframe = barset.to_dataframe()
+        if dataframe.empty:
+            continue
+        timestamps = pd.to_datetime(dataframe["timestamp"], utc=True, errors="coerce").dropna()
+        if timestamps.empty:
+            continue
+        first_bar_date = timestamps.min().date()
+        last_bar_date = timestamps.max().date()
+        common = {
+            "symbol": symbol,
+            "first_bar_date": first_bar_date.isoformat(),
+            "last_bar_date": last_bar_date.isoformat(),
+        }
+        if first_bar_date - requested_start > _DATE_RANGE_TOLERANCE:
+            warnings.append({**common, "issue": "starts_after_requested_window"})
+        if requested_end - last_bar_date > _DATE_RANGE_TOLERANCE:
+            warnings.append({**common, "issue": "ends_before_requested_window"})
+    return warnings

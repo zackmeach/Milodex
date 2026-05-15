@@ -210,15 +210,15 @@ Each universe manifest carries a `survivorship_corrected: bool` field declaring 
 
 **Remaining planned fix:** point-in-time membership reconstruction for `sp100_liquid` (99 stocks, ~20-30 constituent changes 2020-2024). This requires both the per-date membership data and ticker-aliasing infrastructure for mid-window ticker changes. Out of scope for the current PR; tracked as future Phase 1.5 hardening.
 
-**Operational mitigation:** the strict promotion gate (Sharpe > 0.5, max DD < 15%, ≥ 30 trades) is doing implicit survivorship-haircut work — strategies that barely clear the gate on biased data are likely below 0.0 in real expectation. Combined with the paper-stage validation requirement, real-money risk from this bias is bounded; the bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
+**Operational mitigation:** promotion is stage-aware. The paper-readiness gate is intentionally lighter because it only spends a paper-trading slot, while capital-stage gates remain strict (Sharpe > 0.5, max DD < 15%, and the strategy's configured trade-count floor). Strategies that barely clear a strict gate on biased data are likely below 0.0 in real expectation, so paper validation remains the buffer before capital is exposed. The bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
 
 ### Date-range truncation (provider history limit)
 
-A subtler bias: Alpaca's free IEX feed silently truncates requests for dates beyond the rolling history window (~5.75 years as of 2026). A request for `2020-01-01` returns bars starting from approximately `2020-07-27` with no error or warning. The `milodex data fetch-universe` CLI reports "100% coverage" because every requested *symbol* received some data — coverage is checked symbol-by-symbol, not date-by-date.
+A subtler bias: Alpaca's free IEX feed can silently truncate requests for dates beyond the rolling history window. A request for `2020-01-01` may return bars starting months later with no provider error. `milodex data fetch-universe` now reports both symbol coverage and date-range coverage so a cache cannot look complete merely because every requested *symbol* returned some data.
 
-This means evaluations nominally specified as "2020–2024" are in practice "2020-H2 through 2024." The bias is small (~0.5 of a year missing out of 5) and does not advantage any particular strategy class systematically, but it is worth knowing about when comparing run-to-run.
+Date-range diagnostics record first/last returned bar dates per symbol and warn when a symbol starts more than 7 calendar days after the requested `--start` or ends more than 7 calendar days before the requested `--end`. JSON output includes `requested_start`, `requested_end`, `date_range_warnings`, `symbols_with_full_date_range`, and `date_range_coverage_pct`; human output prints a compact warning list capped at 10 symbols.
 
-**Planned fix:** add a date-range coverage assertion to `milodex data fetch-universe` so a request that returns less than the requested window emits a warning (or hard error, configurable). Out of scope for the current PR; tracked as Phase 1.5 hardening.
+This is warning-only. It diagnoses fetch completeness without changing provider cache semantics or backtest execution. A future hard-error mode can be added if the warning signal proves useful and not noisy.
 
 ---
 

@@ -96,7 +96,10 @@ def add_trade_arguments(parser: argparse.ArgumentParser, *, require_paper_flag: 
         "--order-type",
         required=True,
         choices=tuple(ORDER_TYPE_CHOICES),
-        help="Order type.",
+        help=(
+            "Order type. Phase 1 execution supports market orders only; "
+            "non-market values return a structured unsupported-order error."
+        ),
     )
     parser.add_argument(
         "--time-in-force",
@@ -205,10 +208,17 @@ def performance_metrics_to_dict(m: PerformanceMetrics) -> dict[str, Any]:
     }
 
 
-def error_result(command: str, message: str, code: str = "error") -> CommandResult:
+def error_result(
+    command: str,
+    message: str,
+    code: str = "error",
+    *,
+    data: dict[str, Any] | None = None,
+) -> CommandResult:
     return CommandResult(
         command=command,
         status="error",
+        data={} if data is None else data,
         human_lines=[f"Error: {message}"],
         errors=[{"code": code, "message": message}],
     )

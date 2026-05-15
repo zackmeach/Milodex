@@ -42,9 +42,13 @@ strategy:
 """
 
 
-def _write_config(config_dir: Path, stage: str) -> Path:
+def _write_config(config_dir: Path, stage: str, *, min_trades_required: int = 30) -> Path:
     path = config_dir / "test_strategy.yaml"
-    path.write_text(_YAML.format(strategy_id=_STRATEGY_ID, stage=stage), encoding="utf-8")
+    content = _YAML.format(strategy_id=_STRATEGY_ID, stage=stage).replace(
+        "min_trades_required: 30",
+        f"min_trades_required: {min_trades_required}",
+    )
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -341,6 +345,9 @@ def _seed_meanrev_walk_forward_run(
     *,
     run_id: str,
     strategy_id: str,
+    sharpe: float = 0.327,
+    max_drawdown_pct: float = 6.41,
+    trade_count: int = 752,
 ) -> None:
     """Seed a walk-forward backtest run with meanrev's actual Phase 1 numbers.
 
@@ -369,10 +376,10 @@ def _seed_meanrev_walk_forward_run(
                 "walk_forward": True,
                 "oos_aggregate": {
                     "total_return_pct": 4.34,
-                    "sharpe": 0.327,
-                    "max_drawdown_pct": 6.41,
+                    "sharpe": sharpe,
+                    "max_drawdown_pct": max_drawdown_pct,
                     "trading_days": 752,
-                    "trade_count": 752,
+                    "trade_count": trade_count,
                 },
             },
         )
@@ -380,14 +387,11 @@ def _seed_meanrev_walk_forward_run(
     store.update_backtest_run_status(run_id, status="completed", ended_at=end + timedelta(days=1))
 
 
-def test_promotion_promote_refuses_meanrev_shape_evidence_through_cli(tmp_path):
-    """End-to-end honest-signal regression — through `milodex promotion promote`.
+def test_promotion_promote_accepts_paper_readiness_evidence_through_cli(tmp_path):
+    """End-to-end paper-readiness regression through `milodex promotion promote`.
 
-    Mirrors meanrev's 2026-04-26 reality: walk-forward Sharpe 0.327 (<0.50),
-    max DD 6.41% (<15.0), 752 trades (>=30). The CLI must refuse with a
-    Sharpe-specific reason, write nothing to the event store, and leave the
-    YAML stage unchanged. ADR 0023's "the platform refused to lie about
-    meanrev" thesis lives on this test.
+    Sharpe 0.327 is below the strict live-capital threshold, but positive
+    enough for paper observation when drawdown and trade count are healthy.
     """
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
@@ -408,33 +412,88 @@ def test_promotion_promote_refuses_meanrev_shape_evidence_through_cli(tmp_path):
             "--run-id",
             "bt-meanrev-truthful",
             "--recommendation",
-            "sub-threshold Sharpe; this should refuse",
+            "positive edge ready for paper observation",
             "--risk",
-            "promotion attempted on insufficient evidence",
+            "weak edge could decay during paper trading",
         ],
         tmp_path,
     )
 
-    assert exit_code != 0, (
-        "honest-signal regression: a walk-forward run with Sharpe 0.327 must "
-        "be refused at the promotion gate; passing here means the platform "
-        "lost the property ADR 0023 stands on"
-    )
-    err_text = err.getvalue()
-    assert "BLOCKED" in err_text, "human-facing refusal must surface as BLOCKED"
-    assert "Sharpe" in err_text, (
-        f"refusal must name Sharpe specifically (max DD and trade count both pass); "
-        f"got: {err_text!r}"
-    )
+    assert exit_code == 0, err.getvalue()
     store = EventStore(tmp_path / "data" / "milodex.db")
-    assert store.list_promotions() == [], (
-        "refused promotion must write no PromotionEvent; the audit trail is "
-        "preserved as 'no row' rather than 'rejected row' for now"
+    promotions = store.list_promotions()
+    assert len(promotions) == 1
+    assert promotions[0].to_stage == "paper"
+    assert promotions[0].promotion_type == "statistical"
+    assert store.list_strategy_manifests() != []
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_uses_configured_min_trades_required_for_paper(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest", min_trades_required=20)
+    _seed_meanrev_walk_forward_run(
+        tmp_path / "data" / "milodex.db",
+        run_id="bt-low-cadence-pass",
+        strategy_id=_STRATEGY_ID,
+        sharpe=0.66,
+        max_drawdown_pct=18.0,
+        trade_count=20,
     )
-    assert store.list_strategy_manifests() == [], (
-        "refused promotion must write no StrategyManifestEvent either; "
-        "manifest freezing is gated on a passing gate result"
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--run-id",
+            "bt-low-cadence-pass",
+            "--recommendation",
+            "weekly cadence has enough fills for paper",
+            "--risk",
+            "drawdown still needs paper monitoring",
+        ],
+        tmp_path,
     )
-    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8"), (
-        "YAML stage must remain at backtest when the gate refuses"
+
+    assert exit_code == 0, err.getvalue()
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_blocks_when_configured_trade_floor_not_met(tmp_path):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest", min_trades_required=30)
+    _seed_meanrev_walk_forward_run(
+        tmp_path / "data" / "milodex.db",
+        run_id="bt-low-cadence-block",
+        strategy_id=_STRATEGY_ID,
+        sharpe=0.66,
+        max_drawdown_pct=18.0,
+        trade_count=20,
     )
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--run-id",
+            "bt-low-cadence-block",
+            "--recommendation",
+            "weekly cadence under strict floor",
+            "--risk",
+            "trade evidence is sparse",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert "Trade count" in err.getvalue()
+    assert "30" in err.getvalue()
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")

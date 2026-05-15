@@ -746,11 +746,10 @@ _ACTION_INTENT_COPY: dict[str, str] = {
         "Stop the current operational session for this strategy. In Bench v1 this is preview-only."
     ),
     "initiate_backtest": (
-        "Request new backtest evidence for this strategy. In Bench v1 this is preview-only."
+        "Run canonical walk-forward backtest evidence for this strategy."
     ),
     "refresh_backtest": (
-        "Refresh aging or stale backtest evidence for this strategy. "
-        "In Bench v1 this is preview-only."
+        "Refresh aging or stale evidence with the canonical walk-forward backtest."
     ),
     "open_evidence": (
         "Open the read-only Evidence snapshot for this strategy. "
@@ -780,8 +779,8 @@ _ACTION_FUTURE_RECORD: dict[str, str] = {
     "return": "stage_return_event",
     "start_trading": "session_start_event",
     "stop_trading": "session_stop_event",
-    "initiate_backtest": "backtest_request_event",
-    "refresh_backtest": "backtest_refresh_event",
+    "initiate_backtest": "backtest_run",
+    "refresh_backtest": "backtest_run",
     "open_evidence": "evidence_view",
     "unknown": "—",
 }

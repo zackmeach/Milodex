@@ -6,10 +6,17 @@ and R-PRM-004 (regime-family exemption — operational evidence basis).
 
 from __future__ import annotations
 
+import argparse
 from datetime import date
+from unittest.mock import MagicMock
+
+import pandas as pd
 
 from milodex.backtesting.engine import BacktestResult
+from milodex.cli.commands import backtest as backtest_command
 from milodex.cli.commands.backtest import _build_backtest_result
+from milodex.data.models import BarSet
+from milodex.risk import RiskPolicy
 
 
 def _result(strategy_id: str, trade_count: int) -> BacktestResult:
@@ -39,6 +46,26 @@ def test_statistical_strategy_below_threshold_flagged_insufficient():
     assert any("insufficient evidence" in ln for ln in result.human_lines)
 
 
+def test_statistical_strategy_uses_configured_trade_floor_for_uncertainty():
+    result = _build_backtest_result(
+        _result("momentum.daily.dual_absolute.gem_weekly.v1", trade_count=20),
+        min_trade_count=20,
+    )
+
+    assert "uncertainty_label" not in result.data
+    assert not any("insufficient" in ln for ln in result.human_lines)
+
+
+def test_statistical_strategy_configured_trade_floor_appears_in_uncertainty_reason():
+    result = _build_backtest_result(
+        _result("momentum.daily.dual_absolute.gem_weekly.v1", trade_count=19),
+        min_trade_count=20,
+    )
+
+    assert result.data["uncertainty_label"] == "insufficient evidence"
+    assert "19 < 20" in result.data["uncertainty_reason"]
+
+
 def test_statistical_strategy_at_or_above_threshold_not_flagged():
     result = _build_backtest_result(
         _result("meanrev.daily.rsi2pullback.v1", trade_count=30),
@@ -63,3 +90,293 @@ def test_regime_strategy_exempt_even_at_high_trade_count():
     )
     assert result.data["evidence_basis"] == "operational"
     assert "uncertainty_label" not in result.data
+
+
+def test_backtest_cli_defaults_to_bypass_risk_policy():
+    captured = {}
+    ctx = MagicMock()
+
+    def get_engine(strategy_id, **kwargs):
+        captured["strategy_id"] = strategy_id
+        captured["kwargs"] = kwargs
+        engine = MagicMock()
+        engine.run.return_value = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+        return engine
+
+    ctx.get_backtest_engine = get_engine
+    args = _args(risk_policy="bypass")
+
+    result = backtest_command.run(args, ctx)
+
+    assert captured["kwargs"]["risk_policy"] is RiskPolicy.BYPASS
+    assert result.data["risk_policy"] == "bypass"
+    assert any("Risk policy:   bypass" in line for line in result.human_lines)
+
+
+def test_backtest_output_exposes_skipped_count():
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.skipped_count = 3
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["skipped_count"] == 3
+    assert any("Skipped orders: 3" in line for line in result.human_lines)
+
+
+def test_backtest_output_exposes_data_quality_report():
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.data_quality = {
+        "status": "pass_with_warnings",
+        "blocker_count": 0,
+        "warning_count": 2,
+        "issues": [],
+    }
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["data_quality"]["status"] == "pass_with_warnings"
+    assert any(
+        "Data quality:  pass with warnings (2 warning(s))" in line
+        for line in result.human_lines
+    )
+
+
+def test_backtest_output_exposes_run_manifest():
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.run_manifest = {
+        "schema_version": 1,
+        "strategy": {"config_hash": "abc123"},
+        "code": {"commit": "deadbeef", "dirty": False, "available": True},
+    }
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["run_manifest"]["schema_version"] == 1
+    assert result.data["run_manifest"]["strategy"]["config_hash"] == "abc123"
+
+
+def test_backtest_cli_passes_enforce_risk_policy():
+    captured = {}
+    ctx = MagicMock()
+
+    def get_engine(_strategy_id, **kwargs):
+        captured["kwargs"] = kwargs
+        engine = MagicMock()
+        engine.run.return_value = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+        engine.run.return_value.risk_policy = RiskPolicy.ENFORCE
+        return engine
+
+    ctx.get_backtest_engine = get_engine
+    args = _args(risk_policy="enforce")
+
+    result = backtest_command.run(args, ctx)
+
+    assert captured["kwargs"]["risk_policy"] is RiskPolicy.ENFORCE
+    assert result.data["risk_policy"] == "enforce"
+    assert any("Risk policy:   enforce" in line for line in result.human_lines)
+
+
+def test_backtest_parser_rejects_invalid_risk_policy():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    backtest_command.register(subparsers)
+
+    try:
+        parser.parse_args(
+            [
+                "backtest",
+                "meanrev.daily.rsi2pullback.v1",
+                "--start",
+                "2024-01-01",
+                "--end",
+                "2024-01-31",
+                "--risk-policy",
+                "definitely-not-a-policy",
+            ]
+        )
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover - argparse must exit for invalid choices
+        raise AssertionError("invalid --risk-policy value should be rejected")
+
+
+def test_walk_forward_cli_reuses_prefetched_bars(monkeypatch):
+    start = date(2024, 1, 2)
+    bars = {
+        "SPY": BarSet(
+            pd.DataFrame(
+                [
+                    {
+                        "timestamp": pd.Timestamp(start, tz="UTC") + pd.Timedelta(days=i),
+                        "open": 100.0,
+                        "high": 100.0,
+                        "low": 100.0,
+                        "close": 100.0,
+                        "volume": 1000,
+                        "vwap": 100.0,
+                    }
+                    for i in range(10)
+                ]
+            )
+        )
+    }
+    engine = MagicMock()
+    engine._loaded.config.backtest = {"walk_forward_windows": 1}
+    engine.prefetch_bars.return_value = bars
+    ctx = MagicMock()
+    ctx.get_backtest_engine.return_value = engine
+    captured = {}
+
+    def fake_run_walk_forward(*_args, **kwargs):
+        captured["all_bars"] = kwargs.get("all_bars")
+        from milodex.backtesting.walk_forward_runner import (
+            WalkForwardResult,
+            WalkForwardStability,
+        )
+
+        return WalkForwardResult(
+            run_id="wf-1",
+            strategy_id="meanrev.daily.rsi2pullback.v1",
+            start_date=start,
+            end_date=date(2024, 1, 11),
+            initial_equity=10_000.0,
+            train_days=5,
+            test_days=5,
+            step_days=5,
+            windows=[],
+            oos_trade_count=0,
+            oos_skipped_count=2,
+            oos_trading_days=0,
+            oos_total_return_pct=0.0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+            risk_policy=RiskPolicy.BYPASS,
+        )
+
+    monkeypatch.setattr(backtest_command, "run_walk_forward", fake_run_walk_forward)
+    args = _args(risk_policy="bypass")
+    args.walk_forward = True
+
+    backtest_command.run(args, ctx)
+
+    assert captured["all_bars"] is bars
+
+
+def test_walk_forward_output_exposes_skipped_count(monkeypatch):
+    from milodex.backtesting.walk_forward_runner import (
+        WalkForwardResult,
+        WalkForwardStability,
+    )
+
+    result = backtest_command._build_walk_forward_result(
+        WalkForwardResult(
+            run_id="wf-1",
+            strategy_id="meanrev.daily.rsi2pullback.v1",
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 1, 31),
+            initial_equity=10_000.0,
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            windows=[],
+            oos_trade_count=4,
+            oos_skipped_count=2,
+            oos_trading_days=10,
+            oos_total_return_pct=1.0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+            risk_policy=RiskPolicy.BYPASS,
+        )
+    )
+
+    assert result.data["oos_aggregate"]["skipped_count"] == 2
+    assert any("Skipped:     2" in line for line in result.human_lines)
+
+
+def test_walk_forward_output_exposes_data_quality_report():
+    from milodex.backtesting.walk_forward_runner import (
+        WalkForwardResult,
+        WalkForwardStability,
+    )
+
+    result = backtest_command._build_walk_forward_result(
+        WalkForwardResult(
+            run_id="wf-1",
+            strategy_id="meanrev.daily.rsi2pullback.v1",
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 1, 31),
+            initial_equity=10_000.0,
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            windows=[],
+            oos_trade_count=30,
+            oos_skipped_count=0,
+            oos_trading_days=10,
+            oos_total_return_pct=1.0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+            risk_policy=RiskPolicy.BYPASS,
+            data_quality={
+                "status": "pass",
+                "blocker_count": 0,
+                "warning_count": 0,
+                "issues": [],
+            },
+        )
+    )
+
+    assert result.data["data_quality"]["status"] == "pass"
+    assert any("Data quality:  pass" in line for line in result.human_lines)
+
+
+def test_walk_forward_output_exposes_run_manifest():
+    from milodex.backtesting.walk_forward_runner import (
+        WalkForwardResult,
+        WalkForwardStability,
+    )
+
+    result = backtest_command._build_walk_forward_result(
+        WalkForwardResult(
+            run_id="wf-1",
+            strategy_id="meanrev.daily.rsi2pullback.v1",
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 1, 31),
+            initial_equity=10_000.0,
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            windows=[],
+            oos_trade_count=30,
+            oos_skipped_count=0,
+            oos_trading_days=10,
+            oos_total_return_pct=1.0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+            risk_policy=RiskPolicy.BYPASS,
+            run_manifest={"schema_version": 1, "strategy": {"config_hash": "wf-hash"}},
+        )
+    )
+
+    assert result.data["run_manifest"]["strategy"]["config_hash"] == "wf-hash"
+
+
+def _args(*, risk_policy: str) -> argparse.Namespace:
+    return argparse.Namespace(
+        strategy_id="meanrev.daily.rsi2pullback.v1",
+        start="2024-01-01",
+        end="2024-01-31",
+        slippage=None,
+        initial_equity=10_000.0,
+        walk_forward=False,
+        run_id=None,
+        risk_policy=risk_policy,
+    )

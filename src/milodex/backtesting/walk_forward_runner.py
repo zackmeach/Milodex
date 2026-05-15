@@ -37,6 +37,8 @@ from milodex.analytics.metrics import (
 )
 from milodex.backtesting.walk_forward import WalkForwardSplitter
 from milodex.core.event_store import BacktestRunEvent
+from milodex.data.bar_quality import DataQualityError
+from milodex.risk import RiskPolicy
 
 if TYPE_CHECKING:
     from milodex.backtesting.engine import BacktestEngine
@@ -60,6 +62,7 @@ class WalkForwardWindow:
     max_drawdown_pct: float
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
     round_trip_count: int = 0
+    skipped_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,7 @@ class WalkForwardResult:
     step_days: int
     windows: list[WalkForwardWindow]
     oos_trade_count: int
+    oos_skipped_count: int
     oos_trading_days: int
     oos_total_return_pct: float
     oos_sharpe: float | None
@@ -100,6 +104,9 @@ class WalkForwardResult:
     stability: WalkForwardStability
     db_id: int | None = None
     oos_round_trip_count: int = 0
+    risk_policy: RiskPolicy = RiskPolicy.BYPASS
+    data_quality: dict = field(default_factory=dict)
+    run_manifest: dict = field(default_factory=dict)
 
 
 def compute_window_spans(
@@ -212,12 +219,17 @@ def run_walk_forward(
             status="running",
             slippage_pct=engine._slippage_pct,  # noqa: SLF001
             commission_per_trade=engine._commission,  # noqa: SLF001
-            metadata={"walk_forward": True, "windows_planned": len(window_dates)},
+            metadata={
+                "walk_forward": True,
+                "windows_planned": len(window_dates),
+                "risk_policy": engine.risk_policy.value,
+            },
         )
     )
 
     windows: list[WalkForwardWindow] = []
     try:
+        data_quality = engine._scan_data_quality(all_bars, start_date, end_date)  # noqa: SLF001
         for index, (tr_start, tr_end, te_start, te_end) in enumerate(window_dates):
             window_trading_days = [d for d in trading_days if te_start <= d <= te_end]
             if not window_trading_days:
@@ -244,6 +256,7 @@ def run_walk_forward(
                     test_end=te_end,
                     trading_days=len(window_trading_days),
                     trade_count=output.trade_count,
+                    skipped_count=output.skipped_count,
                     initial_equity=eq_start,
                     final_equity=output.final_equity,
                     total_return_pct=total_return_pct,
@@ -253,6 +266,22 @@ def run_walk_forward(
                     round_trip_count=output.round_trip_count,
                 )
             )
+    except DataQualityError as exc:
+        data_quality = exc.report.to_dict()
+        engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
+            effective_run_id,
+            metadata=engine._metadata_with_run_manifest(  # noqa: SLF001
+                effective_run_id,
+                start_date=start_date,
+                end_date=end_date,
+                initial_equity=eq_start,
+                data_quality=data_quality,
+            ),
+        )
+        engine._event_store.update_backtest_run_status(  # noqa: SLF001
+            effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)
+        )
+        raise
     except Exception:
         engine._event_store.update_backtest_run_status(  # noqa: SLF001
             effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)
@@ -261,6 +290,12 @@ def run_walk_forward(
 
     aggregate = _aggregate_oos(windows, eq_start)
     stability = _compute_stability(windows)
+    run_manifest = engine._build_run_manifest(  # noqa: SLF001
+        start_date=start_date,
+        end_date=end_date,
+        initial_equity=eq_start,
+        data_quality=data_quality,
+    )
 
     engine._event_store.update_backtest_run_status(  # noqa: SLF001
         effective_run_id, status="completed", ended_at=datetime.now(tz=UTC)
@@ -276,6 +311,7 @@ def run_walk_forward(
             "windows": [_window_to_dict(w) for w in windows],
             "oos_aggregate": {
                 "trade_count": aggregate.trade_count,
+                "skipped_count": aggregate.skipped_count,
                 "round_trip_count": aggregate.round_trip_count,
                 "trading_days": aggregate.trading_days,
                 "total_return_pct": aggregate.total_return_pct,
@@ -291,6 +327,9 @@ def run_walk_forward(
                 "windows_negative": stability.windows_negative,
                 "single_window_dependency": stability.single_window_dependency,
             },
+            "risk_policy": engine.risk_policy.value,
+            "data_quality": data_quality,
+            "run_manifest": run_manifest,
         },
     )
 
@@ -305,6 +344,7 @@ def run_walk_forward(
         step_days=step_days,
         windows=windows,
         oos_trade_count=aggregate.trade_count,
+        oos_skipped_count=aggregate.skipped_count,
         oos_trading_days=aggregate.trading_days,
         oos_total_return_pct=aggregate.total_return_pct,
         oos_sharpe=aggregate.sharpe,
@@ -313,12 +353,16 @@ def run_walk_forward(
         stability=stability,
         db_id=db_run_id,
         oos_round_trip_count=aggregate.round_trip_count,
+        risk_policy=engine.risk_policy,
+        data_quality=data_quality,
+        run_manifest=run_manifest,
     )
 
 
 @dataclass(frozen=True)
 class _OosAggregate:
     trade_count: int
+    skipped_count: int
     round_trip_count: int
     trading_days: int
     total_return_pct: float
@@ -339,6 +383,7 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
     if not windows:
         return _OosAggregate(
             trade_count=0,
+            skipped_count=0,
             round_trip_count=0,
             trading_days=0,
             total_return_pct=0.0,
@@ -360,6 +405,7 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
             stitched.append((day, running_equity))
             all_returns.append(r)
     trade_count = sum(w.trade_count for w in windows)
+    skipped_count = sum(w.skipped_count for w in windows)
     round_trip_count = sum(w.round_trip_count for w in windows)
     trading_days = sum(w.trading_days for w in windows)
     total_return_pct = (running_equity - initial_equity) / initial_equity * 100.0
@@ -367,6 +413,7 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
     max_dd, _ = max_drawdown_from_equity(stitched)
     return _OosAggregate(
         trade_count=trade_count,
+        skipped_count=skipped_count,
         round_trip_count=round_trip_count,
         trading_days=trading_days,
         total_return_pct=total_return_pct,
@@ -429,6 +476,7 @@ def _window_to_dict(window: WalkForwardWindow) -> dict:
         "test_end": window.test_end.isoformat(),
         "trading_days": window.trading_days,
         "trade_count": window.trade_count,
+        "skipped_count": window.skipped_count,
         "initial_equity": window.initial_equity,
         "final_equity": window.final_equity,
         "total_return_pct": window.total_return_pct,
