@@ -1,8 +1,16 @@
 # Bench command boundary
 
+> **Current submit-capable Bench actions (2026-05-15).** The GUI command
+> bridge can submit demotion / walk-back, freeze manifest, canonical
+> backtest evidence, and promote-to-paper. Start/stop paper runner controls
+> remain preview-only until their wiring PR lands. Promote-to-paper uses the
+> existing promotion governance path, requires operator recommendation and
+> known-risk text, uses the row's evidence run id, and sources `approved_by`
+> backend-side.
+
 **Scope:** Bench v1 implementation (PRs F–O, ADR 0049).
 **Audience:** Any contributor who looks at the Bench code and wonders whether a Bench action can be wired to a real command path.
-**Short answer:** No. Not without a new ADR and a new PR. This document explains why.
+**Short answer:** Only through the ADR 0051 command facade and bridge. Everything else stays preview-only.
 
 > **Forward pointer — ADR 0051 (Bench Command Infrastructure v1).** The successor program is named and architected in [ADR 0051](adr/0051-bench-command-infrastructure-v1.md). That ADR opens a narrow, named set of action families (backtest, freeze manifest, promote to paper, demote, start/stop paper runner) along a single Python facade at `src/milodex/commands/bench.py` and a Qt bridge under `src/milodex/gui/`. **Until each action family is actually wired in its own Phase C–F PR, ADR 0049 and this document remain the binding contract** for that family — preview-only, no submit, no broker call, no event-store write, no runner construction.
 >
@@ -12,10 +20,10 @@
 > * ADR 0051 command infrastructure exists: `src/milodex/commands/bench.py` ships `BenchCommandFacade` with six `propose_*` methods and `CommandProposal` / `CommandResult` / `Blocker` / `Precondition` dataclasses.
 > * **Demotion / walk-back (`submit_demote`) is the first end-to-end GUI-submit-capable action family (Phase C2).** Wiring chain: `BenchConfirmationModal → BenchCommandBridge → BenchCommandFacade → milodex.promotion.state_machine.demote` — the same governance callee the CLI uses. The GUI submit surface accepts only `to_stage="backtest"` (YAML stage-line is rewritten). `to_stage="disabled"` is refused by the facade when `gui_submit=True` with a `disabled_demote_not_gui_ready` blocker until runtime refusal of disabled strategies lands (`promotion.state_machine` slice 3); the CLI demote path keeps allowing ledger-only `disabled` unchanged. Re-validation happens at submit time so a drifted proposal is refused before dispatch.
 > * **Freeze-manifest (`submit_freeze_manifest`) is the second end-to-end GUI-submit-capable action family (Phase D1).** Wiring chain: `BenchConfirmationModal → BenchCommandBridge → BenchCommandFacade → milodex.promotion.manifest.freeze_manifest` — the same governance callee the CLI's `milodex promotion freeze` uses. The GUI submit surface honors the same stage eligibility as the CLI: a paper / micro_live / live strategy freezes; a backtest-stage strategy is refused with `stage_not_freezable` (matches the existing CLI behavior; no GUI-only carve-out). Stale-proposal revalidation runs at submit time. The freeze action has no reason input — the confirmation modal hides the OPERATOR INPUT section for `freeze_manifest`. Freeze is added to the Bench action menu for `_FREEZE_MANIFEST_STAGES` rows.
-> * **The Bench command bridge** is `src/milodex/gui/bench_command_bridge.py`. It is the only file under `src/milodex/gui/` permitted to import the facade. The bridge exposes exactly four Qt slots — `proposeDemote`, `submitDemote`, `proposeFreezeManifest`, `submitFreezeManifest` — and the introspection slot `submitCapableActionFamilies()` (which returns `["demote", "freeze_manifest"]` at Phase D1). No other action family is reachable from QML. The bridge imports PySide6; the facade does not. Operator identity (`approved_by` for demote, `frozen_by` for freeze) is sourced backend-side by a single `_resolve_operator_identity()` helper — QML does not decide identity; any such key in the QML payload is ignored.
-> * **The confirmation modal is action-aware.** For demote actions, it renders an inline reason input (required) and a "Confirm demotion" submit button. For freeze actions, it renders a "Confirm freeze" submit button with no reason input (freeze has no reason concept). For every other action family (Promote, Return, Start Trading, Stop Trading, Initiate Backtest, Refresh Backtest), the modal still renders the inert "Not wired in v1" primary and the `_COPY_DRAFT_BANNER` sentence — those copy strings remain in source verbatim. The "Bench v1 cannot submit it" wording is preserved for non-submit-capable actions and is not globally removed.
-> * **Promote-to-paper (`submit_promote_to_paper`) is backend-submit-capable but NOT yet reachable from the GUI (Phase D2).** The facade method routes through `milodex.promotion.state_machine.transition` — the same atomic governance callee `milodex promotion promote --to paper` uses. The CLI flags (`--recommendation`, `--risk`, `--run-id`, `--lifecycle-exempt`, `--approved-by`) map to `propose_promote_to_paper` kwargs; the submit re-validates, runs `check_gate`, assembles the evidence package, and dispatches to `transition()` which atomically writes manifest + promotion + YAML stage update. Gate failures, missing evidence, wrong source stage, missing run id, and unknown run ids are all surfaced as structured blockers. **GUI wiring lands in Phase D3.** The Bench bridge still exposes only `proposeDemote` / `submitDemote` / `proposeFreezeManifest` / `submitFreezeManifest`; `submitCapableActionFamilies()` still returns `["demote", "freeze_manifest"]`. `BenchConfirmationModal` continues to render the inert "Not wired in v1" primary for promote actions.
-> * **All remaining submit methods** (`submit_backtest`, `submit_start_paper_runner`, `submit_stop_paper_runner`) **remain Phase B stubs** that return a `not_submit_capable_phase_b` blocker. They will be wired one action family at a time per ADR 0051 §10 (Phases D3 → E → F).
+> * **The Bench command bridge** is `src/milodex/gui/bench_command_bridge.py`. It is the only file under `src/milodex/gui/` permitted to import the facade. The bridge exposes action-specific propose/submit slots for demote, freeze manifest, backtest, and promote-to-paper, plus the introspection slot `submitCapableActionFamilies()`. Runner start/stop remain absent from QML. Operator identity (`approved_by` / `frozen_by`) is sourced backend-side by `_resolve_operator_identity()` — QML does not decide identity.
+> * **The confirmation modal is action-aware.** Demote renders a required reason and "Confirm demotion"; freeze renders "Confirm freeze"; backtest renders "Run backtest"; promote-to-paper renders recommendation/risk inputs and "Confirm promotion." Return and runner controls still render the inert "Not wired in v1" primary and the non-submit-capable draft banner.
+> * **Promote-to-paper (`submit_promote_to_paper`) is end-to-end GUI-submit-capable (Phase D3).** The bridge exposes `proposePromoteToPaper` / `submitPromoteToPaper`, sources `approved_by` backend-side, and uses the same `milodex.promotion.state_machine.transition` governance callee as the CLI. The modal requires operator recommendation and known-risk text, passes the row's evidence run id, and surfaces gate, evidence, stale-stage, and unknown-run blockers from the facade.
+> * **All remaining runner submit methods** (`submit_start_paper_runner`, `submit_stop_paper_runner`) **remain Phase B stubs** that return a `not_submit_capable_phase_b` blocker. They will be wired one action family at a time per ADR 0051 §10.
 > * **QML still cannot mutate state directly.** No QML file imports the facade, calls a broker client, opens a runner, writes the event store, or edits YAML. The bridge is the command boundary. Forbidden tokens (`BenchState.demote`, `broker.`, `eventStore.`, `config.write`, `submitCommand`, `dispatchCommand`, `CommandProposal`) are still rejected by `test_bench_pr_n_no_mutation_token_drift` in every Bench QML file.
 > * **`_ADR_0051_COMMAND_INFRA_ALLOWLIST` remains at the same three entries as Phase C2.** Phase D1 reuses the existing bridge file (`src/milodex/gui/bench_command_bridge.py`); freeze slots use action-specific method names (`proposeFreezeManifest`, `submitFreezeManifest`) that do not match the forbidden patterns. No allowlist widening was required.
 
@@ -70,12 +78,11 @@ A **local, QML-only** composition of `evidencePacket + actionIntentPreview` rend
 
 - `source.kind == "local_ui_draft_preview"`
 - `source.authoritative is False`
-- `executable: false`
-- `wired: false`
-- `submissionState: "not_submittable_v1"`
-- `validationState: "not_validated_v1"`
+- `executable` / `wired` mirror whether the selected action family is currently submit-capable
+- `submissionState` / `validationState` distinguish submit-capable actions from preview-only actions
+- Preview-only actions still use `submissionState: "not_submittable_v1"` and `validationState: "not_validated_v1"`
 - Banner copy: `Milodex can render this draft for review, but Bench v1 cannot submit it.`
-- For every non-demote action family, the modal's primary button stays `Not wired in v1` with no MouseArea. The demote action family is the single Phase C2 exception: a "Confirm demotion" submit MouseArea routes through `BenchCommandBridge.proposeDemote` / `submitDemote`, and the GUI submit path refuses `to_stage="disabled"` with a structured blocker.
+- For preview-only action families, the modal's primary button stays `Not wired in v1` with no MouseArea. Submit-capable action families route through `BenchCommandBridge` action-specific propose/submit slots.
 
 **What the Command Draft Preview is NOT:** a `CommandProposal`, a submit handler, a dispatch path, a risk-approved payload, a backend integration point.
 
@@ -96,7 +103,7 @@ Any future move from "preview" to "submit" must:
 - **This document** — the data-shape walkthrough that operators and contributors can read.
 - **Forbidden-token tests** in `tests/milodex/gui/test_qml_load_smoke.py` — narrow, intentional, and named for the PR that introduced each token.
 - **No-command-key walkers** in `tests/milodex/gui/test_read_models.py` — recurse the Evidence Packet and Action Intent Preview at every depth and reject command/proposal/broker/eventStore keys.
-- **`executable: false` / `wired: false` invariants** — checked in Python tests (preview) and grepped in QML tests (draft).
-- **A pinned, inert "Not wired in v1" primary button** — guarded by tests that reject `onSubmit`, `submitDraft`, `submit(`, `dispatch(`, `executeDraft`.
+- **Action-aware `executable` / `wired` invariants** — read-model previews remain non-executable, while the QML draft mirrors the selected action family's submit capability.
+- **A pinned, inert "Not wired in v1" primary button for preview-only actions** — guarded by tests that reject generic `onSubmit`, `submitDraft`, `submit(`, `dispatch(`, `executeDraft`.
 
 If you find yourself disabling or weakening any of the above, stop. Open a new ADR first.

@@ -1651,7 +1651,7 @@ def test_submit_promote_to_paper_threads_approved_by_from_inputs(
     assert promotions[0].approved_by == "operator-cli-override"
 
 
-def test_submit_promote_to_paper_does_not_widen_bench_bridge_surface(
+def test_submit_promote_to_paper_is_exposed_by_bench_bridge(
     tmp_path: Path,
 ) -> None:
     """Phase D2 is backend-only. The Bench bridge must NOT yet expose
@@ -1663,11 +1663,8 @@ def test_submit_promote_to_paper_does_not_widen_bench_bridge_surface(
     members = {
         name for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)
     }
-    for forbidden in ("proposePromoteToPaper", "submitPromoteToPaper"):
-        assert forbidden not in members, (
-            f"BenchCommandBridge must not expose {forbidden} until Phase D3. "
-            "submit_promote_to_paper is backend-only at Phase D2."
-        )
+    assert "proposePromoteToPaper" in members
+    assert "submitPromoteToPaper" in members
 
     # Minimal facade against tmpdir for the introspection check.
     cfg = tmp_path / "configs"
@@ -1682,6 +1679,7 @@ def test_submit_promote_to_paper_does_not_widen_bench_bridge_surface(
         ACTION_FAMILY_DEMOTE,
         ACTION_FAMILY_FREEZE_MANIFEST,
         ACTION_FAMILY_BACKTEST,
+        ACTION_FAMILY_PROMOTE_TO_PAPER,
     ]
 
 

@@ -69,16 +69,21 @@ Item {
         "refresh_backtest": true
     })
     readonly property string _currentActionKind: _actionKind(actionData)
-    readonly property bool _isSubmitCapable: !!_submitCapableKinds[_currentActionKind]
     readonly property bool _isDemoteSubmit: _currentActionKind === "demote"
     readonly property bool _isFreezeManifestSubmit: _currentActionKind === "freeze_manifest"
     readonly property bool _isBacktestSubmit: _currentActionKind === "initiate_backtest"
                                             || _currentActionKind === "refresh_backtest"
+    readonly property bool _isPromoteToPaperSubmit: _currentActionKind === "promote"
+                                                  && ((actionData && actionData.targetStage) || "") === "paper"
+    readonly property bool _isSubmitCapable: !!_submitCapableKinds[_currentActionKind]
+                                             || _isPromoteToPaperSubmit
 
     // Reason text the operator types into the inline input when the action
     // is submit-capable. The submit button is gated on non-blank reason so
     // the audit record always carries one.
     property string _reasonText: ""
+    property string _recommendationText: ""
+    property string _knownRiskText: ""
     property bool   _submitInFlight: false
     property string _submitErrorMessage: ""
 
@@ -163,6 +168,8 @@ Item {
             // starts with an empty reason input and no stale error string.
             // The reason input is only visible when _isSubmitCapable.
             root._reasonText = ""
+            root._recommendationText = ""
+            root._knownRiskText = ""
             root._submitErrorMessage = ""
             root._submitInFlight = false
             forceActiveFocus()
@@ -352,6 +359,68 @@ Item {
         root.closeRequested()
     }
 
+    // ------------------------------------------------------------------
+    // Promote-to-paper submit.
+    //
+    // QML supplies only operator-authored evidence text and the current
+    // evidence run id. The bridge supplies approved_by; the facade owns
+    // gate checks, manifest writes, YAML stage mutation, and blocker shape.
+    // ------------------------------------------------------------------
+    function _dispatchPromoteToPaperSubmit() {
+        if (!root._isPromoteToPaperSubmit) return
+        if (root._submitInFlight) return
+
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        var runId = (root.rowData && root.rowData.evidenceRunId) || ""
+        var recommendation = root._recommendationText
+        var knownRisk = root._knownRiskText
+        if (!strategyId || !recommendation || !recommendation.trim().length
+                || !knownRisk || !knownRisk.trim().length) {
+            root._submitErrorMessage = "Recommendation and known risk are required before promotion."
+            return
+        }
+
+        root._submitErrorMessage = ""
+        root._submitInFlight = true
+
+        var proposal = BenchCommandBridge.proposePromoteToPaper({
+            "strategy_id": strategyId,
+            "recommendation": recommendation,
+            "known_risk": knownRisk,
+            "run_id": runId,
+            "lifecycle_exempt": false
+        })
+
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return
+        }
+
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root.submitBlocked(proposal.blockers)
+            return
+        }
+
+        var result = BenchCommandBridge.submitPromoteToPaper(proposal.proposal_id)
+        root._submitInFlight = false
+
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
+    }
+
     // Top-level dispatcher: routes the submit button click to the right
     // action-family dispatch function. Adding a new submit-capable action
     // family means adding one branch here and one entry in
@@ -363,6 +432,8 @@ Item {
             _dispatchFreezeManifestSubmit()
         } else if (root._isBacktestSubmit) {
             _dispatchBacktestSubmit()
+        } else if (root._isPromoteToPaperSubmit) {
+            _dispatchPromoteToPaperSubmit()
         }
     }
 
@@ -872,6 +943,93 @@ Item {
                 }
             }
 
+            SectionLabel {
+                visible: root._isPromoteToPaperSubmit
+                label: "OPERATOR EVIDENCE"
+                ordinal: "08"
+            }
+
+            ProseBlock {
+                visible: root._isPromoteToPaperSubmit
+                text: "Promotion to paper records the operator recommendation and known risk alongside the selected backtest evidence run."
+            }
+
+            Rectangle {
+                visible: root._isPromoteToPaperSubmit
+                width: parent.width
+                implicitHeight: recommendationField.implicitHeight + Theme.space[3] * 2
+                color: Theme.color.surface.raised
+                border.color: recommendationField.activeFocus ? Theme.color.text.primary : Theme.color.border.subtle
+                border.width: 1
+                radius: Theme.radius.md
+
+                TextInput {
+                    id: recommendationField
+                    anchors.fill: parent
+                    anchors.margins: Theme.space[3]
+                    text: root._recommendationText
+                    color: Theme.color.text.primary
+                    selectByMouse: true
+                    selectionColor: Theme.color.text.primary
+                    selectedTextColor: Theme.color.surface.base
+                    clip: true
+                    font.family:    Theme.typography.data.xs.family
+                    font.pixelSize: Theme.typography.data.xs.size
+                    font.features:  Theme.typography.data.xs.features
+                    onTextChanged: root._recommendationText = text
+
+                    Text {
+                        visible: recommendationField.text.length === 0
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Recommendation required"
+                        color: Theme.color.text.disabled
+                        font.family:    Theme.typography.data.xs.family
+                        font.pixelSize: Theme.typography.data.xs.size
+                        font.features:  Theme.typography.data.xs.features
+                        font.italic: true
+                    }
+                }
+            }
+
+            Rectangle {
+                visible: root._isPromoteToPaperSubmit
+                width: parent.width
+                implicitHeight: riskField.implicitHeight + Theme.space[3] * 2
+                color: Theme.color.surface.raised
+                border.color: riskField.activeFocus ? Theme.color.text.primary : Theme.color.border.subtle
+                border.width: 1
+                radius: Theme.radius.md
+
+                TextInput {
+                    id: riskField
+                    anchors.fill: parent
+                    anchors.margins: Theme.space[3]
+                    text: root._knownRiskText
+                    color: Theme.color.text.primary
+                    selectByMouse: true
+                    selectionColor: Theme.color.text.primary
+                    selectedTextColor: Theme.color.surface.base
+                    clip: true
+                    font.family:    Theme.typography.data.xs.family
+                    font.pixelSize: Theme.typography.data.xs.size
+                    font.features:  Theme.typography.data.xs.features
+                    onTextChanged: root._knownRiskText = text
+
+                    Text {
+                        visible: riskField.text.length === 0
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        text: "Known risk required"
+                        color: Theme.color.text.disabled
+                        font.family:    Theme.typography.data.xs.family
+                        font.pixelSize: Theme.typography.data.xs.size
+                        font.features:  Theme.typography.data.xs.features
+                        font.italic: true
+                    }
+                }
+            }
+
             Text {
                 visible: root._isSubmitCapable && root._submitErrorMessage.length > 0
                 width: parent.width
@@ -1014,6 +1172,7 @@ Item {
                     anchors.centerIn: parent
                     text: {
                         if (root._submitInFlight) return "Submitting…"
+                        if (root._isPromoteToPaperSubmit) return "Confirm promotion"
                         if (root._isBacktestSubmit) return "Run backtest"
                         if (root._isFreezeManifestSubmit) return "Confirm freeze"
                         return "Confirm demotion"
@@ -1038,6 +1197,9 @@ Item {
                     enabled: !root._submitInFlight
                              && (root._isFreezeManifestSubmit
                                  || root._isBacktestSubmit
+                                 || (root._isPromoteToPaperSubmit
+                                     && root._recommendationText.trim().length > 0
+                                     && root._knownRiskText.trim().length > 0)
                                  || root._reasonText.trim().length > 0)
                     onClicked: root._dispatchSubmit()
                 }
