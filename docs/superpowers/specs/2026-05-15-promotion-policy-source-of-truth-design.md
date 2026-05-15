@@ -91,7 +91,12 @@ enforce it; the non-enforcement is recorded as a named, tracked gap.
   - statistical → delegates to
     `ACTIVE_PROMOTION_POLICY.evaluate_research_target(...)`, returning the
     `PromotionCheckResult` it produces.
-  - `check_gate`'s signature, keyword args, and return type are unchanged.
+  - `check_gate`'s signature, keyword args, and return type are unchanged
+    **except** the `min_trade_count` default expression: today it is
+    `= MIN_TRADES` (the constant being removed). Post-move it derives the
+    same value from the active policy (e.g. a module-level
+    `_DEFAULT_MIN_TRADES = ACTIVE_PROMOTION_POLICY.default_trade_floor`, value
+    `30`) so the default-arg behavior is identical and no caller changes.
 - Re-export `PromotionCheckResult` from `policy.py` for import-path stability.
 - `validate_stage_transition()`, `transition()`, `demote()`, `STAGE_ORDER`,
   `PHASE_ONE_BLOCKED_STAGES` — **unchanged**. Structural invariants stay code-side.
@@ -183,6 +188,7 @@ Do not:
 ## Deliverable
 
 One cohesive, reviewable PR: `promotion/policy.py` + `state_machine.py` seam +
-characterization/unit tests + ADR 0052 + the four documentation edits. No
-production behavior change to verify; correctness is proven by the
-characterization test.
+characterization/unit tests + **ADR 0052 (newly authored)** + the **four
+documentation edits** (`SRS.md` pointer, `CLAUDE.md` rewrite,
+`STRATEGY_BANK.md` note, `PROMOTION_GOVERNANCE.md` pointer). No production
+behavior change to verify; correctness is proven by the characterization test.
