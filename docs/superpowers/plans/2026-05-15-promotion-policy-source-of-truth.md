@@ -16,19 +16,36 @@
 
 ## Behavior-preservation contract (read before starting)
 
-The proof of "no behavior change" is: **`tests/milodex/promotion/test_state_machine.py` and `tests/milodex/promotion/test_transition.py` pass with ZERO edits after the refactor.** Those suites already exercise `check_gate` across the tier/boundary/None/lifecycle-exempt/custom-floor matrix. If a step requires editing them, the refactor is wrong — stop and reconsider.
+**Constant-handling rule (operator-directed, scope-binding):** "Remove the
+constants from `state_machine.py` as **independent literals**. Recreate them as
+**policy-derived compatibility aliases**, either in `state_machine.py` or via
+`promotion/__init__.py`, so all public imports remain stable. The only
+canonical values live in `PHASE1_GOVERNANCE_V1`." Deleting these names outright
+would break public call sites and convert this from a behavior-preserving
+consolidation into an API-shape change — out of approved scope.
 
-Public symbols that MUST keep resolving with identical values (verified importers):
-- `from milodex.promotion.state_machine import PromotionCheckResult, check_gate, validate_stage_transition, STAGE_ORDER`
-- `from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES` — used by `gui/read_models.py:35`, `gui/strategy_bank_state.py:85`
-- `from milodex.promotion import MIN_SHARPE, PAPER_MIN_SHARPE, ...` — `promotion/__init__.py.__all__`
+**Test-harness sequencing:** the existing `tests/milodex/promotion/test_state_machine.py`
+gate suite IS the primary characterization harness. First keep it (and
+`test_transition.py`) **green and unedited** after the refactor — that is the
+proof of no behavior change. Only then *add* policy-specific tests around the
+new module and the lifecycle-gate descriptor (`test_policy.py`). Never edit the
+existing suites to make them pass; if they fail, the refactor is wrong.
 
-Current values (the invariants the characterization locks): `MIN_SHARPE=0.5`, `MAX_DRAWDOWN_PCT=15.0`, `MIN_TRADES=30`, `PAPER_MIN_SHARPE=0.0`, `PAPER_MAX_DRAWDOWN_PCT=25.0`.
+Public symbols that MUST keep resolving with identical values — full grounded
+call-site set (`grep` of `--include=*.py` across repo, non-test consumers):
+- `gui/read_models.py:35` — `from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES`
+- `gui/strategy_bank_state.py:85` — same three
+- `scripts/counterfactual_gate.py` — references the constants
+- `cli/commands/backtest.py`, `commands/bench.py` — promotion-symbol consumers
+- `promotion/__init__.py` — re-exports all five in `__all__`
+- plus `from milodex.promotion.state_machine import PromotionCheckResult, check_gate, validate_stage_transition, STAGE_ORDER`
+
+Current values (the invariants the characterization locks): `MIN_SHARPE=0.5`, `MAX_DRAWDOWN_PCT=15.0`, `MIN_TRADES=30`, `PAPER_MIN_SHARPE=0.0`, `PAPER_MAX_DRAWDOWN_PCT=25.0`. After the refactor these are aliases of `PHASE1_GOVERNANCE_V1.capital_gate.min_sharpe`, `.capital_gate.max_drawdown_pct`, `.default_trade_floor`, `.paper_gate.min_sharpe`, `.paper_gate.max_drawdown_pct` respectively.
 
 ## File Structure
 
 - **Create** `src/milodex/promotion/policy.py` — typed SoT: `GateThresholds`, `PromotionCheckResult` (moved here), `LifecycleGateDefinition`, `PromotionPolicy`, `PHASE1_GOVERNANCE_V1`, `ACTIVE_PROMOTION_POLICY`, `_fmt_or_none`.
-- **Modify** `src/milodex/promotion/state_machine.py` — delete the 5 literal constants + `_thresholds_for_stage`; re-export `PromotionCheckResult` from policy; constants become policy-derived aliases; `check_gate` delegates to the policy; fix docstring SRS citations. `validate_stage_transition`, `transition`, `demote`, `STAGE_ORDER`, `PHASE_ONE_BLOCKED_STAGES` untouched.
+- **Modify** `src/milodex/promotion/state_machine.py` — remove the 5 constants *as independent literals* and recreate them as policy-derived compatibility aliases (names + values preserved); delete `_thresholds_for_stage`; re-export `PromotionCheckResult` from policy; `check_gate` delegates to the policy; fix docstring SRS citations. `validate_stage_transition`, `transition`, `demote`, `STAGE_ORDER`, `PHASE_ONE_BLOCKED_STAGES` untouched.
 - **Modify** `src/milodex/promotion/__init__.py` — repoint imports to surviving names (values identical); `__all__` unchanged.
 - **Create** `tests/milodex/promotion/test_policy.py` — unit tests for the policy object.
 - **Create** `docs/adr/0052-promotion-policy-is-a-typed-governance-source-of-truth.md`.
@@ -67,10 +84,10 @@ def test_active_policy_is_phase1_governance_v1() -> None:
 
 def test_phase1_values_match_legacy_constants() -> None:
     p = PHASE1_GOVERNANCE_V1
-    assert p.paper_tier.min_sharpe == 0.0
-    assert p.paper_tier.max_drawdown_pct == 25.0
-    assert p.capital_tier.min_sharpe == 0.5
-    assert p.capital_tier.max_drawdown_pct == 15.0
+    assert p.paper_gate.min_sharpe == 0.0
+    assert p.paper_gate.max_drawdown_pct == 25.0
+    assert p.capital_gate.min_sharpe == 0.5
+    assert p.capital_gate.max_drawdown_pct == 15.0
     assert p.default_trade_floor == 30
 
 
@@ -81,7 +98,7 @@ def test_lifecycle_gate_is_defined_but_not_enforced() -> None:
     assert len(gate.criteria) == 3
 
 
-def test_evaluate_paper_tier_passing() -> None:
+def test_evaluate_paper_gate_passing() -> None:
     r = PHASE1_GOVERNANCE_V1.evaluate_research_target(
         sharpe_ratio=0.1, max_drawdown_pct=20.0, trade_count=30,
         target_stage="paper", min_trade_count=30,
@@ -92,7 +109,7 @@ def test_evaluate_paper_tier_passing() -> None:
     assert r.failures == []
 
 
-def test_evaluate_paper_tier_sharpe_boundary_is_exclusive() -> None:
+def test_evaluate_paper_gate_sharpe_boundary_is_exclusive() -> None:
     # Sharpe must be > min; exactly 0.0 fails on the paper tier.
     r = PHASE1_GOVERNANCE_V1.evaluate_research_target(
         sharpe_ratio=0.0, max_drawdown_pct=20.0, trade_count=30,
@@ -102,7 +119,7 @@ def test_evaluate_paper_tier_sharpe_boundary_is_exclusive() -> None:
     assert r.failures == ["Sharpe 0.0 must be > 0.0 (got 0.0)"]
 
 
-def test_evaluate_capital_tier_thresholds() -> None:
+def test_evaluate_capital_gate_thresholds() -> None:
     r = PHASE1_GOVERNANCE_V1.evaluate_research_target(
         sharpe_ratio=0.4, max_drawdown_pct=10.0, trade_count=30,
         target_stage="micro_live", min_trade_count=30,
@@ -215,16 +232,16 @@ class PromotionPolicy:
     """The typed gate-decision policy. Frozen; one named instance per ADR."""
 
     name: str
-    paper_tier: GateThresholds
-    capital_tier: GateThresholds
+    paper_gate: GateThresholds
+    capital_gate: GateThresholds
     default_trade_floor: int
     lifecycle_gate: LifecycleGateDefinition
 
     def _thresholds_for_stage(self, target_stage: str) -> GateThresholds:
         if target_stage == STAGE_PAPER:
-            return self.paper_tier
+            return self.paper_gate
         if target_stage in CAPITAL_STAGES:
-            return self.capital_tier
+            return self.capital_gate
         # The valid-stage list is kept as a deliberate byte-identical literal
         # matching state_machine.STAGE_ORDER's f-string repr, so the error
         # text does not silently desync if STAGE_ORDER is ever reordered, and
@@ -282,8 +299,8 @@ class PromotionPolicy:
 
 PHASE1_GOVERNANCE_V1 = PromotionPolicy(
     name="phase1_governance_v1",
-    paper_tier=GateThresholds(min_sharpe=0.0, max_drawdown_pct=25.0),
-    capital_tier=GateThresholds(min_sharpe=0.5, max_drawdown_pct=15.0),
+    paper_gate=GateThresholds(min_sharpe=0.0, max_drawdown_pct=25.0),
+    capital_gate=GateThresholds(min_sharpe=0.5, max_drawdown_pct=15.0),
     default_trade_floor=30,
     lifecycle_gate=LifecycleGateDefinition(
         criteria=(
@@ -355,11 +372,11 @@ with:
 # public (re-exported by promotion/__init__.py; imported by gui/read_models.py
 # and gui/strategy_bank_state.py) so they are retained as policy-derived
 # aliases, not deleted — values are identical.
-MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.capital_tier.min_sharpe
-MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.capital_tier.max_drawdown_pct
+MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.capital_gate.min_sharpe
+MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.capital_gate.max_drawdown_pct
 MIN_TRADES: int = ACTIVE_PROMOTION_POLICY.default_trade_floor
-PAPER_MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.paper_tier.min_sharpe
-PAPER_MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.paper_tier.max_drawdown_pct
+PAPER_MIN_SHARPE: float = ACTIVE_PROMOTION_POLICY.paper_gate.min_sharpe
+PAPER_MAX_DRAWDOWN_PCT: float = ACTIVE_PROMOTION_POLICY.paper_gate.max_drawdown_pct
 ```
 
 - [ ] **Step 3: Edit `state_machine.py` imports — add policy import, delete dataclass import**
