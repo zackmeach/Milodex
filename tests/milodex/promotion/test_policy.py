@@ -97,3 +97,19 @@ def test_evaluate_unknown_stage_raises() -> None:
             target_stage="banana",
             min_trade_count=30,
         )
+
+
+def test_unknown_stage_message_is_pinned_verbatim() -> None:
+    import pytest
+
+    with pytest.raises(ValueError) as excinfo:
+        PHASE1_GOVERNANCE_V1.evaluate_research_target(
+            sharpe_ratio=1.0,
+            max_drawdown_pct=1.0,
+            trade_count=99,
+            target_stage="banana",
+            min_trade_count=30,
+        )
+    assert str(excinfo.value) == (
+        "Unknown to_stage 'banana'. Valid stages: ['backtest', 'paper', 'micro_live', 'live']."
+    )
