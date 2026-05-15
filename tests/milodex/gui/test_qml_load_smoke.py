@@ -217,15 +217,15 @@ def test_main_qml_loads_clean() -> None:
 
 
 def test_bench_command_bridge_resolves_in_qml() -> None:
-    """ADR 0051 Phase C2 review F1 (updated for Phase D1): the QML engine
+    """ADR 0051 Phase C2 review F1 (updated for Bench backtest submit): the QML engine
     must resolve ``Milodex.BenchCommandBridge`` and its slot return must
     round-trip.
 
     A probe QML component imports ``Milodex 1.0`` and binds
     ``submitCapableActionFamilies()`` to a property. If the singleton is not
     registered, QML emits a warning at component creation; if registration
-    succeeded, the property reads ``["demote", "freeze_manifest"]`` at Phase
-    D1. Either failure exits the subprocess non-zero.
+    succeeded, the property includes the current submit-capable Bench actions.
+    Either failure exits the subprocess non-zero.
     """
     probe_qml = (
         "import QtQuick\n"
@@ -260,7 +260,7 @@ def test_bench_command_bridge_resolves_in_qml() -> None:
         "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
         "    sys.exit(4)\n"
         "families = obj.property('families')\n"
-        "if list(families) != ['demote', 'freeze_manifest']:\n"
+        "if list(families) != ['demote', 'freeze_manifest', 'backtest']:\n"
         "    print(f'UNEXPECTED_FAMILIES: {families!r}', file=sys.stderr)\n"
         "    sys.exit(5)\n"
         "print('PROBE_OK')\n"
