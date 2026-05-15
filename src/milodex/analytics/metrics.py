@@ -330,16 +330,23 @@ def _max_drawdown_stats(equity_curve: list[tuple[date, float]]) -> tuple[float, 
     return max_dd, duration
 
 
+# Constant (flat-equity) returns produce a variance of float round-off
+# noise (~1e-28), not exactly 0.0, so a bare `variance > 0` guard lets a
+# ~1e16 Sharpe through. Any real daily-return series has variance well
+# above this floor (a 1bp daily std is already 1e-8), so treating
+# anything below it as zero-variance is safe and collapses the noise.
+_VARIANCE_EPSILON = 1e-12
+
+
 def _sharpe(daily_returns: list[float], risk_free_daily: float = 0.0) -> float | None:
     if len(daily_returns) < 2:
         return None
     n = len(daily_returns)
     mean = sum(daily_returns) / n - risk_free_daily
     variance = sum((r - mean) ** 2 for r in daily_returns) / (n - 1)
-    std = math.sqrt(variance) if variance > 0 else 0.0
-    if std == 0.0:
+    if variance < _VARIANCE_EPSILON:
         return None
-    return (mean / std) * math.sqrt(252)
+    return (mean / math.sqrt(variance)) * math.sqrt(252)
 
 
 def _sortino(daily_returns: list[float], risk_free_daily: float = 0.0) -> float | None:
@@ -351,10 +358,9 @@ def _sortino(daily_returns: list[float], risk_free_daily: float = 0.0) -> float 
     if not downside:
         return None
     downside_var = sum(r**2 for r in downside) / len(downside)
-    downside_std = math.sqrt(downside_var) if downside_var > 0 else 0.0
-    if downside_std == 0.0:
+    if downside_var < _VARIANCE_EPSILON:
         return None
-    return (mean / downside_std) * math.sqrt(252)
+    return (mean / math.sqrt(downside_var)) * math.sqrt(252)
 
 
 def _trade_stats(
