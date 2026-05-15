@@ -110,6 +110,11 @@ def _create_db(path: Path) -> None:
             daily_pnl REAL NOT NULL,
             positions_json TEXT NOT NULL
         );
+        CREATE TABLE trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT,
+            source TEXT NOT NULL
+        );
         CREATE TABLE orchestration_batches (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             batch_id TEXT NOT NULL UNIQUE,
@@ -529,6 +534,8 @@ def test_kanban_snapshot_derives_session_state_from_strategy_runs(tmp_path: Path
         """,
         (strategy_id,),
     )
+    conn.execute("INSERT INTO trades (session_id, source) VALUES ('session-1', 'paper')")
+    conn.execute("INSERT INTO trades (session_id, source) VALUES ('session-1', 'paper')")
     conn.commit()
     conn.close()
 
@@ -537,6 +544,42 @@ def test_kanban_snapshot_derives_session_state_from_strategy_runs(tmp_path: Path
     assert card["sessionState"] == "running"
     assert card["sessionId"] == "session-1"
     assert card["sessionDetail"] == "session active"
+    assert card["paperEvidence"]["status"] == "running"
+    assert card["paperEvidence"]["tradeCount"] == 2
+    assert card["evidencePacket"]["paperEvidence"]["sessionId"] == "session-1"
+
+
+def test_bench_snapshot_marks_controlled_stop_paper_evidence_completed(
+    tmp_path: Path,
+) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO strategy_runs (
+            session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json
+        )
+        VALUES ('session-2', ?, '2026-05-09T12:00:00+00:00',
+                '2026-05-09T12:30:00+00:00', 'controlled_stop', '{}')
+        """,
+        (strategy_id,),
+    )
+    conn.execute("INSERT INTO trades (session_id, source) VALUES ('session-2', 'paper')")
+    conn.commit()
+    conn.close()
+
+    card = build_bench_snapshot(db, configs)["sections"][2]["strategies"][0]
+
+    assert card["paperEvidence"]["status"] == "completed"
+    assert card["paperEvidence"]["exitReason"] == "controlled_stop"
+    assert card["paperEvidence"]["tradeCount"] == 1
 
 
 def test_kanban_snapshot_surfaces_queued_orchestration_job_activity(tmp_path: Path) -> None:
@@ -724,10 +767,11 @@ def test_bench_pr_m_evidence_packet_keys_are_stable(tmp_path: Path) -> None:
         "metrics",
         "evidence",
         "gate",
-        "status",
-        "session",
-        "job",
-    }
+            "status",
+            "session",
+            "paperEvidence",
+            "job",
+        }
     assert set(packet["source"].keys()) == {"kind", "authoritative", "note"}
     assert set(packet["metrics"].keys()) == {"sharpe", "maxDrawdownPct", "tradeCount"}
     assert set(packet["evidence"].keys()) == {
@@ -877,8 +921,22 @@ def test_bench_pr_n_action_preview_present_on_every_action(tmp_path: Path) -> No
         )
         preview = action["actionIntentPreview"]
         assert preview["schemaVersion"] == 1
-        assert preview["executable"] is False, "PR N must keep executable=False"
-        assert preview["wired"] is False, "PR N must keep wired=False"
+        submit_capable = preview["actionKind"] in {
+            "demote",
+            "freeze_manifest",
+            "initiate_backtest",
+            "refresh_backtest",
+            "start_trading",
+            "stop_trading",
+        } or (
+            preview["actionKind"] == "promote" and preview["targetStage"] == "paper"
+        )
+        if submit_capable:
+            assert preview["executable"] is True
+            assert preview["wired"] is True
+        else:
+            assert preview["executable"] is False
+            assert preview["wired"] is False
 
 
 def test_bench_pr_n_action_preview_keys_are_stable(tmp_path: Path) -> None:
@@ -943,9 +1001,9 @@ def test_bench_pr_n_action_preview_source_contract(tmp_path: Path) -> None:
         assert source["kind"] == "gui_read_model_preview"
         assert source["authoritative"] is False
         note = source["note"]
-        assert "No command is submitted" in note
-        assert "no event is written" in note
-        assert "no state is changed" in note
+        assert "display metadata" in note
+        assert "Bench command bridge" in note
+        assert "before state changes" in note
 
 
 def test_bench_pr_n_action_preview_kind_classification(tmp_path: Path) -> None:
@@ -975,6 +1033,7 @@ def test_bench_pr_n_action_preview_kind_classification(tmp_path: Path) -> None:
         "Stop Trading": "stop_trading",
         "Initiate Backtest": "initiate_backtest",
         "Refresh Backtest": "refresh_backtest",
+        "Freeze Manifest": "freeze_manifest",
         "Open Evidence": "open_evidence",
     }
     for label, preview in by_label.items():
@@ -1017,7 +1076,7 @@ def test_bench_pr_n_action_preview_capital_bearing_paper_start(tmp_path: Path) -
     )
     # The pre-rendered safetyCopy must include the paper-start clarification.
     assert "no capital exposure" in preview["safetyCopy"]
-    assert "Bench v1 renders this intent packet for review only." in preview["safetyCopy"]
+    assert "validated through the command bridge" in preview["safetyCopy"]
 
 
 def test_bench_pr_n_action_preview_future_record_strings(tmp_path: Path) -> None:

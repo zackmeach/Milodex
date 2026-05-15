@@ -13,6 +13,34 @@
 
 ---
 
+## 0. Current lifecycle target (2026-05-15)
+
+Bench is no longer a read-only prototype for the paper lifecycle. The launch
+walk now treats the normal operator path as:
+
+`backtest evidence -> promote to paper -> start paper runner -> controlled stop -> inspect paper evidence -> demote/walk back`
+
+The submit-capable action families are demotion / walk-back, freeze manifest,
+canonical backtest evidence, promote-to-paper, start paper runner, and stop
+paper runner. Paper-runner Stop Trading is controlled-stop only; the kill
+switch remains a separate Anchor/Risk Office affordance.
+
+Before release, rerun the manual operator walk with the GUI as the primary
+surface and verify:
+
+- canonical Bench backtest writes a completed `backtest_runs` row;
+- promote-to-paper writes the manifest / promotion event and updates YAML stage;
+- Start Trading launches a paper runner without blocking the GUI;
+- Bench shows the active `strategy_runs` session;
+- Stop Trading writes a controlled-stop request, and the runner closes with
+  `exit_reason="controlled_stop"`;
+- Bench paper evidence shows session status, timestamps, exit reason, and paper
+  trade count;
+- QML still does not import or call broker, event-store, runner, or facade code
+  directly; all submits route through `BenchCommandBridge`.
+
+---
+
 ## Results summary
 
 | Category | Auto-verified | Manual still needed | Result |

@@ -138,6 +138,7 @@ def run_app() -> int:
     from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
     from milodex.strategies.loader import StrategyLoader
+    from milodex.strategies.paper_runner_control import PaperRunnerControl
 
     # --- 1. QGuiApplication ---------------------------------------------------
     app = QGuiApplication.instance()
@@ -221,6 +222,7 @@ def run_app() -> int:
         get_trading_mode=lambda: trading_mode,
         event_store_factory=get_event_store,
         backtest_engine_factory=get_backtest_engine,
+        paper_runner_control=PaperRunnerControl(locks_dir=get_locks_dir()),
     )
     bench_command_bridge = BenchCommandBridge(
         bench_command_facade,

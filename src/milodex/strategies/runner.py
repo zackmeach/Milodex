@@ -21,6 +21,7 @@ from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
+from milodex.strategies.paper_runner_control import consume_controlled_stop_request
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ class StrategyRunner:
         poll_interval_seconds: float | None = None,
         prompt_fn: Callable[[], str] | None = None,
         on_cycle_result: Callable[[list[ExecutionResult]], None] | None = None,
+        controlled_stop_request_path: Path | None = None,
         close_lockin_min_interval_seconds: float = 30.0,
         close_lockin_max_wait_seconds: float = 300.0,
     ) -> None:
@@ -64,6 +66,7 @@ class StrategyRunner:
         # Resolved after _loaded is set below.
         self._prompt_fn = prompt_fn or self._prompt_shutdown_choice
         self._on_cycle_result = on_cycle_result
+        self._controlled_stop_request_path = controlled_stop_request_path
         self._close_lockin_min_interval_seconds = close_lockin_min_interval_seconds
         self._close_lockin_max_wait_seconds = close_lockin_max_wait_seconds
         self._loaded = StrategyLoader().load(self._resolve_config_path())
@@ -138,10 +141,12 @@ class StrategyRunner:
         _exit_mode = "controlled"
         try:
             while True:
+                self._check_controlled_stop_request()
                 if self._requested_shutdown is not None:
                     _exit_mode = self._requested_shutdown
                     break
                 self.run_cycle()
+                self._check_controlled_stop_request()
                 if self._requested_shutdown is not None:
                     _exit_mode = self._requested_shutdown
                     break
@@ -340,6 +345,16 @@ class StrategyRunner:
         self._pending_lockin_signature = None
         self._pending_lockin_seen_at = None
         self._lockin_started_at = None
+
+    def _check_controlled_stop_request(self) -> None:
+        if self._requested_shutdown is not None:
+            return
+        request = consume_controlled_stop_request(
+            self._controlled_stop_request_path,
+            strategy_id=self._strategy_id,
+        )
+        if request is not None:
+            self._requested_shutdown = "controlled"
 
     def _is_daily_bar(self) -> bool:
         return self._loaded.config.tempo.get("bar_size") == "1D"

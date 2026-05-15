@@ -66,16 +66,26 @@ Item {
         "demote": true,
         "freeze_manifest": true,
         "initiate_backtest": true,
-        "refresh_backtest": true
+        "refresh_backtest": true,
+        "start_trading": true,
+        "stop_trading": true
     })
     readonly property string _currentActionKind: _actionKind(actionData)
     readonly property bool _isDemoteSubmit: _currentActionKind === "demote"
     readonly property bool _isFreezeManifestSubmit: _currentActionKind === "freeze_manifest"
     readonly property bool _isBacktestSubmit: _currentActionKind === "initiate_backtest"
                                             || _currentActionKind === "refresh_backtest"
+    readonly property bool _isStartPaperRunnerSubmit: _currentActionKind === "start_trading"
+                                                      && ((rowData && rowData.stage) || "") === "paper"
+    readonly property bool _isStopPaperRunnerSubmit: _currentActionKind === "stop_trading"
+                                                     && ((rowData && rowData.stage) || "") === "paper"
     readonly property bool _isPromoteToPaperSubmit: _currentActionKind === "promote"
                                                   && ((actionData && actionData.targetStage) || "") === "paper"
-    readonly property bool _isSubmitCapable: !!_submitCapableKinds[_currentActionKind]
+    readonly property bool _isSubmitCapable: (!!_submitCapableKinds[_currentActionKind]
+                                             && (_currentActionKind !== "start_trading"
+                                                 || _isStartPaperRunnerSubmit)
+                                             && (_currentActionKind !== "stop_trading"
+                                                 || _isStopPaperRunnerSubmit))
                                              || _isPromoteToPaperSubmit
 
     // Reason text the operator types into the inline input when the action
@@ -421,6 +431,108 @@ Item {
         root.closeRequested()
     }
 
+    // ------------------------------------------------------------------
+    // Paper runner controls (ADR 0051 Phase F).
+    //
+    // Start launches the existing paper runner asynchronously through the
+    // bridge/facade boundary. Stop writes a controlled-stop request for the
+    // runner to consume between cycles. This is deliberately not a kill
+    // switch path; QML does not touch broker, runner, event store, or YAML.
+    // ------------------------------------------------------------------
+    function _dispatchStartPaperRunnerSubmit() {
+        if (!root._isStartPaperRunnerSubmit) return
+        if (root._submitInFlight) return
+
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        if (!strategyId) {
+            root._submitErrorMessage = "Strategy id missing — cannot start paper runner."
+            return
+        }
+
+        root._submitErrorMessage = ""
+        root._submitInFlight = true
+
+        var proposal = BenchCommandBridge.proposeStartPaperRunner({
+            "strategy_id": strategyId
+        })
+
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return
+        }
+
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root.submitBlocked(proposal.blockers)
+            return
+        }
+
+        var result = BenchCommandBridge.submitStartPaperRunner(proposal.proposal_id)
+        root._submitInFlight = false
+
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
+    }
+
+    function _dispatchStopPaperRunnerSubmit() {
+        if (!root._isStopPaperRunnerSubmit) return
+        if (root._submitInFlight) return
+
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        if (!strategyId) {
+            root._submitErrorMessage = "Strategy id missing — cannot stop paper runner."
+            return
+        }
+
+        root._submitErrorMessage = ""
+        root._submitInFlight = true
+
+        var proposal = BenchCommandBridge.proposeStopPaperRunner({
+            "strategy_id": strategyId
+        })
+
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return
+        }
+
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root.submitBlocked(proposal.blockers)
+            return
+        }
+
+        var result = BenchCommandBridge.submitStopPaperRunner(proposal.proposal_id)
+        root._submitInFlight = false
+
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
+    }
+
     // Top-level dispatcher: routes the submit button click to the right
     // action-family dispatch function. Adding a new submit-capable action
     // family means adding one branch here and one entry in
@@ -434,6 +546,10 @@ Item {
             _dispatchBacktestSubmit()
         } else if (root._isPromoteToPaperSubmit) {
             _dispatchPromoteToPaperSubmit()
+        } else if (root._isStartPaperRunnerSubmit) {
+            _dispatchStartPaperRunnerSubmit()
+        } else if (root._isStopPaperRunnerSubmit) {
+            _dispatchStopPaperRunnerSubmit()
         }
     }
 
@@ -506,7 +622,7 @@ Item {
     // grep-based safety tests can match them substring-exactly.
     readonly property string _COPY_DIRECTIONAL: "This preview shows the confirmation Milodex will require before changing a strategy's Bench stage. Command execution is not wired in Bench v1."
 
-    readonly property string _COPY_INVOCATION: "This preview shows the confirmation Milodex will require before starting, stopping, initiating, or refreshing an operational process. Command execution is not wired in Bench v1."
+    readonly property string _COPY_INVOCATION: "This confirmation sends operational process requests through the Bench command bridge. Paper runner start and controlled stop are validated again before submit."
 
     readonly property string _COPY_CAPITAL_LOCK: "Capital-bearing transitions remain locked while ADR 0004 is in force. This modal is a visual shell only."
 
@@ -568,9 +684,9 @@ Item {
         if (kind === "return")
             return "Restore this strategy to a previously eligible stage or return it to the idle shelf."
         if (kind === "start_trading")
-            return "Start an operational session for this strategy at its current stage. In Bench v1 this is preview-only."
+            return "Start a paper trading session for this strategy through the controlled runner boundary."
         if (kind === "stop_trading")
-            return "Stop the current operational session for this strategy. In Bench v1 this is preview-only."
+            return "Request a controlled stop for the current paper session. This is not the kill switch."
         if (kind === "initiate_backtest")
             return "Run canonical walk-forward backtest evidence for this strategy."
         if (kind === "refresh_backtest")
@@ -1173,6 +1289,8 @@ Item {
                     text: {
                         if (root._submitInFlight) return "Submitting…"
                         if (root._isPromoteToPaperSubmit) return "Confirm promotion"
+                        if (root._isStartPaperRunnerSubmit) return "Start paper runner"
+                        if (root._isStopPaperRunnerSubmit) return "Request stop"
                         if (root._isBacktestSubmit) return "Run backtest"
                         if (root._isFreezeManifestSubmit) return "Confirm freeze"
                         return "Confirm demotion"
@@ -1197,6 +1315,8 @@ Item {
                     enabled: !root._submitInFlight
                              && (root._isFreezeManifestSubmit
                                  || root._isBacktestSubmit
+                                 || root._isStartPaperRunnerSubmit
+                                 || root._isStopPaperRunnerSubmit
                                  || (root._isPromoteToPaperSubmit
                                      && root._recommendationText.trim().length > 0
                                      && root._knownRiskText.trim().length > 0)

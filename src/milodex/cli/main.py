@@ -50,6 +50,7 @@ from milodex.data.bar_quality import DataQualityError
 from milodex.execution import ExecutionService, UnsupportedOrderTypeError
 from milodex.execution.state import KillSwitchStateStore
 from milodex.strategies.loader import StrategyLoader
+from milodex.strategies.paper_runner_control import controlled_stop_request_path
 from milodex.strategies.runner import StrategyRunner
 
 _COMMAND_MODULES = (
@@ -163,6 +164,10 @@ def main(
             data_provider=data_provider,
             execution_service=execution_service,
             event_store=event_store,
+            controlled_stop_request_path=controlled_stop_request_path(
+                _locks_dir,
+                strategy_id,
+            ),
         )
 
     def get_backtest_engine(strategy_id: str, **kwargs) -> BacktestEngine:
