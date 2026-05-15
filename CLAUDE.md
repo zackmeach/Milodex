@@ -13,17 +13,20 @@ ruff format src/ tests/       # Format
 
 ## Architecture
 
-src-layout Python package (`src/milodex/`). Nine modules:
+src-layout Python package (`src/milodex/`). Twelve modules:
 
 - **broker/** — Brokerage API integration (Alpaca). All broker access goes through this interface.
 - **strategies/** — Config-driven strategy definitions. No hardcoded strategy logic — parameters live in `configs/*.yaml`.
 - **risk/** — Risk management layer. Sits between strategies and execution with **veto power** over all trades. Never bypass.
 - **execution/** — Trade orchestration service. Single chokepoint from intent → trade: invokes the risk layer, records explanations, submits to broker. No code path reaches the broker without passing through here.
+- **promotion/** — Promotion lifecycle surface (ADR 0015): frozen strategy manifests, evidence, and stage-transition governance. The risk layer reads back the active manifest hash from here.
 - **backtesting/** — Backtest engine with walk-forward validation. Minimum 30 trades before statistical conclusions. Intentionally below the risk layer — risk is enforced at promotion, not simulation.
 - **data/** — Market data acquisition. Start with free sources (Alpaca, Yahoo Finance). Premium only if testing justifies cost.
 - **analytics/** — Performance metrics, trade logging, benchmark comparison (vs SPY).
 - **core/** — Shared infrastructure: SQLite event store (ADR 0011), advisory locks, schema migrations. Source of truth for trade, explanation, kill-switch, strategy-run, and backtest-run history. Durable state lives under `data/` per ADR 0018.
 - **cli/** — Command-line interface. Primary interaction surface.
+- **commands/** — Backend command facades the GUI (and future tooling) reaches. Thin orchestrators over existing CLI/governance/runtime callees — no business rules of their own (ADR 0051).
+- **gui/** — GUI subsystem (PySide6 + Qt Quick), per ADR 0033/0035. Bundled fonts, QML theme infrastructure, read models.
 
 ## Key Design Rules
 
