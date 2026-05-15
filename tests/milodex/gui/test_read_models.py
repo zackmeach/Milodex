@@ -1039,8 +1039,8 @@ def test_bench_pr_n_action_preview_future_record_strings(tmp_path: Path) -> None
         "return": "stage_return_event",
         "start_trading": "session_start_event",
         "stop_trading": "session_stop_event",
-        "initiate_backtest": "backtest_request_event",
-        "refresh_backtest": "backtest_refresh_event",
+        "initiate_backtest": "backtest_run",
+        "refresh_backtest": "backtest_run",
         "open_evidence": "evidence_view",
     }
     for action in _all_actions(build_bench_snapshot(db, configs)):

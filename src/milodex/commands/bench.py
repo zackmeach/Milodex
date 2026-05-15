@@ -37,6 +37,8 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
+from milodex.backtesting.engine import _trading_days_in_range
+from milodex.backtesting.walk_forward_runner import compute_window_spans, run_walk_forward
 from milodex.cli.commands.promotion import (
     _compute_post_update_hash as _cli_compute_post_update_hash,
 )
@@ -57,6 +59,7 @@ from milodex.promotion import (
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
 from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.promotion.state_machine import transition as _governance_transition
+from milodex.risk.policy import RiskPolicy
 from milodex.strategies.loader import load_strategy_config
 
 # Phase D2 (backend `submit_promote_to_paper`) reuses two private helpers from
@@ -193,6 +196,7 @@ class CommandResult:
     action_family: str
     status: str
     durable_refs: dict[str, str] = field(default_factory=dict)
+    data: dict[str, Any] = field(default_factory=dict)
     blockers: list[Blocker] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     submitted_at: datetime | None = None
@@ -204,6 +208,7 @@ class CommandResult:
             "action_family": self.action_family,
             "status": self.status,
             "durable_refs": dict(self.durable_refs),
+            "data": dict(self.data),
             "blockers": [b.to_dict() for b in self.blockers],
             "warnings": list(self.warnings),
             "submitted_at": self.submitted_at.isoformat() if self.submitted_at else None,
@@ -226,12 +231,14 @@ class BenchCommandFacade:
         locks_dir: Path,
         get_trading_mode: Callable[[], str],
         event_store_factory: Callable[[], EventStore] | None = None,
+        backtest_engine_factory: Callable[..., Any] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._config_dir = Path(config_dir)
         self._locks_dir = Path(locks_dir)
         self._get_trading_mode = get_trading_mode
         self._event_store_factory = event_store_factory
+        self._backtest_engine_factory = backtest_engine_factory
         self._now = now or (lambda: datetime.now(tz=UTC))
 
     # ------------------------------------------------------------------ #
@@ -248,6 +255,7 @@ class BenchCommandFacade:
         initial_equity: float = 100_000.0,
         slippage: float | None = None,
         run_id: str | None = None,
+        risk_policy: str = RiskPolicy.BYPASS.value,
     ) -> CommandProposal:
         """Propose a backtest run.
 
@@ -262,6 +270,7 @@ class BenchCommandFacade:
             "initial_equity": float(initial_equity),
             "slippage": slippage,
             "run_id": run_id,
+            "risk_policy": risk_policy,
         }
         config, resolve_blocker = self._resolve_config(strategy_id)
         if resolve_blocker is not None:
@@ -896,7 +905,145 @@ class BenchCommandFacade:
     # ------------------------------------------------------------------ #
 
     def submit_backtest(self, proposal: CommandProposal) -> CommandResult:
-        return self._phase_b_blocked(proposal, ACTION_FAMILY_BACKTEST)
+        """Run a Bench-requested backtest and return durable evidence refs."""
+        if proposal.action_family != ACTION_FAMILY_BACKTEST:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=proposal.action_family,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="proposal_action_family_mismatch",
+                        message=(
+                            f"submit_backtest received a proposal for "
+                            f"'{proposal.action_family}'; expected "
+                            f"'{ACTION_FAMILY_BACKTEST}'."
+                        ),
+                        context={
+                            "expected": ACTION_FAMILY_BACKTEST,
+                            "received": proposal.action_family,
+                        },
+                    )
+                ],
+            )
+
+        required_store = self._require_event_store(proposal)
+        if isinstance(required_store, CommandResult):
+            return required_store
+
+        if self._backtest_engine_factory is None:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_BACKTEST,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="backtest_engine_unavailable",
+                        message=(
+                            "BenchCommandFacade was constructed without a "
+                            "backtest_engine_factory; backtest submits require one."
+                        ),
+                        context={},
+                    )
+                ],
+            )
+
+        try:
+            start = date.fromisoformat(str(proposal.inputs.get("start")))
+            end = date.fromisoformat(str(proposal.inputs.get("end")))
+            walk_forward = bool(proposal.inputs.get("walk_forward", False))
+            initial_equity = float(proposal.inputs.get("initial_equity", 100_000.0))
+            slippage_raw = proposal.inputs.get("slippage")
+            slippage = float(slippage_raw) if slippage_raw is not None else None
+            run_id_raw = proposal.inputs.get("run_id")
+            run_id = str(run_id_raw) if run_id_raw else None
+        except (TypeError, ValueError) as exc:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_BACKTEST,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="invalid_backtest_input",
+                        message=f"Backtest proposal inputs are invalid: {exc}",
+                        context={"inputs": dict(proposal.inputs)},
+                    )
+                ],
+            )
+
+        revalidation = self.propose_backtest(
+            proposal.strategy_id,
+            start=start,
+            end=end,
+            walk_forward=walk_forward,
+            initial_equity=initial_equity,
+            slippage=slippage,
+            run_id=run_id,
+            risk_policy=RiskPolicy.BYPASS.value,
+        )
+        if not revalidation.admissible:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_BACKTEST,
+                status="blocked",
+                blockers=list(revalidation.blockers),
+            )
+
+        engine_kwargs: dict[str, Any] = {
+            "initial_equity": initial_equity,
+            "risk_policy": RiskPolicy.BYPASS,
+        }
+        if slippage is not None:
+            engine_kwargs["slippage_pct"] = slippage
+
+        try:
+            engine = self._backtest_engine_factory(proposal.strategy_id, **engine_kwargs)
+            if walk_forward:
+                all_bars = engine.prefetch_bars(start, end)
+                total_trading_days = len(_trading_days_in_range(all_bars, start, end))
+                window_count = int(
+                    engine._loaded.config.backtest.get("walk_forward_windows", 4)  # noqa: SLF001
+                )
+                train_days, test_days, step_days = compute_window_spans(
+                    total_trading_days, window_count
+                )
+                result = run_walk_forward(
+                    engine,
+                    start_date=start,
+                    end_date=end,
+                    train_days=train_days,
+                    test_days=test_days,
+                    step_days=step_days,
+                    initial_equity=initial_equity,
+                    run_id=run_id,
+                    all_bars=all_bars,
+                )
+            else:
+                result = engine.run(start, end, run_id=run_id)
+        except Exception as exc:  # noqa: BLE001 - facade returns structured submit failures.
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_BACKTEST,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="backtest_failed",
+                        message=f"Backtest submit failed: {exc}",
+                        context={"error_type": exc.__class__.__name__},
+                    )
+                ],
+                submitted_at=self._now(),
+            )
+
+        return CommandResult(
+            proposal_id=proposal.proposal_id,
+            action_family=ACTION_FAMILY_BACKTEST,
+            status="submitted",
+            durable_refs=self._backtest_durable_refs(result, walk_forward=walk_forward),
+            data=self._backtest_result_data(result, walk_forward=walk_forward),
+            submitted_at=self._now(),
+            audit_event_id=str(result.run_id),
+        )
 
     def submit_freeze_manifest(self, proposal: CommandProposal) -> CommandResult:
         """Second submit-capable action (ADR 0051 Phase D1).
@@ -1444,6 +1591,61 @@ class BenchCommandFacade:
             "enabled": bool(config.enabled),
             "config_path": str(config.path),
         }
+
+    def _backtest_durable_refs(self, result: Any, *, walk_forward: bool) -> dict[str, str]:
+        refs = {
+            "run_id": str(result.run_id),
+            "strategy_id": str(result.strategy_id),
+            "start": result.start_date.isoformat(),
+            "end": result.end_date.isoformat(),
+            "walk_forward": str(bool(walk_forward)).lower(),
+            "risk_policy": self._risk_policy_value(
+                getattr(result, "risk_policy", RiskPolicy.BYPASS)
+            ),
+        }
+        db_id = getattr(result, "db_id", None)
+        if db_id is not None:
+            refs["backtest_run_db_id"] = str(db_id)
+        return refs
+
+    def _backtest_result_data(self, result: Any, *, walk_forward: bool) -> dict[str, Any]:
+        data_quality = dict(getattr(result, "data_quality", {}) or {})
+        run_manifest = dict(getattr(result, "run_manifest", {}) or {})
+        payload: dict[str, Any] = {
+            "walk_forward": bool(walk_forward),
+            "data_quality": data_quality,
+            "data_quality_status": data_quality.get("status"),
+            "run_manifest": run_manifest,
+        }
+        if walk_forward:
+            payload["skipped_count"] = int(getattr(result, "oos_skipped_count", 0))
+            payload["oos_aggregate"] = {
+                "trade_count": int(getattr(result, "oos_trade_count", 0)),
+                "skipped_count": int(getattr(result, "oos_skipped_count", 0)),
+                "trading_days": int(getattr(result, "oos_trading_days", 0)),
+                "total_return_pct": float(getattr(result, "oos_total_return_pct", 0.0)),
+                "sharpe": getattr(result, "oos_sharpe", None),
+                "max_drawdown_pct": float(getattr(result, "oos_max_drawdown_pct", 0.0)),
+            }
+        else:
+            payload["skipped_count"] = int(getattr(result, "skipped_count", 0))
+            payload["metrics"] = {
+                "trade_count": int(getattr(result, "trade_count", 0)),
+                "skipped_count": int(getattr(result, "skipped_count", 0)),
+                "trading_days": int(getattr(result, "trading_days", 0)),
+                "initial_equity": float(getattr(result, "initial_equity", 0.0)),
+                "final_equity": float(getattr(result, "final_equity", 0.0)),
+                "total_return_pct": float(getattr(result, "total_return_pct", 0.0)),
+                "buy_count": int(getattr(result, "buy_count", 0)),
+                "sell_count": int(getattr(result, "sell_count", 0)),
+                "round_trip_count": int(getattr(result, "round_trip_count", 0)),
+            }
+        return payload
+
+    @staticmethod
+    def _risk_policy_value(policy: Any) -> str:
+        value = getattr(policy, "value", policy)
+        return str(value)
 
     def _require_event_store(
         self, proposal: CommandProposal

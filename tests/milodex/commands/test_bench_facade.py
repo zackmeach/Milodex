@@ -24,9 +24,16 @@ import textwrap
 from dataclasses import FrozenInstanceError, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
+import pandas as pd
 import pytest
 
+from milodex.backtesting.engine import BacktestResult
+from milodex.backtesting.walk_forward_runner import (
+    WalkForwardResult,
+    WalkForwardStability,
+)
 from milodex.commands import bench as facade_module
 from milodex.commands.bench import (
     ACTION_FAMILIES,
@@ -43,6 +50,8 @@ from milodex.commands.bench import (
     Precondition,
 )
 from milodex.core.event_store import BacktestRunEvent, EventStore
+from milodex.data.models import BarSet
+from milodex.risk.policy import RiskPolicy
 
 # Canonical id used by every test config. The loader cross-validates
 # strategy.id against family/template/variant/version, so we pin one shape
@@ -133,12 +142,14 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
         *,
         trading_mode: str = "paper",
         with_event_store: bool = True,
+        backtest_engine_factory=None,
     ) -> BenchCommandFacade:
         return BenchCommandFacade(
             config_dir=config_dir,
             locks_dir=locks_dir,
             get_trading_mode=lambda: trading_mode,
             event_store_factory=(lambda: event_store) if with_event_store else None,
+            backtest_engine_factory=backtest_engine_factory,
         )
 
     return _make
@@ -212,6 +223,7 @@ def test_command_result_shape() -> None:
     assert d["proposal_id"] == "abc"
     assert d["status"] == "blocked"
     assert d["durable_refs"] == {}
+    assert d["data"] == {}
     assert d["audit_event_id"] is None
     assert d["submitted_at"] is None
 
@@ -599,13 +611,11 @@ def test_propose_demote_refuses_micro_live_and_live_targets(
 
 
 # Phase C1 wired submit_demote; Phase D1 wired submit_freeze_manifest;
-# Phase D2 wires submit_promote_to_paper (backend only). The remaining two
-# submit methods (backtest, start/stop paper runner) are still Phase B stubs.
-# Phase E / F land them.
+# Phase D2 wires submit_promote_to_paper (backend only); PR 13 wires
+# submit_backtest. The runner start/stop actions remain Phase B stubs.
 @pytest.mark.parametrize(
     "method_name,family",
     [
-        ("submit_backtest", ACTION_FAMILY_BACKTEST),
         ("submit_start_paper_runner", ACTION_FAMILY_START_PAPER_RUNNER),
         ("submit_stop_paper_runner", ACTION_FAMILY_STOP_PAPER_RUNNER),
     ],
@@ -638,6 +648,234 @@ def test_submit_returns_phase_b_blocker(
 # --------------------------------------------------------------------------- #
 # Phase C1 — submit_demote
 # --------------------------------------------------------------------------- #
+
+
+# --------------------------------------------------------------------------- #
+# PR 13 - submit_backtest
+# --------------------------------------------------------------------------- #
+
+
+class _FakeSingleBacktestEngine:
+    def __init__(self) -> None:
+        self.calls: list[tuple[date, date, str | None]] = []
+
+    def run(self, start: date, end: date, *, run_id: str | None = None) -> BacktestResult:
+        self.calls.append((start, end, run_id))
+        return BacktestResult(
+            run_id=run_id or "bt-single",
+            strategy_id=STRATEGY_ID,
+            start_date=start,
+            end_date=end,
+            initial_equity=1_000.0,
+            final_equity=1_125.0,
+            total_return_pct=12.5,
+            trade_count=4,
+            buy_count=2,
+            sell_count=2,
+            slippage_pct=0.0005,
+            commission_per_trade=0.0,
+            trading_days=8,
+            db_id=101,
+            round_trip_count=2,
+            risk_policy=RiskPolicy.BYPASS,
+            skipped_count=1,
+            data_quality={"status": "pass", "blocker_count": 0, "warning_count": 0},
+            run_manifest={"schema_version": 1, "data": {"quality": {"status": "pass"}}},
+        )
+
+
+class _FakeWalkForwardEngine:
+    def __init__(self) -> None:
+        self.prefetched: tuple[date, date] | None = None
+        self._loaded = SimpleNamespace(  # noqa: SLF001 - fake mirrors engine internals.
+            config=SimpleNamespace(backtest={"walk_forward_windows": 2})
+        )
+
+    def prefetch_bars(self, start: date, end: date) -> dict[str, BarSet]:
+        self.prefetched = (start, end)
+        return {"AAPL": _barset(start, 8)}
+
+
+def _barset(start: date, days: int) -> BarSet:
+    timestamps = pd.date_range(start=start.isoformat(), periods=days, freq="D", tz="UTC")
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "open": [100.0] * days,
+                "high": [101.0] * days,
+                "low": [99.0] * days,
+                "close": [100.5] * days,
+                "volume": [1000] * days,
+            }
+        )
+    )
+
+
+def _make_backtest_proposal(*, walk_forward: bool) -> CommandProposal:
+    return CommandProposal(
+        action_family=ACTION_FAMILY_BACKTEST,
+        strategy_id=STRATEGY_ID,
+        inputs={
+            "start": "2020-01-01",
+            "end": "2020-01-08",
+            "walk_forward": walk_forward,
+            "initial_equity": 1000.0,
+            "slippage": None,
+            "run_id": "bench-run",
+            "risk_policy": "bypass",
+        },
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="bench-backtest-proposal",
+    )
+
+
+def test_submit_backtest_runs_single_period_engine_and_returns_payload(
+    make_facade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    engine = _FakeSingleBacktestEngine()
+    facade = make_facade(backtest_engine_factory=lambda _strategy_id, **_kwargs: engine)
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert result.status == "submitted", result.blockers
+    assert engine.calls == [(date(2020, 1, 1), date(2020, 1, 8), "bench-run")]
+    assert result.durable_refs == {
+        "run_id": "bench-run",
+        "strategy_id": STRATEGY_ID,
+        "start": "2020-01-01",
+        "end": "2020-01-08",
+        "walk_forward": "false",
+        "risk_policy": "bypass",
+        "backtest_run_db_id": "101",
+    }
+    assert result.data["metrics"]["trade_count"] == 4
+    assert result.data["skipped_count"] == 1
+    assert result.data["data_quality_status"] == "pass"
+    assert result.data["run_manifest"]["schema_version"] == 1
+
+
+def test_submit_backtest_runs_walk_forward_with_prefetched_bars(
+    make_facade, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    engine = _FakeWalkForwardEngine()
+    facade = make_facade(backtest_engine_factory=lambda _strategy_id, **_kwargs: engine)
+    captured: dict[str, object] = {}
+
+    def fake_run_walk_forward(**kwargs):
+        captured.update(kwargs)
+        return WalkForwardResult(
+            run_id="bench-run",
+            strategy_id=STRATEGY_ID,
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 1, 8),
+            initial_equity=1_000.0,
+            train_days=4,
+            test_days=2,
+            step_days=2,
+            windows=[],
+            oos_trade_count=3,
+            oos_skipped_count=2,
+            oos_trading_days=4,
+            oos_total_return_pct=7.5,
+            oos_sharpe=1.2,
+            oos_max_drawdown_pct=3.4,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(
+                sharpe_min=1.0,
+                sharpe_max=1.4,
+                sharpe_std=0.2,
+                windows_positive=2,
+                windows_negative=0,
+                single_window_dependency=False,
+            ),
+            db_id=202,
+            risk_policy=RiskPolicy.BYPASS,
+            data_quality={"status": "pass_with_warnings", "warning_count": 1},
+            run_manifest={"schema_version": 1, "mode": "walk_forward"},
+        )
+
+    monkeypatch.setattr(
+        facade_module,
+        "run_walk_forward",
+        lambda engine_arg, **kwargs: fake_run_walk_forward(engine=engine_arg, **kwargs),
+    )
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=True))
+
+    assert result.status == "submitted", result.blockers
+    assert engine.prefetched == (date(2020, 1, 1), date(2020, 1, 8))
+    assert captured["all_bars"] is not None
+    assert result.durable_refs["walk_forward"] == "true"
+    assert result.durable_refs["backtest_run_db_id"] == "202"
+    assert result.data["oos_aggregate"]["trade_count"] == 3
+    assert result.data["oos_aggregate"]["skipped_count"] == 2
+    assert result.data["data_quality_status"] == "pass_with_warnings"
+
+
+def test_submit_backtest_rejects_wrong_action_family(make_facade) -> None:
+    facade = make_facade(backtest_engine_factory=lambda *_args, **_kwargs: object())
+    wrong = CommandProposal(
+        action_family=ACTION_FAMILY_DEMOTE,
+        strategy_id=STRATEGY_ID,
+        inputs={},
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="wrong-family",
+    )
+
+    result = facade.submit_backtest(wrong)
+
+    assert result.status == "error"
+    assert any(
+        blocker.reason_code == "proposal_action_family_mismatch"
+        for blocker in result.blockers
+    )
+
+
+def test_submit_backtest_requires_event_store_and_engine_factory(
+    make_facade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    proposal = _make_backtest_proposal(walk_forward=False)
+
+    no_store = make_facade(
+        with_event_store=False,
+        backtest_engine_factory=lambda *_args, **_kwargs: object(),
+    )
+    assert no_store.submit_backtest(proposal).blockers[0].reason_code == (
+        "event_store_unavailable"
+    )
+
+    no_engine = make_facade()
+    assert no_engine.submit_backtest(proposal).blockers[0].reason_code == (
+        "backtest_engine_unavailable"
+    )
+
+
+def test_submit_backtest_revalidates_stale_deleted_config(
+    make_facade, config_dir: Path
+) -> None:
+    config_path = _write_strategy(config_dir, stage="backtest")
+    proposal = _make_backtest_proposal(walk_forward=False)
+    facade = make_facade(
+        backtest_engine_factory=lambda *_args, **_kwargs: _FakeSingleBacktestEngine()
+    )
+    config_path.unlink()
+
+    result = facade.submit_backtest(proposal)
+
+    assert result.status == "blocked"
+    assert any(blocker.reason_code == "strategy_not_found" for blocker in result.blockers)
 
 
 def _make_demote_proposal(
@@ -1418,8 +1656,8 @@ def test_submit_promote_to_paper_does_not_widen_bench_bridge_surface(
 ) -> None:
     """Phase D2 is backend-only. The Bench bridge must NOT yet expose
     ``proposePromoteToPaper`` / ``submitPromoteToPaper`` slots — GUI wiring
-    lands in Phase D3. The introspection slot must still return the Phase
-    D1 set."""
+    lands in Phase D3. The introspection slot must still return the currently
+    wired GUI submit set."""
     from milodex.gui.bench_command_bridge import BenchCommandBridge
 
     members = {
@@ -1443,6 +1681,7 @@ def test_submit_promote_to_paper_does_not_widen_bench_bridge_surface(
     assert bridge.submitCapableActionFamilies() == [
         ACTION_FAMILY_DEMOTE,
         ACTION_FAMILY_FREEZE_MANIFEST,
+        ACTION_FAMILY_BACKTEST,
     ]
 
 

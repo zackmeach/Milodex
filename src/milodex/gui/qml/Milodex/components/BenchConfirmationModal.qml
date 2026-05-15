@@ -57,19 +57,23 @@ Item {
     // and human messages without parsing free text.
     signal submitBlocked(var blockers)
 
-    // Submit affordance is enabled for the demote (Phase C2) and
-    // freeze-manifest (Phase D1) action families only. Every other action
+    // Submit affordance is enabled for demote, freeze-manifest, and
+    // canonical backtest evidence action families. Every other action
     // family still routes to the inert "Not wired in v1" primary button
     // below. The kind comes from the action-intent preview when present,
     // otherwise from the action label's prefix.
     readonly property var _submitCapableKinds: ({
         "demote": true,
-        "freeze_manifest": true
+        "freeze_manifest": true,
+        "initiate_backtest": true,
+        "refresh_backtest": true
     })
     readonly property string _currentActionKind: _actionKind(actionData)
     readonly property bool _isSubmitCapable: !!_submitCapableKinds[_currentActionKind]
     readonly property bool _isDemoteSubmit: _currentActionKind === "demote"
     readonly property bool _isFreezeManifestSubmit: _currentActionKind === "freeze_manifest"
+    readonly property bool _isBacktestSubmit: _currentActionKind === "initiate_backtest"
+                                            || _currentActionKind === "refresh_backtest"
 
     // Reason text the operator types into the inline input when the action
     // is submit-capable. The submit button is gated on non-blank reason so
@@ -119,6 +123,7 @@ Item {
     readonly property string _COPY_DRAFT_SOURCE_NOTE: "This is a local UI draft preview only. No command is submitted, no event is written, and no state is changed."
 
     readonly property string _COPY_DRAFT_BANNER: "Milodex can render this draft for review, but Bench v1 cannot submit it."
+    readonly property string _COPY_SUBMIT_CAPABLE_BANNER: "Milodex will validate this proposal through the command bridge before submitting it."
 
     readonly property var _draftBlockedBy: [
         "Bench v1 command submission is not wired",
@@ -142,11 +147,11 @@ Item {
         "evidencePacketSchemaVersion":      (_packet.schemaVersion  || 0),
         "actionIntentPreviewSchemaVersion": (_preview.schemaVersion || 0),
         "expectedFutureRecord": (_preview.futureRecord || "—"),
-        "executable": false,
-        "wired": false,
-        "submissionState": "not_submittable_v1",
-        "validationState": "not_validated_v1",
-        "blockedBy": _draftBlockedBy
+        "executable": root._isSubmitCapable,
+        "wired": root._isSubmitCapable,
+        "submissionState": root._isSubmitCapable ? "submit_capable" : "not_submittable_v1",
+        "validationState": root._isSubmitCapable ? "validated_on_submit" : "not_validated_v1",
+        "blockedBy": root._isSubmitCapable ? [] : _draftBlockedBy
     })
 
     visible: open
@@ -286,6 +291,67 @@ Item {
         root.closeRequested()
     }
 
+    // ------------------------------------------------------------------
+    // Canonical backtest submit (PR 13).
+    //
+    // Runs the evidence shape used by the strategy bank: walk-forward,
+    // 2020-01-01 through 2024-12-31, $1,000 initial equity, and raw
+    // research risk policy (`bypass`). QML supplies only the strategy id
+    // and canonical run settings; all validation and execution stays behind
+    // the Python command bridge.
+    // ------------------------------------------------------------------
+    function _dispatchBacktestSubmit() {
+        if (!root._isBacktestSubmit) return
+        if (root._submitInFlight) return
+
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        if (!strategyId) {
+            root._submitErrorMessage = "Strategy id missing — cannot run backtest."
+            return
+        }
+
+        root._submitErrorMessage = ""
+        root._submitInFlight = true
+
+        var proposal = BenchCommandBridge.proposeBacktest({
+            "strategy_id": strategyId,
+            "start": "2020-01-01",
+            "end": "2024-12-31",
+            "walk_forward": true,
+            "initial_equity": 1000,
+            "risk_policy": "bypass"
+        })
+
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return
+        }
+
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root.submitBlocked(proposal.blockers)
+            return
+        }
+
+        var result = BenchCommandBridge.submitBacktest(proposal.proposal_id)
+        root._submitInFlight = false
+
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
+    }
+
     // Top-level dispatcher: routes the submit button click to the right
     // action-family dispatch function. Adding a new submit-capable action
     // family means adding one branch here and one entry in
@@ -295,6 +361,8 @@ Item {
             _dispatchDemoteSubmit()
         } else if (root._isFreezeManifestSubmit) {
             _dispatchFreezeManifestSubmit()
+        } else if (root._isBacktestSubmit) {
+            _dispatchBacktestSubmit()
         }
     }
 
@@ -433,9 +501,9 @@ Item {
         if (kind === "stop_trading")
             return "Stop the current operational session for this strategy. In Bench v1 this is preview-only."
         if (kind === "initiate_backtest")
-            return "Request new backtest evidence for this strategy. In Bench v1 this is preview-only."
+            return "Run canonical walk-forward backtest evidence for this strategy."
         if (kind === "refresh_backtest")
-            return "Refresh aging or stale backtest evidence for this strategy. In Bench v1 this is preview-only."
+            return "Refresh aging or stale evidence with the canonical walk-forward backtest."
         if (kind === "freeze_manifest")
             return "Snapshot this strategy's current YAML config and stage into the event store as an auditable manifest."
         return "Action not recognised by the intent packet renderer."
@@ -476,8 +544,8 @@ Item {
         if (kind === "return")             return "stage_return_event"
         if (kind === "start_trading")      return "session_start_event"
         if (kind === "stop_trading")       return "session_stop_event"
-        if (kind === "initiate_backtest")  return "backtest_request_event"
-        if (kind === "refresh_backtest")   return "backtest_refresh_event"
+        if (kind === "initiate_backtest")  return "backtest_run"
+        if (kind === "refresh_backtest")   return "backtest_run"
         return "—"
     }
 
@@ -683,8 +751,12 @@ Item {
             // ============================================================
             SectionLabel { label: "COMMAND DRAFT PREVIEW"; ordinal: "06" }
 
-            SafetyBanner { text: "NOT SUBMITTABLE" }
-            ProseBlock { text: root._COPY_DRAFT_BANNER }
+            SafetyBanner { text: root._isSubmitCapable ? "SUBMIT CAPABLE" : "NOT SUBMITTABLE" }
+            ProseBlock {
+                text: root._isSubmitCapable
+                      ? root._COPY_SUBMIT_CAPABLE_BANNER
+                      : root._COPY_DRAFT_BANNER
+            }
 
             DetailRow {
                 label: "Submission state"
@@ -747,11 +819,9 @@ Item {
             //
             // Visible ONLY when the action is a demote. Collects the
             // required reason and surfaces submit/refuse status. Every
-            // other action family bypasses this section and renders the
-            // existing "Not wired in v1" inert primary action below.
-            // Freeze-manifest (Phase D1) is submit-capable but has no
-            // reason concept (its governance callee takes only the config
-            // path and backend-sourced frozen_by), so it skips this block.
+            // other submit-capable family bypasses this section.
+            // Freeze-manifest and backtest have no reason concept, so they
+            // skip this block.
             // ============================================================
             SectionLabel {
                 visible: root._isDemoteSubmit
@@ -944,6 +1014,7 @@ Item {
                     anchors.centerIn: parent
                     text: {
                         if (root._submitInFlight) return "Submitting…"
+                        if (root._isBacktestSubmit) return "Run backtest"
                         if (root._isFreezeManifestSubmit) return "Confirm freeze"
                         return "Confirm demotion"
                     }
@@ -963,9 +1034,10 @@ Item {
                     hoverEnabled: true
                     cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                     // Demote requires a non-blank reason for the audit
-                    // record; freeze_manifest has no reason concept.
+                    // record; freeze_manifest and backtest have no reason concept.
                     enabled: !root._submitInFlight
                              && (root._isFreezeManifestSubmit
+                                 || root._isBacktestSubmit
                                  || root._reasonText.trim().length > 0)
                     onClicked: root._dispatchSubmit()
                 }

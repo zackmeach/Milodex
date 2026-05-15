@@ -113,7 +113,18 @@ def run_app() -> int:
         )
         return 1
 
-    from milodex.config import get_bundled_resource_dir, get_data_dir, get_trading_mode
+    from milodex.backtesting.engine import BacktestEngine
+    from milodex.cli.commands.promote import resolve_strategy_config
+    from milodex.commands.bench import BenchCommandFacade
+    from milodex.config import (
+        get_bundled_resource_dir,
+        get_data_dir,
+        get_locks_dir,
+        get_trading_mode,
+    )
+    from milodex.core.event_store import EventStore
+    from milodex.data.alpaca_provider import AlpacaDataProvider
+    from milodex.gui.bench_command_bridge import BenchCommandBridge
     from milodex.gui.fonts import load_fonts
     from milodex.gui.operational_state import OperationalState
     from milodex.gui.qml_setup import register_qml_types
@@ -126,6 +137,7 @@ def run_app() -> int:
     )
     from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
+    from milodex.strategies.loader import StrategyLoader
 
     # --- 1. QGuiApplication ---------------------------------------------------
     app = QGuiApplication.instance()
@@ -190,6 +202,31 @@ def run_app() -> int:
     ledger_state = LedgerState(db_path=db_path)
     desk_state = DeskState(db_path=db_path, configs_dir=configs_dir)
 
+    def get_event_store() -> EventStore:
+        return EventStore(db_path)
+
+    def get_backtest_engine(strategy_id: str, **kwargs) -> BacktestEngine:
+        config_path = resolve_strategy_config(strategy_id, configs_dir)
+        loaded = StrategyLoader().load(config_path)
+        return BacktestEngine(
+            loaded=loaded,
+            data_provider=AlpacaDataProvider(),
+            event_store=get_event_store(),
+            **kwargs,
+        )
+
+    bench_command_facade = BenchCommandFacade(
+        config_dir=configs_dir,
+        locks_dir=get_locks_dir(),
+        get_trading_mode=lambda: trading_mode,
+        event_store_factory=get_event_store,
+        backtest_engine_factory=get_backtest_engine,
+    )
+    bench_command_bridge = BenchCommandBridge(
+        bench_command_facade,
+        bench_state=bench_state,
+    )
+
     register_qml_types(
         theme_manager=theme_manager,
         operational_state=operational_state,
@@ -199,6 +236,7 @@ def run_app() -> int:
         kanban_state=kanban_state,
         ledger_state=ledger_state,
         desk_state=desk_state,
+        bench_command_bridge=bench_command_bridge,
     )
     logger.info("run_app: active theme = %r", theme_manager.theme)
 
