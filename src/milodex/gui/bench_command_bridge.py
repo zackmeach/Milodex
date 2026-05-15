@@ -35,6 +35,7 @@ from milodex.commands.bench import (
     ACTION_FAMILY_BACKTEST,
     ACTION_FAMILY_DEMOTE,
     ACTION_FAMILY_FREEZE_MANIFEST,
+    ACTION_FAMILY_PROMOTE_TO_PAPER,
     BenchCommandFacade,
     CommandProposal,
 )
@@ -338,6 +339,52 @@ class BenchCommandBridge(QObject):
         return payload
 
     # ------------------------------------------------------------------ #
+    # QML-callable slots (promote to paper)
+    # ------------------------------------------------------------------ #
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def proposePromoteToPaper(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
+        """Build a promote-to-paper proposal and cache it by id."""
+        strategy_id = str(inputs.get("strategy_id", ""))
+        recommendation_raw = inputs.get("recommendation")
+        recommendation = (
+            str(recommendation_raw) if recommendation_raw is not None else None
+        )
+        run_id_raw = inputs.get("run_id")
+        run_id = str(run_id_raw) if run_id_raw else None
+        proposal = self._facade.propose_promote_to_paper(
+            strategy_id,
+            recommendation=recommendation,
+            known_risks=_known_risks_from_qvariant(inputs),
+            run_id=run_id,
+            approved_by=_resolve_operator_identity(),
+            lifecycle_exempt=bool(inputs.get("lifecycle_exempt", False)),
+        )
+        self._proposals[proposal.proposal_id] = proposal
+        return proposal.to_dict()
+
+    @Slot(str, result="QVariantMap")
+    def submitPromoteToPaper(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Submit a previously-proposed promote-to-paper request."""
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            return self._unknown_proposal_payload(
+                proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                submit_method="submitPromoteToPaper",
+                propose_method="proposePromoteToPaper",
+            )
+
+        result = self._facade.submit_promote_to_paper(proposal)
+        payload = result.to_dict()
+
+        if result.status == "submitted":
+            self._refresh_after_submit("submit_promote_to_paper")
+
+        self.submitCompleted.emit(payload)
+        return payload
+
+    # ------------------------------------------------------------------ #
     # Introspection (used by tests and operator surfaces)
     # ------------------------------------------------------------------ #
 
@@ -352,6 +399,7 @@ class BenchCommandBridge(QObject):
             ACTION_FAMILY_DEMOTE,
             ACTION_FAMILY_FREEZE_MANIFEST,
             ACTION_FAMILY_BACKTEST,
+            ACTION_FAMILY_PROMOTE_TO_PAPER,
         ]
 
 
@@ -361,3 +409,15 @@ def _date_from_qvariant(value: Any, default: date) -> date:
     if isinstance(value, date):
         return value
     return date.fromisoformat(str(value))
+
+
+def _known_risks_from_qvariant(inputs: dict[str, Any]) -> list[str]:
+    risks_raw = inputs.get("known_risks")
+    if isinstance(risks_raw, list | tuple):
+        return [str(risk) for risk in risks_raw if risk and str(risk).strip()]
+    if risks_raw not in (None, ""):
+        return [str(risks_raw)]
+    known_risk_raw = inputs.get("known_risk")
+    if known_risk_raw in (None, ""):
+        return []
+    return [str(known_risk_raw)]

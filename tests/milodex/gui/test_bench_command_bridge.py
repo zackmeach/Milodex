@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import inspect
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -30,9 +31,10 @@ from milodex.commands.bench import (
     ACTION_FAMILY_BACKTEST,
     ACTION_FAMILY_DEMOTE,
     ACTION_FAMILY_FREEZE_MANIFEST,
+    ACTION_FAMILY_PROMOTE_TO_PAPER,
     BenchCommandFacade,
 )
-from milodex.core.event_store import EventStore
+from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.gui import bench_command_bridge as bridge_module
 from milodex.gui.bench_command_bridge import BenchCommandBridge
 from milodex.risk.policy import RiskPolicy
@@ -75,6 +77,33 @@ def _write_strategy(config_dir: Path, *, stage: str) -> Path:
     path = config_dir / "strategy.yaml"
     path.write_text(_STRATEGY_YAML_TEMPLATE.format(stage=stage), encoding="utf-8")
     return path
+
+
+def _append_walk_forward_backtest_run(event_store: EventStore, *, run_id: str) -> None:
+    now = datetime.now()
+    event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id=run_id,
+            strategy_id=STRATEGY_ID,
+            config_path=None,
+            config_hash=None,
+            start_date=now,
+            end_date=now,
+            started_at=now,
+            status="completed",
+            slippage_pct=None,
+            commission_per_trade=None,
+            metadata={
+                "walk_forward": True,
+                "oos_aggregate": {
+                    "sharpe": 1.1,
+                    "max_drawdown_pct": 6.0,
+                    "trade_count": 35,
+                },
+            },
+            ended_at=now,
+        )
+    )
 
 
 @pytest.fixture
@@ -318,12 +347,12 @@ def test_bridge_exposes_submit_capable_action_family_slots() -> None:
     assert "submitFreezeManifest" in members
     assert "proposeBacktest" in members
     assert "submitBacktest" in members
+    assert "proposePromoteToPaper" in members
+    assert "submitPromoteToPaper" in members
     # No other action-family slot. Adding one without the corresponding ADR
     # amendment + facade wiring + boundary doc update is exactly the failure
     # mode the perimeter exists to prevent.
     for forbidden in (
-        "proposePromoteToPaper",
-        "submitPromoteToPaper",
         "proposeStartPaperRunner",
         "submitStartPaperRunner",
         "proposeStopPaperRunner",
@@ -343,6 +372,7 @@ def test_submit_capable_action_families_returns_wired_families(
         ACTION_FAMILY_DEMOTE,
         ACTION_FAMILY_FREEZE_MANIFEST,
         ACTION_FAMILY_BACKTEST,
+        ACTION_FAMILY_PROMOTE_TO_PAPER,
     ]
 
 
@@ -421,6 +451,133 @@ def test_submit_backtest_unknown_or_consumed_id_returns_structured_error(
     second = bridge.submitBacktest(proposal["proposal_id"])
     assert second["status"] == "error"
     assert second["blockers"][0]["reason_code"] == "unknown_proposal_id"
+
+
+# --------------------------------------------------------------------------- #
+# Promote-to-paper submit bridge
+# --------------------------------------------------------------------------- #
+
+
+def test_propose_promote_to_paper_returns_dict_and_caches_proposal(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+
+    payload = bridge.proposePromoteToPaper(
+        {
+            "strategy_id": STRATEGY_ID,
+            "recommendation": "Backtest evidence is strong enough for paper.",
+            "known_risk": "Regime shifts may degrade the signal.",
+            "run_id": "bt-gui-promote",
+        }
+    )
+
+    assert payload["action_family"] == ACTION_FAMILY_PROMOTE_TO_PAPER
+    assert payload["inputs"]["recommendation"] == (
+        "Backtest evidence is strong enough for paper."
+    )
+    assert payload["inputs"]["known_risks"] == ["Regime shifts may degrade the signal."]
+    assert payload["inputs"]["run_id"] == "bt-gui-promote"
+    assert payload["inputs"]["approved_by"] == bridge_module._resolve_operator_identity()
+    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+
+
+def test_submit_promote_to_paper_with_known_id_writes_event_and_refreshes(
+    facade: BenchCommandFacade,
+    config_dir: Path,
+    event_store: EventStore,
+) -> None:
+    config_path = _write_strategy(config_dir, stage="backtest")
+    _append_walk_forward_backtest_run(event_store, run_id="bt-gui-promote")
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    proposal = bridge.proposePromoteToPaper(
+        {
+            "strategy_id": STRATEGY_ID,
+            "recommendation": "Backtest evidence is strong enough for paper.",
+            "known_risk": "Regime shifts may degrade the signal.",
+            "run_id": "bt-gui-promote",
+        }
+    )
+    result = bridge.submitPromoteToPaper(proposal["proposal_id"])
+
+    assert result["status"] == "submitted", result["blockers"]
+    assert result["action_family"] == ACTION_FAMILY_PROMOTE_TO_PAPER
+    assert result["durable_refs"]["from_stage"] == "backtest"
+    assert result["durable_refs"]["to_stage"] == "paper"
+    assert result["durable_refs"]["backtest_run_id"] == "bt-gui-promote"
+    assert result["audit_event_id"]
+    assert fake_state.refresh_kicks == 1
+    assert len(payloads) == 1
+    assert payloads[0]["status"] == "submitted"
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_propose_promote_to_paper_surfaces_missing_inputs(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+
+    payload = bridge.proposePromoteToPaper({"strategy_id": STRATEGY_ID})
+
+    codes = {blocker["reason_code"] for blocker in payload["blockers"]}
+    assert {"missing_recommendation", "missing_known_risks", "missing_run_id"}.issubset(
+        codes
+    )
+
+
+def test_submit_promote_to_paper_unknown_or_consumed_id_returns_structured_error(
+    facade: BenchCommandFacade,
+    config_dir: Path,
+    event_store: EventStore,
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    _append_walk_forward_backtest_run(event_store, run_id="bt-gui-promote")
+    bridge = BenchCommandBridge(facade)
+
+    unknown = bridge.submitPromoteToPaper("missing-proposal")
+    assert unknown["status"] == "error"
+    assert unknown["action_family"] == ACTION_FAMILY_PROMOTE_TO_PAPER
+    assert unknown["blockers"][0]["reason_code"] == "unknown_proposal_id"
+
+    proposal = bridge.proposePromoteToPaper(
+        {
+            "strategy_id": STRATEGY_ID,
+            "recommendation": "Backtest evidence is strong enough for paper.",
+            "known_risk": "Regime shifts may degrade the signal.",
+            "run_id": "bt-gui-promote",
+        }
+    )
+    first = bridge.submitPromoteToPaper(proposal["proposal_id"])
+    assert first["status"] == "submitted"
+    second = bridge.submitPromoteToPaper(proposal["proposal_id"])
+    assert second["status"] == "error"
+    assert second["blockers"][0]["reason_code"] == "unknown_proposal_id"
+
+
+def test_propose_promote_to_paper_ignores_qml_approved_by(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+
+    payload = bridge.proposePromoteToPaper(
+        {
+            "strategy_id": STRATEGY_ID,
+            "recommendation": "Backtest evidence is strong enough for paper.",
+            "known_risk": "Regime shifts may degrade the signal.",
+            "run_id": "bt-gui-promote",
+            "approved_by": "malicious-attempt",
+        }
+    )
+
+    assert payload["inputs"]["approved_by"] == bridge_module._resolve_operator_identity()
+    assert payload["inputs"]["approved_by"] != "malicious-attempt"
 
 
 # --------------------------------------------------------------------------- #

@@ -224,8 +224,8 @@ def test_bench_command_bridge_resolves_in_qml() -> None:
     A probe QML component imports ``Milodex 1.0`` and binds
     ``submitCapableActionFamilies()`` to a property. If the singleton is not
     registered, QML emits a warning at component creation; if registration
-    succeeded, the property includes the current submit-capable Bench actions.
-    Either failure exits the subprocess non-zero.
+    succeeded, the property reads the currently submit-capable action
+    families. Either failure exits the subprocess non-zero.
     """
     probe_qml = (
         "import QtQuick\n"
@@ -260,7 +260,7 @@ def test_bench_command_bridge_resolves_in_qml() -> None:
         "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
         "    sys.exit(4)\n"
         "families = obj.property('families')\n"
-        "if list(families) != ['demote', 'freeze_manifest', 'backtest']:\n"
+        "if list(families) != ['demote', 'freeze_manifest', 'backtest', 'promote_to_paper']:\n"
         "    print(f'UNEXPECTED_FAMILIES: {families!r}', file=sys.stderr)\n"
         "    sys.exit(5)\n"
         "print('PROBE_OK')\n"
@@ -1318,8 +1318,31 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     assert "Run canonical walk-forward backtest evidence" in modal_src
 
 
+def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
+    """PR 14: Promote to Paper routes through the command bridge."""
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "Confirm promotion" in modal_src
+    assert "_isPromoteToPaperSubmit" in modal_src
+    assert "BenchCommandBridge.proposePromoteToPaper(" in modal_src
+    assert "BenchCommandBridge.submitPromoteToPaper(" in modal_src
+    assert '"recommendation": recommendation' in modal_src
+    assert '"known_risk": knownRisk' in modal_src
+    assert '"run_id": runId' in modal_src
+    assert '"lifecycle_exempt": false' in modal_src
+    start = modal_src.find("function _dispatchPromoteToPaperSubmit")
+    assert start != -1
+    end = modal_src.find("function _dispatchSubmit", start)
+    assert end != -1
+    assert '"approved_by"' not in modal_src[start:end]
+    assert "Recommendation required" in modal_src
+    assert "Known risk required" in modal_src
+
+
 def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
-    """ADR 0051: only demote, freeze_manifest, and backtest are
+    """ADR 0051: demote, freeze_manifest, backtest, and Promote to Paper are
     submit-capable. The modal must still render the inert "Not wired in v1"
     primary for every other action family. The boolean gate that selects
     which primary renders must look at the action kind, not at a global
@@ -1339,6 +1362,7 @@ def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
     assert '"freeze_manifest": true' in modal_src
     assert '"initiate_backtest": true' in modal_src
     assert '"refresh_backtest": true' in modal_src
+    assert "_isPromoteToPaperSubmit" in modal_src
 
     # The inert primary block must be visible-gated to the !_isSubmitCapable
     # branch so promote / return / start / stop / initiate / refresh actions
