@@ -141,6 +141,20 @@ def test_backtest_output_exposes_data_quality_report():
     )
 
 
+def test_backtest_output_exposes_run_manifest():
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.run_manifest = {
+        "schema_version": 1,
+        "strategy": {"config_hash": "abc123"},
+        "code": {"commit": "deadbeef", "dirty": False, "available": True},
+    }
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["run_manifest"]["schema_version"] == 1
+    assert result.data["run_manifest"]["strategy"]["config_hash"] == "abc123"
+
+
 def test_backtest_cli_passes_enforce_risk_policy():
     captured = {}
     ctx = MagicMock()
@@ -320,6 +334,39 @@ def test_walk_forward_output_exposes_data_quality_report():
 
     assert result.data["data_quality"]["status"] == "pass"
     assert any("Data quality:  pass" in line for line in result.human_lines)
+
+
+def test_walk_forward_output_exposes_run_manifest():
+    from milodex.backtesting.walk_forward_runner import (
+        WalkForwardResult,
+        WalkForwardStability,
+    )
+
+    result = backtest_command._build_walk_forward_result(
+        WalkForwardResult(
+            run_id="wf-1",
+            strategy_id="meanrev.daily.rsi2pullback.v1",
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 1, 31),
+            initial_equity=10_000.0,
+            train_days=10,
+            test_days=5,
+            step_days=5,
+            windows=[],
+            oos_trade_count=30,
+            oos_skipped_count=0,
+            oos_trading_days=10,
+            oos_total_return_pct=1.0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_equity_curve=[],
+            stability=WalkForwardStability(None, None, None, 0, 0, False),
+            risk_policy=RiskPolicy.BYPASS,
+            run_manifest={"schema_version": 1, "strategy": {"config_hash": "wf-hash"}},
+        )
+    )
+
+    assert result.data["run_manifest"]["strategy"]["config_hash"] == "wf-hash"
 
 
 def _args(*, risk_policy: str) -> argparse.Namespace:

@@ -40,6 +40,10 @@ import pandas as pd
 import yaml
 
 from milodex.analytics.snapshots import record_daily_snapshot
+from milodex.backtesting.run_manifest import (
+    BacktestRunManifestInput,
+    build_backtest_run_manifest,
+)
 from milodex.broker.models import AccountInfo, OrderSide, Position
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import BacktestRunEvent, EventStore, ExplanationEvent, TradeEvent
@@ -93,6 +97,7 @@ class BacktestResult:
     risk_policy: RiskPolicy = RiskPolicy.BYPASS
     skipped_count: int = 0
     data_quality: dict = field(default_factory=dict)
+    run_manifest: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -245,11 +250,15 @@ class BacktestEngine:
                 db_run_id=db_run_id,
             )
         except DataQualityError as exc:
+            data_quality = exc.report.to_dict()
             self._event_store.update_backtest_run_metadata(
                 effective_run_id,
-                metadata=self._metadata_with_data_quality(
+                metadata=self._metadata_with_run_manifest(
                     effective_run_id,
-                    exc.report.to_dict(),
+                    start_date=start_date,
+                    end_date=end_date,
+                    initial_equity=self._initial_equity,
+                    data_quality=data_quality,
                 ),
             )
             self._event_store.update_backtest_run_status(
@@ -283,6 +292,7 @@ class BacktestEngine:
                 "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
                 "risk_policy": self._risk_policy.value,
                 "data_quality": result.data_quality,
+                "run_manifest": result.run_manifest,
             },
         )
         return result
@@ -476,6 +486,12 @@ class BacktestEngine:
     ) -> BacktestResult:
         all_bars = self.prefetch_bars(start_date, end_date)
         data_quality = self._scan_data_quality(all_bars, start_date, end_date)
+        run_manifest = self._build_run_manifest(
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=self._initial_equity,
+            data_quality=data_quality,
+        )
 
         trading_days = _trading_days_in_range(all_bars, start_date, end_date)
         if not trading_days:
@@ -498,6 +514,7 @@ class BacktestEngine:
                 risk_policy=self._risk_policy,
                 skipped_count=0,
                 data_quality=data_quality,
+                run_manifest=run_manifest,
             )
 
         output = self._simulate(
@@ -528,6 +545,7 @@ class BacktestEngine:
             risk_policy=self._risk_policy,
             skipped_count=output.skipped_count,
             data_quality=data_quality,
+            run_manifest=run_manifest,
         )
 
     def _scan_data_quality(
@@ -542,10 +560,48 @@ class BacktestEngine:
             raise DataQualityError(report)
         return report.to_dict()
 
-    def _metadata_with_data_quality(self, run_id: str, data_quality: dict) -> dict:
+    def _build_run_manifest(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        initial_equity: float,
+        data_quality: dict,
+    ) -> dict:
+        return build_backtest_run_manifest(
+            BacktestRunManifestInput(
+                loaded=self._loaded,
+                data_provider=self._data_provider,
+                requested_start=start_date,
+                requested_end=end_date,
+                warmup_start=start_date - timedelta(days=self._warmup_calendar_days()),
+                risk_policy=self._risk_policy.value,
+                slippage_pct=self._slippage_pct,
+                commission_per_trade=self._commission,
+                initial_equity=initial_equity,
+                data_quality=data_quality,
+                coverage_threshold=self._resolve_coverage_threshold(),
+            )
+        )
+
+    def _metadata_with_run_manifest(
+        self,
+        run_id: str,
+        *,
+        start_date: date,
+        end_date: date,
+        initial_equity: float,
+        data_quality: dict,
+    ) -> dict:
         run_record = self._event_store.get_backtest_run(run_id)
         metadata = dict(run_record.metadata) if run_record is not None else {}
         metadata["data_quality"] = data_quality
+        metadata["run_manifest"] = self._build_run_manifest(
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=initial_equity,
+            data_quality=data_quality,
+        )
         return metadata
 
     def _simulate(

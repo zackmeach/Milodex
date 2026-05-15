@@ -159,6 +159,7 @@ def _build_backtest_result(
         "skipped_count": result.skipped_count,
         "risk_policy": result.risk_policy.value,
         "data_quality": _data_quality_payload(result.data_quality),
+        "run_manifest": _run_manifest_payload(result.run_manifest),
         "slippage_pct": result.slippage_pct,
         "commission_per_trade": result.commission_per_trade,
     }
@@ -246,6 +247,7 @@ def _build_walk_forward_result(
         "initial_equity": result.initial_equity,
         "risk_policy": result.risk_policy.value,
         "data_quality": _data_quality_payload(result.data_quality),
+        "run_manifest": _run_manifest_payload(result.run_manifest),
         "oos_aggregate": {
             "trading_days": result.oos_trading_days,
             "trade_count": result.oos_trade_count,
@@ -357,6 +359,10 @@ def _data_quality_label(data_quality: dict | None) -> str:
     if status == "pass_with_warnings":
         return f"pass with warnings ({warning_count} warning(s))"
     return status.replace("_", " ")
+
+
+def _run_manifest_payload(run_manifest: dict | None) -> dict[str, Any]:
+    return dict(run_manifest) if run_manifest else {}
 
 
 # Statistical minimum before a backtest is considered evidence-bearing

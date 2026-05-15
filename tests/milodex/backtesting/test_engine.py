@@ -410,6 +410,10 @@ def test_engine_data_quality_blocker_fails_before_simulated_mutation():
     assert run_record.metadata["risk_policy"] == "bypass"
     assert run_record.metadata["data_quality"]["status"] == "fail"
     assert run_record.metadata["data_quality"]["blocker_count"] == 1
+    manifest = run_record.metadata["run_manifest"]
+    assert manifest["strategy"]["config_hash"] == loaded.context.config_hash
+    assert manifest["execution_assumptions"]["risk_policy"] == "bypass"
+    assert manifest["data"]["quality"]["status"] == "fail"
     assert store.list_trades() == []
     assert store.list_explanations() == []
     assert store.list_portfolio_snapshots_for_session("bad-quality-run") == []
@@ -442,6 +446,45 @@ def test_engine_data_quality_warning_allows_run_and_persists_metadata():
     assert run_record is not None
     assert run_record.status == "completed"
     assert run_record.metadata["data_quality"] == result.data_quality
+
+
+def test_engine_persists_reproducibility_run_manifest():
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 5)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded.strategy.evaluate.return_value = _decision([])
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": _make_barset([100.0, 101.0, 102.0, 103.0], start)}
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        initial_equity=12_345.0,
+        slippage_pct=0.0005,
+        commission_per_trade=1.25,
+    )
+
+    result = engine.run(start, end, run_id="manifest-run")
+
+    manifest = result.run_manifest
+    assert manifest["schema_version"] == 1
+    assert manifest["strategy"]["strategy_id"] == loaded.config.strategy_id
+    assert manifest["strategy"]["config_hash"] == loaded.context.config_hash
+    assert manifest["universe"]["symbols"] == ["SPY"]
+    assert manifest["execution_assumptions"] == {
+        "risk_policy": "bypass",
+        "slippage_pct": 0.0005,
+        "commission_per_trade": 1.25,
+        "initial_equity": 12_345.0,
+    }
+    assert manifest["date_window"]["requested_start"] == "2024-01-02"
+    assert manifest["date_window"]["requested_end"] == "2024-01-05"
+    assert manifest["data"]["quality"]["status"] == "pass"
+    assert "commit" in manifest["code"]
+    run_record = store.get_backtest_run("manifest-run")
+    assert run_record is not None
+    assert run_record.metadata["run_manifest"] == manifest
 
 
 def test_engine_skips_buy_when_insufficient_cash():

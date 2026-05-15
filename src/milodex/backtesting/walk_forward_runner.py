@@ -106,6 +106,7 @@ class WalkForwardResult:
     oos_round_trip_count: int = 0
     risk_policy: RiskPolicy = RiskPolicy.BYPASS
     data_quality: dict = field(default_factory=dict)
+    run_manifest: dict = field(default_factory=dict)
 
 
 def compute_window_spans(
@@ -266,11 +267,15 @@ def run_walk_forward(
                 )
             )
     except DataQualityError as exc:
+        data_quality = exc.report.to_dict()
         engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
             effective_run_id,
-            metadata=engine._metadata_with_data_quality(  # noqa: SLF001
+            metadata=engine._metadata_with_run_manifest(  # noqa: SLF001
                 effective_run_id,
-                exc.report.to_dict(),
+                start_date=start_date,
+                end_date=end_date,
+                initial_equity=eq_start,
+                data_quality=data_quality,
             ),
         )
         engine._event_store.update_backtest_run_status(  # noqa: SLF001
@@ -285,6 +290,12 @@ def run_walk_forward(
 
     aggregate = _aggregate_oos(windows, eq_start)
     stability = _compute_stability(windows)
+    run_manifest = engine._build_run_manifest(  # noqa: SLF001
+        start_date=start_date,
+        end_date=end_date,
+        initial_equity=eq_start,
+        data_quality=data_quality,
+    )
 
     engine._event_store.update_backtest_run_status(  # noqa: SLF001
         effective_run_id, status="completed", ended_at=datetime.now(tz=UTC)
@@ -318,6 +329,7 @@ def run_walk_forward(
             },
             "risk_policy": engine.risk_policy.value,
             "data_quality": data_quality,
+            "run_manifest": run_manifest,
         },
     )
 
@@ -343,6 +355,7 @@ def run_walk_forward(
         oos_round_trip_count=aggregate.round_trip_count,
         risk_policy=engine.risk_policy,
         data_quality=data_quality,
+        run_manifest=run_manifest,
     )
 
 

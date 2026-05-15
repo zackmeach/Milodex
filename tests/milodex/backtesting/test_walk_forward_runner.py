@@ -256,6 +256,8 @@ def test_walk_forward_metadata_contains_data_quality_report():
     assert stored is not None
     assert result.data_quality["status"] == "pass_with_warnings"
     assert stored.metadata["data_quality"] == result.data_quality
+    assert stored.metadata["run_manifest"] == result.run_manifest
+    assert result.run_manifest["data"]["quality"]["status"] == "pass_with_warnings"
 
 
 def test_walk_forward_data_quality_blocker_marks_parent_run_failed():
@@ -282,6 +284,7 @@ def test_walk_forward_data_quality_blocker_marks_parent_run_failed():
     assert stored.metadata["windows_planned"] == 4
     assert stored.metadata["risk_policy"] == "bypass"
     assert stored.metadata["data_quality"]["status"] == "fail"
+    assert stored.metadata["run_manifest"]["data"]["quality"]["status"] == "fail"
 
 
 def test_walk_forward_per_window_initial_equity_resets():
