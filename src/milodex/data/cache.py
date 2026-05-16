@@ -147,13 +147,56 @@ class ParquetCache:
     def merge(self, symbol: str, timeframe: Timeframe, new_data: pd.DataFrame) -> None:
         """Merge new data into existing cache.
 
-        Algorithm: load existing -> concatenate -> deduplicate by timestamp
+        Algorithm: load existing -> validate new_data schema -> coerce new_data
+        to the existing schema -> concatenate -> deduplicate by timestamp
         (keeping the newest row) -> sort by timestamp -> write back.
+
+        Schema validation prevents silent downstream corruption: without it, an
+        extra column in ``new_data`` widens the on-disk parquet (injecting NaN
+        for existing rows), and a missing column fills the new rows with NaN —
+        both propagate silently into metrics that feed the capital-readiness gate.
+
+        Coercion strategy (prefer loud correctness over silent corruption):
+
+        - **Extra columns** in ``new_data`` are stripped; they are not part of
+          the established schema and their presence usually indicates a caller
+          bug.
+        - **Missing columns** in ``new_data`` cause a ``ValueError``: we cannot
+          silently invent values for a column we know nothing about.  A NaN fill
+          would be as wrong as omitting the column, and a loud failure at the
+          merge site is far better than silent NaN propagation into indicators.
         """
         existing = self.read(symbol, timeframe)
         if existing is None:
             self.write(symbol, timeframe, new_data)
             return
+
+        existing_cols = list(existing.columns)
+        new_cols = set(new_data.columns)
+
+        # Detect missing columns first — we cannot safely invent values.
+        missing = [c for c in existing_cols if c not in new_cols]
+        if missing:
+            msg = (
+                f"ParquetCache.merge({symbol!r}, {timeframe.value!r}): "
+                f"new_data is missing column(s) {missing} that exist in the "
+                f"cached frame.  Refusing to merge — a NaN fill would silently "
+                f"corrupt downstream metrics.  Caller must supply all columns: "
+                f"{existing_cols}"
+            )
+            raise ValueError(msg)
+
+        # Strip extra columns silently — new_data may carry provider metadata
+        # columns that are not part of the bar schema.
+        extra = [c for c in new_data.columns if c not in existing_cols]
+        if extra:
+            _logger.warning(
+                "cache_merge_schema_drift symbol=%s timeframe=%s extra_columns_stripped=%s",
+                symbol.upper(),
+                timeframe.value,
+                extra,
+            )
+            new_data = new_data[existing_cols]
 
         combined = pd.concat([existing, new_data], ignore_index=True)
         combined = combined.drop_duplicates(subset=["timestamp"], keep="last")

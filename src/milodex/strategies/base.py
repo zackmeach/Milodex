@@ -123,6 +123,33 @@ class Strategy(ABC):
     template: str
     parameter_specs: Sequence[StrategyParameterSpec] = ()
 
+    def max_lookback_periods(self) -> int:
+        """Return the maximum number of trading-day bars this strategy needs to
+        compute its indicators without NaN.
+
+        The backtest engine uses this value to size the warmup window it
+        requests from the data provider.  A warmup of at least
+        ``max_lookback_periods()`` trading days ensures that on the first
+        evaluation day the strategy receives a full indicator history.
+
+        **Override this method** in any strategy whose largest lookback cannot
+        be reliably inferred from its integer-valued config parameters (e.g.
+        when the lookback is stored as a float or is buried inside a nested
+        sub-dict).  The default implementation scans the strategy's
+        :attr:`parameter_specs` names against the context parameters at class
+        level, which is not available here, so it falls back to 0 and lets the
+        engine's own heuristic take over.  Concrete strategies that declare a
+        float or nested lookback MUST override and return the correct value.
+
+        The default of ``0`` is intentionally conservative: the engine's
+        existing integer-parameter heuristic (``max(int_params) * 3``, floor
+        365 calendar days) already provides correct warmup for all strategies
+        whose lookback params are stored as plain Python ``int`` values.
+        Returning ``0`` here means "no override; use the heuristic" — preserving
+        current behaviour for all existing strategies.
+        """
+        return 0
+
     @abstractmethod
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         """Return the trade intents plus cycle-level reasoning.

@@ -691,9 +691,33 @@ class BacktestEngine:
                 skipped_count += drained_skips
                 pending = []
 
+            # Gate on whether ANY universe symbol has a bar today, not just
+            # universe[0].  Multi-symbol universes can have mismatched holiday
+            # calendars: a day where universe[0] is absent but another symbol
+            # is active must still be evaluated so the equity curve has no
+            # holes and signals on the active symbols are not silently skipped.
+            # Single-symbol behaviour is unchanged: if the only symbol has no
+            # bar, none of the universe symbols do, so we still skip.
+            any_symbol_active = any(
+                bars_by_symbol.get(sym) is not None and len(bars_by_symbol[sym]) > 0
+                for sym in universe
+            )
+            if not any_symbol_active:
+                continue
+
+            # For strategy.evaluate() the primary_bars argument is the bars
+            # for universe[0] up to today.  When universe[0] has no bars yet
+            # (e.g. newly listed symbol, or mismatched holiday calendars), fall
+            # back to the first available symbol's barset.  Strategies that only
+            # use bars_by_symbol (e.g. meanrev, breakout) ignore the primary_bars
+            # argument anyway; strategies that do use it (e.g. regime) require
+            # universe[0] to be their primary signal source and will return
+            # no_signal when it has insufficient history — the same safe result.
             primary_bars = bars_by_symbol.get(universe[0])
             if primary_bars is None or len(primary_bars) == 0:
-                continue
+                primary_bars = next(
+                    bs for sym in universe if (bs := bars_by_symbol.get(sym)) is not None
+                )
 
             equity = _compute_equity(cash, positions, latest_closes)
             self._sync_broker_state(
@@ -1208,10 +1232,44 @@ class BacktestEngine:
         sim_broker.set_positions(reported_positions)
 
     def _warmup_calendar_days(self) -> int:
-        integer_params = [
-            v for v in self._loaded.config.parameters.values() if isinstance(v, int) and v > 0
+        """Return the number of calendar days to prepend before the run window.
+
+        Resolution order:
+
+        1. ``strategy.max_lookback_periods()`` — if the concrete strategy
+           declares a non-zero value, convert it to calendar days using a
+           1.4× trading-to-calendar multiplier (5 trading days / 7 calendar,
+           rounded up generously) plus a 30-day buffer for holiday variation.
+           This covers strategies whose lookback is expressed as a float param
+           or nested in a sub-dict — cases that the integer-param heuristic
+           (step 2) cannot reach.
+        2. Integer-param heuristic — scan ``config.parameters`` values, take
+           the largest *numeric whole-number* value (int or float-that-is-whole),
+           multiply by 3 to convert trading periods to calendar days, floor at
+           365.  ``bool`` values are excluded (they are ``int`` subclasses but
+           not lookback periods).
+        """
+        # Step 1: strategy-declared maximum lookback.
+        declared = self._loaded.strategy.max_lookback_periods()
+        if declared > 0:
+            # 1.4 calendar days per trading day (= 7/5), rounded up, plus 30-day buffer.
+            return math.ceil(declared * 1.4) + 30
+
+        # Step 2: heuristic — scan parameter values for the largest numeric
+        # whole-number (covers both int and float like 200.0).  Exclude booleans
+        # (bool is a subclass of int in Python) and negative/zero values.
+        # Whole-number constraint keeps fractional multipliers (e.g. 2.0 meaning
+        # "2× ATR") from being mis-interpreted as lookback periods; the 365-day
+        # floor is the safety net for strategies with small integer params.
+        numeric_params = [
+            int(v)
+            for v in self._loaded.config.parameters.values()
+            if isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and v > 0
+            and float(v) == int(v)
         ]
-        largest = max(integer_params, default=30)
+        largest = max(numeric_params, default=30)
         return max(365, largest * 3)
 
 
