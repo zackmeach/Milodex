@@ -12,7 +12,7 @@ Business logic — the rules that define *what Milodex means and how it behaves*
 
 - strategy evaluation (`src/milodex/strategies/`)
 - promotion policy (lifecycle, governance — backed by `docs/PROMOTION_GOVERNANCE.md`)
-- risk policy (`src/milodex/risk/`; `execution/risk.py` is a thin compatibility shim)
+- risk policy (`src/milodex/risk/`)
 - portfolio policy (sizing, exposure — backed by `docs/RISK_POLICY.md`)
 - execution eligibility
 - audit / governance rules
@@ -48,7 +48,7 @@ Benefits: the system is easier to test, easier to evolve into a GUI later, and c
 
 ## `execution/` vs `risk/` Boundary
 
-The risk evaluator (`RiskEvaluator` and `EvaluationContext`) lives in `src/milodex/risk/evaluator.py`. The `src/milodex/execution/risk.py` module is a thin backwards-compatibility re-export and is not the home of risk logic. The logical boundary:
+The risk evaluator (`RiskEvaluator` and `EvaluationContext`) lives in `src/milodex/risk/evaluator.py`. Risk types belong in `src/milodex/risk/` per ADR 0019. The logical boundary:
 
 **`risk/` — "Is Milodex allowed to proceed at all?"**
 

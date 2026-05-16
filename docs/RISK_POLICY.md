@@ -210,7 +210,7 @@ Each universe manifest carries a `survivorship_corrected: bool` field declaring 
 
 **Remaining planned fix:** point-in-time membership reconstruction for `sp100_liquid` (99 stocks, ~20-30 constituent changes 2020-2024). This requires both the per-date membership data and ticker-aliasing infrastructure for mid-window ticker changes. Out of scope for the current PR; tracked as future Phase 1.5 hardening.
 
-**Operational mitigation:** promotion is stage-aware. The paper-readiness gate is intentionally lighter because it only spends a paper-trading slot, while capital-stage gates remain strict (Sharpe > 0.5, max DD < 15%, and the strategy's configured trade-count floor). Strategies that barely clear a strict gate on biased data are likely below 0.0 in real expectation, so paper validation remains the buffer before capital is exposed. The bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
+**Operational mitigation:** promotion is stage-aware. The paper-readiness gate is intentionally lighter because it only spends a paper-trading slot, while capital-stage gates remain strict (see `src/milodex/promotion/policy.py` / ADR 0052 for authoritative threshold values). Strategies that barely clear a strict gate on biased data are likely below 0.0 in real expectation, so paper validation remains the buffer before capital is exposed. The bias hurts research velocity (false-positive strategies waste paper-trading slots) more than it hurts capital safety.
 
 ### Date-range truncation (provider history limit)
 

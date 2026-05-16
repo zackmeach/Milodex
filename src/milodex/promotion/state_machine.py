@@ -10,14 +10,12 @@ module owns structural transition legality and mechanics.
 
 Statistical strategies (promotion_type='statistical')
   Backtest -> paper:
-  Sharpe ratio     > 0.0
-  Max drawdown     < 25.0%
-  Trade count      >= strategy backtest.min_trades_required (default 30)
+    Paper-readiness gate — see ACTIVE_PROMOTION_POLICY.paper_gate for
+    the authoritative Sharpe, max-drawdown, and trade-count thresholds.
 
   Later capital stages:
-  Sharpe ratio     > 0.5          (SRS R-PRM-004)
-  Max drawdown     < 15.0%        (SRS R-PRM-004)
-  Trade count      >= strategy backtest.min_trades_required (default 30)
+    Capital-readiness gate — see ACTIVE_PROMOTION_POLICY.capital_gate
+    and ACTIVE_PROMOTION_POLICY.default_trade_floor (SRS R-PRM-004).
 
 Lifecycle-exempt strategies (promotion_type='lifecycle_exempt')
   Statistical thresholds do not apply (SRS R-PRM-004).

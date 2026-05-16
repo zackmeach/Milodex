@@ -1,6 +1,7 @@
 # ADR 0020 — Promotion Thresholds Are Code-Level Invariants
 
-**Status:** Accepted
+**Status:** Accepted — superseded in part by ADR 0052 (2026-05)
+**Superseded in part by:** [ADR 0052](0052-promotion-policy-is-a-typed-governance-source-of-truth.md) — the threshold source-of-truth moved from `src/milodex/strategies/promotion.py` to `src/milodex/promotion/policy.py`. The core decision (thresholds are code-level invariants, not YAML tuning) remains binding. See ADR 0052 for the current module path and the typed `PromotionPolicy` / `GateTier` structure.
 **Date:** 2026-04-22
 **Relates to:** ADR 0009 (promotion pipeline stage model), ADR 0003 (config-driven strategies)
 
@@ -14,7 +15,7 @@ Three numeric thresholds gate statistical promotion from `paper` to `micro_live`
 - Maximum drawdown < 15% (SRS R-PRM-002)
 - Trade count at or above the applicable floor, defaulting to 30 (SRS R-PRM-004, R-BKT-004)
 
-Today these live as Python constants in [src/milodex/strategies/promotion.py](../../src/milodex/strategies/promotion.py):
+At the time of this ADR these lived as Python constants in `src/milodex/strategies/promotion.py` (that path no longer exists — see the ADR 0052 supersedure note above; the current source of truth is `src/milodex/promotion/policy.py`):
 
 ```python
 MIN_SHARPE: float = 0.5
@@ -48,7 +49,7 @@ Specifically:
 
 ## Consequences
 
-- `promotion.py` constants remain the single source of truth for global gate thresholds and the default trade-count floor. If the SRS numbers change, the constants are updated in the same commit as the SRS edit.
+- The promotion-policy module remains the single source of truth for global gate thresholds and the default trade-count floor (now `src/milodex/promotion/policy.py` per ADR 0052; the original `src/milodex/strategies/promotion.py` no longer exists). If the SRS numbers change, the constants are updated in the same commit as the SRS edit.
 - `configs/risk_defaults.yaml` continues to hold only per-run, per-account operational guardrails (position caps, daily loss, kill-switch thresholds). It stays the right place for values that an operator might reasonably tune between runs.
 - Adding a new promotion threshold (e.g. a minimum backtest-window duration) is a code change plus an SRS requirement addition plus this ADR getting referenced. That is the intended level of friction.
 - Strategies that cannot meet the statistical thresholds (e.g. regime strategies that trade too infrequently) continue to use the `lifecycle_exempt` escape hatch. That escape hatch is not expanded.
