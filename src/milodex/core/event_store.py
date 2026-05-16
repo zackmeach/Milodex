@@ -549,6 +549,28 @@ class EventStore:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
         return [_trade_from_row(row) for row in rows]
 
+    def get_last_paper_buy_date_by_symbol(self) -> dict[str, str]:
+        """Return the most-recent ``recorded_at`` ISO string per symbol for paper BUY trades.
+
+        Performs a targeted indexed query (filter source+side, aggregate per symbol)
+        instead of a full-table scan followed by a Python reduction loop.
+        Used by :class:`milodex.strategies.runner.StrategyRunner` to build
+        ``entry_state`` without loading every trade row.
+
+        Returns a dict mapping ``SYMBOL.upper()`` → ISO-format ``recorded_at`` string
+        (the raw TEXT stored in the DB so the caller can parse to ``date``).
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT symbol, MAX(recorded_at) AS last_at
+                FROM trades
+                WHERE source = 'paper' AND side = 'buy'
+                GROUP BY symbol
+                """,
+            ).fetchall()
+        return {row[0].upper(): row[1] for row in rows}
+
     def list_kill_switch_events(self) -> list[KillSwitchEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM kill_switch_events ORDER BY id ASC").fetchall()

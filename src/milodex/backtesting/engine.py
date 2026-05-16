@@ -29,6 +29,7 @@ historical and live with no branches" guarantee.
 
 from __future__ import annotations
 
+import bisect
 import math
 import uuid
 from dataclasses import dataclass, field, replace
@@ -133,7 +134,7 @@ def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -
     if len(barset) == 0:
         return False
 
-    df = barset.to_dataframe()
+    df = barset._df_view()  # noqa: SLF001 — read-only internal helper
     if df.empty or "timestamp" not in df.columns:
         return False
 
@@ -642,6 +643,11 @@ class BacktestEngine:
             event_store=self._event_store,
         )
 
+        # Fix #1: pre-parse all timestamps to date objects once (O(symbols×bars));
+        # subsequent per-day slicing uses binary search (O(log bars)) instead of
+        # O(bars) re-parse.
+        ts_index = _build_ts_date_index(all_bars)
+
         cash = initial_equity
         positions: dict[str, tuple[float, float]] = {}
         entry_state: dict[str, dict] = {}
@@ -660,8 +666,8 @@ class BacktestEngine:
             for sym in entry_state:
                 entry_state[sym]["held_days"] = int(entry_state[sym]["held_days"]) + 1
 
-            bars_by_symbol = _slice_bars_to_day(all_bars, day)
-            fill_opens = _opens_on_day(bars_by_symbol, day)
+            bars_by_symbol = _slice_bars_to_day(all_bars, day, ts_index)
+            fill_opens = _opens_on_day(bars_by_symbol, day, ts_index)
             latest_closes = _latest_closes(bars_by_symbol)
 
             # Drain any orders enqueued on the previous decision day. Fills
@@ -751,7 +757,7 @@ class BacktestEngine:
 
         if pending and trading_days:
             last_day = trading_days[-1]
-            last_bars = _slice_bars_to_day(all_bars, last_day)
+            last_bars = _slice_bars_to_day(all_bars, last_day, ts_index)
             last_closes = _latest_closes(last_bars)
             final_equity_for_skips = _compute_equity(cash, positions, last_closes)
             for p in pending:
@@ -787,7 +793,7 @@ class BacktestEngine:
         # `analytics/snapshots.py` scaffolded surface (R-XC-016).
         if trading_days:
             last_day = trading_days[-1]
-            last_bars = _slice_bars_to_day(all_bars, last_day)
+            last_bars = _slice_bars_to_day(all_bars, last_day, ts_index)
             last_closes = _latest_closes(last_bars)
             self._sync_broker_state(
                 sim_broker=sim_broker,
@@ -1220,33 +1226,70 @@ class BacktestEngine:
 # ---------------------------------------------------------------------------
 
 
+def _build_ts_date_index(all_bars: dict[str, BarSet]) -> dict[str, list[date]]:
+    """Pre-parse each symbol's timestamps into a sorted list of ``date`` objects.
+
+    Computed once per simulation run; shared across all per-day slicing calls
+    so that timestamp parsing is O(symbols × total_bars) rather than
+    O(days × symbols × total_bars).
+    """
+    index: dict[str, list[date]] = {}
+    for sym, barset in all_bars.items():
+        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
+        if df.empty or "timestamp" not in df.columns:
+            index[sym] = []
+            continue
+        dates = pd.to_datetime(df["timestamp"], utc=True).dt.date.tolist()
+        index[sym] = dates  # already monotone-ascending from cache
+    return index
+
+
 def _trading_days_in_range(
     all_bars: dict[str, BarSet], start_date: date, end_date: date
 ) -> list[date]:
-    """Return sorted unique trading days present in bar data within [start, end]."""
+    """Return sorted unique trading days present in bar data within [start, end].
+
+    Vectorized: parses each symbol's ts column once via dt.date, no Python loop
+    over individual timestamps.
+    """
     days: set[date] = set()
     for barset in all_bars.values():
-        df = barset.to_dataframe()
+        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
         if df.empty or "timestamp" not in df.columns:
             continue
-        timestamps = pd.to_datetime(df["timestamp"], utc=True)
-        for ts in timestamps:
-            d = ts.date()
-            if start_date <= d <= end_date:
-                days.add(d)
+        dates = pd.to_datetime(df["timestamp"], utc=True).dt.date
+        days.update(d for d in dates if start_date <= d <= end_date)
     return sorted(days)
 
 
-def _slice_bars_to_day(all_bars: dict[str, BarSet], day: date) -> dict[str, BarSet]:
-    """Return a dict of BarSets each truncated to bars on or before ``day``."""
+def _slice_bars_to_day(
+    all_bars: dict[str, BarSet],
+    day: date,
+    ts_index: dict[str, list[date]] | None = None,
+) -> dict[str, BarSet]:
+    """Return a dict of BarSets each truncated to bars on or before ``day``.
+
+    When ``ts_index`` is supplied (pre-parsed date lists from
+    :func:`_build_ts_date_index`), slicing is O(log(total_bars)) per symbol
+    via binary search rather than O(total_bars) per-day re-parse.  Falls back
+    to the parse-each-call path when ``ts_index`` is absent.
+    """
     result: dict[str, BarSet] = {}
     for sym, barset in all_bars.items():
-        df = barset.to_dataframe()
+        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
         if df.empty:
             continue
-        timestamps = pd.to_datetime(df["timestamp"], utc=True)
-        mask = timestamps.dt.date <= day
-        sliced = df.loc[mask]
+        if ts_index is not None:
+            dates = ts_index.get(sym, [])
+            # bisect_right gives the insertion point *after* all dates == day.
+            cut = bisect.bisect_right(dates, day)
+            if cut == 0:
+                continue
+            sliced = df.iloc[:cut]
+        else:
+            timestamps = pd.to_datetime(df["timestamp"], utc=True)
+            mask = timestamps.dt.date <= day
+            sliced = df.loc[mask]
         if not sliced.empty:
             result[sym] = BarSet(sliced.reset_index(drop=True))
     return result
@@ -1255,7 +1298,7 @@ def _slice_bars_to_day(all_bars: dict[str, BarSet], day: date) -> dict[str, BarS
 def _latest_closes(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
     closes: dict[str, float] = {}
     for sym, barset in bars_by_symbol.items():
-        df = barset.to_dataframe()
+        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
         if not df.empty:
             closes[sym] = float(df["close"].iloc[-1])
     return closes
@@ -1271,24 +1314,37 @@ def _latest_opens(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
     """
     opens: dict[str, float] = {}
     for sym, barset in bars_by_symbol.items():
-        df = barset.to_dataframe()
+        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
         if not df.empty:
             opens[sym] = float(df["open"].iloc[-1])
     return opens
 
 
-def _opens_on_day(bars_by_symbol: dict[str, BarSet], day: date) -> dict[str, float]:
+def _opens_on_day(
+    bars_by_symbol: dict[str, BarSet],
+    day: date,
+    ts_index: dict[str, list[date]] | None = None,
+) -> dict[str, float]:
     """Return each symbol's open only when it has a bar exactly on ``day``."""
     opens: dict[str, float] = {}
     for sym, barset in bars_by_symbol.items():
-        df = barset.to_dataframe()
+        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
         if df.empty or "timestamp" not in df.columns:
             continue
-        timestamps = pd.to_datetime(df["timestamp"], utc=True)
-        mask = timestamps.dt.date == day
-        rows = df.loc[mask]
-        if not rows.empty:
-            opens[sym] = float(rows["open"].iloc[-1])
+        if ts_index is not None:
+            dates = ts_index.get(sym, [])
+            # Find the last occurrence of ``day`` via binary search.
+            hi = bisect.bisect_right(dates, day)
+            lo = bisect.bisect_left(dates, day)
+            if lo == hi:
+                continue  # no bar on this exact day
+            opens[sym] = float(df["open"].iloc[hi - 1])
+        else:
+            timestamps = pd.to_datetime(df["timestamp"], utc=True)
+            mask = timestamps.dt.date == day
+            rows = df.loc[mask]
+            if not rows.empty:
+                opens[sym] = float(rows["open"].iloc[-1])
     return opens
 
 

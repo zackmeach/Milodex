@@ -400,19 +400,26 @@ class StrategyRunner:
         ``held_days`` is derived from the most recent paper BUY trade in the
         event store for each symbol.  Falls back to 0 when no trade record
         exists (e.g. position opened outside this system).
+
+        Uses a targeted indexed SQL query instead of a full-table scan so the
+        cost is proportional to the number of distinct symbols that have ever
+        had a paper buy, not the total trade count.
         """
         positions = self._broker.get_positions()
         if not positions:
             return {}
 
         today = date.today()
+        # Fix #5: single targeted READ-ONLY query — MAX(recorded_at) per symbol
+        # for paper buys, rather than a full list_trades() scan.
+        raw = self._event_store.get_last_paper_buy_date_by_symbol()
         last_buy_date: dict[str, date] = {}
-        for trade in self._event_store.list_trades():
-            if trade.side.lower() == "buy" and trade.source == "paper":
-                sym = trade.symbol.upper()
-                trade_date = trade.recorded_at.date()
-                if sym not in last_buy_date or trade_date > last_buy_date[sym]:
-                    last_buy_date[sym] = trade_date
+        for sym, recorded_at_str in raw.items():
+            try:
+                # recorded_at is stored as ISO text; take the date portion.
+                last_buy_date[sym] = datetime.fromisoformat(recorded_at_str).date()
+            except (ValueError, TypeError):
+                pass
 
         entry_state: dict[str, dict[str, Any]] = {}
         for position in positions:

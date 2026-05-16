@@ -95,8 +95,17 @@ class AlpacaDataProvider(DataProvider):
         symbol_ranges: dict[str, list[tuple[date, date]]] = {}
 
         for symbol in symbols:
+            # Fix #4: read parquet once; derive range from the in-memory frame
+            # rather than calling get_cached_range() which re-reads the file.
             cached_df = self._cache.read(symbol, timeframe)
-            cached_range = self._cache.get_cached_range(symbol, timeframe)
+            if cached_df is not None and not cached_df.empty:
+                _ts = pd.to_datetime(cached_df["timestamp"])
+                cached_range: tuple[date, date] | None = (
+                    _ts.min().date(),
+                    _ts.max().date(),
+                )
+            else:
+                cached_range = None
 
             # Full cache hit: range covered and not requesting today
             if (
