@@ -374,7 +374,7 @@ def test_duplicate_order_is_blocked(
 def test_market_closed_blocks_submit_but_not_preview(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):
-    service, _ = build_service(
+    service, broker = build_service(
         tmp_path,
         risk_defaults_file,
         latest_bar,
@@ -390,6 +390,8 @@ def test_market_closed_blocks_submit_but_not_preview(
     assert preview.risk_decision.allowed is True
     assert submit.risk_decision.allowed is False
     assert "market_closed" in submit.risk_decision.reason_codes
+    # Chokepoint invariant: a blocked submit must NEVER reach the broker.
+    assert broker.submit_calls == []
 
 
 def test_stale_data_is_blocked(tmp_path, risk_defaults_file, sample_account, submitted_order):
@@ -402,7 +404,7 @@ def test_stale_data_is_blocked(tmp_path, risk_defaults_file, sample_account, sub
         volume=1000,
         vwap=100.0,
     )
-    service, _ = build_service(
+    service, broker = build_service(
         tmp_path,
         risk_defaults_file,
         stale_bar,
@@ -415,6 +417,8 @@ def test_stale_data_is_blocked(tmp_path, risk_defaults_file, sample_account, sub
     )
 
     assert "stale_market_data" in result.risk_decision.reason_codes
+    # Chokepoint invariant: a blocked submit must NEVER reach the broker.
+    assert broker.submit_calls == []
 
 
 def test_strategy_stage_must_be_paper_or_backtest(
@@ -462,7 +466,7 @@ def test_paper_submit_requires_paper_mode(
         daily_pnl=50.0,
     )
     monkeypatch.setattr("milodex.execution.service.get_trading_mode", lambda: "live")
-    service, _ = build_service(
+    service, broker = build_service(
         tmp_path,
         risk_defaults_file,
         latest_bar,
@@ -475,6 +479,8 @@ def test_paper_submit_requires_paper_mode(
     )
 
     assert "paper_mode_required" in result.risk_decision.reason_codes
+    # Chokepoint invariant: a blocked submit must NEVER reach the broker.
+    assert broker.submit_calls == []
 
 
 def test_kill_switch_status_and_activation(
@@ -487,7 +493,7 @@ def test_kill_switch_status_and_activation(
         portfolio_value=10_000.0,
         daily_pnl=-1_500.0,
     )
-    service, _ = build_service(
+    service, broker = build_service(
         tmp_path,
         risk_defaults_file,
         latest_bar,
@@ -502,6 +508,8 @@ def test_kill_switch_status_and_activation(
 
     assert "kill_switch_threshold_breached" in result.risk_decision.reason_codes
     assert state.active is True
+    # Chokepoint invariant: a blocked submit must NEVER reach the broker.
+    assert broker.submit_calls == []
 
 
 def test_preview_and_submit_record_explanations_and_trades(
@@ -706,3 +714,133 @@ def test_submit_paper_records_pending_broker_status(
     assert len(trades) == 1
     assert trades[0].broker_status == "pending"
     assert trades[0].broker_order_id == "order-pending-1"
+
+
+# ---------------------------------------------------------------------------
+# Chokepoint parametrized invariant — every block reason must never submit
+# ---------------------------------------------------------------------------
+
+
+def _make_stale_bar() -> Bar:
+    return Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(minutes=10),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _make_recent_duplicate_order() -> Order:
+    return Order(
+        id="dup-order",
+        symbol="SPY",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=1,
+        time_in_force=TimeInForce.DAY,
+        status=OrderStatus.PENDING,
+        submitted_at=datetime.now(tz=UTC) - timedelta(seconds=30),
+    )
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "kill_switch",
+        "market_closed",
+        "stale_data",
+        "paper_mode_required",
+        "duplicate_order",
+    ],
+)
+def test_any_block_reason_never_submits(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    monkeypatch,
+    scenario,
+):
+    """Chokepoint invariant: for EVERY block reason, the broker receives zero
+    submit calls.
+
+    Meaningfulness verified: temporarily mutating the chokepoint in service.py
+    to call ``self._broker.submit_order(...)`` unconditionally (before the
+    ``if not result.risk_decision.allowed: return`` guard) causes this test to
+    fail for all non-duplicate-order scenarios, since StubBroker.submit_order
+    raises AssertionError when ``submit_order_result is None`` (the duplicate
+    path sets it to None to provoke that path). The parametrize coverage is
+    therefore genuine for every entry listed here.
+    """
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    if scenario == "kill_switch":
+        # Trigger kill switch via daily-loss breach (same approach as
+        # test_kill_switch_status_and_activation above).
+        loss_account = AccountInfo(
+            equity=10_000.0,
+            cash=8_000.0,
+            buying_power=8_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=-1_500.0,  # exceeds 10% max_drawdown_pct threshold
+        )
+        service, broker = build_service(
+            tmp_path, risk_defaults_file, latest_bar, loss_account, submitted_order
+        )
+        result = service.submit_paper(intent)
+        assert "kill_switch_threshold_breached" in result.risk_decision.reason_codes
+
+    elif scenario == "market_closed":
+        service, broker = build_service(
+            tmp_path,
+            risk_defaults_file,
+            latest_bar,
+            sample_account,
+            submitted_order,
+            market_open=False,
+        )
+        result = service.submit_paper(intent)
+        assert "market_closed" in result.risk_decision.reason_codes
+
+    elif scenario == "stale_data":
+        service, broker = build_service(
+            tmp_path,
+            risk_defaults_file,
+            _make_stale_bar(),
+            sample_account,
+            submitted_order,
+        )
+        result = service.submit_paper(intent)
+        assert "stale_market_data" in result.risk_decision.reason_codes
+
+    elif scenario == "paper_mode_required":
+        monkeypatch.setattr("milodex.execution.service.get_trading_mode", lambda: "live")
+        service, broker = build_service(
+            tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+        )
+        result = service.submit_paper(intent)
+        assert "paper_mode_required" in result.risk_decision.reason_codes
+
+    elif scenario == "duplicate_order":
+        service, broker = build_service(
+            tmp_path,
+            risk_defaults_file,
+            latest_bar,
+            sample_account,
+            submitted_order,
+            orders=[_make_recent_duplicate_order()],
+        )
+        result = service.submit_paper(intent)
+        assert "duplicate_order_window" in result.risk_decision.reason_codes
+
+    # The universal chokepoint assertion: regardless of WHY we blocked, the
+    # broker must have received zero submit calls.
+    assert result.risk_decision.allowed is False
+    assert broker.submit_calls == [], (
+        f"Scenario '{scenario}': broker was called despite block — "
+        "the execution chokepoint is broken."
+    )
