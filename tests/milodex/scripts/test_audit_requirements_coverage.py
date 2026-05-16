@@ -16,6 +16,9 @@ from pathlib import Path
 
 import pytest
 
+# As-of stamp format: "> As of: commit `<sha>` — YYYY-MM-DD"
+_AS_OF_PATTERN = re.compile(r"> As of: commit `[0-9a-f]+` — \d{4}-\d{2}-\d{2}")
+
 # Ensure the scripts/ directory is importable.
 _SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
 if str(_SCRIPTS_DIR) not in sys.path:
@@ -140,6 +143,16 @@ class TestGenerateReport:
         requirements, coverage, output = minimal_inputs
         generate_report(requirements, coverage, output)
         assert output.exists()
+
+    def test_as_of_stamp_present_and_well_formed(self, minimal_inputs: tuple) -> None:
+        """The report header must contain an as-of stamp with commit SHA and date."""
+        requirements, coverage, output = minimal_inputs
+        generate_report(requirements, coverage, output)
+        text = output.read_text(encoding="utf-8")
+        assert _AS_OF_PATTERN.search(text), (
+            "Expected an as-of stamp matching "
+            r'"> As of: commit `<sha>` — YYYY-MM-DD" in the report header'
+        )
 
     def test_contains_all_five_sections(self, minimal_inputs: tuple) -> None:
         """The report must contain sections A through E."""
