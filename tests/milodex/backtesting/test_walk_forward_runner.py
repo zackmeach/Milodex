@@ -399,6 +399,53 @@ def test_aggregate_oos_sharpe_is_on_concatenated_returns():
     assert abs(aggregate.sharpe) < 1.0
 
 
+def test_aggregate_oos_aligns_dates_to_returns_with_nonpositive_prior_day():
+    """A non-positive-prior equity day must not misalign dates to returns.
+
+    ``daily_returns_from_equity`` only emits a return when the prior day's
+    equity is > 0, so an equity curve with a wiped-out (0.0) day produces
+    fewer returns than ``equity_curve[1:]`` has elements. The old
+    ``zip(..., strict=False)`` silently truncated, pairing later dates with
+    the wrong returns and corrupting the stitched OOS curve — and therefore
+    ``oos_sharpe`` / ``oos_max_drawdown_pct`` that the promotion capital gate
+    consumes. The stitched curve must stay one equity point per curve step
+    with the correct date attached to each step.
+    """
+    d = date(2024, 1, 1)
+    # Day 1 wipes equity to 0.0, day 2 recovers to 5.0, day 3 to 6.0.
+    equity_curve = [
+        (d, 100.0),
+        (d + timedelta(days=1), 0.0),
+        (d + timedelta(days=2), 5.0),
+        (d + timedelta(days=3), 6.0),
+    ]
+    window = WalkForwardWindow(
+        index=0,
+        train_start=date(2023, 1, 1),
+        train_end=date(2023, 12, 31),
+        test_start=d,
+        test_end=d + timedelta(days=3),
+        trading_days=4,
+        trade_count=0,
+        skipped_count=0,
+        initial_equity=100.0,
+        final_equity=6.0,
+        total_return_pct=-94.0,
+        sharpe=None,
+        max_drawdown_pct=0.0,
+        equity_curve=equity_curve,
+    )
+
+    aggregate = _aggregate_oos([window], initial_equity=100.0)
+
+    # One stitched point per equity-curve step (seed + 3 transitions),
+    # each carrying its own curve date — no truncation, no shifted dates.
+    assert len(aggregate.equity_curve) == len(equity_curve)
+    assert [day for day, _ in aggregate.equity_curve] == [day for day, _ in equity_curve]
+    # The final stitched date must be the curve's last date (not dropped).
+    assert aggregate.equity_curve[-1][0] == d + timedelta(days=3)
+
+
 # ---------------------------------------------------------------------------
 # Stability diagnostics
 # ---------------------------------------------------------------------------
