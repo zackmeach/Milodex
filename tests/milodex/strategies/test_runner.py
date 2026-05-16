@@ -994,6 +994,51 @@ def test_runner_second_sigint_during_prompt_forces_kill_switch(
     assert event_store.list_strategy_runs()[0].exit_reason == "kill_switch"
 
 
+def test_runner_heartbeats_its_lock_each_poll_cycle(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The runner must refresh its advisory lock once per poll cycle.
+
+    Regression for the fix/event-store-integrity fail-open: ``run()`` is an
+    unbounded loop documented as safe to leave running all day/overnight,
+    holding the per-strategy advisory lock the whole time. Without a
+    per-cycle heartbeat the lock-file mtime never moves, so the 12h age
+    fallback would let a second invocation STEAL the lock from the still
+    -working process → duplicate trade submission. Assert the runner
+    invokes its injected ``lock_heartbeat`` on every loop iteration.
+    """
+    heartbeats = {"count": 0}
+
+    runner, _broker, _event_store, _kill = _build_sigint_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        prompt_fn=lambda: "c",
+    )
+    runner.set_lock_heartbeat(lambda: heartbeats.__setitem__("count", heartbeats["count"] + 1))
+
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        # Run a few full cycles, then ask for a controlled stop so the
+        # unbounded loop terminates.
+        fired["count"] += 1
+        if fired["count"] >= 3:
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    # At least one heartbeat per completed poll cycle.
+    assert heartbeats["count"] >= fired["count"] >= 3
+
+
 # ---------------------------------------------------------------------------
 # CI-1 (PHASE2_PLANNING.md): post-close watermark advance is gated on bar
 # finalization stability — two consecutive identical OHLCV fetches separated

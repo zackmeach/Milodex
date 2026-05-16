@@ -67,6 +67,9 @@ class StubRunner:
     def set_on_cycle_result(self, callback) -> None:
         pass
 
+    def set_lock_heartbeat(self, heartbeat) -> None:
+        pass
+
 
 class TestStageCompatibilityGuard:
     """paper mode × stage combinations."""

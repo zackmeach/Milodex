@@ -164,6 +164,9 @@ class StubStrategyRunner:
     def set_on_cycle_result(self, callback) -> None:
         self.on_cycle_result = callback
 
+    def set_lock_heartbeat(self, heartbeat) -> None:
+        self.lock_heartbeat = heartbeat
+
 
 def _sample_barset() -> BarSet:
     return BarSet(

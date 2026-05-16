@@ -120,6 +120,9 @@ class _StrategyRunner:
     def set_on_cycle_result(self, callback):
         self.on_cycle_result = callback
 
+    def set_lock_heartbeat(self, heartbeat):
+        self.lock_heartbeat = heartbeat
+
 
 def _sample_execution_result(status: ExecutionStatus = ExecutionStatus.PREVIEW) -> ExecutionResult:
     request = ExecutionRequest(
