@@ -19,13 +19,35 @@ state-changing code path must call ``acquire`` explicitly.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import platform
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+
+_logger = logging.getLogger(__name__)
+
+_STALE_LOCK_MAX_AGE_SECONDS = 12 * 60 * 60
+"""Age past which a lock file is reclaimable even if its PID looks live.
+
+Justification: Phase 1 is daily swing trading (``docs/OPERATIONS.md``).
+Every Milodex process that takes this lock — the intraday strategy
+runner, a submit-capable CLI command, a backtest — is bounded by a
+single trading day; none legitimately holds the lock for half a day of
+wall-clock continuously. A lock file whose mtime is older than this is
+therefore almost certainly an orphan whose recorded PID was *recycled*
+by the OS onto an unrelated live process (so the liveness check returns
+a false "still held" and would block restarts forever) — or was written
+by a build whose ``ctypes``/``OpenProcess`` path could not actually
+prove liveness. 12h is deliberately well above any real process lifetime
+and well below "days", so a genuinely long-running process is never
+stolen mid-session, while a truly dead-but-PID-recycled lock self-heals
+within half a day instead of never.
+"""
 
 
 @dataclass(frozen=True)
@@ -80,13 +102,34 @@ class AdvisoryLock:
 
         existing_holder = self._read_holder()
         if existing_holder is not None and _process_exists(existing_holder.pid):
-            msg = (
-                f"Advisory lock '{self._name}' is held by {existing_holder.holder_name} "
-                f"(pid {existing_holder.pid} on {existing_holder.hostname}, "
-                f"started {existing_holder.started_at.isoformat()}). "
-                "Stop the other process or wait for it to exit, then retry."
-            )
-            raise AdvisoryLockError(msg, holder=existing_holder)
+            if self._lock_is_past_max_age():
+                # The recorded PID resolves to a live process, but the
+                # lock file is older than any legitimate single-session
+                # hold (see _STALE_LOCK_MAX_AGE_SECONDS). Treat the PID as
+                # almost certainly recycled (the original holder is long
+                # dead) and reclaim — loudly, because the alternative is a
+                # permanently wedged system that can never restart.
+                _logger.warning(
+                    "Reclaiming stale advisory lock '%s': lock file age "
+                    "exceeds %ds and its recorded pid %d is presumed "
+                    "recycled (original holder %s on %s, started %s). "
+                    "If a legitimate Milodex process is genuinely still "
+                    "running this long, stop it and investigate.",
+                    self._name,
+                    _STALE_LOCK_MAX_AGE_SECONDS,
+                    existing_holder.pid,
+                    existing_holder.holder_name,
+                    existing_holder.hostname,
+                    existing_holder.started_at.isoformat(),
+                )
+            else:
+                msg = (
+                    f"Advisory lock '{self._name}' is held by {existing_holder.holder_name} "
+                    f"(pid {existing_holder.pid} on {existing_holder.hostname}, "
+                    f"started {existing_holder.started_at.isoformat()}). "
+                    "Stop the other process or wait for it to exit, then retry."
+                )
+                raise AdvisoryLockError(msg, holder=existing_holder)
 
         if existing_holder is not None:
             self._lock_path.unlink(missing_ok=True)
@@ -145,6 +188,21 @@ class AdvisoryLock:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.release()
+
+    def _lock_is_past_max_age(self) -> bool:
+        """Return ``True`` if the lock file is older than the stale threshold.
+
+        Uses the file mtime (wall clock). A missing file or an
+        ``OSError`` reading its stat is treated as "not past age" — the
+        caller already established the holder exists, and we must never
+        weaken correctness for a genuinely-fresh lock on a transient
+        stat error; the conservative outcome is "still held".
+        """
+        try:
+            mtime = self._lock_path.stat().st_mtime
+        except OSError:
+            return False
+        return (time.time() - mtime) > _STALE_LOCK_MAX_AGE_SECONDS
 
     def _read_holder(self) -> LockHolder | None:
         if not self._lock_path.exists():
@@ -213,6 +271,13 @@ def _process_exists(pid: int) -> bool:
 
 
 def _windows_process_exists(pid: int) -> bool:
+    # Note: the unknowable cases below deliberately return True ("assume
+    # held") so a genuinely-fresh lock is never stolen on a probe failure.
+    # The permanent-deadlock that this used to cause in a stripped env
+    # (no ctypes / OpenProcess blocked) is now bounded by the lock-file
+    # age fallback in AdvisoryLock.acquire: a lock this code cannot prove
+    # dead still self-heals once it is older than _STALE_LOCK_MAX_AGE
+    # _SECONDS, instead of blocking restarts forever.
     try:
         import ctypes
         import ctypes.wintypes

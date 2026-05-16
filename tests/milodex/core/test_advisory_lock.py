@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
 from milodex.core.advisory_lock import (
+    _STALE_LOCK_MAX_AGE_SECONDS,
     AdvisoryLock,
     AdvisoryLockError,
     advisory_lock,
@@ -81,6 +83,74 @@ def test_advisory_lock_release_is_noop_when_not_held(tmp_path):
     # Should not raise even though acquire was never called.
     lock.release()
     assert not lock.path.exists()
+
+
+def test_old_lockfile_with_live_recycled_pid_is_reclaimable_with_warning(tmp_path, caplog):
+    """An ancient lock whose PID is now some unrelated live process is reclaimable.
+
+    Recycled-PID hazard: the original Milodex holder died, the OS reused
+    its PID for an unrelated long-lived process, and ``_process_exists``
+    truthfully reports that PID alive — permanently blocking a legitimate
+    restart. Fix: a lock older than the conservative age threshold is
+    reclaimed (with a logged WARNING) even if its recorded PID is live,
+    because no single trading session legitimately holds the lock that
+    long. We record THIS process's own pid (guaranteed alive) and a very
+    old mtime to stand in for the recycled-PID case.
+    """
+    lock_path = tmp_path / "milodex.runtime.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),  # guaranteed-live, stands in for recycled
+                "hostname": "ghost",
+                "holder_name": "milodex",
+                "started_at": "2020-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    old = time.time() - (_STALE_LOCK_MAX_AGE_SECONDS + 3600)
+    os.utime(lock_path, (old, old))
+
+    lock = AdvisoryLock("milodex.runtime", locks_dir=tmp_path)
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="milodex.core.advisory_lock"):
+        holder = lock.acquire()
+    try:
+        assert holder.pid == os.getpid()
+        assert any(
+            "reclaim" in r.message.lower() or "stale" in r.message.lower() for r in caplog.records
+        ), f"expected a stale-reclaim WARNING, got {caplog.records!r}"
+    finally:
+        lock.release()
+
+
+def test_fresh_lockfile_with_live_owner_is_not_reclaimable(tmp_path):
+    """A recently-written lock held by a live process must still block.
+
+    The mtime fallback must NOT make a genuinely-held fresh lock
+    stealable. Here the recorded PID is this live process and the lock
+    file is brand new → acquisition must raise.
+    """
+    lock_path = tmp_path / "milodex.runtime.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "hostname": "host",
+                "holder_name": "milodex",
+                "started_at": "2026-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    # mtime is "now" (just written); well within the freshness window.
+    lock = AdvisoryLock("milodex.runtime", locks_dir=tmp_path)
+    with pytest.raises(AdvisoryLockError) as exc_info:
+        lock.acquire()
+    assert exc_info.value.holder is not None
+    assert exc_info.value.holder.pid == os.getpid()
 
 
 def _pick_stale_pid() -> int:
