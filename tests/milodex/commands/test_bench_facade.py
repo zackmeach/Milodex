@@ -273,14 +273,10 @@ def test_action_families_tuple_matches_constants() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_propose_backtest_admissible_for_known_strategy(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_backtest_admissible_for_known_strategy(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
-    proposal = facade.propose_backtest(
-        STRATEGY_ID, start=date(2025, 1, 1), end=date(2025, 6, 30)
-    )
+    proposal = facade.propose_backtest(STRATEGY_ID, start=date(2025, 1, 1), end=date(2025, 6, 30))
     assert proposal.action_family == ACTION_FAMILY_BACKTEST
     assert proposal.admissible, proposal.blockers
     assert proposal.state_snapshot["stage"] == "backtest"
@@ -301,20 +297,13 @@ def test_propose_backtest_walk_forward_routes_to_walk_forward_callee(
         end=date(2025, 6, 30),
         walk_forward=True,
     )
-    assert (
-        "walk_forward_runner.run_walk_forward"
-        in proposal.projected_outcome["eventual_callee"]
-    )
+    assert "walk_forward_runner.run_walk_forward" in proposal.projected_outcome["eventual_callee"]
 
 
-def test_propose_backtest_blocks_when_dates_inverted(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_backtest_blocks_when_dates_inverted(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
-    proposal = facade.propose_backtest(
-        STRATEGY_ID, start=date(2025, 6, 30), end=date(2025, 1, 1)
-    )
+    proposal = facade.propose_backtest(STRATEGY_ID, start=date(2025, 6, 30), end=date(2025, 1, 1))
     assert not proposal.admissible
     codes = [b.reason_code for b in proposal.blockers]
     assert "invalid_date_range" in codes
@@ -334,9 +323,7 @@ def test_propose_backtest_blocks_unknown_strategy(make_facade) -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_propose_freeze_manifest_admissible_for_paper_stage(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_freeze_manifest_admissible_for_paper_stage(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     proposal = facade.propose_freeze_manifest(STRATEGY_ID)
@@ -346,9 +333,7 @@ def test_propose_freeze_manifest_admissible_for_paper_stage(
     )
 
 
-def test_propose_freeze_manifest_blocks_backtest_stage(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_freeze_manifest_blocks_backtest_stage(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
     proposal = facade.propose_freeze_manifest(STRATEGY_ID)
@@ -363,9 +348,7 @@ def test_propose_freeze_manifest_blocks_backtest_stage(
 # --------------------------------------------------------------------------- #
 
 
-def test_propose_promote_to_paper_requires_evidence_inputs(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_promote_to_paper_requires_evidence_inputs(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
     proposal = facade.propose_promote_to_paper(STRATEGY_ID)
@@ -407,9 +390,7 @@ def test_propose_promote_to_paper_lifecycle_exempt_skips_run_id_requirement(
     assert proposal.projected_outcome["promotion_type"] == "lifecycle_exempt"
 
 
-def test_propose_promote_to_paper_blocks_wrong_source_stage(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_promote_to_paper_blocks_wrong_source_stage(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     proposal = facade.propose_promote_to_paper(
@@ -427,9 +408,7 @@ def test_propose_promote_to_paper_blocks_wrong_source_stage(
 # --------------------------------------------------------------------------- #
 
 
-def test_propose_demote_admissible_for_paper_to_backtest(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_demote_admissible_for_paper_to_backtest(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     proposal = facade.propose_demote(
@@ -451,9 +430,7 @@ def test_propose_demote_requires_reason(make_facade, config_dir: Path) -> None:
     assert any(b.reason_code == "missing_reason" for b in proposal.blockers)
 
 
-def test_propose_demote_rejects_invalid_target(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_demote_rejects_invalid_target(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     proposal = facade.propose_demote(STRATEGY_ID, to_stage="live", reason="test")
@@ -461,14 +438,10 @@ def test_propose_demote_rejects_invalid_target(
     assert any(b.reason_code == "invalid_demotion_target" for b in proposal.blockers)
 
 
-def test_propose_demote_rejects_noop_same_stage(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_demote_rejects_noop_same_stage(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
-    proposal = facade.propose_demote(
-        STRATEGY_ID, to_stage="backtest", reason="test"
-    )
+    proposal = facade.propose_demote(STRATEGY_ID, to_stage="backtest", reason="test")
     assert not proposal.admissible
     assert any(b.reason_code == "demotion_is_noop" for b in proposal.blockers)
 
@@ -540,9 +513,7 @@ def test_propose_start_paper_runner_admissible_for_paper_stage(
     assert proposal.projected_outcome["trading_mode"] == "paper"
 
 
-def test_propose_start_paper_runner_blocks_backtest_stage(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_start_paper_runner_blocks_backtest_stage(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
     proposal = facade.propose_start_paper_runner(STRATEGY_ID)
@@ -572,15 +543,11 @@ def test_propose_start_paper_runner_blocks_when_advisory_lock_held(
     assert not proposal.admissible
     codes = {b.reason_code for b in proposal.blockers}
     assert "advisory_lock_held" in codes
-    holder_blocker = next(
-        b for b in proposal.blockers if b.reason_code == "advisory_lock_held"
-    )
+    holder_blocker = next(b for b in proposal.blockers if b.reason_code == "advisory_lock_held")
     assert holder_blocker.context["holder"]["pid"] == 1
 
 
-def test_propose_stop_paper_runner_blocks_when_no_runner(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_stop_paper_runner_blocks_when_no_runner(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
@@ -607,9 +574,7 @@ def test_propose_stop_paper_runner_admissible_with_active_runner(
 
 def test_facade_exposes_no_micro_live_or_live_route() -> None:
     """ADR 0051 §6, §7: no GUI path to micro_live or live at launch."""
-    methods = {
-        name for name, _ in inspect.getmembers(BenchCommandFacade, predicate=callable)
-    }
+    methods = {name for name, _ in inspect.getmembers(BenchCommandFacade, predicate=callable)}
     for forbidden in (
         "propose_promote_to_micro_live",
         "submit_promote_to_micro_live",
@@ -621,17 +586,13 @@ def test_facade_exposes_no_micro_live_or_live_route() -> None:
         )
 
 
-def test_propose_demote_refuses_micro_live_and_live_targets(
-    make_facade, config_dir: Path
-) -> None:
+def test_propose_demote_refuses_micro_live_and_live_targets(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     for bad in ("micro_live", "live"):
         proposal = facade.propose_demote(STRATEGY_ID, to_stage=bad, reason="trying")
         assert not proposal.admissible
-        assert any(
-            b.reason_code == "invalid_demotion_target" for b in proposal.blockers
-        )
+        assert any(b.reason_code == "invalid_demotion_target" for b in proposal.blockers)
 
 
 # --------------------------------------------------------------------------- #
@@ -676,9 +637,7 @@ def test_submit_start_paper_runner_blocks_when_revalidation_fails(
     assert any(b.reason_code == "stage_incompatible_with_mode" for b in result.blockers)
 
 
-def test_submit_start_paper_runner_requires_runner_control(
-    make_facade, config_dir: Path
-) -> None:
+def test_submit_start_paper_runner_requires_runner_control(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     proposal = facade.propose_start_paper_runner(STRATEGY_ID)
@@ -785,9 +744,10 @@ class _FakeSingleBacktestEngine:
 class _FakeWalkForwardEngine:
     def __init__(self) -> None:
         self.prefetched: tuple[date, date] | None = None
-        self._loaded = SimpleNamespace(  # noqa: SLF001 - fake mirrors engine internals.
-            config=SimpleNamespace(backtest={"walk_forward_windows": 2})
-        )
+        # ``walk_forward_windows`` is exposed as a public property on
+        # ``BacktestEngine``; tests set it directly here rather than reaching
+        # into ``_loaded``.
+        self.walk_forward_windows: int = 2
 
     def prefetch_bars(self, start: date, end: date) -> dict[str, BarSet]:
         self.prefetched = (start, end)
@@ -935,8 +895,7 @@ def test_submit_backtest_rejects_wrong_action_family(make_facade) -> None:
 
     assert result.status == "error"
     assert any(
-        blocker.reason_code == "proposal_action_family_mismatch"
-        for blocker in result.blockers
+        blocker.reason_code == "proposal_action_family_mismatch" for blocker in result.blockers
     )
 
 
@@ -950,9 +909,7 @@ def test_submit_backtest_requires_event_store_and_engine_factory(
         with_event_store=False,
         backtest_engine_factory=lambda *_args, **_kwargs: object(),
     )
-    assert no_store.submit_backtest(proposal).blockers[0].reason_code == (
-        "event_store_unavailable"
-    )
+    assert no_store.submit_backtest(proposal).blockers[0].reason_code == ("event_store_unavailable")
 
     no_engine = make_facade()
     assert no_engine.submit_backtest(proposal).blockers[0].reason_code == (
@@ -960,9 +917,7 @@ def test_submit_backtest_requires_event_store_and_engine_factory(
     )
 
 
-def test_submit_backtest_revalidates_stale_deleted_config(
-    make_facade, config_dir: Path
-) -> None:
+def test_submit_backtest_revalidates_stale_deleted_config(make_facade, config_dir: Path) -> None:
     config_path = _write_strategy(config_dir, stage="backtest")
     proposal = _make_backtest_proposal(walk_forward=False)
     facade = make_facade(
@@ -1091,9 +1046,7 @@ def test_submit_demote_records_reverses_event_id_when_prior_promotion_exists(
     )
 
     facade = make_facade()
-    result = facade.submit_demote(
-        _make_demote_proposal(to_stage="backtest", reason="walk back")
-    )
+    result = facade.submit_demote(_make_demote_proposal(to_stage="backtest", reason="walk back"))
 
     assert result.status == "submitted", result.blockers
     assert result.durable_refs.get("reverses_event_id") == str(prior_id)
@@ -1106,9 +1059,7 @@ def test_submit_demote_blank_reason_refused_and_no_state_change(
     yaml_before = config_path.read_text(encoding="utf-8")
     facade = make_facade()
 
-    result = facade.submit_demote(
-        _make_demote_proposal(to_stage="backtest", reason="   ")
-    )
+    result = facade.submit_demote(_make_demote_proposal(to_stage="backtest", reason="   "))
 
     assert result.status == "blocked"
     codes = {b.reason_code for b in result.blockers}
@@ -1129,9 +1080,7 @@ def test_submit_demote_invalid_target_refused(
     yaml_before = config_path.read_text(encoding="utf-8")
     facade = make_facade()
 
-    result = facade.submit_demote(
-        _make_demote_proposal(to_stage=bad_target, reason="trying")
-    )
+    result = facade.submit_demote(_make_demote_proposal(to_stage=bad_target, reason="trying"))
 
     assert result.status == "blocked"
     # Either invalid_demotion_target (live/micro_live/nonsense) or
@@ -1162,9 +1111,7 @@ def test_submit_demote_rejects_proposal_for_different_action_family(
     )
     result = facade.submit_demote(wrong)
     assert result.status == "error"
-    assert any(
-        b.reason_code == "proposal_action_family_mismatch" for b in result.blockers
-    )
+    assert any(b.reason_code == "proposal_action_family_mismatch" for b in result.blockers)
     assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
 
 
@@ -1176,17 +1123,13 @@ def test_submit_demote_revalidates_stale_proposal(
     config_path = _write_strategy(config_dir, stage="paper")
     facade = make_facade()
     # Propose against the live config (paper stage); this is admissible.
-    proposal = facade.propose_demote(
-        STRATEGY_ID, to_stage="backtest", reason="real reason"
-    )
+    proposal = facade.propose_demote(STRATEGY_ID, to_stage="backtest", reason="real reason")
     assert proposal.admissible
 
     # Simulate drift: someone (operator, another process) already walked the
     # strategy back to backtest. The proposal is now stale.
     config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            'stage: "paper"', 'stage: "backtest"'
-        ),
+        config_path.read_text(encoding="utf-8").replace('stage: "paper"', 'stage: "backtest"'),
         encoding="utf-8",
     )
 
@@ -1208,9 +1151,7 @@ def test_submit_demote_refuses_when_facade_lacks_event_store(
         get_trading_mode=lambda: "paper",
         event_store_factory=None,
     )
-    result = facade.submit_demote(
-        _make_demote_proposal(to_stage="backtest", reason="x")
-    )
+    result = facade.submit_demote(_make_demote_proposal(to_stage="backtest", reason="x"))
     assert result.status == "error"
     assert any(b.reason_code == "event_store_unavailable" for b in result.blockers)
 
@@ -1248,9 +1189,7 @@ def test_submit_freeze_manifest_success_on_paper_stage(
     config_path = _write_strategy(config_dir, stage="paper")
     facade = make_facade()
 
-    result = facade.submit_freeze_manifest(
-        _make_freeze_manifest_proposal(frozen_by="operator")
-    )
+    result = facade.submit_freeze_manifest(_make_freeze_manifest_proposal(frozen_by="operator"))
 
     assert result.status == "submitted", result.blockers
     assert result.action_family == ACTION_FAMILY_FREEZE_MANIFEST
@@ -1279,9 +1218,7 @@ def test_submit_freeze_manifest_refuses_backtest_stage(
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
 
-    result = facade.submit_freeze_manifest(
-        _make_freeze_manifest_proposal()
-    )
+    result = facade.submit_freeze_manifest(_make_freeze_manifest_proposal())
 
     assert result.status == "blocked"
     codes = {b.reason_code for b in result.blockers}
@@ -1289,9 +1226,7 @@ def test_submit_freeze_manifest_refuses_backtest_stage(
     # governance call.
     assert "stage_not_freezable" in codes
     # No event written on refusal.
-    assert (
-        event_store.get_active_manifest_for_strategy(STRATEGY_ID, "backtest") is None
-    )
+    assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "backtest") is None
 
 
 def test_submit_freeze_manifest_revalidates_stale_proposal(
@@ -1307,9 +1242,7 @@ def test_submit_freeze_manifest_revalidates_stale_proposal(
 
     # Drift the YAML so the strategy is no longer freezable.
     config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            'stage: "paper"', 'stage: "backtest"'
-        ),
+        config_path.read_text(encoding="utf-8").replace('stage: "paper"', 'stage: "backtest"'),
         encoding="utf-8",
     )
 
@@ -1318,9 +1251,7 @@ def test_submit_freeze_manifest_revalidates_stale_proposal(
     codes = {b.reason_code for b in result.blockers}
     assert "stage_not_freezable" in codes
     assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper") is None
-    assert (
-        event_store.get_active_manifest_for_strategy(STRATEGY_ID, "backtest") is None
-    )
+    assert event_store.get_active_manifest_for_strategy(STRATEGY_ID, "backtest") is None
 
 
 def test_submit_freeze_manifest_refuses_when_facade_lacks_event_store(
@@ -1359,9 +1290,7 @@ def test_submit_freeze_manifest_rejects_proposal_for_different_action_family(
     )
     result = facade.submit_freeze_manifest(wrong)
     assert result.status == "error"
-    assert any(
-        b.reason_code == "proposal_action_family_mismatch" for b in result.blockers
-    )
+    assert any(b.reason_code == "proposal_action_family_mismatch" for b in result.blockers)
 
 
 def test_submit_freeze_manifest_threads_frozen_by_from_inputs(
@@ -1435,8 +1364,8 @@ def _append_walk_forward_backtest_run(
     trade_count: int,
 ) -> None:
     """Insert a synthetic walk-forward backtest run whose OOS aggregate
-    metrics can be read directly by ``_metrics_from_run`` — no need to
-    synthesize real trades. Mirrors the metadata shape the orchestrator
+    metrics can be read directly by ``metrics_from_run`` (milodex.promotion.run_evidence)
+    — no need to synthesize real trades. Mirrors the metadata shape the orchestrator
     writes per ADR 0021."""
     now = datetime.now()
     event_store.append_backtest_run(
@@ -1560,9 +1489,7 @@ def test_submit_promote_to_paper_missing_known_risks_refused(
     config_path = _write_strategy(config_dir, stage="backtest")
     yaml_before = config_path.read_text(encoding="utf-8")
     facade = make_facade()
-    proposal = _make_promote_to_paper_proposal(
-        known_risks=[], lifecycle_exempt=True, run_id=None
-    )
+    proposal = _make_promote_to_paper_proposal(known_risks=[], lifecycle_exempt=True, run_id=None)
 
     result = facade.submit_promote_to_paper(proposal)
 
@@ -1595,9 +1522,7 @@ def test_submit_promote_to_paper_missing_run_id_for_statistical_refused(
     """Non-lifecycle-exempt promotion requires a backtest run id."""
     _write_strategy(config_dir, stage="backtest")
     facade = make_facade()
-    proposal = _make_promote_to_paper_proposal(
-        run_id=None, lifecycle_exempt=False
-    )
+    proposal = _make_promote_to_paper_proposal(run_id=None, lifecycle_exempt=False)
 
     result = facade.submit_promote_to_paper(proposal)
 
@@ -1672,9 +1597,7 @@ def test_submit_promote_to_paper_revalidates_stale_proposal(
 
     # Drift the YAML so the strategy is no longer at backtest.
     config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            'stage: "backtest"', 'stage: "paper"'
-        ),
+        config_path.read_text(encoding="utf-8").replace('stage: "backtest"', 'stage: "paper"'),
         encoding="utf-8",
     )
 
@@ -1719,9 +1642,7 @@ def test_submit_promote_to_paper_rejects_proposal_for_different_action_family(
     )
     result = facade.submit_promote_to_paper(wrong)
     assert result.status == "error"
-    assert any(
-        b.reason_code == "proposal_action_family_mismatch" for b in result.blockers
-    )
+    assert any(b.reason_code == "proposal_action_family_mismatch" for b in result.blockers)
 
 
 def test_submit_promote_to_paper_threads_approved_by_from_inputs(
@@ -1758,9 +1679,7 @@ def test_submit_promote_to_paper_is_exposed_by_bench_bridge(
     wired GUI submit set."""
     from milodex.gui.bench_command_bridge import BenchCommandBridge
 
-    members = {
-        name for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)
-    }
+    members = {name for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)}
     assert "proposePromoteToPaper" in members
     assert "submitPromoteToPaper" in members
 
@@ -1769,9 +1688,7 @@ def test_submit_promote_to_paper_is_exposed_by_bench_bridge(
     locks = tmp_path / "locks"
     cfg.mkdir()
     locks.mkdir()
-    facade = BenchCommandFacade(
-        config_dir=cfg, locks_dir=locks, get_trading_mode=lambda: "paper"
-    )
+    facade = BenchCommandFacade(config_dir=cfg, locks_dir=locks, get_trading_mode=lambda: "paper")
     bridge = BenchCommandBridge(facade)
     assert bridge.submitCapableActionFamilies() == [
         ACTION_FAMILY_DEMOTE,
@@ -1842,20 +1759,36 @@ def test_facade_module_does_not_import_broker_runner_or_execution_writes() -> No
             )
 
 
+def test_facade_module_does_not_import_cli_internals() -> None:
+    """ADR 0051 §6: the facade must route through domain/governance callees, not CLI
+    internals. Any ``milodex.cli.*`` import in bench.py is a layering inversion.
+    This test pins the refactor that graduated ``_metrics_from_run``,
+    ``_compute_post_update_hash``, and ``_ALLOWED_STAGES_BY_MODE`` to public
+    ``milodex.promotion`` surfaces (PR refactor/bench-facade-layering).
+    """
+    source = Path(facade_module.__file__).read_text(encoding="utf-8")
+    forbidden_cli_imports = (
+        "from milodex.cli",
+        "import milodex.cli",
+    )
+    for forbidden in forbidden_cli_imports:
+        for line in source.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            assert not stripped.startswith(forbidden), (
+                f"milodex.commands.bench must not import from milodex.cli.* "
+                f"(ADR 0051 §6 layering rule). Offending line: {line!r}"
+            )
+
+
 def test_gui_qml_files_still_forbid_submit_broker_eventstore() -> None:
     """ADR 0049 perimeter survives Phase B.
 
     Phase B introduces no QML changes, so the existing forbidden-token
     contract on Bench QML must still hold.
     """
-    qml_dir = (
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "milodex"
-        / "gui"
-        / "qml"
-        / "Milodex"
-    )
+    qml_dir = Path(__file__).resolve().parents[3] / "src" / "milodex" / "gui" / "qml" / "Milodex"
     forbidden_tokens = (
         "BenchState.promote",
         "BenchState.demote",

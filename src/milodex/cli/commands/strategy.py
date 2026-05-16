@@ -10,6 +10,7 @@ from milodex.cli.formatter import CommandResult
 from milodex.config import get_locks_dir
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.execution.models import ExecutionResult, ExecutionStatus
+from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE, RECOGNIZED_MODES
 from milodex.strategies.loader import load_strategy_config
 from milodex.strategies.paper_runner_control import (
     controlled_stop_request_path,
@@ -55,15 +56,6 @@ def _format_decision_line(result: ExecutionResult) -> str:
     return f"rejected {side} {req.symbol} x{req.quantity:g} — {reason}"
 
 
-# TODO(phase-2): when live mode opens, extend this table AND relax the
-# `trading_mode != "paper"` guard in run() below.
-_ALLOWED_STAGES_BY_MODE: dict[str, frozenset[str]] = {
-    "paper": frozenset({"paper"}),
-}
-
-_RECOGNIZED_MODES: frozenset[str] = frozenset(_ALLOWED_STAGES_BY_MODE)
-
-
 def _check_stage_compatibility(strategy_id: str, config_stage: str, trading_mode: str) -> None:
     """Raise ValueError if config_stage is not eligible to run under trading_mode.
 
@@ -76,16 +68,20 @@ def _check_stage_compatibility(strategy_id: str, config_stage: str, trading_mode
     Strict exact-match policy: paper mode only accepts paper-stage strategies.
     If no convention existed, the strictest interpretation was chosen so that
     a reviewer can relax it rather than having to tighten a bug.
+
+    The ``ALLOWED_STAGES_BY_MODE`` table lives in
+    :mod:`milodex.promotion.stage_compat` so both this CLI command and the Bench
+    facade read the same authoritative mapping.
     """
-    if trading_mode not in _RECOGNIZED_MODES:
-        recognized = ", ".join(sorted(_RECOGNIZED_MODES))
+    if trading_mode not in RECOGNIZED_MODES:
+        recognized = ", ".join(sorted(RECOGNIZED_MODES))
         msg = (
             f"Unrecognized trading mode '{trading_mode}'. "
             f"Recognized modes: {recognized}. "
             "Check your TRADING_MODE environment variable."
         )
         raise ValueError(msg)
-    allowed = _ALLOWED_STAGES_BY_MODE[trading_mode]
+    allowed = ALLOWED_STAGES_BY_MODE[trading_mode]
     if config_stage not in allowed:
         msg = (
             f"Strategy '{strategy_id}' has stage='{config_stage}' but the active "

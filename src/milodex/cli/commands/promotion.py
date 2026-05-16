@@ -3,9 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
-from typing import Any
 
 from milodex.cli._shared import CommandContext, add_global_flags
 from milodex.cli.formatter import CommandResult
@@ -20,8 +17,9 @@ from milodex.promotion import (
     resolve_strategy_config_path,
     validate_stage_transition,
 )
+from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.promotion.state_machine import demote, transition
-from milodex.strategies.loader import canonicalize_config_data, load_strategy_config
+from milodex.strategies.loader import load_strategy_config
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -199,7 +197,7 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     event_store = ctx.get_event_store()
 
-    sharpe_ratio, max_drawdown_pct, trade_count = _metrics_from_run(args.run_id, event_store)
+    sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(args.run_id, event_store)
 
     gate_result = check_gate(
         lifecycle_exempt=args.lifecycle_exempt,
@@ -212,7 +210,7 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if not gate_result.allowed:
         return _promote_blocked_result(args.strategy_id, from_stage, to_stage, gate_result)
 
-    manifest_hash = _compute_post_update_hash(config.raw_data, to_stage)
+    manifest_hash = compute_post_update_hash(config.raw_data, to_stage)
     evidence = assemble_evidence_package(
         strategy_id=args.strategy_id,
         from_stage=from_stage,
@@ -317,45 +315,6 @@ def _require_evidence_inputs(args: argparse.Namespace) -> None:
             + ". Per R-PRM-008 the CLI refuses promotion without these."
         )
         raise ValueError(msg)
-
-
-def _metrics_from_run(
-    run_id: str | None, event_store: Any
-) -> tuple[float | None, float | None, int | None]:
-    """Sharpe, max-drawdown, trade-count for a backtest run.
-
-    For walk-forward runs, returns the OOS-aggregate metrics stored in run
-    metadata by the orchestrator — *not* the whole-period numbers. This is the
-    promotion-gate hookup for ADR 0021: the gate evaluates evidence from
-    out-of-sample data, not from data the strategy implicitly had access to.
-    For single whole-period runs, falls through to :func:`metrics_for_run`
-    which derives metrics from recorded trades.
-    """
-    if run_id is None:
-        return None, None, None
-    from milodex.cli.commands.analytics import metrics_for_run
-
-    run_ = event_store.get_backtest_run(run_id)
-    if run_ is None:
-        raise ValueError(f"Backtest run not found: {run_id}")
-    metadata = run_.metadata or {}
-    if metadata.get("walk_forward") and isinstance(metadata.get("oos_aggregate"), dict):
-        oos = metadata["oos_aggregate"]
-        return (
-            oos.get("sharpe"),
-            oos.get("max_drawdown_pct"),
-            oos.get("trade_count"),
-        )
-    metrics = metrics_for_run(run_, event_store)
-    return metrics.sharpe_ratio, metrics.max_drawdown_pct, metrics.trade_count
-
-
-def _compute_post_update_hash(raw_data: dict, to_stage: str) -> str:
-    strategy = dict(raw_data["strategy"])
-    strategy["stage"] = to_stage
-    canonical = canonicalize_config_data({**raw_data, "strategy": strategy})
-    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _promote_blocked_result(

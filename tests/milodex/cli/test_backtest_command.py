@@ -136,8 +136,7 @@ def test_backtest_output_exposes_data_quality_report():
 
     assert result.data["data_quality"]["status"] == "pass_with_warnings"
     assert any(
-        "Data quality:  pass with warnings (2 warning(s))" in line
-        for line in result.human_lines
+        "Data quality:  pass with warnings (2 warning(s))" in line for line in result.human_lines
     )
 
 
@@ -221,7 +220,9 @@ def test_walk_forward_cli_reuses_prefetched_bars(monkeypatch):
         )
     }
     engine = MagicMock()
-    engine._loaded.config.backtest = {"walk_forward_windows": 1}
+    # ``walk_forward_windows`` is now a public property on ``BacktestEngine``
+    # consumed by ``derive_walk_forward_spans``; set it directly on the mock.
+    engine.walk_forward_windows = 1
     engine.prefetch_bars.return_value = bars
     ctx = MagicMock()
     ctx.get_backtest_engine.return_value = engine

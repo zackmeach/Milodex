@@ -23,6 +23,7 @@ from milodex.backtesting.walk_forward_runner import (
     _aggregate_oos,
     _compute_stability,
     _single_window_dependency,
+    derive_walk_forward_spans,
     run_walk_forward,
 )
 from milodex.core.event_store import EventStore
@@ -494,3 +495,109 @@ def test_walk_forward_records_one_snapshot_per_window():
         )
         # Snapshot equity matches the window's reported final_equity.
         assert snapshots[0].equity == pytest.approx(window.final_equity)
+
+
+# ---------------------------------------------------------------------------
+# derive_walk_forward_spans — shared helper (refactor/bench-facade-layering)
+# ---------------------------------------------------------------------------
+
+
+class _FakeDeriveEngine:
+    """Minimal engine stub for derive_walk_forward_spans tests.
+
+    Uses the public ``walk_forward_windows`` attribute instead of
+    ``_loaded.config.backtest``, which is what the real ``BacktestEngine``
+    property surfaces.
+    """
+
+    def __init__(self, *, bars: dict, walk_forward_windows: int = 4) -> None:
+        self._bars = bars
+        self.walk_forward_windows = walk_forward_windows
+
+    def prefetch_bars(self, start: date, end: date) -> dict:  # noqa: ARG002
+        return self._bars
+
+
+def _bars_for_days(n: int, start: date = date(2024, 1, 2)) -> dict:
+    """Build a single-symbol BarSet with *n* calendar days of data."""
+    rows = [
+        {
+            "timestamp": pd.Timestamp(start + timedelta(days=i), tz="UTC"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1000,
+            "vwap": 100.0,
+        }
+        for i in range(n)
+    ]
+    return {"SPY": BarSet(pd.DataFrame(rows))}
+
+
+def test_derive_walk_forward_spans_returns_bars_and_window_tuple():
+    """derive_walk_forward_spans returns (all_bars, train, test, step)."""
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 11)  # 10 calendar days
+    bars = _bars_for_days(10, start)
+    engine = _FakeDeriveEngine(bars=bars, walk_forward_windows=2)
+
+    all_bars, train_days, test_days, step_days = derive_walk_forward_spans(engine, start, end)
+
+    # bars should be the same object returned by prefetch_bars
+    assert all_bars is bars
+    # With 10 trading days and 2 windows: test_days = 10 // 3 = 3,
+    # train_days = 10 - 2*3 = 4, step_days = test_days = 3.
+    assert test_days == step_days, "step_days must equal test_days (non-overlapping)"
+    assert train_days >= 1
+    assert train_days + 2 * test_days <= 10
+
+
+def test_derive_walk_forward_spans_uses_public_walk_forward_windows():
+    """The helper reads engine.walk_forward_windows, not engine._loaded."""
+    start = date(2024, 1, 2)
+    bars = _bars_for_days(20, start)
+    end = start + timedelta(days=19)
+
+    engine_2 = _FakeDeriveEngine(bars=bars, walk_forward_windows=2)
+    engine_4 = _FakeDeriveEngine(bars=bars, walk_forward_windows=4)
+
+    _, train_2, test_2, _ = derive_walk_forward_spans(engine_2, start, end)
+    _, train_4, test_4, _ = derive_walk_forward_spans(engine_4, start, end)
+
+    # More windows → smaller test slices → larger training prelude
+    assert test_4 < test_2 or train_4 > train_2, (
+        "different walk_forward_windows must produce different span tuples"
+    )
+
+
+def test_derive_walk_forward_spans_raises_on_insufficient_days():
+    """Too few trading days propagates the ValueError from compute_window_spans."""
+    bars = _bars_for_days(1, date(2024, 1, 2))
+    engine = _FakeDeriveEngine(bars=bars, walk_forward_windows=4)
+
+    with pytest.raises(ValueError, match="Not enough trading days"):
+        derive_walk_forward_spans(engine, date(2024, 1, 2), date(2024, 1, 2))
+
+
+def test_derive_walk_forward_spans_identical_output_to_manual_derivation():
+    """derive_walk_forward_spans produces the same result as the manual derivation
+    that the two call sites previously duplicated independently."""
+    from milodex.backtesting.engine import _trading_days_in_range
+    from milodex.backtesting.walk_forward_runner import compute_window_spans
+
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 11)
+    n_windows = 3
+    bars = _bars_for_days(10, start)
+    engine = _FakeDeriveEngine(bars=bars, walk_forward_windows=n_windows)
+
+    all_bars, train, test, step = derive_walk_forward_spans(engine, start, end)
+
+    # Replicate the pre-refactor manual derivation
+    manual_all_bars = engine.prefetch_bars(start, end)
+    total_days = len(_trading_days_in_range(manual_all_bars, start, end))
+    manual_train, manual_test, manual_step = compute_window_spans(total_days, n_windows)
+
+    assert (train, test, step) == (manual_train, manual_test, manual_step)
+    assert all_bars is manual_all_bars

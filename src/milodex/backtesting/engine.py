@@ -195,6 +195,17 @@ class BacktestEngine:
         """Return the risk policy used for simulated order submissions."""
         return self._risk_policy
 
+    @property
+    def walk_forward_windows(self) -> int:
+        """Number of OOS windows configured for walk-forward runs.
+
+        Reads ``backtest.walk_forward_windows`` from the strategy config,
+        defaulting to 4. Callers that need to derive window spans should use
+        :func:`milodex.backtesting.walk_forward_runner.derive_walk_forward_spans`
+        rather than reading this property and calling the splitter directly.
+        """
+        return int(self._loaded.config.backtest.get("walk_forward_windows", 4))
+
     def run(
         self,
         start_date: date,

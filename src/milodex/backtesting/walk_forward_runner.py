@@ -134,6 +134,44 @@ def compute_window_spans(
     return train_days, test_days, test_days
 
 
+def derive_walk_forward_spans(
+    engine: BacktestEngine,
+    start: date,
+    end: date,
+) -> tuple[dict, int, int, int]:
+    """Prefetch bars and derive walk-forward window spans from the engine config.
+
+    Single shared implementation used by both the CLI backtest command and the
+    Bench command facade so the two paths cannot drift apart on how they frame
+    the walk-forward split for the same strategy config.
+
+    Returns ``(all_bars, train_days, test_days, step_days)`` where *all_bars*
+    is the prefetched bar dict that callers pass on to :func:`run_walk_forward`
+    (avoiding a second fetch).  Window count is read via the public
+    :attr:`BacktestEngine.walk_forward_windows` property so this function
+    requires no access to private engine attributes.
+
+    Args:
+        engine: A fully-configured :class:`~milodex.backtesting.engine.BacktestEngine`.
+        start: Backtest start date (inclusive).
+        end: Backtest end date (inclusive).
+
+    Returns:
+        A 4-tuple ``(all_bars, train_days, test_days, step_days)``.
+
+    Raises:
+        ValueError: If there are fewer than 2 trading days in the range, or
+            if the window math yields a non-positive ``train_days``.
+    """
+    from milodex.backtesting.engine import _trading_days_in_range
+
+    all_bars = engine.prefetch_bars(start, end)
+    total_days = len(_trading_days_in_range(all_bars, start, end))
+    window_count = engine.walk_forward_windows
+    train_days, test_days, step_days = compute_window_spans(total_days, window_count)
+    return all_bars, train_days, test_days, step_days
+
+
 def run_walk_forward(
     engine: BacktestEngine,
     *,
