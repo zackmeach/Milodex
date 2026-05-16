@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -548,6 +548,51 @@ class EventStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
         return [_trade_from_row(row) for row in rows]
+
+    def count_recent_submitted_orders(
+        self,
+        *,
+        symbol: str,
+        side: str,
+        since: datetime,
+    ) -> int:
+        """Count submitted trade rows for ``symbol``/``side`` since ``since``.
+
+        The authoritative, untruncated backstop for the risk layer's
+        duplicate-order veto: ``broker.get_orders(limit=100)`` silently
+        drops the matching prior order when order volume inside the dedup
+        window exceeds 100. This consults the durable trade history
+        instead.
+
+        Only ``status="submitted"`` rows count — ``preview``/``blocked``
+        rows never reached the broker, and ``cancelled`` is excluded to
+        mirror the broker-side filter (which excludes CANCELLED/REJECTED).
+        Uses the ``idx_trades_symbol`` index; the ``side``/``status``/time
+        predicates filter the already-narrowed per-symbol partition.
+        Timestamps are compared in Python against the ISO-8601
+        ``recorded_at`` to match the evaluator's existing window semantics.
+        """
+        normalized_symbol = symbol.strip().upper()
+        normalized_side = side.strip().lower()
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT side, recorded_at
+                FROM trades
+                WHERE symbol = ? AND status = 'submitted' AND lower(side) = ?
+                """,
+                (normalized_symbol, normalized_side),
+            ).fetchall()
+        count = 0
+        for row in rows:
+            recorded = _parse_datetime(row["recorded_at"])
+            if recorded is None:
+                continue
+            if recorded.tzinfo is None:
+                recorded = recorded.replace(tzinfo=UTC)
+            if recorded >= since:
+                count += 1
+        return count
 
     def list_kill_switch_events(self) -> list[KillSwitchEvent]:
         with self._connect() as connection:

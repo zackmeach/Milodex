@@ -1515,3 +1515,57 @@ def test_regime_can_enter_when_meanrev_holds_unrelated_positions(tmp_path):
     )
     assert "max_strategy_positions_exceeded" not in decision.reason_codes
     assert "max_concurrent_positions_exceeded" not in decision.reason_codes
+
+
+# --- _check_data_staleness fail-closed -------------------------------------
+
+
+def test_data_staleness_naive_bar_timestamp_blocks_not_raises():
+    """A naive (tz-unaware) bar timestamp must fail closed, not raise.
+
+    Regression: ``datetime.now(tz=UTC) - naive_ts`` raises ``TypeError``
+    (can't subtract offset-naive from offset-aware). An uncaught
+    exception inside a ``_check_*`` aborts the whole ``evaluate()`` so
+    the trade is neither explicitly allowed nor blocked — a fail-open
+    hole. The bar timestamp must be normalized to UTC-aware before the
+    subtraction, and ``evaluate()`` must still return a decision.
+    """
+    naive_old = datetime.now(tz=UTC).replace(tzinfo=None) - timedelta(days=1)
+    bar = Bar(
+        timestamp=naive_old,
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+
+    decision = RiskEvaluator().evaluate(make_context(latest_bar=bar))
+
+    assert decision.allowed is False
+    result = check_result(decision, "data_staleness")
+    assert result.passed is False
+    assert result.reason_code == "stale_market_data"
+
+
+def test_unexpected_exception_in_check_fails_closed(monkeypatch):
+    """An unexpected exception in any individual check blocks, not raises.
+
+    Defense-in-depth: even if a future check raises an unanticipated
+    error, ``evaluate()`` must return a blocking ``RiskDecision`` rather
+    than propagating the exception (which would leave the trade in an
+    undefined allow/block state at the call site).
+    """
+
+    def _boom(self, context):
+        raise RuntimeError("synthetic check failure")
+
+    monkeypatch.setattr(RiskEvaluator, "_check_order_value", _boom)
+
+    decision = RiskEvaluator().evaluate(make_context())
+
+    assert decision.allowed is False
+    result = check_result(decision, "order_value")
+    assert result.passed is False
+    assert result.reason_code == "risk_check_error"

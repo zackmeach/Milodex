@@ -96,7 +96,14 @@ def attribute_position(
         if side == "buy":
             running_qty += qty
         elif side == "sell":
-            running_qty -= qty
+            # Invariant: a broker position cannot be net-short in this
+            # system, so clamp at 0. A SELL exceeding prior submitted BUYs
+            # is a data artifact (partial-fill mismatch / out-of-system
+            # manual sell), not a real short; letting it drive the running
+            # balance negative would require the phantom debt to be repaid
+            # before a re-buy could re-open the chain — silently dropping a
+            # held position from its strategy's ADR-0029 cap (fail-open).
+            running_qty = max(0.0, running_qty - qty)
         else:
             # Unknown side — defensive: don't change the running total.
             continue

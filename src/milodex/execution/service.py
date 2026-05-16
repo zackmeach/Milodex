@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +34,8 @@ from milodex.risk import (
     load_risk_defaults,
 )
 from milodex.strategies.loader import compute_config_hash
+
+_logger = logging.getLogger(__name__)
 
 
 class ExecutionService:
@@ -169,6 +172,15 @@ class ExecutionService:
             try:
                 order = self._broker.get_order(order_id)
             except Exception:
+                # Return contract unchanged (cancelled, None) — the order
+                # was cancelled regardless. But the post-cancel status
+                # fetch failing during shutdown/kill-switch cancellation
+                # must be auditable, not silently swallowed.
+                _logger.warning(
+                    "cancel_order: broker.get_order(%s) failed after cancel; returning order=None",
+                    order_id,
+                    exc_info=True,
+                )
                 order = None
         return cancelled, order
 
@@ -294,10 +306,25 @@ class ExecutionService:
             # keeping the surface unchanged.
             from milodex.promotion.manifest import get_active_manifest_hash
 
+            # Resolve the frozen manifest hash from the runner-bound
+            # ``expected_stage`` when present, falling back to the YAML
+            # stage only when no runner-bound stage exists. This mirrors
+            # the evaluator's own ``effective_stage`` logic so BOTH sides
+            # of the manifest-drift comparison key off the same stage.
+            # Keying the lookup off ``strategy_config.stage`` (re-read from
+            # the mutable on-disk YAML each cycle) while the evaluator keys
+            # the exemption off ``intent.expected_stage`` is a TOCTOU race:
+            # a YAML stage flip between reads could let a hash frozen for a
+            # different stage satisfy a paper runner's drift check (ADR 0015).
+            effective_stage = (
+                normalized_intent.expected_stage
+                if normalized_intent.expected_stage is not None
+                else (strategy_config.stage if strategy_config is not None else None)
+            )
             frozen_manifest_hash = (
                 get_active_manifest_hash(
                     strategy_config.name,
-                    strategy_config.stage,
+                    effective_stage,
                     self._event_store,
                 )
                 if strategy_config is not None
