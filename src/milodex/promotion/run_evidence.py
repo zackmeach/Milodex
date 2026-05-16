@@ -4,10 +4,13 @@ These functions are used by both the CLI promotion command and the Bench command
 facade when assembling the inputs for :func:`milodex.promotion.check_gate` and
 :func:`milodex.promotion.state_machine.transition`.
 
-Placing them here (rather than in ``milodex.cli.commands.promotion``) keeps the
-promotion layer self-contained: callers in ``milodex.commands`` (the facade
-layer) no longer need to reach across the CLI boundary to obtain the inputs the
-gate and transition require.
+Placing them here eliminated the bench facade's direct CLI imports (its primary
+goal, lock-tested in the bench facade). However, the ``promotion`` layer is not
+fully self-contained: :func:`metrics_from_run` still lazily imports
+``milodex.cli.commands.analytics.metrics_for_run``, a residual
+``promotion → cli`` inversion. There is no import cycle and behaviour is
+unchanged, but the boundary crossing remains. The clean fix is to graduate
+``metrics_for_run`` into ``milodex.analytics`` — tracked as a follow-up.
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ def metrics_from_run(
     """
     if run_id is None:
         return None, None, None
+    # TODO(layering): graduate metrics_for_run into analytics/ to remove this promotion->cli edge
     from milodex.cli.commands.analytics import metrics_for_run
 
     run_ = event_store.get_backtest_run(run_id)
