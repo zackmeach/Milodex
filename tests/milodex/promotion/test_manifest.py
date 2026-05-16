@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import textwrap
 from pathlib import Path
 
@@ -124,6 +126,33 @@ def test_freeze_manifest_stores_canonical_config_json(tmp_path):
     # Dict keys survive in canonical (sorted) order.
     keys = list(event.config_json["strategy"])
     assert keys == sorted(keys)
+
+
+def _hash_canonical(canonical) -> str:
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def test_freeze_manifest_hash_is_derived_from_stored_config_json(tmp_path):
+    """'What you hashed is what you stored' must hold by construction.
+
+    ``transition()`` hashes the exact canonical dict it stores. ``freeze_manifest``
+    must do the same — computing the hash from the same canonical dict that is
+    serialized into ``config_json``, not from an independent file re-read whose
+    canonicalization path can silently diverge from the stored JSON.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, display_name="Demo Regime")
+
+    event = freeze_manifest(cfg_path, event_store=store)
+
+    # The stored hash equals a hash recomputed over the stored config_json.
+    assert event.config_hash == _hash_canonical(event.config_json)
+
+    # And the persisted row carries the same invariant.
+    active = store.get_active_manifest_for_strategy("regime.daily.sma200_rotation.demo.v1", "paper")
+    assert active is not None
+    assert active.config_hash == _hash_canonical(active.config_json)
 
 
 def test_freeze_manifest_excludes_display_name_from_hashed_config_json(tmp_path):

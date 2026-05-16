@@ -640,6 +640,12 @@ class BacktestEngine:
             risk_defaults_path=self._risk_defaults_path,
             risk_evaluator=self._build_risk_evaluator(),
             event_store=self._event_store,
+            # Explicit backtest marker so the ENFORCE path
+            # (BacktestStructuralRiskEvaluator) is recognised as a backtest —
+            # it must not bind the historical replay to live
+            # trading-mode/env or a live frozen-manifest lookup. The BYPASS
+            # path (NullRiskEvaluator) already short-circuits regardless.
+            is_backtest=True,
         )
 
         cash = initial_equity

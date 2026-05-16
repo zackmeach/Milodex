@@ -279,6 +279,67 @@ def test_enforce_policy_blocks_second_position_after_first_fill(tmp_path: Path) 
     assert any("max_strategy_positions_exceeded" in e.reason_codes for e in explanations)
 
 
+def test_enforce_policy_does_not_bind_to_live_trading_mode_or_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ENFORCE backtest replays historical bars; it must NOT consult live
+    trading-mode/env or perform a live frozen-manifest lookup, and must not be
+    blocked by live trading-mode/market-open/staleness. Its structural risk
+    checks must still run (that is the whole point of ENFORCE)."""
+    config_path = _write_strategy_yaml(tmp_path, max_position_pct=0.10, max_positions=1)
+    risk_defaults = _write_risk_defaults(tmp_path)
+    loaded = _make_loaded(config_path)
+
+    # If the service binds the historical replay to live state, these are hit.
+    import milodex.execution.service as service_mod
+
+    def _boom_trading_mode() -> str:
+        raise AssertionError("ENFORCE backtest must not read live trading mode")
+
+    monkeypatch.setattr(service_mod, "get_trading_mode", _boom_trading_mode)
+
+    manifest_calls: list[tuple] = []
+    import milodex.promotion.manifest as manifest_mod
+
+    real_get_active = manifest_mod.get_active_manifest_hash
+
+    def _tracking_get_active(*args, **kwargs):
+        manifest_calls.append(args)
+        return real_get_active(*args, **kwargs)
+
+    monkeypatch.setattr(manifest_mod, "get_active_manifest_hash", _tracking_get_active)
+
+    calls = [0]
+
+    def evaluate(_bars, _context):
+        calls[0] += 1
+        if calls[0] == 1:
+            # Oversized buy: structural single-position check must still block it.
+            return _decision([_intent("SPY", 20.0)])
+        return _decision([])
+
+    loaded.strategy.evaluate.side_effect = evaluate
+    engine, store, start = _make_engine(
+        loaded=loaded,
+        risk_defaults_path=risk_defaults,
+        risk_policy=RiskPolicy.ENFORCE,
+    )
+
+    result = engine.run(start, start + timedelta(days=2))
+
+    # Did not raise -> live trading-mode read was avoided.
+    assert result.risk_policy is RiskPolicy.ENFORCE
+    # No live frozen-manifest lookup occurred during the replay.
+    assert manifest_calls == []
+    # Structural enforcement still ran: the oversized buy was blocked.
+    assert result.trade_count == 0
+    trades = store.list_trades_for_backtest_run(result.db_id)
+    assert len(trades) == 1
+    assert trades[0].status == "blocked"
+    explanations = store.list_explanations()
+    assert any("max_single_position_exceeded" in e.reason_codes for e in explanations)
+
+
 def _intent(symbol: str, quantity: float) -> TradeIntent:
     return TradeIntent(
         symbol=symbol,
