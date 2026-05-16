@@ -494,6 +494,238 @@ def test_universe0_absent_single_symbol_still_skips(tmp_path):
 
 
 # ===========================================================================
+# Bug 2b — REGIME WRONG-SYMBOL SUBSTITUTION (safety blocker)
+#
+# The Bug-2 fix kept a day live when universe[0] is absent but another
+# universe symbol is active.  Its first cut substituted "the first available
+# symbol's BarSet" as the primary_bars argument.  Strategies that consume
+# `bars` DIRECTLY (RegimeSpyShy200DmaStrategy: bars.to_dataframe(), MA,
+# position sizing) would then compute a confidently-wrong risk-on/off
+# decision and position size from the WRONG symbol's prices (e.g. SHY, a
+# bond ETF, standing in for an absent SPY) — corrupting the regime equity
+# curve and every gate/analytics number derived from it.
+#
+# Fix: when universe[0] is absent for the day, do NOT substitute a different
+# symbol's barset as primary_bars.  Keep the day live (bars_by_symbol
+# strategies still evaluate, equity still recorded) but feed the direct-bars
+# consumer an empty primary barset so it correctly returns no_signal.
+# ===========================================================================
+
+
+class _BarsBySymbolProbe(Strategy):
+    """A strategy that ignores `bars` and reads context.bars_by_symbol.
+
+    Mirrors how meanrev/breakout consume data.  Records the days it was
+    evaluated so we can prove the universe[0]-absent day stays live for
+    these (safe) strategies even after the wrong-symbol substitution is
+    removed.
+    """
+
+    family = "test"
+    template = "test.bars_by_symbol"
+
+    def __init__(self) -> None:
+        self.evaluated_secondary_closes: list[float] = []
+
+    def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:  # noqa: ARG002
+        _ = bars  # intentionally unused — this family reads bars_by_symbol
+        secondary = context.bars_by_symbol.get("SHY")
+        if secondary is not None and len(secondary) > 0:
+            self.evaluated_secondary_closes.append(
+                float(secondary.to_dataframe()["close"].iloc[-1])
+            )
+        return _decision_no_signal()
+
+
+def _regime_strategy() -> Strategy:
+    from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
+
+    return RegimeSpyShy200DmaStrategy()
+
+
+def _spy_absent_universe(tmp_path):
+    """Build the SPY-absent-day scenario shared by the blocker tests.
+
+    Universe is ("SPY", "SHY").  SHY has a clean 4-day uptrend on
+    day1..day4; SPY only has bars on day3, day4.  On day1 and day2 SPY
+    (universe[0]) is absent but SHY is active.
+
+    SHY's series is engineered so that IF the regime strategy were fed
+    SHY's barset as primary_bars on day3 (3 SHY bars available, SPY still
+    absent), it would resolve a target and emit a BUY intent (latest close
+    strictly above the 3-bar MA, and the account can afford a share at that
+    price).  That is the wrong-symbol bias we are guarding against — a real
+    fill driven entirely by the wrong symbol's prices.
+    """
+    base = date(2025, 1, 6)  # Monday
+    day1 = base
+    day2 = base + timedelta(days=1)
+    day3 = base + timedelta(days=2)
+    day4 = base + timedelta(days=3)
+    day5 = base + timedelta(days=4)
+
+    def _barset(dates_and_closes: list[tuple[date, float]]) -> BarSet:
+        rows = [
+            {
+                "timestamp": pd.Timestamp(d, tz="UTC"),
+                "open": c,
+                "high": c,
+                "low": c,
+                "close": c,
+                "volume": 1000,
+                "vwap": c,
+            }
+            for d, c in dates_and_closes
+        ]
+        return BarSet(pd.DataFrame(rows))
+
+    # SHY: strong uptrend. On day3 SHY has 3 bars (10, 12, 14) so a 3-bar MA
+    # = 12 and latest close 14 > 12 -> if regime were fed SHY it resolves a
+    # target and, with a $100k account, can afford a share at 14 -> emits a
+    # BUY intent that fills on day4's SHY open. That fill is pure wrong-symbol
+    # contamination (SPY is still absent through day3).
+    shy_barset = _barset([(day1, 10.0), (day2, 12.0), (day3, 14.0), (day4, 16.0), (day5, 18.0)])
+    # SPY absent on day1..day3; present only day4, day5 — and with just 2 SPY
+    # bars the regime's 3-bar MA is never satisfied, so a CORRECT engine
+    # produces zero regime trades across the whole run.
+    spy_barset = _barset([(day4, 400.0), (day5, 402.0)])
+
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": spy_barset, "SHY": shy_barset}
+    return provider, (day1, day2, day3, day4, day5)
+
+
+def test_regime_does_not_emit_wrong_symbol_decision_when_universe0_absent(tmp_path):
+    """The REAL regime strategy must NOT produce an SHY-derived decision on a
+    day where SPY (universe[0]) is absent but SHY is present.
+
+    Pre-fix (wrong-symbol substitution): on day1/day2 the engine feeds SHY's
+    barset to regime as primary_bars.  Regime computes its MA filter and
+    position size from SHY (bond ETF) prices and emits a BUY intent — a
+    confidently-wrong decision that corrupts the regime equity curve.
+
+    Post-fix: regime receives an empty primary barset on the SPY-absent days
+    and correctly returns no_signal (no intents, no fills) for those days,
+    while the day stays live (equity recorded).
+    """
+    params = {
+        "ma_filter_length": 3,
+        "risk_on_symbol": "SPY",
+        "risk_off_symbol": "SHY",
+        "allocation_pct": 0.5,
+    }
+    regime = _regime_strategy()
+    loaded = _make_loaded(
+        strategy_id="regime.spy_shy.v1",
+        universe=("SPY", "SHY"),
+        parameters=params,
+        strategy_obj=regime,
+        tmp_dir=tmp_path,
+    )
+
+    provider, (day1, day2, day3, day4, day5) = _spy_absent_universe(tmp_path)
+    spy_absent_days = (day1, day2, day3)
+
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+    result = engine.run(day1, day5)
+
+    # The decisive assertion: a CORRECT engine produces ZERO regime trades.
+    # SPY (universe[0]) is absent day1..day3 and present only day4/day5 with
+    # just 2 bars — never enough for the 3-bar MA — so regime never has a
+    # valid signal. Under the pre-fix wrong-symbol substitution, day3 feeds
+    # SHY's 3-bar barset (10,12,14; latest 14 > MA 12) to regime, which
+    # resolves a target and BUYs, filling on day4's SHY open. Any trade here
+    # is therefore pure SHY-derived contamination.
+    assert result.trade_count == 0, (
+        f"regime executed {result.trade_count} trade(s); SPY is absent "
+        "day1..day3 and has <3 bars thereafter, so a correct engine never "
+        "trades — any trade is SHY-derived wrong-symbol contamination"
+    )
+
+    # No trade events at all may exist (regime never had a valid SPY signal).
+    assert len(store.list_trades()) == 0, (
+        "regime produced trade events with SPY absent/under-supplied — "
+        "SHY-derived wrong-symbol contamination"
+    )
+
+    # The audit trail must NOT contain a no_trade row anchored on an
+    # SHY-derived close (10.0 / 12.0 / 14.0) for a SPY-absent day. A
+    # non-universe[0] close on a row labelled symbol=SPY is exactly the
+    # corrupted-audit symptom the fix removes (pre-fix the substituted SHY
+    # barset's latest() leaked onto these rows).
+    explanations = store.list_explanations()
+    no_action_days = [e for e in explanations if e.decision_type == "no_trade"]
+    for e in no_action_days:
+        if e.latest_bar_timestamp is None:
+            continue
+        ts = pd.Timestamp(e.latest_bar_timestamp).date()
+        if ts in spy_absent_days:
+            assert e.symbol == "SPY"
+            assert e.latest_bar_close not in (10.0, 12.0, 14.0), (
+                f"no_trade row for {ts} recorded an SHY-derived close "
+                f"{e.latest_bar_close} — wrong-symbol audit contamination"
+            )
+
+    # Bug-2 fix preserved: equity recorded for the SPY-absent days too.
+    equity_dates = [d for d, _ in result.equity_curve]
+    for d in spy_absent_days:
+        assert d in equity_dates, (
+            f"equity curve missing SPY-absent day {d} "
+            f"(equity_dates={equity_dates}); the legitimate Bug-2 "
+            "keep-day-live fix regressed"
+        )
+
+
+def test_bars_by_symbol_strategy_still_evaluated_on_universe0_absent_day(tmp_path):
+    """A bars_by_symbol-consuming strategy must STILL be evaluated (and see
+    the active secondary symbol) on a day where universe[0] is absent.
+
+    This proves the wrong-symbol fix did not regress the legitimate Bug-2
+    behaviour for the safe strategy family.
+    """
+    probe = _BarsBySymbolProbe()
+    loaded = _make_loaded(
+        strategy_id="probe.bars_by_symbol.v1",
+        universe=("SPY", "SHY"),
+        parameters={"ma_filter_length": 3, "allocation_pct": 0.5},
+        strategy_obj=probe,
+        tmp_dir=tmp_path,
+    )
+
+    provider, (day1, day2, day3, day4, day5) = _spy_absent_universe(tmp_path)
+
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+    result = engine.run(day1, day5)
+
+    # The probe must have been evaluated on the SPY-absent days and seen the
+    # active SHY bars there (closes 10.0 on day1, 12.0 on day2).
+    assert 10.0 in probe.evaluated_secondary_closes, (
+        "bars_by_symbol probe was not evaluated on day1 (SPY absent, SHY "
+        f"active); evaluated_secondary_closes={probe.evaluated_secondary_closes}"
+    )
+    assert 12.0 in probe.evaluated_secondary_closes, (
+        "bars_by_symbol probe was not evaluated on day2 (SPY absent, SHY "
+        f"active); evaluated_secondary_closes={probe.evaluated_secondary_closes}"
+    )
+    equity_dates = [d for d, _ in result.equity_curve]
+    assert day1 in equity_dates and day2 in equity_dates
+
+
+# ===========================================================================
 # Bug 3 — CACHE MERGE NO DTYPE VALIDATION
 #
 # ParquetCache.merge() concatenates existing and new DataFrames without
@@ -642,3 +874,163 @@ def test_merge_matching_schema_unchanged(tmp_path):
     assert list(result.columns) == _BASE_COLUMNS
     assert result["close"].dtype == "float64"
     assert float(result["close"].iloc[-1]) == pytest.approx(103.5)
+
+
+# ---------------------------------------------------------------------------
+# Bug 3b — DTYPE / TZ DRIFT (the actual downstream-corruption vector)
+#
+# Column-set validation alone is insufficient: new_data can carry the right
+# COLUMNS but the wrong DTYPES.  A numeric column arriving as object/string,
+# or a tz-naive timestamp concatenated onto a tz-aware one, produces a mixed
+# parquet that reads back with object columns — silently breaking every
+# numeric op downstream with no pointer back to the merge.
+# ---------------------------------------------------------------------------
+
+
+def _numeric_as_object_df() -> pd.DataFrame:
+    """New data whose `close` arrived as object (numeric-looking strings).
+
+    This is the realistic provider-drift case: a JSON/CSV ingestion path
+    that forgot to cast, so the values are coercible but the dtype is wrong.
+    """
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-01-15"], utc=True),
+            "open": pd.array([103.0], dtype="float64"),
+            "high": pd.array([104.0], dtype="float64"),
+            "low": pd.array([102.0], dtype="float64"),
+            "close": pd.array(["103.5"], dtype="object"),  # ← dtype drift
+            "volume": pd.array([1_200_000], dtype="int64"),
+            "vwap": pd.array([103.2], dtype="float64"),
+        }
+    )
+
+
+def _non_numeric_object_df() -> pd.DataFrame:
+    """New data whose `close` is object AND not coercible to a number."""
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-01-15"], utc=True),
+            "open": pd.array([103.0], dtype="float64"),
+            "high": pd.array([104.0], dtype="float64"),
+            "low": pd.array([102.0], dtype="float64"),
+            "close": pd.array(["N/A"], dtype="object"),  # ← lossy / ambiguous
+            "volume": pd.array([1_200_000], dtype="int64"),
+            "vwap": pd.array([103.2], dtype="float64"),
+        }
+    )
+
+
+def _tz_naive_timestamp_df() -> pd.DataFrame:
+    """New data whose timestamp is tz-naive while existing is tz-aware (UTC)."""
+    return pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2025-01-15"]),  # ← tz-naive drift
+            "open": pd.array([103.0], dtype="float64"),
+            "high": pd.array([104.0], dtype="float64"),
+            "low": pd.array([102.0], dtype="float64"),
+            "close": pd.array([103.5], dtype="float64"),
+            "volume": pd.array([1_200_000], dtype="int64"),
+            "vwap": pd.array([103.2], dtype="float64"),
+        }
+    )
+
+
+def test_merge_numeric_column_as_object_coerces_or_raises(tmp_path):
+    """A numeric column arriving as object (numeric-looking strings) must be
+    safely coerced to the existing numeric dtype — never silently concatenated
+    as a mixed/object column.
+
+    Pre-fix: pd.concat produces an object `close` column; the parquet reads
+    back object and every float op downstream silently breaks.
+
+    Post-fix: the merge coerces "103.5" → 103.5 (float64) because the
+    conversion is unambiguous and lossless, OR raises a clear error. Either
+    way the on-disk `close` must not be an object column.
+    """
+    cache = ParquetCache(tmp_path / "cache")
+    cache.write("AAPL", Timeframe.DAY_1, _base_df())
+
+    # "103.5" → 103.5 is unambiguous and lossless, so the merge MUST succeed
+    # by coercing.  (Pre-fix this raises a cryptic pyarrow ArrowInvalid at
+    # parquet-write time — deep in the write path, not actionable, and never
+    # coerced.  That is the corruption vector this test pins down.)
+    cache.merge("AAPL", Timeframe.DAY_1, _numeric_as_object_df())
+
+    result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None
+    assert result["close"].dtype == "float64", (
+        f"close dtype drifted to {result['close'].dtype} — a numeric-looking "
+        "object column was not coerced to the existing numeric dtype"
+    )
+    assert float(result["close"].iloc[-1]) == pytest.approx(103.5)
+    # No NaN injected for the existing rows, and the existing dtype is intact.
+    assert result["close"].notna().all()
+    assert len(result) == 3
+
+
+def test_merge_non_numeric_object_raises_clearly(tmp_path):
+    """A numeric column arriving as object with NON-numeric values must raise a
+    clear, actionable error — coercion would be lossy/ambiguous and a silent
+    NaN concat is exactly the corruption vector.
+    """
+    cache = ParquetCache(tmp_path / "cache")
+    cache.write("AAPL", Timeframe.DAY_1, _base_df())
+
+    with pytest.raises((ValueError, TypeError)) as excinfo:
+        cache.merge("AAPL", Timeframe.DAY_1, _non_numeric_object_df())
+
+    # The error must be raised by the merge's own dtype validation — a clear,
+    # actionable message that names the merge, the offending column, and the
+    # dtype problem — NOT a cryptic pyarrow/pandas internal raised deep in the
+    # parquet-write path (pre-fix behaviour).
+    msg = str(excinfo.value)
+    assert "ParquetCache.merge(" in msg, (
+        "dtype drift was not caught at the merge boundary — the error did not "
+        f"originate from merge's own validation: {excinfo.value!r}"
+    )
+    assert "close" in msg and "dtype" in msg.lower(), (
+        f"error message is not actionable about the dtype drift: {excinfo.value!r}"
+    )
+
+    # The cache must be untouched (no partial/corrupt write).
+    result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None
+    assert len(result) == 2
+    assert result["close"].dtype == "float64"
+
+
+def test_merge_tz_mismatch_aligns_or_raises(tmp_path):
+    """A tz-naive timestamp merged onto a tz-aware (UTC) cache must either be
+    aligned to the existing tz or rejected — never silently concatenated into
+    a mixed/object timestamp column.
+
+    Pre-fix: pd.concat of tz-aware + tz-naive yields an object timestamp
+    column; sort/dedup and every downstream `.dt` access silently breaks.
+
+    Post-fix: new_data's timestamp is localized to the existing tz (UTC), OR
+    a clear error is raised. The on-disk timestamp must remain a proper
+    tz-aware datetime column.
+    """
+    cache = ParquetCache(tmp_path / "cache")
+    cache.write("AAPL", Timeframe.DAY_1, _base_df())
+
+    # Aligning a tz-naive timestamp to the existing UTC tz is unambiguous
+    # (Milodex bars are UTC by contract — see BarSet column contract), so the
+    # merge MUST succeed by localizing.  (Pre-fix this raises a TypeError from
+    # pandas' concat of tz-aware + tz-naive — the corruption vector this test
+    # pins down.)
+    cache.merge("AAPL", Timeframe.DAY_1, _tz_naive_timestamp_df())
+
+    result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None
+    ts_dtype = result["timestamp"].dtype
+    assert isinstance(ts_dtype, pd.DatetimeTZDtype), (
+        f"timestamp dtype drifted to {ts_dtype} — tz-naive row was not "
+        "aligned to the existing tz-aware dtype"
+    )
+    assert str(ts_dtype.tz).upper() in ("UTC", "UTC+00:00")
+    assert len(result) == 3
+    assert result["timestamp"].notna().all()
+    # The localized row must be present and correct (2025-01-15 UTC).
+    assert pd.Timestamp("2025-01-15", tz="UTC") in set(result["timestamp"])

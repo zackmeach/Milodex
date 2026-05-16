@@ -165,6 +165,17 @@ class ParquetCache:
           silently invent values for a column we know nothing about.  A NaN fill
           would be as wrong as omitting the column, and a loud failure at the
           merge site is far better than silent NaN propagation into indicators.
+        - **Dtype / tz drift** on a shared column is reconciled *before* the
+          concat.  Column-set parity is not enough: ``new_data`` can carry the
+          right columns with the wrong dtypes (a numeric column arriving as
+          object/string, or a tz-naive timestamp) and ``pd.concat`` would then
+          silently produce a mixed/object column that reads back broken.  Where
+          the coercion is unambiguous and lossless (numeric-looking strings →
+          the existing numeric dtype; tz-naive timestamp → the existing tz) the
+          value is coerced; where it would be lossy or ambiguous a clear,
+          actionable ``ValueError`` is raised at the merge boundary instead of
+          a cryptic pyarrow/pandas error deep in the write path.  A column whose
+          dtype already matches is left byte-identical.
         """
         existing = self.read(symbol, timeframe)
         if existing is None:
@@ -198,7 +209,128 @@ class ParquetCache:
             )
             new_data = new_data[existing_cols]
 
+        # Reconcile per-column dtype / tz drift before concatenating. A column
+        # whose dtype already matches is untouched, so the matching-schema
+        # path stays byte-identical.
+        new_data = self._reconcile_dtypes(symbol, timeframe, existing, new_data)
+
         combined = pd.concat([existing, new_data], ignore_index=True)
         combined = combined.drop_duplicates(subset=["timestamp"], keep="last")
         combined = combined.sort_values("timestamp").reset_index(drop=True)
         self.write(symbol, timeframe, combined)
+
+    def _reconcile_dtypes(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        existing: pd.DataFrame,
+        new_data: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """Align ``new_data`` column dtypes to ``existing`` before concat.
+
+        Returns ``new_data`` (a copy only when a column needed coercion).
+        Columns whose dtype already matches are left untouched so the
+        matching-schema path is byte-identical to the pre-validation
+        behaviour.  Raises ``ValueError`` with an actionable, merge-scoped
+        message when a drift cannot be coerced losslessly.
+        """
+        prefix = f"ParquetCache.merge({symbol!r}, {timeframe.value!r})"
+        result = new_data
+        for col in existing.columns:
+            exist_dtype = existing[col].dtype
+            new_dtype = new_data[col].dtype
+            if exist_dtype == new_dtype:
+                continue  # matching dtype — leave byte-identical
+
+            coerced = self._coerce_column(
+                column=col,
+                existing_series=existing[col],
+                new_series=new_data[col],
+                prefix=prefix,
+            )
+            if result is new_data:
+                result = new_data.copy()
+            result[col] = coerced
+        return result
+
+    @staticmethod
+    def _coerce_column(
+        *,
+        column: str,
+        existing_series: pd.Series,
+        new_series: pd.Series,
+        prefix: str,
+    ) -> pd.Series:
+        """Coerce one drifted column to the existing dtype, or raise clearly."""
+        exist_dtype = existing_series.dtype
+        new_dtype = new_series.dtype
+
+        # --- timestamp / tz drift -------------------------------------------
+        if isinstance(exist_dtype, pd.DatetimeTZDtype):
+            if isinstance(new_dtype, pd.DatetimeTZDtype):
+                # Both tz-aware but different tz → convert (lossless).
+                return new_series.dt.tz_convert(exist_dtype.tz)
+            if pd.api.types.is_datetime64_any_dtype(new_series):
+                # tz-naive → localize to the existing tz. Milodex bars are
+                # UTC by contract (see BarSet column contract); localizing a
+                # naive wall-clock to that tz is the unambiguous alignment.
+                return new_series.dt.tz_localize(exist_dtype.tz)
+            msg = (
+                f"{prefix}: column {column!r} has dtype {new_dtype} but the "
+                f"cached frame stores it as tz-aware datetime {exist_dtype}. "
+                f"Refusing to merge — concatenating these would silently "
+                f"produce an object timestamp column. Caller must supply a "
+                f"datetime column."
+            )
+            raise ValueError(msg)
+
+        # --- numeric column arriving as object/string -----------------------
+        if pd.api.types.is_numeric_dtype(exist_dtype) and not pd.api.types.is_numeric_dtype(
+            new_dtype
+        ):
+            converted = pd.to_numeric(new_series, errors="coerce")
+            # A non-null source value that became NaN is a lossy/ambiguous
+            # conversion (e.g. "N/A") — refuse rather than inject NaN.
+            introduced_nan = converted.isna() & new_series.notna()
+            if introduced_nan.any():
+                bad = new_series[introduced_nan].unique().tolist()
+                msg = (
+                    f"{prefix}: column {column!r} arrived with dtype "
+                    f"{new_dtype} but the cached frame stores it as numeric "
+                    f"{exist_dtype}, and value(s) {bad!r} cannot be coerced to "
+                    f"a number. Refusing to merge — a silent NaN concat would "
+                    f"corrupt downstream metrics."
+                )
+                raise ValueError(msg)
+            try:
+                return converted.astype(exist_dtype)
+            except (ValueError, TypeError) as exc:
+                msg = (
+                    f"{prefix}: column {column!r} (dtype {new_dtype}) could "
+                    f"not be safely cast to the cached numeric dtype "
+                    f"{exist_dtype}: {exc}. Refusing to merge."
+                )
+                raise ValueError(msg) from exc
+
+        # --- numeric ↔ numeric width/kind drift (e.g. int vs float) ---------
+        if pd.api.types.is_numeric_dtype(exist_dtype) and pd.api.types.is_numeric_dtype(new_dtype):
+            converted = new_series.astype(exist_dtype)
+            # Round-trip guard: only accept a lossless cast (e.g. 103.0 int↔
+            # float). A lossy narrowing must fail loudly.
+            if not (converted.astype(new_dtype) == new_series).all():
+                msg = (
+                    f"{prefix}: column {column!r} (dtype {new_dtype}) cannot "
+                    f"be cast to the cached numeric dtype {exist_dtype} "
+                    f"without loss. Refusing to merge."
+                )
+                raise ValueError(msg)
+            return converted
+
+        # --- anything else: unsafe, refuse ----------------------------------
+        msg = (
+            f"{prefix}: column {column!r} has dtype {new_dtype} which is "
+            f"incompatible with the cached dtype {exist_dtype}. Refusing to "
+            f"merge — concatenating mismatched dtypes silently corrupts the "
+            f"on-disk schema."
+        )
+        raise ValueError(msg)

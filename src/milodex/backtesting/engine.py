@@ -707,17 +707,29 @@ class BacktestEngine:
 
             # For strategy.evaluate() the primary_bars argument is the bars
             # for universe[0] up to today.  When universe[0] has no bars yet
-            # (e.g. newly listed symbol, or mismatched holiday calendars), fall
-            # back to the first available symbol's barset.  Strategies that only
-            # use bars_by_symbol (e.g. meanrev, breakout) ignore the primary_bars
-            # argument anyway; strategies that do use it (e.g. regime) require
-            # universe[0] to be their primary signal source and will return
-            # no_signal when it has insufficient history — the same safe result.
-            primary_bars = bars_by_symbol.get(universe[0])
-            if primary_bars is None or len(primary_bars) == 0:
-                primary_bars = next(
-                    bs for sym in universe if (bs := bars_by_symbol.get(sym)) is not None
-                )
+            # (e.g. newly listed symbol, or mismatched holiday calendars) the
+            # day is still kept live so strategies that read
+            # ``context.bars_by_symbol`` (e.g. meanrev, breakout) still
+            # evaluate and equity is still recorded.  Strategies that consume
+            # ``bars`` DIRECTLY (e.g. the regime strategy:
+            # ``bars.to_dataframe()`` → moving average → position sizing) must
+            # NOT be handed a different symbol's barset as a stand-in: doing so
+            # would make them compute a confidently-wrong risk-on/off decision
+            # and position size from the wrong symbol's prices (e.g. SHY, a
+            # bond ETF, substituting for an absent SPY), corrupting the equity
+            # curve and every gate/analytics number derived from it.  Instead
+            # feed an empty primary barset so a direct-``bars`` consumer
+            # correctly returns no_signal (its insufficient-history guard
+            # trips), exactly as it would for genuinely missing primary
+            # history.
+            primary_symbol_bars = bars_by_symbol.get(universe[0])
+            primary_symbol_present = (
+                primary_symbol_bars is not None and len(primary_symbol_bars) > 0
+            )
+            if primary_symbol_present:
+                primary_bars = primary_symbol_bars
+            else:
+                primary_bars = _empty_barset()
 
             equity = _compute_equity(cash, positions, latest_closes)
             self._sync_broker_state(
@@ -742,20 +754,31 @@ class BacktestEngine:
             intents = decision.intents
 
             if not intents:
-                latest_bar = primary_bars.latest()
-                execution_service.record_no_action(
-                    strategy_name=self._loaded.config.strategy_id,
-                    strategy_stage=self._loaded.config.stage,
-                    strategy_config_path=self._loaded.config.path,
-                    config_hash=self._loaded.context.config_hash,
-                    symbol=universe[0],
-                    latest_bar_timestamp=latest_bar.timestamp,
-                    latest_bar_close=latest_bar.close,
-                    session_id=session_id,
-                    reasoning=decision.reasoning,
-                    submitted_by="backtest_engine",
-                    backtest_run_id=db_run_id,
-                )
+                # The no-action audit row is anchored on universe[0]'s own
+                # bar (symbol + close).  When universe[0] is absent there is
+                # no honest primary bar to quote, and borrowing another
+                # symbol's close onto a row labelled ``symbol=universe[0]``
+                # would be a misleading audit entry — so skip the no-action
+                # record for that day.  This matches master's behaviour: on
+                # master a universe[0]-absent day was skipped entirely and
+                # produced no record either.  The day still stays live:
+                # equity is recorded below and strategies that DO emit
+                # intents (via context.bars_by_symbol) still queue them.
+                if primary_symbol_present:
+                    latest_bar = primary_bars.latest()
+                    execution_service.record_no_action(
+                        strategy_name=self._loaded.config.strategy_id,
+                        strategy_stage=self._loaded.config.stage,
+                        strategy_config_path=self._loaded.config.path,
+                        config_hash=self._loaded.context.config_hash,
+                        symbol=universe[0],
+                        latest_bar_timestamp=latest_bar.timestamp,
+                        latest_bar_close=latest_bar.close,
+                        session_id=session_id,
+                        reasoning=decision.reasoning,
+                        submitted_by="backtest_engine",
+                        backtest_run_id=db_run_id,
+                    )
             else:
                 for intent in intents:
                     pending.append(
@@ -1293,6 +1316,31 @@ def _trading_days_in_range(
             if start_date <= d <= end_date:
                 days.add(d)
     return sorted(days)
+
+
+def _empty_barset() -> BarSet:
+    """An empty, schema-valid BarSet.
+
+    Handed to ``strategy.evaluate()`` as ``primary_bars`` on a day where
+    ``universe[0]`` has no bar.  A direct-``bars`` consumer (e.g. the regime
+    strategy) hits its insufficient-history guard and returns no_signal
+    rather than computing a decision from a substituted wrong symbol's
+    prices.  Strategies that read ``context.bars_by_symbol`` ignore this
+    argument and still evaluate normally.
+    """
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": pd.Series([], dtype="datetime64[ns, UTC]"),
+                "open": pd.Series([], dtype="float64"),
+                "high": pd.Series([], dtype="float64"),
+                "low": pd.Series([], dtype="float64"),
+                "close": pd.Series([], dtype="float64"),
+                "volume": pd.Series([], dtype="int64"),
+                "vwap": pd.Series([], dtype="float64"),
+            }
+        )
+    )
 
 
 def _slice_bars_to_day(all_bars: dict[str, BarSet], day: date) -> dict[str, BarSet]:
