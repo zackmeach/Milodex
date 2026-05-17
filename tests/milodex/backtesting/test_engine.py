@@ -134,6 +134,7 @@ def _make_loaded_strategy(
 
     strategy = MagicMock()
     strategy.evaluate.return_value = _decision([])
+    strategy.max_lookback_periods.return_value = 0
 
     loaded = MagicMock()
     loaded.config = config
@@ -592,6 +593,7 @@ def test_engine_audits_sell_without_position_skip():
     start = date(2024, 1, 2)
     end = date(2024, 1, 3)
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+
     def fake_evaluate(bars, _context):
         current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
         if current_day == start:
@@ -625,6 +627,7 @@ def test_engine_audits_missing_next_open_skip():
     start = date(2024, 1, 2)
     end = date(2024, 1, 3)
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY", "AAPL"))
+
     def fake_evaluate(bars, _context):
         current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
         if current_day == start:
@@ -661,6 +664,7 @@ def test_engine_blocks_non_positive_next_open_as_data_quality_failure():
     start = date(2024, 1, 2)
     end = date(2024, 1, 3)
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+
     def fake_evaluate(bars, _context):
         current_day = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True).dt.date.max()
         if current_day == start:

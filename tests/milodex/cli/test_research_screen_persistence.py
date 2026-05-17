@@ -89,6 +89,7 @@ def _make_loaded(strategy_id: str, family: str, universe: tuple[str, ...]):
 
     strategy = MagicMock()
     strategy.evaluate.return_value = _decision()
+    strategy.max_lookback_periods.return_value = 0
 
     loaded = MagicMock()
     loaded.config = config

@@ -697,9 +697,45 @@ class BacktestEngine:
                 skipped_count += drained_skips
                 pending = []
 
-            primary_bars = bars_by_symbol.get(universe[0])
-            if primary_bars is None or len(primary_bars) == 0:
+            # Gate on whether ANY universe symbol has a bar today, not just
+            # universe[0].  Multi-symbol universes can have mismatched holiday
+            # calendars: a day where universe[0] is absent but another symbol
+            # is active must still be evaluated so the equity curve has no
+            # holes and signals on the active symbols are not silently skipped.
+            # Single-symbol behaviour is unchanged: if the only symbol has no
+            # bar, none of the universe symbols do, so we still skip.
+            any_symbol_active = any(
+                bars_by_symbol.get(sym) is not None and len(bars_by_symbol[sym]) > 0
+                for sym in universe
+            )
+            if not any_symbol_active:
                 continue
+
+            # For strategy.evaluate() the primary_bars argument is the bars
+            # for universe[0] up to today.  When universe[0] has no bars yet
+            # (e.g. newly listed symbol, or mismatched holiday calendars) the
+            # day is still kept live so strategies that read
+            # ``context.bars_by_symbol`` (e.g. meanrev, breakout) still
+            # evaluate and equity is still recorded.  Strategies that consume
+            # ``bars`` DIRECTLY (e.g. the regime strategy:
+            # ``bars.to_dataframe()`` → moving average → position sizing) must
+            # NOT be handed a different symbol's barset as a stand-in: doing so
+            # would make them compute a confidently-wrong risk-on/off decision
+            # and position size from the wrong symbol's prices (e.g. SHY, a
+            # bond ETF, substituting for an absent SPY), corrupting the equity
+            # curve and every gate/analytics number derived from it.  Instead
+            # feed an empty primary barset so a direct-``bars`` consumer
+            # correctly returns no_signal (its insufficient-history guard
+            # trips), exactly as it would for genuinely missing primary
+            # history.
+            primary_symbol_bars = bars_by_symbol.get(universe[0])
+            primary_symbol_present = (
+                primary_symbol_bars is not None and len(primary_symbol_bars) > 0
+            )
+            if primary_symbol_present:
+                primary_bars = primary_symbol_bars
+            else:
+                primary_bars = _empty_barset()
 
             equity = _compute_equity(cash, positions, latest_closes)
             self._sync_broker_state(
@@ -724,20 +760,31 @@ class BacktestEngine:
             intents = decision.intents
 
             if not intents:
-                latest_bar = primary_bars.latest()
-                execution_service.record_no_action(
-                    strategy_name=self._loaded.config.strategy_id,
-                    strategy_stage=self._loaded.config.stage,
-                    strategy_config_path=self._loaded.config.path,
-                    config_hash=self._loaded.context.config_hash,
-                    symbol=universe[0],
-                    latest_bar_timestamp=latest_bar.timestamp,
-                    latest_bar_close=latest_bar.close,
-                    session_id=session_id,
-                    reasoning=decision.reasoning,
-                    submitted_by="backtest_engine",
-                    backtest_run_id=db_run_id,
-                )
+                # The no-action audit row is anchored on universe[0]'s own
+                # bar (symbol + close).  When universe[0] is absent there is
+                # no honest primary bar to quote, and borrowing another
+                # symbol's close onto a row labelled ``symbol=universe[0]``
+                # would be a misleading audit entry — so skip the no-action
+                # record for that day.  This matches master's behaviour: on
+                # master a universe[0]-absent day was skipped entirely and
+                # produced no record either.  The day still stays live:
+                # equity is recorded below and strategies that DO emit
+                # intents (via context.bars_by_symbol) still queue them.
+                if primary_symbol_present:
+                    latest_bar = primary_bars.latest()
+                    execution_service.record_no_action(
+                        strategy_name=self._loaded.config.strategy_id,
+                        strategy_stage=self._loaded.config.stage,
+                        strategy_config_path=self._loaded.config.path,
+                        config_hash=self._loaded.context.config_hash,
+                        symbol=universe[0],
+                        latest_bar_timestamp=latest_bar.timestamp,
+                        latest_bar_close=latest_bar.close,
+                        session_id=session_id,
+                        reasoning=decision.reasoning,
+                        submitted_by="backtest_engine",
+                        backtest_run_id=db_run_id,
+                    )
             else:
                 for intent in intents:
                     pending.append(
@@ -1214,10 +1261,44 @@ class BacktestEngine:
         sim_broker.set_positions(reported_positions)
 
     def _warmup_calendar_days(self) -> int:
-        integer_params = [
-            v for v in self._loaded.config.parameters.values() if isinstance(v, int) and v > 0
+        """Return the number of calendar days to prepend before the run window.
+
+        Resolution order:
+
+        1. ``strategy.max_lookback_periods()`` — if the concrete strategy
+           declares a non-zero value, convert it to calendar days using a
+           1.4× trading-to-calendar multiplier (5 trading days / 7 calendar,
+           rounded up generously) plus a 30-day buffer for holiday variation.
+           This covers strategies whose lookback is expressed as a float param
+           or nested in a sub-dict — cases that the integer-param heuristic
+           (step 2) cannot reach.
+        2. Integer-param heuristic — scan ``config.parameters`` values, take
+           the largest *numeric whole-number* value (int or float-that-is-whole),
+           multiply by 3 to convert trading periods to calendar days, floor at
+           365.  ``bool`` values are excluded (they are ``int`` subclasses but
+           not lookback periods).
+        """
+        # Step 1: strategy-declared maximum lookback.
+        declared = self._loaded.strategy.max_lookback_periods()
+        if declared > 0:
+            # 1.4 calendar days per trading day (= 7/5), rounded up, plus 30-day buffer.
+            return math.ceil(declared * 1.4) + 30
+
+        # Step 2: heuristic — scan parameter values for the largest numeric
+        # whole-number (covers both int and float like 200.0).  Exclude booleans
+        # (bool is a subclass of int in Python) and negative/zero values.
+        # Whole-number constraint keeps fractional multipliers (e.g. 2.0 meaning
+        # "2× ATR") from being mis-interpreted as lookback periods; the 365-day
+        # floor is the safety net for strategies with small integer params.
+        numeric_params = [
+            int(v)
+            for v in self._loaded.config.parameters.values()
+            if isinstance(v, (int, float))
+            and not isinstance(v, bool)
+            and v > 0
+            and float(v) == int(v)
         ]
-        largest = max(integer_params, default=30)
+        largest = max(numeric_params, default=30)
         return max(365, largest * 3)
 
 
@@ -1241,6 +1322,31 @@ def _trading_days_in_range(
             if start_date <= d <= end_date:
                 days.add(d)
     return sorted(days)
+
+
+def _empty_barset() -> BarSet:
+    """An empty, schema-valid BarSet.
+
+    Handed to ``strategy.evaluate()`` as ``primary_bars`` on a day where
+    ``universe[0]`` has no bar.  A direct-``bars`` consumer (e.g. the regime
+    strategy) hits its insufficient-history guard and returns no_signal
+    rather than computing a decision from a substituted wrong symbol's
+    prices.  Strategies that read ``context.bars_by_symbol`` ignore this
+    argument and still evaluate normally.
+    """
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": pd.Series([], dtype="datetime64[ns, UTC]"),
+                "open": pd.Series([], dtype="float64"),
+                "high": pd.Series([], dtype="float64"),
+                "low": pd.Series([], dtype="float64"),
+                "close": pd.Series([], dtype="float64"),
+                "volume": pd.Series([], dtype="int64"),
+                "vwap": pd.Series([], dtype="float64"),
+            }
+        )
+    )
 
 
 def _slice_bars_to_day(all_bars: dict[str, BarSet], day: date) -> dict[str, BarSet]:

@@ -99,6 +99,7 @@ def _make_loaded_strategy(
     )
 
     strategy = MagicMock()
+    strategy.max_lookback_periods.return_value = 0
 
     loaded = MagicMock()
     loaded.config = config
