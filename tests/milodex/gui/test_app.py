@@ -182,7 +182,13 @@ from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, LedgerState, DeskState
+from milodex.gui.read_models import FrontPageState, BenchState, LedgerState
+from milodex.gui.performance_state import PerformanceState
+from milodex.gui.risk_throughput_state import RiskThroughputState
+from milodex.gui.active_ops_state import ActiveOpsState
+from milodex.gui.attention_state import AttentionState
+from milodex.gui.market_tape_state import MarketTapeState
+from milodex.gui.activity_feed_state import ActivityFeedState
 
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
@@ -213,7 +219,12 @@ strategy_bank_state = StrategyBankState(db_path=db_path)
 front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
 bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
 ledger_state = LedgerState(db_path=db_path)
-desk_state = DeskState(db_path=db_path, configs_dir=configs_dir)
+performance_state = PerformanceState(db_path=db_path, cache_dir=db_path)
+risk_throughput_state = RiskThroughputState(db_path=db_path)
+active_ops_state = ActiveOpsState(db_path=db_path, configs_dir=configs_dir, locks_dir=db_path)
+attention_state = AttentionState(db_path=db_path)
+market_tape_state = MarketTapeState(cache_dir=db_path)
+activity_feed_state = ActivityFeedState(db_path=db_path)
 register_qml_types(
     theme_manager=tm,
     operational_state=op_state,
@@ -221,7 +232,12 @@ register_qml_types(
     front_page_state=front_page_state,
     bench_state=bench_state,
     ledger_state=ledger_state,
-    desk_state=desk_state,
+    performance_state=performance_state,
+    risk_throughput_state=risk_throughput_state,
+    active_ops_state=active_ops_state,
+    attention_state=attention_state,
+    market_tape_state=market_tape_state,
+    activity_feed_state=activity_feed_state,
 )
 
 warnings_seen = []

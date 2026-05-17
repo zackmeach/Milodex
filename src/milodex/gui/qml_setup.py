@@ -25,15 +25,20 @@ from __future__ import annotations
 
 from PySide6.QtQml import qmlRegisterSingletonInstance
 
+from milodex.gui.active_ops_state import ActiveOpsState
+from milodex.gui.activity_feed_state import ActivityFeedState
+from milodex.gui.attention_state import AttentionState
 from milodex.gui.bench_command_bridge import BenchCommandBridge
+from milodex.gui.market_tape_state import MarketTapeState
 from milodex.gui.operational_state import OperationalState
+from milodex.gui.performance_state import PerformanceState
 from milodex.gui.read_models import (
     BenchState,
-    DeskState,
     FrontPageState,
     KanbanState,
     LedgerState,
 )
+from milodex.gui.risk_throughput_state import RiskThroughputState
 from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
@@ -54,7 +59,12 @@ _front_page_state_instance: FrontPageState | None = None
 _bench_state_instance: BenchState | None = None
 _kanban_state_instance: KanbanState | None = None
 _ledger_state_instance: LedgerState | None = None
-_desk_state_instance: DeskState | None = None
+_performance_state_instance: PerformanceState | None = None
+_risk_throughput_state_instance: RiskThroughputState | None = None
+_active_ops_state_instance: ActiveOpsState | None = None
+_attention_state_instance: AttentionState | None = None
+_market_tape_state_instance: MarketTapeState | None = None
+_activity_feed_state_instance: ActivityFeedState | None = None
 _bench_command_bridge_instance: BenchCommandBridge | None = None
 
 
@@ -66,7 +76,12 @@ def register_qml_types(
     bench_state: BenchState | None = None,
     kanban_state: KanbanState | None = None,
     ledger_state: LedgerState | None = None,
-    desk_state: DeskState | None = None,
+    performance_state: PerformanceState | None = None,
+    risk_throughput_state: RiskThroughputState | None = None,
+    active_ops_state: ActiveOpsState | None = None,
+    attention_state: AttentionState | None = None,
+    market_tape_state: MarketTapeState | None = None,
+    activity_feed_state: ActivityFeedState | None = None,
     bench_command_bridge: BenchCommandBridge | None = None,
 ) -> ThemeManager:
     """Register Python QML types and return the :class:`ThemeManager` singleton.
@@ -112,7 +127,9 @@ def register_qml_types(
     """
     global _singleton_instance, _operational_state_instance, _strategy_bank_state_instance
     global _front_page_state_instance, _bench_state_instance, _kanban_state_instance
-    global _ledger_state_instance, _desk_state_instance, _bench_command_bridge_instance
+    global _ledger_state_instance, _performance_state_instance, _risk_throughput_state_instance
+    global _active_ops_state_instance, _attention_state_instance, _market_tape_state_instance
+    global _activity_feed_state_instance, _bench_command_bridge_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
     qmlRegisterSingletonInstance(
@@ -191,16 +208,71 @@ def register_qml_types(
         )
         _ledger_state_instance = ledger_state
 
-    if desk_state is not None:
+    if performance_state is not None:
         qmlRegisterSingletonInstance(
-            DeskState,
+            PerformanceState,
             QML_IMPORT_URI,
             QML_IMPORT_VERSION[0],
             QML_IMPORT_VERSION[1],
-            "DeskState",
-            desk_state,
+            "PerformanceState",
+            performance_state,
         )
-        _desk_state_instance = desk_state
+        _performance_state_instance = performance_state
+
+    if risk_throughput_state is not None:
+        qmlRegisterSingletonInstance(
+            RiskThroughputState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "RiskThroughputState",
+            risk_throughput_state,
+        )
+        _risk_throughput_state_instance = risk_throughput_state
+
+    if active_ops_state is not None:
+        qmlRegisterSingletonInstance(
+            ActiveOpsState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "ActiveOpsState",
+            active_ops_state,
+        )
+        _active_ops_state_instance = active_ops_state
+
+    if attention_state is not None:
+        qmlRegisterSingletonInstance(
+            AttentionState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "AttentionState",
+            attention_state,
+        )
+        _attention_state_instance = attention_state
+
+    if market_tape_state is not None:
+        qmlRegisterSingletonInstance(
+            MarketTapeState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "MarketTapeState",
+            market_tape_state,
+        )
+        _market_tape_state_instance = market_tape_state
+
+    if activity_feed_state is not None:
+        qmlRegisterSingletonInstance(
+            ActivityFeedState,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "ActivityFeedState",
+            activity_feed_state,
+        )
+        _activity_feed_state_instance = activity_feed_state
 
     if bench_command_bridge is not None:
         # ADR 0051 Phase C2: register the Bench command bridge as a QML
