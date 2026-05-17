@@ -305,6 +305,20 @@ def test_feed_union_ordering_and_cap(tmp_path) -> None:
         "Expected fill row from delta strategy"
     )
 
+    # Oldest seeded explanation (i=149 → now - 159 min) must NOT be present.
+    # With correct sort-then-cap the 200 newest rows are kept, so this row
+    # (ranked ~210th newest overall) is dropped.  A slice-before-sort bug
+    # would retain an arbitrary 200 rows and could include this oldest row
+    # while missing the most-recent special rows asserted above — the two
+    # assertions together prove the cap is applied after sorting.
+    oldest_exp_time = (now - timedelta(minutes=159)).isoformat()
+    assert not any(
+        r["strategy"] == "alpha" and r["time"] == oldest_exp_time for r in feed
+    ), (
+        f"Oldest explanation (alpha @ {oldest_exp_time}) should have been dropped by cap "
+        "but is present — cap was likely applied before sorting"
+    )
+
     # Backtest rows must be absent
     for row in feed:
         assert row.get("strategy") not in {"bt-run-999"}, "Backtest strategy name leaked"
@@ -488,7 +502,7 @@ def test_feed_detail_format_trade(tmp_path) -> None:
 
 
 def test_feed_detail_null_broker_status(tmp_path) -> None:
-    """NULL broker_status renders as 'None' in detail string."""
+    """NULL broker_status renders as 'pending' in detail string."""
     from milodex.gui.activity_feed_state import _query_feed
 
     db = tmp_path / "feed.db"
@@ -504,7 +518,7 @@ def test_feed_detail_null_broker_status(tmp_path) -> None:
     )
 
     feed = _query_feed(db)
-    assert feed[0]["detail"] == "sell 3.0 @ submitted/None"
+    assert feed[0]["detail"] == "sell 3.0 @ submitted/pending"
 
 
 def test_feed_missing_db_raises(tmp_path) -> None:

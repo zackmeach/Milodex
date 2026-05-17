@@ -41,7 +41,7 @@ Each normalized row is a dict with keys:
 Detail string formats:
 - explanations: ``"{decision_type}/{status}"``  (e.g. ``"submit/submitted"``)
 - trades: ``"{side} {quantity} @ {status}/{broker_status}"``
-  (e.g. ``"buy 10 @ submitted/pending"``;  broker_status may be ``"None"`` if NULL)
+  (e.g. ``"buy 10 @ submitted/pending"``;  broker_status renders as ``"pending"`` if NULL)
 
 Kind derivation:
 - explanations: ``kind='rejection'`` if ``risk_allowed = 0``; else ``kind='signal'``
@@ -142,7 +142,7 @@ SELECT
         WHEN broker_status = 'filled'   THEN 'fill'
         ELSE NULL
     END                                       AS kind,
-    side || ' ' || quantity || ' @ ' || status || '/' || COALESCE(broker_status, 'None')
+    side || ' ' || quantity || ' @ ' || status || '/' || COALESCE(broker_status, 'pending')
                                               AS detail,
     symbol                                    AS symbol,
     NULL                                      AS risk_allowed
