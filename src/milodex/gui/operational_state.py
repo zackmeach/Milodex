@@ -148,6 +148,7 @@ def _account_to_snapshot(
         "equity": float(account.equity),
         "cash": float(account.cash),
         "buying_power": float(account.buying_power),
+        "daily_pnl": float(account.daily_pnl),
         "open_positions_count": len(positions),
         "refreshed_at": datetime.now(tz=UTC).isoformat(),
     }
@@ -212,6 +213,7 @@ class OperationalState(QObject):
         self._equity: float = 0.0
         self._cash: float = 0.0
         self._buying_power: float = 0.0
+        self._daily_pnl: float = 0.0
         self._currency: str = "USD"
         self._open_positions_count: int = 0
         self._last_refreshed_at: str = ""
@@ -356,6 +358,7 @@ class OperationalState(QObject):
             snapshot["equity"] != self._equity
             or snapshot["cash"] != self._cash
             or snapshot["buying_power"] != self._buying_power
+            or snapshot["daily_pnl"] != self._daily_pnl
             or snapshot["open_positions_count"] != self._open_positions_count
         )
 
@@ -363,6 +366,7 @@ class OperationalState(QObject):
         self._equity = snapshot["equity"]
         self._cash = snapshot["cash"]
         self._buying_power = snapshot["buying_power"]
+        self._daily_pnl = snapshot["daily_pnl"]
         self._open_positions_count = snapshot["open_positions_count"]
         self._last_refreshed_at = snapshot["refreshed_at"]
         self.refreshedAtChanged.emit()
@@ -420,6 +424,9 @@ class OperationalState(QObject):
     def _get_buying_power(self) -> float:
         return self._buying_power
 
+    def _get_daily_pnl(self) -> float:
+        return self._daily_pnl
+
     def _get_currency(self) -> str:
         return self._currency
 
@@ -454,6 +461,7 @@ class OperationalState(QObject):
     equity = Property(float, _get_equity, notify=accountChanged)
     cash = Property(float, _get_cash, notify=accountChanged)
     buyingPower = Property(float, _get_buying_power, notify=accountChanged)  # noqa: N815
+    dailyPnl = Property(float, _get_daily_pnl, notify=accountChanged)  # noqa: N815
     currency = Property(str, _get_currency, notify=accountChanged)
     openPositionsCount = Property(  # noqa: N815
         int, _get_open_positions_count, notify=accountChanged
