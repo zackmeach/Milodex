@@ -406,7 +406,7 @@ def _write_spy_parquet(cache_dir: Path, version: str, rows: list[dict]) -> None:
 
 def test_latest_cache_version_picks_highest(tmp_path) -> None:
     """_latest_cache_version returns the highest vN dir among v2, v3, v10."""
-    from milodex.gui.performance_state import _latest_cache_version
+    from milodex.gui._market_cache import _latest_cache_version
 
     (tmp_path / "v2").mkdir()
     (tmp_path / "v3").mkdir()
@@ -418,14 +418,14 @@ def test_latest_cache_version_picks_highest(tmp_path) -> None:
 
 
 def test_latest_cache_version_single_dir(tmp_path) -> None:
-    from milodex.gui.performance_state import _latest_cache_version
+    from milodex.gui._market_cache import _latest_cache_version
 
     (tmp_path / "v2").mkdir()
     assert _latest_cache_version(tmp_path) == "v2"
 
 
 def test_latest_cache_version_no_versioned_dirs_returns_none(tmp_path) -> None:
-    from milodex.gui.performance_state import _latest_cache_version
+    from milodex.gui._market_cache import _latest_cache_version
 
     (tmp_path / "1Day").mkdir()
     assert _latest_cache_version(tmp_path) is None

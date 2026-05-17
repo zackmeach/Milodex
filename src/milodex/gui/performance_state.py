@@ -48,7 +48,6 @@ column over each slice window.  Missing cache → ``None`` returns.
 from __future__ import annotations
 
 import logging
-import re
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -66,6 +65,7 @@ from PySide6.QtCore import (  # pragma: no cover
 )
 
 from milodex.config import get_cache_dir
+from milodex.gui._market_cache import _latest_cache_version  # noqa: PLC2701
 
 logger = logging.getLogger(__name__)
 
@@ -105,34 +105,6 @@ def _is_stale(newest_iso: str | None, now: datetime, max_trading_days: int = 2) 
     if newest.tzinfo is None:
         newest = newest.replace(tzinfo=UTC)
     return (now - newest).days > max_trading_days
-
-
-# ---------------------------------------------------------------------------
-# Cache version helper
-# ---------------------------------------------------------------------------
-
-
-def _latest_cache_version(cache_dir: Path) -> str | None:
-    """Return the highest ``vN`` directory name inside ``cache_dir``.
-
-    Ignores directories that do not match the ``vN`` pattern (e.g. ``1Day``).
-    Returns ``None`` if no ``vN`` directory exists.
-    """
-    pattern = re.compile(r"^v(\d+)$")
-    best_n: int | None = None
-    best_name: str | None = None
-    try:
-        for entry in cache_dir.iterdir():
-            if entry.is_dir():
-                m = pattern.match(entry.name)
-                if m:
-                    n = int(m.group(1))
-                    if best_n is None or n > best_n:
-                        best_n = n
-                        best_name = entry.name
-    except OSError:
-        return None
-    return best_name
 
 
 # ---------------------------------------------------------------------------
