@@ -245,6 +245,7 @@ Item {
                 Column {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
@@ -347,6 +348,7 @@ Item {
                     id: perfCol
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
@@ -496,6 +498,7 @@ Item {
                     id: activeOpsCol
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
@@ -624,6 +627,7 @@ Item {
                     id: throughputCol
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
@@ -682,6 +686,7 @@ Item {
                     id: attentionCol
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
@@ -786,6 +791,7 @@ Item {
                 Column {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
