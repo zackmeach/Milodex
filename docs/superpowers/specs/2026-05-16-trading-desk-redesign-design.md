@@ -18,7 +18,7 @@ The current `DeskSurface.qml` (~1300 lines, 8 lettered sections) runs on inline 
 
 1. **Deliverable:** QML rewrite of `DeskSurface.qml`, wired to live data. React mockup = reference only.
 2. **Scope boundary:** DESK surface only. `Main.qml` chrome (top-nav, Risk Office strip, kill banner) and the `FRONT`/`BENCH`/`LEDGER` surfaces are untouched. (Fallback: chrome changes permitted only if the vision genuinely requires them — to be raised explicitly if hit.)
-3. **Today P/L semantics:** "Today" binds the existing `OperationalState` account `daily_pnl` (live-ish, ~15s broker poll). Week / Month / YTD / All-Paper are derived from `portfolio_snapshots`.
+3. **Today P/L semantics:** "Today" binds a new `OperationalState.dailyPnl` Q_PROPERTY (live-ish, ~15s broker poll). The broker `AccountInfo` model already carries `daily_pnl` (`src/milodex/broker/models.py:87`) and `OperationalState` already fetches `AccountInfo` every poll — it is dropped in `_account_to_snapshot()`. Exposing it is a one-line snapshot addition + one Q_PROPERTY: a small extension, **not** "no new code", and crucially **no second broker poll**. Week / Month / YTD / All-Paper are derived from `portfolio_snapshots`.
 4. **Freshness posture:** timestamp ("as of") on the two EOD/daily-grained sections. A **stale flag** is applied to **Performance & Trust only** (it is operator-trust-bearing and names "Trust"); if its underlying snapshot is older than the staleness threshold the hero degrades to a muted "stale as of \<date\>" treatment instead of presenting an old number as current. Market Tape is timestamp-only (decorative; decisions are strategy/risk-gated, so stale market context cannot drive a bad trade).
 5. **Soft-field definitions** (see §5 for full detail): cadence + heartbeat replace last/next-cycle; "needs review" = a tripped gate awaiting a human decision (three concrete cases); "underperforming" = below the prior-stage evidence that earned the current stage, gated by a minimum-evidence floor; needs-review(c) is the unacknowledged subset of underperforming (relationship stated explicitly so the two counts read coherently).
 6. **Funnel top stage:** "Evaluations" (a hard count of paper-scoped `explanations` rows in the slice), not an inferred "Cycles run". Every funnel stage is then a predicate over one population.
@@ -43,8 +43,8 @@ The six new models are siblings of the existing ones, not a new architecture. Th
 
 | # | Section | Read-model | Primary source |
 |---|---------|-----------|----------------|
-| I | Risk & Mode | `OperationalState` *(reuse, no new code)* | kill switch, broker, market, mode + DB-present check |
-| II | Performance & Trust | `PerformanceState` *(new)* | `portfolio_snapshots` (Week+); `OperationalState` `daily_pnl` (Today); SPY from data cache; stale flag |
+| I | Risk & Mode | `OperationalState` *(reuse; small `dailyPnl` extension, see below)* | kill switch, broker, market, mode + DB-present check |
+| II | Performance & Trust | `PerformanceState` *(new)* + `OperationalState.dailyPnl` *(new property)* | `portfolio_snapshots` (Week+); `OperationalState.dailyPnl` (Today); SPY from data cache; stale flag |
 | III | Active Operations | `ActiveOpsState` *(new)* | `strategy_runs`, tempo config (cadence), `advisory_lock`, stop-request sentinel, `explanations` (last-eval) |
 | IV | Risk Layer Throughput | `RiskThroughputState` *(new)* | `explanations` + `trades`, paper-scoped, by slice |
 | V | Strategy Attention | `AttentionState` *(new; extends `StrategyBankState`)* | `promotions`, `strategy_manifests`, `portfolio_snapshots`, gate machinery |
@@ -59,7 +59,7 @@ Cadences below are spec-tunable defaults.
 
 ### `PerformanceState` — Section II (refresh ~30s)
 - Slices: Today / Week / Month / YTD / All-Paper, exposed as a `bySlice` map.
-- **Today** P/L is *not* owned here — QML binds `OperationalState` account `daily_pnl` (no second broker poll). This model owns Week+ derived from `portfolio_snapshots`: period return, peak-to-trough drawdown over the slice's equity series, equity sparkline series.
+- **Today** P/L is *not* owned here — QML binds the new `OperationalState.dailyPnl` (sourced from `AccountInfo.daily_pnl`, already fetched each poll; no second broker poll). This model owns Week+ derived from `portfolio_snapshots`: period return, peak-to-trough drawdown over the slice's equity series, equity sparkline series.
 - Benchmark: SPY period return over the same window from the data cache. **Excess = strategy return − SPY return**.
 - **Stale flag (this section only):** newest `portfolio_snapshots` row older than threshold (default: > 2 trading days) → `isStale=true`, `staleAsOf` set; QML degrades the hero to a muted "stale as of \<date\>" state.
 - `Q_PROPERTY`s: `bySlice`, `sparkline`, `benchmarkBySlice`, `isStale`, `staleAsOf`, `lastRefreshedAt`, `dataStatus`, `dataError`.
@@ -142,6 +142,7 @@ Component tests (existing pattern): `SegmentedToggle` index, `Sparkline` path, `
 
 | PR | Scope | Size |
 |----|-------|------|
+| 0 | Extend `OperationalState`: surface `AccountInfo.daily_pnl` as a `dailyPnl` Q_PROPERTY (snapshot dict + property + tests). Prereq for PR 1's "Today". | tiny |
 | 1 | `PerformanceState` + tests | small |
 | 2 | `RiskThroughputState` + tests | small |
 | 3 | `ActiveOpsState` + tests — scheduled early to surface the cadence-config verification item before PR 8 depends on it | small–decent |
