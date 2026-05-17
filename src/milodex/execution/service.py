@@ -50,6 +50,7 @@ class ExecutionService:
         kill_switch_store: KillSwitchStateStore | None = None,
         risk_evaluator: RiskEvaluator | None = None,
         event_store: EventStore | None = None,
+        is_backtest: bool = False,
     ) -> None:
         self._broker = broker_client
         self._data_provider = data_provider
@@ -60,6 +61,15 @@ class ExecutionService:
             legacy_path=get_logs_dir() / "kill_switch_state.json",
         )
         self._risk_evaluator = risk_evaluator or RiskEvaluator()
+        # Explicit backtest marker (ADR 0008/0030). When True the historical
+        # replay must NOT bind to live trading-mode/env or perform a live
+        # frozen-manifest lookup. This is decided by the caller (the backtest
+        # engine), not inferred from ``isinstance(risk_evaluator,
+        # NullRiskEvaluator)`` — the ENFORCE backtest path injects
+        # ``BacktestStructuralRiskEvaluator`` (not a NullRiskEvaluator) and
+        # must still be recognised as a backtest so it does not couple to
+        # today's wall-clock/manifest state while its structural checks run.
+        self._is_backtest = is_backtest
 
     def preview(
         self,
@@ -272,7 +282,14 @@ class ExecutionService:
         reasoning: DecisionReasoning | None = None,
     ) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
+        # Full short-circuit applies only to the BYPASS backtest policy
+        # (NullRiskEvaluator). ``is_backtest`` is the broader, explicit
+        # marker: it also covers the ENFORCE backtest path
+        # (BacktestStructuralRiskEvaluator), which must still run its
+        # structural checks but must NOT bind the historical replay to live
+        # trading-mode/env or a live frozen-manifest lookup.
         bypass_mode = isinstance(self._risk_evaluator, NullRiskEvaluator)
+        is_backtest = self._is_backtest or bypass_mode
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
 
         latest_bar = self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
@@ -292,44 +309,59 @@ class ExecutionService:
             # not exist in a backtest environment.
             decision = self._risk_evaluator.evaluate(None)  # type: ignore[arg-type]
         else:
-            runtime_config_hash = (
-                compute_config_hash(normalized_intent.strategy_config_path)
-                if normalized_intent.strategy_config_path is not None
-                else None
-            )
-            # Lazy import: importing at module scope would create a cycle —
-            # `milodex.execution.__init__` eagerly loads this module, and any
-            # caller that touches `milodex.execution.models` (e.g. a strategy
-            # importing `TradeIntent`) reaches us mid-init of
-            # `milodex.promotion.__init__` if the test file is loading that
-            # package directly. Deferring to call time breaks the cycle while
-            # keeping the surface unchanged.
-            from milodex.promotion.manifest import get_active_manifest_hash
-
-            # Resolve the frozen manifest hash from the runner-bound
-            # ``expected_stage`` when present, falling back to the YAML
-            # stage only when no runner-bound stage exists. This mirrors
-            # the evaluator's own ``effective_stage`` logic so BOTH sides
-            # of the manifest-drift comparison key off the same stage.
-            # Keying the lookup off ``strategy_config.stage`` (re-read from
-            # the mutable on-disk YAML each cycle) while the evaluator keys
-            # the exemption off ``intent.expected_stage`` is a TOCTOU race:
-            # a YAML stage flip between reads could let a hash frozen for a
-            # different stage satisfy a paper runner's drift check (ADR 0015).
-            effective_stage = (
-                normalized_intent.expected_stage
-                if normalized_intent.expected_stage is not None
-                else (strategy_config.stage if strategy_config is not None else None)
-            )
-            frozen_manifest_hash = (
-                get_active_manifest_hash(
-                    strategy_config.name,
-                    effective_stage,
-                    self._event_store,
+            if is_backtest:
+                # ENFORCE backtest (BacktestStructuralRiskEvaluator). The
+                # structural checks must still run, but the historical replay
+                # must not couple to today's trading-mode/env or perform a
+                # live frozen-manifest lookup. ``is_backtest=True`` also
+                # short-circuits ``_check_manifest_drift`` (ADR 0030). The
+                # structural checks do not read trading_mode /
+                # runtime_config_hash / frozen_manifest_hash, so leaving them
+                # at their inert defaults is safe and avoids the live binding.
+                runtime_config_hash = None
+                frozen_manifest_hash = None
+                trading_mode = "backtest"
+            else:
+                runtime_config_hash = (
+                    compute_config_hash(normalized_intent.strategy_config_path)
+                    if normalized_intent.strategy_config_path is not None
+                    else None
                 )
-                if strategy_config is not None
-                else None
-            )
+                # Lazy import: importing at module scope would create a cycle —
+                # `milodex.execution.__init__` eagerly loads this module, and
+                # any caller that touches `milodex.execution.models` (e.g. a
+                # strategy importing `TradeIntent`) reaches us mid-init of
+                # `milodex.promotion.__init__` if the test file is loading that
+                # package directly. Deferring to call time breaks the cycle
+                # while keeping the surface unchanged.
+                from milodex.promotion.manifest import get_active_manifest_hash
+
+                # Resolve the frozen manifest hash from the runner-bound
+                # ``expected_stage`` when present, falling back to the YAML
+                # stage only when no runner-bound stage exists. This mirrors
+                # the evaluator's own ``effective_stage`` logic so BOTH sides
+                # of the manifest-drift comparison key off the same stage.
+                # Keying the lookup off ``strategy_config.stage`` (re-read
+                # from the mutable on-disk YAML each cycle) while the
+                # evaluator keys the exemption off ``intent.expected_stage``
+                # is a TOCTOU race: a YAML stage flip between reads could let
+                # a hash frozen for a different stage satisfy a paper
+                # runner's drift check (ADR 0015).
+                effective_stage = (
+                    normalized_intent.expected_stage
+                    if normalized_intent.expected_stage is not None
+                    else (strategy_config.stage if strategy_config is not None else None)
+                )
+                frozen_manifest_hash = (
+                    get_active_manifest_hash(
+                        strategy_config.name,
+                        effective_stage,
+                        self._event_store,
+                    )
+                    if strategy_config is not None
+                    else None
+                )
+                trading_mode = get_trading_mode()
             context = EvaluationContext(
                 intent=normalized_intent,
                 request=request,
@@ -338,13 +370,14 @@ class ExecutionService:
                 recent_orders=self._broker.get_orders(limit=100),
                 latest_bar=latest_bar,
                 market_open=market_open,
-                trading_mode=get_trading_mode(),
+                trading_mode=trading_mode,
                 preview_only=preview_only,
                 kill_switch_state=self._kill_switch_store.get_state(),
                 risk_defaults=load_risk_defaults(self._risk_defaults_path),
                 strategy_config=strategy_config,
                 runtime_config_hash=runtime_config_hash,
                 frozen_manifest_hash=frozen_manifest_hash,
+                is_backtest=is_backtest,
                 # Plumb the runner-bound stage and risk envelope from the
                 # intent through to the risk evaluator. None for operator
                 # manual trades — the evaluator falls back to

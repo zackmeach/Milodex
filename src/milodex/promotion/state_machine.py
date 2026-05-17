@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -337,15 +338,34 @@ def _hash_canonical(canonical: dict) -> str:
 
 
 def _update_stage_in_yaml(path: Path, from_stage: str, to_stage: str) -> None:
-    """Replace the ``stage:`` line in the YAML in-place (preserves comments/formatting)."""
+    """Replace the ``stage:`` line in the YAML in-place (preserves comments/formatting).
+
+    Tolerant of single quotes, double quotes, no quotes, and variable
+    whitespace around the value — a real promotion must not leave the YAML
+    stale (and so block all trading for the strategy on the next runner
+    cycle) merely because the ``stage:`` line is single-quoted or spaced
+    differently. The rewrite is a targeted single-line substitution so
+    surrounding comments and formatting are preserved. It still fails loudly
+    when the ``from`` stage is genuinely absent — never a silent no-op that
+    would mask a real divergence.
+    """
     content = path.read_text(encoding="utf-8")
-    old = f'stage: "{from_stage}"'
-    new = f'stage: "{to_stage}"'
-    if old not in content:
+    # Anchor to a full stage line: optional indent, ``stage:``, optional
+    # whitespace, the from-stage value optionally wrapped in matching single
+    # or double quotes, optional trailing whitespace, to end-of-line.
+    pattern = re.compile(
+        rf'^(?P<indent>[ \t]*stage:[ \t]*)(?P<q>["\']?){re.escape(from_stage)}(?P=q)[ \t]*$',
+        re.MULTILINE,
+    )
+    match = pattern.search(content)
+    if match is None:
         msg = (
-            f"Could not find 'stage: \"{from_stage}\"' in {path}. "
+            f"Could not find a 'stage: {from_stage}' line in {path}. "
             "Durable state is written, but the YAML could not be updated; "
             "the next cycle's drift check will flag this discrepancy."
         )
         raise ValueError(msg)
-    path.write_text(content.replace(old, new, 1), encoding="utf-8")
+    quote = match.group("q")
+    replacement = f"{match.group('indent')}{quote}{to_stage}{quote}"
+    updated = content[: match.start()] + replacement + content[match.end() :]
+    path.write_text(updated, encoding="utf-8")

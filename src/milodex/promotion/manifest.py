@@ -7,6 +7,8 @@ hash-only lookup used by the risk layer's drift check.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -16,7 +18,6 @@ import yaml
 from milodex.core.event_store import StrategyManifestEvent
 from milodex.strategies.loader import (
     canonicalize_config_data,
-    compute_config_hash,
     load_strategy_config,
 )
 
@@ -24,6 +25,12 @@ if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
 
 _FROZEN_STAGES = frozenset({"paper", "micro_live", "live"})
+
+
+def _hash_canonical(canonical: dict) -> str:
+    """SHA-256 over the canonical dict, identical to ``state_machine._hash_canonical``."""
+    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def freeze_manifest(
@@ -47,8 +54,13 @@ def freeze_manifest(
         )
         raise ValueError(msg)
 
+    # Hash the SAME canonical dict that is serialized into ``config_json`` so
+    # "what you hashed is what you stored" holds by construction — mirroring
+    # ``state_machine.transition()``. Hashing an independent file re-read
+    # (compute_config_hash) is a separate canonicalization path over a
+    # separate input and can silently diverge from the stored JSON.
     canonical = canonicalize_config_data(config.raw_data)
-    config_hash = compute_config_hash(config_path)
+    config_hash = _hash_canonical(canonical)
 
     event = StrategyManifestEvent(
         strategy_id=config.strategy_id,

@@ -14,7 +14,7 @@ from milodex.promotion import (
     PromotionCheckResult,
     assemble_evidence_package,
 )
-from milodex.promotion.state_machine import transition
+from milodex.promotion.state_machine import _update_stage_in_yaml, transition
 from milodex.strategies.loader import compute_config_hash
 
 _NOW = datetime(2026, 4, 23, 18, 0, tzinfo=UTC)
@@ -198,3 +198,113 @@ def test_transition_refuses_when_evidence_hash_mismatches(tmp_path):
 
     assert store.list_promotions() == []
     assert store.list_strategy_manifests() == []
+
+
+@pytest.mark.parametrize(
+    "stage_line",
+    [
+        '  stage: "backtest"',  # canonical double-quoted (control)
+        "  stage: 'backtest'",  # single-quoted
+        "  stage: backtest",  # unquoted
+        "  stage:    backtest",  # extra whitespace, unquoted
+        '  stage:  "backtest"  ',  # trailing whitespace, double-quoted
+    ],
+)
+def test_update_stage_in_yaml_tolerates_quoting_and_whitespace(tmp_path, stage_line):
+    """A real promotion must not leave the YAML stale just because the
+    ``stage:`` line is single-quoted, unquoted, or differently spaced —
+    that would block all trading for the strategy on the next runner cycle.
+    """
+    path = tmp_path / "demo.yaml"
+    path.write_text(
+        f'strategy:\n  id: "demo.v1"\n{stage_line}\n  enabled: true  # keep this comment\n',
+        encoding="utf-8",
+    )
+
+    _update_stage_in_yaml(path, "backtest", "paper")
+
+    content = path.read_text(encoding="utf-8")
+    # Stage line now reflects the target stage.
+    assert "backtest" not in content
+    assert "stage:" in content
+    # Surrounding lines and comments are preserved.
+    assert '  id: "demo.v1"' in content
+    assert "  enabled: true  # keep this comment" in content
+    # Reloading shows the new stage value regardless of original quoting.
+    import yaml as _yaml
+
+    assert _yaml.safe_load(content)["strategy"]["stage"] == "paper"
+
+
+def test_update_stage_in_yaml_raises_when_from_stage_absent(tmp_path):
+    """A genuine from-stage mismatch must still fail loudly — never a
+    silent no-op that masks a real divergence."""
+    path = tmp_path / "demo.yaml"
+    path.write_text(
+        'strategy:\n  id: "demo.v1"\n  stage: paper\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="backtest"):
+        _update_stage_in_yaml(path, "backtest", "paper")
+
+
+def test_transition_statistical_happy_path_writes_atomically_and_advances(tmp_path):
+    """The statistical (non-exempt) promotion happy path through
+    ``transition()`` — gate passes on real metrics, atomic manifest+promotion
+    write, stage advance — is otherwise never exercised end-to-end."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path)
+    to_stage_hash = _hash_at_stage(cfg_path, "paper")
+    evidence = assemble_evidence_package(
+        strategy_id=_STRATEGY_ID,
+        from_stage="backtest",
+        to_stage="paper",
+        manifest_hash=to_stage_hash,
+        backtest_run_id=None,
+        recommendation="statistical edge cleared the paper-readiness gate",
+        known_risks=["sample size near the floor"],
+        promotion_type="statistical",
+        gate_check_outcome={"allowed": True},
+        metrics_snapshot={
+            "sharpe_ratio": 1.2,
+            "max_drawdown_pct": 8.0,
+            "trade_count": 42,
+        },
+        event_store=store,
+        now=_NOW,
+    )
+    gate = PromotionCheckResult(
+        allowed=True,
+        promotion_type="statistical",
+        failures=[],
+        sharpe_ratio=1.2,
+        max_drawdown_pct=8.0,
+        trade_count=42,
+    )
+
+    promotion = transition(
+        config_path=cfg_path,
+        to_stage="paper",
+        gate_result=gate,
+        evidence=evidence,
+        approved_by="operator",
+        event_store=store,
+        now=_NOW,
+    )
+
+    assert promotion.promotion_type == "statistical"
+    assert promotion.from_stage == "backtest"
+    assert promotion.to_stage == "paper"
+    assert promotion.sharpe_ratio == 1.2
+    assert promotion.max_drawdown_pct == 8.0
+    assert promotion.trade_count == 42
+
+    manifest = store.get_active_manifest_for_strategy(_STRATEGY_ID, "paper")
+    assert manifest is not None
+    assert manifest.stage == "paper"
+    assert manifest.config_hash == to_stage_hash
+    # Atomic write: both rows share the same transaction.
+    assert promotion.manifest_id == manifest.id
+    # Stage advanced on disk.
+    assert 'stage: "paper"' in cfg_path.read_text(encoding="utf-8")
