@@ -222,7 +222,7 @@ def _is_stale(newest_iso: str | None, now: datetime, max_trading_days: int = 2) 
     return (now - newest).days > max_trading_days
 ```
 
-**SPY benchmark:** read the daily-bar parquet for `SPY` via `ParquetCache` and compute `_period_return` on `close` over the same window. Cache dir from `milodex.config.get_market_cache_dir()`; **version: read the highest `vN` dir present** (helper `_latest_cache_version(cache_dir)` — verification: confirm against `market_cache/` which currently holds `1Day, v2, v3`). `Timeframe.DAY_1`. Excess = strategy return − SPY return per slice.
+**SPY benchmark:** read the daily-bar parquet for `SPY` via `ParquetCache` and compute `_period_return` on `close` over the same window. Cache dir from `milodex.config.get_cache_dir()`; **version: read the highest `vN` dir present** (helper `_latest_cache_version(cache_dir)` — verification: confirm against `market_cache/` which currently holds `1Day, v2, v3`). `Timeframe.DAY_1`. Excess = strategy return − SPY return per slice.
 
 **Q_PROPERTYs:** `bySlice` (`QVariantMap`: slice → `{return, drawdown}`), `benchmarkBySlice` (`QVariantMap`: slice → `{spyReturn, excess}`), `sparkline` (`QVariantList` of equity floats, All-Paper window), `isStale` (bool), `staleAsOf` (str), `lastRefreshedAt`, `dataStatus`, `dataErrorMessage`.
 
@@ -360,7 +360,7 @@ git commit -m "feat(gui): AttentionState — rollups, needs-review a/b/c, underp
 - Create: `src/milodex/gui/market_tape_state.py`
 - Test: `tests/milodex/gui/test_market_tape_state.py`
 
-Reads ParquetCache only (no DB, no network). Symbols `("SPY","QQQ","IWM","TLT","VIX")`. Per symbol: latest `close`, prior `close`, `pctChange = latest/prior - 1`, `asOf` = latest bar `timestamp` date. Timestamp-only, **no stale flag** (locked). Constructor takes `cache_dir: Path | None` (default `get_market_cache_dir()`), `refresh_interval_ms=60_000`. Reuse `_latest_cache_version` from PR 1 (move it to `_dashboard_scope.py` or a shared `_market_cache.py` if PR 1 hasn't — DRY: factor on first reuse).
+Reads ParquetCache only (no DB, no network). Symbols `("SPY","QQQ","IWM","TLT","VIX")`. Per symbol: latest `close`, prior `close`, `pctChange = latest/prior - 1`, `asOf` = latest bar `timestamp` date. Timestamp-only, **no stale flag** (locked). Constructor takes `cache_dir: Path | None` (default `get_cache_dir()`), `refresh_interval_ms=60_000`. Reuse `_latest_cache_version` from PR 1 (move it to `_dashboard_scope.py` or a shared `_market_cache.py` if PR 1 hasn't — DRY: factor on first reuse).
 
 - [ ] Pure test `_pct_change(latest, prior)` incl. prior==0 → None.
 - [ ] Fixture: write small DataFrames via `ParquetCache.write` for two symbols; assert `rows` payload exact + a missing-symbol → entry with `dataStatus` note, others still present.
@@ -425,7 +425,7 @@ git commit -m "feat(gui): shared Trading Desk QML components"
 
 - [ ] **Step 1:** Read current `DeskSurface.qml`, `Main.qml`, the surface-loader, and an existing surface (e.g. `LedgerSurface.qml`) to copy chrome/section conventions. Chrome (`Main.qml`, RiskStrip, kill banner) is **not** modified (scope A).
 - [ ] **Step 2:** Rewrite `DeskSurface.qml`: header band; Row1 `I·II·III`; hairline; Row2 `IV·V·VI`; hairline; `VII` full-width. Section I binds `OperationalState` (+ `dailyPnl` in II's Today cell). Sections II–VII bind the new singletons. Slice toggles index the precomputed `bySlice` map client-side (no re-query). Section II shows the stale state when `PerformanceState.isStale`. Animation discipline: instant state changes; figures never crossfade; kill banner never pulses.
-- [ ] **Step 3:** Wire `qml_setup.py` + `app.py` for the 6 models; remove mock `DeskState`. Each model constructed with `db_path=db_path` (PerformanceState also needs cache via `get_market_cache_dir()`; MarketTapeState takes `cache_dir`; ActiveOpsState/AttentionState take `configs_dir` only if cadence/eligibility needs it — match the constructor each model actually defines).
+- [ ] **Step 3:** Wire `qml_setup.py` + `app.py` for the 6 models; remove mock `DeskState`. Each model constructed with `db_path=db_path` (PerformanceState also needs cache via `get_cache_dir()`; MarketTapeState takes `cache_dir`; ActiveOpsState/AttentionState take `configs_dir` only if cadence/eligibility needs it — match the constructor each model actually defines).
 - [ ] **Step 4:** Run QML load smoke test → assert `DeskSurface.qml` loads with zero QML errors and all 6 singletons resolve.
 - [ ] **Step 5:** Manual visual verification — run `milodex gui`, confirm all 7 sections render with live data from `data/milodex.db`, slice toggles are instant, no console QML errors. (UI correctness cannot be asserted by unit tests — verify in the running app and report what was seen.)
 - [ ] **Step 6:** Full gate: `ruff check src/milodex/gui tests/milodex/gui && pytest tests/milodex/gui -q`. Commit:
