@@ -160,6 +160,12 @@ All eight kept separate (separation is the point of Approach B). Within this aut
 - **Minimum-evidence floor (PR 4):** the exact statistical floor for "underperforming" is set in the implementation plan; without it the counter misleads in the current early-paper regime (promotions are days old).
 - **`AttentionState` ↔ `StrategyBankState` coupling:** extends rather than duplicates; the implementation plan must define the seam so `StrategyBankState` internals stay encapsulated.
 
+### Plan-level clarifications (from spec review — pin these before/at PR start)
+
+- **Canonical paper-scope predicate:** `RiskThroughputState` and `AttentionState` must scope identically. The implementation plan pins one canonical predicate (name + exact definition of "paper-scoped" / "live-ish stage" = `strategy_stage ∈ {paper, micro_live, live}` and `decision_type != 'backtest_fill'`) reused by both models so the two cannot drift.
+- **`ActivityFeedState` cardinality:** §3 IA map says ⨝ (join); §4 describes normalize-to-common-shape (union). The plan must state explicitly that PR 6 builds a **union** of `explanations`-derived rows and `trades`-derived rows normalized to one shape (not a row-multiplying join), so feed cardinality is correct.
+- **Funnel trade-stage coherence:** "Submitted" / "Filled" derive from `trades` while Evaluations…Rejected derive from `explanations`. The plan must specify how trade-derived stages join back to the explanation population (via `trades.explanation_id`) so the funnel proportions remain coherent and a fill is never counted without its originating evaluation.
+
 ## 9. Out of scope
 
 - Any change to `Main.qml` chrome or the `FRONT`/`BENCH`/`LEDGER` surfaces (unless the fallback in §2.2 is explicitly triggered).
