@@ -60,7 +60,7 @@ Item {
         color:                  Theme.color.text.primary
         font.family:            Theme.typography.data.sm.family
         font.pixelSize:         Theme.typography.data.sm.size
-        font.weight:            Font.Medium
+        font.weight:            Theme.typography.data.sm.weight
         font.features:          Theme.typography.data.sm.features
     }
 

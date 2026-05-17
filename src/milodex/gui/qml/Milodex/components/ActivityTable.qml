@@ -35,6 +35,7 @@ Item {
     property string filter: ""
 
     // Tone → editorial token mapping (centralised per spec §5).
+    // keep in sync with RollupCell.qml's tone→color mapping
     function _toneColor(tone) {
         if (tone === "positive") return Theme.status.positive
         if (tone === "negative") return Theme.status.negative
@@ -76,7 +77,7 @@ Item {
             anchors.left:           parent.left
             anchors.leftMargin:     Theme.space[2]
             anchors.verticalCenter: parent.verticalCenter
-            width:                  80
+            width:                  Theme.column.deskTs
             text:                   "TIME"
             color:                  Theme.color.text.muted
             font.family:            Theme.typography.label.xs.family
@@ -90,7 +91,7 @@ Item {
             anchors.left:           tsHeader.right
             anchors.leftMargin:     Theme.space[2]
             anchors.verticalCenter: parent.verticalCenter
-            width:                  80
+            width:                  Theme.column.deskKind
             text:                   "KIND"
             color:                  Theme.color.text.muted
             font.family:            Theme.typography.label.xs.family
@@ -102,7 +103,7 @@ Item {
 
         Text {
             anchors.left:           parent.left
-            anchors.leftMargin:     180
+            anchors.leftMargin:     Theme.column.deskSubject
             anchors.verticalCenter: parent.verticalCenter
             text:                   "SUBJECT / DETAIL"
             color:                  Theme.color.text.muted
@@ -163,7 +164,7 @@ Item {
                 anchors.left:           parent.left
                 anchors.leftMargin:     Theme.space[2]
                 anchors.verticalCenter: parent.verticalCenter
-                width:                  80
+                width:                  Theme.column.deskTs
                 text:                   modelData.ts || ""
                 color:                  Theme.color.text.secondary
                 font.family:            Theme.typography.data.sm.family
@@ -179,7 +180,7 @@ Item {
                 anchors.left:           tsText.right
                 anchors.leftMargin:     Theme.space[2]
                 anchors.verticalCenter: parent.verticalCenter
-                width:                  80
+                width:                  Theme.column.deskKind
                 text:                   modelData.kind || ""
                 color:                  root._toneColor(modelData.tone || "data")
                 font.family:            Theme.typography.data.sm.family
@@ -193,7 +194,7 @@ Item {
             Text {
                 id: subjectText
                 anchors.left:           parent.left
-                anchors.leftMargin:     180
+                anchors.leftMargin:     Theme.column.deskSubject
                 anchors.right:          parent.right
                 anchors.rightMargin:    Theme.space[2]
                 anchors.verticalCenter: parent.verticalCenter

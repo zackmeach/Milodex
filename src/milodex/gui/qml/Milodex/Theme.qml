@@ -365,6 +365,9 @@ QtObject {
         ledgerSubject: 224,
         ledgerTransition: 220,
         ledgerOutcome: 120,
+        deskTs: 80,           // desk activity timestamp column
+        deskKind: 80,         // desk activity kind column
+        deskSubject: 180,     // desk activity subject column (ts + kind + space[2] gap)
         kanbanLane: 320,
         kanbanCard: 288,
         kanbanCardMinHeight: 132,

@@ -59,6 +59,7 @@ Item {
                 // Selected segment highlight
                 Rectangle {
                     anchors.fill:        parent
+                    // 2px inset — intentional half of Theme.space[1] (4px); no exact token
                     anchors.topMargin:   2
                     anchors.bottomMargin: 2
                     anchors.leftMargin:  index === 0 ? 2 : 0

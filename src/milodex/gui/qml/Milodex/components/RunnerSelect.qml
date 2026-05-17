@@ -52,7 +52,7 @@ Item {
         width:        parent.width
         height:       triggerLabel.implicitHeight + Theme.space[2] * 2
         color:        Theme.color.surface.base
-        radius:       root._open ? Theme.radius.md : Theme.radius.md
+        radius:       Theme.radius.md
         border.color: root._open ? Theme.color.border.regular : Theme.color.border.subtle
         border.width: 1
 

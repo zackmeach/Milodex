@@ -29,6 +29,7 @@ Item {
     property string tone:  "data"
 
     // Tone → editorial token mapping (centralised here per spec §5).
+    // keep in sync with ActivityTable.qml's tone→color mapping
     // No Behavior — state changes are instant.
     readonly property color _valueColor: {
         if (root.tone === "positive") return Theme.status.positive
