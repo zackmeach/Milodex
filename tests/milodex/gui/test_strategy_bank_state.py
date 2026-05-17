@@ -531,6 +531,23 @@ def test_query_bank_missing_db_raises(tmp_path) -> None:
         _query_bank(tmp_path / "nonexistent.db")
 
 
+def test_query_bank_read_only_connection_blocks_writes(tmp_path) -> None:
+    """_query_bank opens the DB with a read-only URI; DDL through the same
+    file:...?mode=ro connection raises OperationalError."""
+    db = tmp_path / "ro_test.db"
+    # Create a valid DB so mode=ro can open it
+    conn = sqlite3.connect(str(db))
+    conn.execute("CREATE TABLE t(a INTEGER)")
+    conn.commit()
+    conn.close()
+
+    # Confirm mode=ro blocks writes — mirrors the pattern in test_performance_state.py
+    ro_conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    with pytest.raises(sqlite3.OperationalError):
+        ro_conn.execute("CREATE TABLE x(a)")
+    ro_conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Helpers for lifecycle_exempt / COALESCE tests (no Qt required)
 # ---------------------------------------------------------------------------

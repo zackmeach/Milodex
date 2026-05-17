@@ -802,9 +802,7 @@ def test_query_attention_multi_strategy_scenario(tmp_path) -> None:
     # underperforming: nr.c
     assert result["underperforming"] >= 1
 
-    # (c)⊆underperforming
-    assert result["needs_review"] <= result["needs_review"] + result["underperforming"]  # tautology
-    # more precisely: underperforming >= case(c) count = 1
+    # underperforming >= case(c) count = 1
     assert result["underperforming"] >= 1
 
     # driftList: at least nr.c (underperformer) + paper.good (no fills)

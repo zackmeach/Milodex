@@ -387,6 +387,8 @@ def _build_drift_list(
             stale = True
         else:
             last_dt = last
+            # Both operands are datetime.isoformat() output (same UTC offset format),
+            # so lexicographic comparison is valid and equals chronological order.
             if last_dt < cutoff:
                 stale = True
         if stale:
