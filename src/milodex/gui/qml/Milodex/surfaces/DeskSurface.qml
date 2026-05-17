@@ -357,6 +357,8 @@ Item {
                     readonly property var bench: PerformanceState.benchmarkBySlice[root.perfSlice] || ({})
                     // Stale treatment applies to Section II only and only to
                     // the hero (not the live-broker Today figure).
+                    // showStale is true only when a snapshot exists AND it is old.
+                    readonly property bool hasSnapshot: PerformanceState.hasSnapshot
                     readonly property bool showStale: PerformanceState.isStale && !isToday
                     readonly property bool hasData: PerformanceState.dataStatus !== "error"
                                                     && PerformanceState.lastRefreshedAt !== ""
@@ -389,9 +391,18 @@ Item {
                         hasData: PerformanceState.lastRefreshedAt !== ""
                     }
 
+                    // Empty state — no snapshot at all (honest "no data yet").
+                    SectionStatus {
+                        visible: perfCol.hasData && !perfCol.hasSnapshot
+                        status: "ready"
+                        errorMessage: ""
+                        hasData: false
+                    }
+
                     // Stale hero — muted "stale as of <date>" (spec-locked).
+                    // Only shown when a snapshot exists AND it is older than threshold.
                     Column {
-                        visible: perfCol.hasData && perfCol.showStale
+                        visible: perfCol.hasData && perfCol.hasSnapshot && perfCol.showStale
                         width: parent.width
                         spacing: Theme.space[1]
                         Text {
@@ -427,7 +438,7 @@ Item {
                     // Fresh hero — Today binds OperationalState.dailyPnl;
                     // Week+ bind PerformanceState.bySlice[slice].return.
                     Column {
-                        visible: perfCol.hasData && !perfCol.showStale
+                        visible: perfCol.hasData && perfCol.hasSnapshot && !perfCol.showStale
                         width: parent.width
                         spacing: Theme.space[3]
 

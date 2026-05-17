@@ -84,13 +84,15 @@ def _read_tape(cache_dir: Path) -> list[dict[str, Any]]:
     from milodex.data.models import Timeframe
 
     if not cache_dir.exists():
-        raise RuntimeError(f"Market cache directory does not exist: {cache_dir}")
+        logger.warning("MarketTapeState: cache directory does not exist: %s", cache_dir)
+        raise RuntimeError("Market data unavailable — cache not found")
 
     version = _latest_cache_version(cache_dir)
     if version is None:
-        raise RuntimeError(
-            f"No vN version directory found in market cache: {cache_dir}"
+        logger.warning(
+            "MarketTapeState: no vN version directory found in cache: %s", cache_dir
         )
+        raise RuntimeError("Market data unavailable — no versioned cache found")
 
     cache = ParquetCache(cache_dir, version=version)
     rows: list[dict[str, Any]] = []

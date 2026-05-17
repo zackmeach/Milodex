@@ -99,8 +99,10 @@ def _max_drawdown(equity_series: list[float]) -> float | None:
 def _is_stale(newest_iso: str | None, now: datetime, max_trading_days: int = 2) -> bool:
     # spec §8: threshold pinned here at 2 calendar-day proxy for trading days
     # (documented simplification; refine only if a trading-calendar util exists).
+    # An empty series (newest_iso is None) is NOT stale — it is "no data".
+    # Stale means: a snapshot exists but is older than the freshness threshold.
     if newest_iso is None:
-        return True
+        return False
     newest = datetime.fromisoformat(newest_iso)
     if newest.tzinfo is None:
         newest = newest.replace(tzinfo=UTC)
@@ -376,6 +378,7 @@ class PerformanceState(QObject):
     benchmarkBySliceChanged = Signal()  # noqa: N815
     sparklineChanged = Signal()  # noqa: N815
     isStaleChanged = Signal()  # noqa: N815
+    hasSnapshotChanged = Signal()  # noqa: N815
     staleAsOfChanged = Signal()  # noqa: N815
     lastRefreshedAtChanged = Signal()  # noqa: N815
     dataStatusChanged = Signal()  # noqa: N815
@@ -409,6 +412,7 @@ class PerformanceState(QObject):
         self._benchmark_by_slice: dict[str, Any] = {}
         self._sparkline: list[float] = []
         self._is_stale: bool = False
+        self._has_snapshot: bool = False
         self._stale_as_of: str = ""
         self._last_refreshed_at: str = ""
         self._data_status: str = "loading"
@@ -474,14 +478,20 @@ class PerformanceState(QObject):
         self._sparkline = result["sparkline"]
         self._last_refreshed_at = result["refreshed_at"]
 
-        # Compute staleness
+        # Compute staleness and snapshot presence
         now = datetime.now(tz=UTC)
         newest = result.get("newest_recorded_at")
+        new_has_snapshot = newest is not None
         new_is_stale = _is_stale(newest, now)
         new_stale_as_of = newest or ""
 
-        stale_changed = new_is_stale != self._is_stale or new_stale_as_of != self._stale_as_of
+        stale_changed = (
+            new_is_stale != self._is_stale
+            or new_stale_as_of != self._stale_as_of
+            or new_has_snapshot != self._has_snapshot
+        )
         self._is_stale = new_is_stale
+        self._has_snapshot = new_has_snapshot
         self._stale_as_of = new_stale_as_of
 
         self.lastRefreshedAtChanged.emit()
@@ -493,6 +503,7 @@ class PerformanceState(QObject):
             self.sparklineChanged.emit()
         if stale_changed:
             self.isStaleChanged.emit()
+            self.hasSnapshotChanged.emit()
             self.staleAsOfChanged.emit()
 
         if self._data_status != "ready" or self._data_error_message:
@@ -524,6 +535,9 @@ class PerformanceState(QObject):
     def _get_is_stale(self) -> bool:
         return self._is_stale
 
+    def _get_has_snapshot(self) -> bool:
+        return self._has_snapshot
+
     def _get_stale_as_of(self) -> str:
         return self._stale_as_of
 
@@ -546,6 +560,7 @@ class PerformanceState(QObject):
         "QVariantList", _get_sparkline, notify=sparklineChanged
     )
     isStale = Property(bool, _get_is_stale, notify=isStaleChanged)  # noqa: N815
+    hasSnapshot = Property(bool, _get_has_snapshot, notify=hasSnapshotChanged)  # noqa: N815
     staleAsOf = Property(str, _get_stale_as_of, notify=staleAsOfChanged)  # noqa: N815
     lastRefreshedAt = Property(  # noqa: N815
         str, _get_last_refreshed_at, notify=lastRefreshedAtChanged

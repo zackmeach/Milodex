@@ -189,23 +189,46 @@ def test_read_tape_symbol_order(tmp_path) -> None:
 
 
 def test_read_tape_missing_cache_dir_raises_or_errors(tmp_path) -> None:
-    """_read_tape raises an exception when the cache_dir does not exist."""
+    """_read_tape raises RuntimeError when the cache_dir does not exist.
+
+    The raised message must be path-free (no absolute filesystem path
+    in the operator-facing string).
+    """
     from milodex.gui.market_tape_state import _read_tape
 
     missing = tmp_path / "nonexistent_cache"
-    with pytest.raises(Exception):  # noqa: B017
+    with pytest.raises(RuntimeError, match="Market data unavailable"):
         _read_tape(missing)
 
 
+def test_read_tape_missing_cache_dir_message_has_no_path(tmp_path) -> None:
+    """The raised error message must not expose an absolute filesystem path."""
+    from milodex.gui.market_tape_state import _read_tape
+
+    missing = tmp_path / "nonexistent_cache"
+    try:
+        _read_tape(missing)
+    except RuntimeError as exc:
+        msg = str(exc)
+        assert str(missing) not in msg, (
+            f"Absolute path found in operator-facing error message: {msg!r}"
+        )
+    else:
+        pytest.fail("_read_tape should have raised RuntimeError")
+
+
 def test_read_tape_no_version_dir_raises(tmp_path) -> None:
-    """_read_tape raises when cache_dir exists but contains no vN dirs."""
+    """_read_tape raises RuntimeError when cache_dir exists but contains no vN dirs.
+
+    The raised message must be path-free.
+    """
     from milodex.gui.market_tape_state import _read_tape
 
     cache_dir = tmp_path / "market_cache"
     cache_dir.mkdir()
     (cache_dir / "1Day").mkdir()  # not a vN dir
 
-    with pytest.raises(Exception):  # noqa: B017
+    with pytest.raises(RuntimeError, match="Market data unavailable"):
         _read_tape(cache_dir)
 
 

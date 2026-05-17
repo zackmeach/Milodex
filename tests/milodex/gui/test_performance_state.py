@@ -102,11 +102,17 @@ def test_max_drawdown_returns_nonpositive() -> None:
     assert result <= 0.0
 
 
-def test_is_stale_none_newest() -> None:
+def test_is_stale_none_newest_is_not_stale() -> None:
+    """Empty table (newest_iso=None) is NOT stale — it is 'no data'.
+
+    Stale requires: a snapshot exists AND it is older than the threshold.
+    An empty series is a separate state; conflating it with stale would render
+    the wrong UI treatment (stale warning vs. honest 'no data yet').
+    """
     from milodex.gui.performance_state import _is_stale
 
     now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
-    assert _is_stale(None, now) is True
+    assert _is_stale(None, now) is False
 
 
 def test_is_stale_exactly_two_days_fresh() -> None:
@@ -133,6 +139,38 @@ def test_is_stale_recent() -> None:
     now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
     newest_iso = (now - timedelta(hours=6)).isoformat()
     assert _is_stale(newest_iso, now) is False
+
+
+def test_empty_snapshot_not_stale() -> None:
+    """(a) Empty snapshots → NOT stale. An empty series has no snapshot; it
+    must not be reported as stale data — it is simply no data yet."""
+    from milodex.gui.performance_state import _is_stale
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    # newest_iso=None means the portfolio_snapshots table returned no rows.
+    assert _is_stale(None, now) is False, "empty series must NOT be flagged stale"
+
+
+def test_snapshot_present_but_old_is_stale() -> None:
+    """(b) Snapshot exists but is older than threshold → stale.
+
+    This is the genuine stale case: we had data and it aged out.
+    The existing stale path must be preserved intact.
+    """
+    from milodex.gui.performance_state import _is_stale
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    old_iso = (now - timedelta(days=5)).isoformat()  # 5 days > 2-day threshold
+    assert _is_stale(old_iso, now) is True, "old snapshot must be flagged stale"
+
+
+def test_fresh_snapshot_not_stale() -> None:
+    """(c) Fresh snapshot (within threshold) → NOT stale."""
+    from milodex.gui.performance_state import _is_stale
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    recent_iso = (now - timedelta(hours=4)).isoformat()
+    assert _is_stale(recent_iso, now) is False, "recent snapshot must NOT be flagged stale"
 
 
 def test_is_stale_tz_naive_input_does_not_raise() -> None:
@@ -717,7 +755,7 @@ def test_stop_drains_in_flight_worker(qapp, tmp_path) -> None:
 
 @_skip_no_qt
 def test_stale_flag_exposed_on_state(qapp, tmp_path) -> None:
-    """isStale is True when newest snapshot is older than 2 days."""
+    """isStale is True (and hasSnapshot is True) when newest snapshot is older than 2 days."""
     _ = qapp
     db = tmp_path / "perf.db"
     _create_fixture_db(db)
@@ -731,7 +769,8 @@ def test_stale_flag_exposed_on_state(qapp, tmp_path) -> None:
     _wait_for_pool(state)
 
     assert state.dataStatus == "ready"
-    assert state.isStale is True
+    assert state.hasSnapshot is True, "snapshot exists — hasSnapshot must be True"
+    assert state.isStale is True, "old snapshot must be flagged stale"
     assert state.staleAsOf != ""
 
     state.stop()
@@ -739,7 +778,7 @@ def test_stale_flag_exposed_on_state(qapp, tmp_path) -> None:
 
 @_skip_no_qt
 def test_fresh_data_not_stale(qapp, tmp_path) -> None:
-    """isStale is False when newest snapshot is within 2 days."""
+    """isStale is False (and hasSnapshot is True) when newest snapshot is within 2 days."""
     _ = qapp
     db = tmp_path / "perf.db"
     _create_fixture_db(db)
@@ -752,6 +791,31 @@ def test_fresh_data_not_stale(qapp, tmp_path) -> None:
     _wait_for_pool(state)
 
     assert state.dataStatus == "ready"
-    assert state.isStale is False
+    assert state.hasSnapshot is True, "snapshot exists — hasSnapshot must be True"
+    assert state.isStale is False, "fresh snapshot must NOT be flagged stale"
+
+    state.stop()
+
+
+@_skip_no_qt
+def test_empty_db_has_no_snapshot_not_stale(qapp, tmp_path) -> None:
+    """Empty portfolio_snapshots → hasSnapshot=False, isStale=False.
+
+    The empty-table case must NOT be treated as stale; it is 'no data yet.'
+    Verifies the three-way distinction: empty ≠ stale ≠ fresh.
+    """
+    _ = qapp
+    db = tmp_path / "perf.db"
+    _create_fixture_db(db)
+    # No rows inserted — empty table
+
+    state = _make_state(db)
+    state._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state)
+
+    assert state.dataStatus == "ready", "empty DB is a valid ready state, not an error"
+    assert state.hasSnapshot is False, "no rows → hasSnapshot must be False"
+    assert state.isStale is False, "no rows → must NOT be flagged stale"
+    assert state.staleAsOf == "", "no rows → staleAsOf must be empty"
 
     state.stop()
