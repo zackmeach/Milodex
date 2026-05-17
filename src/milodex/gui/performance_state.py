@@ -77,6 +77,8 @@ SLICES = ("Today", "Week", "Month", "YTD", "All-Paper")
 
 
 def _period_return(equity_series: list[float]) -> float | None:
+    # Negative starting equity is assumed impossible (paper trading), so
+    # a zero check is sufficient — sign inversion is acceptable here.
     if len(equity_series) < 2 or equity_series[0] == 0:
         return None
     return (equity_series[-1] / equity_series[0]) - 1.0
@@ -100,6 +102,8 @@ def _is_stale(newest_iso: str | None, now: datetime, max_trading_days: int = 2) 
     if newest_iso is None:
         return True
     newest = datetime.fromisoformat(newest_iso)
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=UTC)
     return (now - newest).days > max_trading_days
 
 
@@ -316,7 +320,7 @@ def _compute_benchmark(
                         end = t1.tz_localize("UTC") if t1.tzinfo is None else t1
                         mask = (ts >= start) & (ts <= end)
                     else:
-                        mask = pd.Series([False] * len(spy_df))
+                        mask = pd.Series(False, index=spy_df.index)
                 else:
                     window = windows[slice_name]
                     assert window is not None
@@ -328,10 +332,11 @@ def _compute_benchmark(
                 if not subset.empty:
                     closes = subset["close"].tolist()
                     spy_return = _period_return(closes)
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "PerformanceState: SPY benchmark computation failed for %s",
+                    "PerformanceState: SPY benchmark failed for %s: %s",
                     slice_name,
+                    exc,
                 )
                 spy_return = None
 

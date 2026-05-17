@@ -135,6 +135,23 @@ def test_is_stale_recent() -> None:
     assert _is_stale(newest_iso, now) is False
 
 
+def test_is_stale_tz_naive_input_does_not_raise() -> None:
+    """A tz-naive ISO string from an upstream regression must not crash _is_stale.
+
+    Without the tzinfo guard, ``datetime.now(tz=UTC) - naive_dt`` raises
+    TypeError.  The fix clamps to UTC so the result degrades to a wrong-by-
+    hours stale flag rather than a hard crash that kills every refresh cycle.
+    """
+    from milodex.gui.performance_state import _is_stale
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    # Naive ISO (no +00:00 suffix) — simulates a broken upstream snapshot
+    naive_iso = "2026-05-16T06:00:00"
+    # Must not raise; result value is acceptable as long as it's a bool
+    result = _is_stale(naive_iso, now)
+    assert isinstance(result, bool)
+
+
 # ---------------------------------------------------------------------------
 # Fixture DB helpers
 # ---------------------------------------------------------------------------
@@ -683,13 +700,17 @@ def test_stop_drains_in_flight_worker(qapp, tmp_path) -> None:
         state._kick_refresh()  # noqa: SLF001
         assert worker_ran.wait(timeout=3.0), "Worker did not start within 3s"
 
-        release.set()
+        # Worker is now genuinely in-flight (blocking on release).  Schedule
+        # the unblock *after* stop() starts so that stop() must actually wait.
+        threading.Timer(0.5, release.set).start()
+
         t0 = time.monotonic()
         state.stop()
         elapsed = time.monotonic() - t0
 
         assert state._thread_pool.activeThreadCount() == 0  # noqa: SLF001
-        assert elapsed < 2.0, f"stop() took {elapsed:.2f}s — expected < 2s"
+        assert elapsed >= 0.4, f"stop() returned too fast ({elapsed:.2f}s) — drain not exercised"
+        assert elapsed < 2.0, f"stop() took {elapsed:.2f}s — expected < 2s (hit timeout?)"
     finally:
         _PerfRefreshRunnable.run = original_run
 
