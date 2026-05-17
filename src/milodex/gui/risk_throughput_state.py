@@ -58,7 +58,7 @@ from PySide6.QtCore import (  # pragma: no cover
     Slot,
 )
 
-from milodex.gui._dashboard_scope import EXPLANATION_PAPER_SQL
+from milodex.gui._dashboard_scope import EXPLANATION_PAPER_SQL, TRADE_PAPER_SQL
 
 logger = logging.getLogger(__name__)
 
@@ -175,30 +175,30 @@ def _count_stage(
               AND {time_filter}
         """
     elif stage_key == "submitted":
-        # Trades paper-scoped AND whose explanation is in paper scope (join-back)
-        sql = """
+        # TRADE_PAPER_SQL applied inside subquery over trades alone (unqualified columns
+        # are unambiguous there), then joined back to paper-scoped explanations.
+        sql = f"""
             SELECT COUNT(DISTINCT t.id)
-            FROM trades t
+            FROM (SELECT id, explanation_id, recorded_at
+                  FROM trades
+                  WHERE {TRADE_PAPER_SQL}
+                    AND status = 'submitted'
+                    AND recorded_at >= :start AND recorded_at <= :end) t
             JOIN explanations e ON t.explanation_id = e.id
-            WHERE t.strategy_stage IN ('paper','micro_live','live')
-              AND t.backtest_run_id IS NULL
-              AND e.strategy_stage IN ('paper','micro_live','live')
-              AND e.decision_type != 'backtest_fill'
-              AND t.status = 'submitted'
-              AND t.recorded_at >= :start AND t.recorded_at <= :end
+            WHERE {EXPLANATION_PAPER_SQL}
         """
     elif stage_key == "filled":
-        # Trades paper-scoped AND whose explanation is in paper scope (join-back)
-        sql = """
+        # TRADE_PAPER_SQL applied inside subquery over trades alone (unqualified columns
+        # are unambiguous there), then joined back to paper-scoped explanations.
+        sql = f"""
             SELECT COUNT(DISTINCT t.id)
-            FROM trades t
+            FROM (SELECT id, explanation_id, recorded_at
+                  FROM trades
+                  WHERE {TRADE_PAPER_SQL}
+                    AND broker_status = 'filled'
+                    AND recorded_at >= :start AND recorded_at <= :end) t
             JOIN explanations e ON t.explanation_id = e.id
-            WHERE t.strategy_stage IN ('paper','micro_live','live')
-              AND t.backtest_run_id IS NULL
-              AND e.strategy_stage IN ('paper','micro_live','live')
-              AND e.decision_type != 'backtest_fill'
-              AND t.broker_status = 'filled'
-              AND t.recorded_at >= :start AND t.recorded_at <= :end
+            WHERE {EXPLANATION_PAPER_SQL}
         """
     else:
         return 0
