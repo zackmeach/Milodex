@@ -224,6 +224,10 @@ def test_compute_metrics_flat_equity():
     assert m.max_drawdown_pct == pytest.approx(0.0)
     assert m.trade_count == 0
     assert m.confidence_label == "insufficient_data"
+    # A perfectly flat curve has zero return variance: Sharpe/Sortino are
+    # undefined (None), not a ~1e16 number from float round-off noise.
+    assert m.sharpe_ratio is None
+    assert m.sortino_ratio is None
 
 
 def test_compute_metrics_positive_return():
