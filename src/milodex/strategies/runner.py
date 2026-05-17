@@ -52,6 +52,7 @@ class StrategyRunner:
         poll_interval_seconds: float | None = None,
         prompt_fn: Callable[[], str] | None = None,
         on_cycle_result: Callable[[list[ExecutionResult]], None] | None = None,
+        lock_heartbeat: Callable[[], None] | None = None,
         controlled_stop_request_path: Path | None = None,
         close_lockin_min_interval_seconds: float = 30.0,
         close_lockin_max_wait_seconds: float = 300.0,
@@ -66,6 +67,15 @@ class StrategyRunner:
         # Resolved after _loaded is set below.
         self._prompt_fn = prompt_fn or self._prompt_shutdown_choice
         self._on_cycle_result = on_cycle_result
+        # Optional liveness heartbeat for the per-strategy advisory lock.
+        # run() is an unbounded loop the operator may leave running all
+        # day/overnight while the lock is held. The advisory lock's age
+        # fallback (_STALE_LOCK_MAX_AGE_SECONDS) reclaims a lock whose
+        # mtime is stale even if the PID looks live, to break a
+        # recycled-PID deadlock; that is only safe if this live holder
+        # refreshes the mtime each cycle. The CLI wires AdvisoryLock.refresh
+        # here after acquiring the lock; tests inject a stub. None → no-op.
+        self._lock_heartbeat = lock_heartbeat
         self._controlled_stop_request_path = controlled_stop_request_path
         self._close_lockin_min_interval_seconds = close_lockin_min_interval_seconds
         self._close_lockin_max_wait_seconds = close_lockin_max_wait_seconds
@@ -127,6 +137,30 @@ class StrategyRunner:
         """
         self._on_cycle_result = callback
 
+    def set_lock_heartbeat(self, heartbeat: Callable[[], None] | None) -> None:
+        """Register (or clear) the per-cycle advisory-lock heartbeat.
+
+        The CLI acquires the per-strategy :class:`AdvisoryLock` outside the
+        runner and passes its ``refresh`` here so a long-running session
+        keeps its lock-file mtime fresh and cannot be stolen mid-session by
+        the lock's recycled-PID age fallback. The runner never owns or
+        releases the lock — it only signals liveness.
+        """
+        self._lock_heartbeat = heartbeat
+
+    def _heartbeat_lock(self) -> None:
+        """Signal liveness on the held advisory lock; never raise.
+
+        A failed heartbeat must not take down a live trading runner — the
+        worst case is one stale cycle, still far inside the age threshold.
+        """
+        if self._lock_heartbeat is None:
+            return
+        try:
+            self._lock_heartbeat()
+        except Exception:  # noqa: BLE001 — liveness signal is best-effort
+            logger.warning("Advisory-lock heartbeat failed; continuing", exc_info=True)
+
     def run(self) -> None:
         """Run the strategy loop until the operator stops it.
 
@@ -141,6 +175,13 @@ class StrategyRunner:
         _exit_mode = "controlled"
         try:
             while True:
+                # Refresh the advisory lock's liveness mtime at the top of
+                # every poll cycle. This long-running loop holds the
+                # per-strategy lock for its whole lifetime; without this a
+                # session left running past _STALE_LOCK_MAX_AGE_SECONDS
+                # would look stale and a second invocation could steal the
+                # lock → duplicate trade submission.
+                self._heartbeat_lock()
                 self._check_controlled_stop_request()
                 if self._requested_shutdown is not None:
                     _exit_mode = self._requested_shutdown

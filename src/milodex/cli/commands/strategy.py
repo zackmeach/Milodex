@@ -122,12 +122,18 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     # the broker via the risk evaluator's per-call position query (ADR 0024),
     # not to inter-process file locks.
     locks_dir = ctx.locks_dir or get_locks_dir()
-    with AdvisoryLock(
+    runner_lock = AdvisoryLock(
         runner_lock_name(args.strategy_id),
         locks_dir=locks_dir,
         holder_name=f"milodex strategy run {args.strategy_id}",
-    ):
+    )
+    with runner_lock:
         runner = ctx.get_strategy_runner(args.strategy_id)
+        # The runner's run() loop holds this lock for its whole (possibly
+        # all-day) lifetime. Wire the lock's heartbeat so each poll cycle
+        # refreshes the lock-file mtime; the advisory lock's recycled-PID
+        # age fallback then cannot steal the lock from this live session.
+        runner.set_lock_heartbeat(runner_lock.refresh)
         if getattr(runner, "_controlled_stop_request_path", None) is None:
             runner._controlled_stop_request_path = controlled_stop_request_path(  # noqa: SLF001
                 locks_dir,

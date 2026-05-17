@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1229,8 +1230,41 @@ class EventStore:
         return [_portfolio_snapshot_from_row(row) for row in rows]
 
     def _apply_migrations(self) -> None:
+        """Apply forward-only migrations atomically and concurrency-safely.
+
+        Invariant: for any migration, its DDL **and** the matching
+        ``_schema_version`` bump commit as a single unit, and the version
+        is re-read *inside* the serialized critical section so a process
+        that lost the startup race never re-applies an already-applied
+        migration.
+
+        Why this shape:
+
+        * ``sqlite3.executescript`` issues an implicit ``COMMIT`` before it
+          runs, which would split each migration's DDL from its version
+          bump into separate transactions — exactly the partial-schema /
+          stale-version corruption hazard under concurrent construction
+          (``ExecutionService``, ``KillSwitchStateStore``, the runner and
+          the backtest engine each build their own ``EventStore``). So we
+          do *not* use ``executescript``; we split the migration file into
+          statements and execute them inside one explicit
+          ``BEGIN EXCLUSIVE`` transaction together with the version write.
+        * ``BEGIN EXCLUSIVE`` takes SQLite's write lock for the whole
+          critical section: the first constructor migrates while every
+          other constructor blocks (up to ``busy_timeout``) and then, on
+          entering its own ``BEGIN EXCLUSIVE``, re-reads the now-current
+          version and finds nothing to do — exactly-once application.
+        * Statement splitting uses :func:`sqlite3.complete_statement`
+          (SQLite's own tokenizer) so ``;`` inside string literals or SQL
+          comments is handled correctly. WAL mode and normal
+          single-process startup are unchanged (one quick EXCLUSIVE txn,
+          no contention) and remain idempotent.
+        """
         migrations = self._load_migrations()
         with self._connect() as connection:
+            # _connect() already set PRAGMA busy_timeout so losers of the
+            # startup race wait for the EXCLUSIVE write lock instead of
+            # failing fast with "database is locked".
             connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS _schema_version (
@@ -1238,18 +1272,31 @@ class EventStore:
                 )
                 """
             )
-            current_version = self._get_schema_version(connection)
-            for version, sql in migrations:
-                if version <= current_version:
-                    continue
-                connection.executescript(sql)
-                connection.execute("DELETE FROM _schema_version")
-                connection.execute(
-                    "INSERT INTO _schema_version(version) VALUES (?)",
-                    (version,),
-                )
-                current_version = version
             connection.commit()
+            for version, sql in migrations:
+                # Fast pre-check outside the lock (optimisation only — the
+                # authoritative re-check is inside the EXCLUSIVE txn).
+                if version <= self._get_schema_version(connection):
+                    continue
+                connection.execute("BEGIN EXCLUSIVE")
+                try:
+                    # Re-read INSIDE the critical section: a process that
+                    # lost the race sees the winner's committed version
+                    # and must not re-apply.
+                    if version <= self._get_schema_version(connection):
+                        connection.execute("ROLLBACK")
+                        continue
+                    for statement in _split_sql_statements(sql):
+                        connection.execute(statement)
+                    connection.execute("DELETE FROM _schema_version")
+                    connection.execute(
+                        "INSERT INTO _schema_version(version) VALUES (?)",
+                        (version,),
+                    )
+                    connection.execute("COMMIT")
+                except BaseException:
+                    connection.execute("ROLLBACK")
+                    raise
 
     def _load_migrations(self) -> list[tuple[int, str]]:
         migrations_dir = Path(__file__).resolve().parent / "migrations"
@@ -1268,7 +1315,15 @@ class EventStore:
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self._path)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+        # busy_timeout FIRST: it sets a lock-wait policy without itself
+        # taking a lock, so every subsequent statement on this connection
+        # (including the WAL-mode pragma, which is a write under
+        # contention, and the migration EXCLUSIVE transaction) blocks and
+        # retries instead of failing fast with "database is locked" when
+        # several EventStore instances are constructed concurrently
+        # (ExecutionService / KillSwitchStateStore / runner / engine).
+        connection.execute("PRAGMA busy_timeout=30000")
+        _set_wal_mode(connection)
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
@@ -1464,6 +1519,74 @@ def _portfolio_snapshot_from_row(row: sqlite3.Row) -> PortfolioSnapshotEvent:
         daily_pnl=float(row["daily_pnl"]),
         positions=list(_load_json(row["positions_json"])),
     )
+
+
+def _set_wal_mode(connection: sqlite3.Connection) -> None:
+    """Put the database in WAL mode, tolerating a concurrent-setup race.
+
+    ``PRAGMA journal_mode=WAL`` does **not** honour ``busy_timeout``: it
+    needs a moment with no other connection touching the database, so
+    when several ``EventStore`` instances are constructed at once on a
+    fresh DB they collide and all but one get ``database is locked``.
+
+    Journal mode is a *persistent, database-level* setting (stored in the
+    file header) — once any single connection sets WAL it stays WAL for
+    every connection thereafter. So a transient failure here is benign as
+    long as *someone* succeeds: we retry briefly, and if the mode is
+    already WAL (a peer won the race) we stop. We only raise if we can
+    neither set nor observe WAL after the bounded retry, which would
+    indicate a genuinely stuck database rather than a startup race.
+    """
+    deadline = time.monotonic() + 30.0
+    last_error: sqlite3.OperationalError | None = None
+    while True:
+        try:
+            row = connection.execute("PRAGMA journal_mode=WAL").fetchone()
+            if row is not None and str(row[0]).lower() == "wal":
+                return
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+        # Did a peer already switch the persistent mode to WAL?
+        try:
+            current = connection.execute("PRAGMA journal_mode").fetchone()
+            if current is not None and str(current[0]).lower() == "wal":
+                return
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+        if time.monotonic() >= deadline:
+            if last_error is not None:
+                raise last_error
+            raise sqlite3.OperationalError(
+                "Could not establish WAL journal mode within the startup retry window."
+            )
+        time.sleep(0.05)
+
+
+def _split_sql_statements(sql: str) -> list[str]:
+    """Split a migration file into individual executable statements.
+
+    Uses :func:`sqlite3.complete_statement` — SQLite's own tokenizer — to
+    find statement boundaries, so a ``;`` inside a string literal, a
+    ``--`` line comment, or a ``/* */`` block comment does **not** split a
+    statement incorrectly (the naive ``str.split(';')`` approach is wrong
+    for the existing migrations, several of which have ``;`` and ``'`` in
+    SQL comments). Empty / comment-only fragments are dropped so
+    ``connection.execute`` is never handed a no-op statement.
+    """
+    statements: list[str] = []
+    buffer = ""
+    for char in sql:
+        buffer += char
+        if char == ";" and sqlite3.complete_statement(buffer):
+            stripped = buffer.strip()
+            if stripped and stripped != ";":
+                statements.append(stripped)
+            buffer = ""
+    tail = buffer.strip()
+    if tail and tail != ";":
+        # A trailing statement with no terminating ';' (still valid DDL).
+        statements.append(tail)
+    return statements
 
 
 def _dt(value: datetime | None) -> str | None:
