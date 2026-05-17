@@ -27,7 +27,6 @@ from milodex.core.event_store import EventStore
 from milodex.data.models import BarSet
 from milodex.strategies import StrategyLoader
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------
@@ -268,7 +267,11 @@ class TestEngineEquivalence:
         assert result.final_equity == pytest.approx(9_231.0)
 
         trades = store.list_trades_for_backtest_run(result.db_id)
-        filled = [(t.side, t.symbol, t.quantity, t.estimated_unit_price) for t in trades if t.status == "submitted"]
+        filled = [
+            (t.side, t.symbol, t.quantity, t.estimated_unit_price)
+            for t in trades
+            if t.status == "submitted"
+        ]
         assert filled == [
             ("buy", "SPY", 769.0, 8.0),
             ("sell", "SPY", 769.0, 7.0),
