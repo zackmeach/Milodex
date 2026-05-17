@@ -902,10 +902,12 @@ Item {
                     height: Theme.space[7] * 10
                     visible: ActivityFeedState.dataStatus !== "error"
                     rows: feedCol._tableRows
-                    // "All" → empty free-text filter (no filtering);
-                    // a category maps to its exact `kind` token, which the
-                    // ActivityTable substring-filters on kind+subject+detail.
-                    filter: feedCol.feedFilter === "All" ? "" : feedCol.feedFilter
+                    // kindFilter drives the category toggle: "All" → "" (show
+                    // all kinds); other values are exact kind tokens that must
+                    // equal the row's kind field — no substring false-positives.
+                    kindFilter: feedCol.feedFilter === "All" ? "" : feedCol.feedFilter
+                    // filter is reserved for free-text search; leave empty by default.
+                    filter: ""
                 }
             }
 

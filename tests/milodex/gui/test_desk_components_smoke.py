@@ -322,6 +322,104 @@ ActivityTable {
     _run(_build_load_script(qml), "ActivityTable (with filter)")
 
 
+@_skip_no_qt
+def test_activity_table_kind_filter_exact_match_no_false_positives() -> None:
+    """kindFilter="fill" must NOT pass an order row whose detail contains "filled".
+
+    Under the old substring-only behavior (filter="fill" on kind+subject+detail),
+    an order row with detail "BUY 100 SPY submitted/filled" would match because
+    "fill" is a substring of "filled".  The new kindFilter property applies an
+    exact case-sensitive equality on row.kind, so only rows with kind=="fill"
+    pass — the order row is excluded.
+
+    The test asserts the exact _filteredRows count via the component's exposed
+    property, which would be 2 (both rows) under the old behavior and 1 (fill
+    only) under the correct behavior.  Failing count == old substring count ==
+    2 is the failure signal.
+    """
+    script = f"""\
+import os, sys
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQml import QQmlApplicationEngine, QQmlComponent
+
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+tm = ThemeManager()
+register_qml_types(tm)
+
+engine = QQmlApplicationEngine()
+warnings = []
+engine.warnings.connect(lambda ws: warnings.extend(str(w.toString()) for w in ws))
+engine.addImportPath({str(_QML_IMPORT_ROOT)!r})
+
+component = QQmlComponent(engine)
+component.setData(b'''
+import QtQuick
+import Milodex 1.0
+
+ActivityTable {{
+    id: table
+    // Two rows: one order whose detail contains "filled" (false-positive
+    // candidate), one genuine fill.
+    rows: [
+        {{ ts: "09:30", kind: "order", subject: "SPY",
+           detail: "BUY 100 SPY submitted/filled", tone: "data" }},
+        {{ ts: "09:31", kind: "fill",  subject: "SPY 100sh",
+           detail: "@523.10 filled", tone: "positive" }}
+    ]
+    // kindFilter="fill" must match only kind=="fill" exactly.
+    kindFilter: "fill"
+    filter: ""
+    width: 500
+    height: 200
+    // Expose filtered count for assertion from Python.
+    property int filteredCount: _filteredRows.length
+}}
+''', QUrl())
+
+if component.status() == QQmlComponent.Error:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(2)
+obj = component.create(engine.rootContext())
+if obj is None:
+    print(component.errorString(), file=sys.stderr)
+    sys.exit(3)
+if warnings:
+    print("\\n".join(warnings), file=sys.stderr)
+    sys.exit(4)
+
+count = obj.property("filteredCount")
+# Old substring behavior: "fill" matches both "order" detail "submitted/filled"
+# AND "fill" kind row → count == 2.  Correct exact-match: only the fill row
+# passes → count == 1.
+if count != 1:
+    print(
+        f"kindFilter='fill' yielded {{count}} rows; expected 1. "
+        f"Old substring behavior would yield 2 — fix is NOT in effect.",
+        file=sys.stderr,
+    )
+    sys.exit(5)
+print("KIND_FILTER_OK")
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"kindFilter exact-match test FAILED\n"
+        f"returncode: {result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tier 2 — token-binding: spot-check key tokens resolve correctly
 # ---------------------------------------------------------------------------

@@ -22,8 +22,9 @@
 // MOTION DISCIPLINE: no animations anywhere in this component.
 //
 // Public API:
-//   rows   : var    — array of row objects
-//   filter : string — free-text filter applied to kind + subject + detail
+//   rows       : var    — array of row objects
+//   filter     : string — free-text filter applied to kind + subject + detail
+//   kindFilter : string — exact kind match ("order"|"rejection"|"signal"|"fill"|"")
 
 import QtQuick
 import Milodex 1.0
@@ -31,8 +32,9 @@ import Milodex 1.0
 Item {
     id: root
 
-    property var    rows:   []
-    property string filter: ""
+    property var    rows:       []
+    property string filter:     ""
+    property string kindFilter: ""
 
     // Tone → editorial token mapping (centralised per spec §5).
     // keep in sync with RollupCell.qml's tone→color mapping
@@ -46,17 +48,26 @@ Item {
     }
 
     // Filter rows in JS — purely computed, no read-model coupling.
+    // Two independent predicates ANDed:
+    //   1. kindFilter — exact case-sensitive equality on row.kind ("" = pass all)
+    //   2. filter     — free-text substring on kind+subject+detail ("" = pass all)
     readonly property var _filteredRows: {
-        if (root.filter === "") return root.rows
-        var lower = root.filter.toLowerCase()
         var result = []
+        var lower = root.filter === "" ? "" : root.filter.toLowerCase()
         for (var i = 0; i < root.rows.length; i++) {
             var r = root.rows[i]
-            var haystack = (r.kind    || "") + " " +
-                           (r.subject || "") + " " +
-                           (r.detail  || "")
-            if (haystack.toLowerCase().indexOf(lower) !== -1)
-                result.push(r)
+            // Predicate 1: exact kind gate
+            if (root.kindFilter !== "" && String(r.kind) !== root.kindFilter)
+                continue
+            // Predicate 2: free-text substring
+            if (lower !== "") {
+                var haystack = (r.kind    || "") + " " +
+                               (r.subject || "") + " " +
+                               (r.detail  || "")
+                if (haystack.toLowerCase().indexOf(lower) === -1)
+                    continue
+            }
+            result.push(r)
         }
         return result
     }
@@ -138,7 +149,7 @@ Item {
         Text {
             anchors.centerIn: parent
             visible:          listView.count === 0
-            text:             root.filter !== "" ? "No matching activity" : "No activity"
+            text:             (root.filter !== "" || root.kindFilter !== "") ? "No matching activity" : "No activity"
             color:            Theme.color.text.muted
             font.family:      Theme.typography.body.sm.family
             font.pixelSize:   Theme.typography.body.sm.size
