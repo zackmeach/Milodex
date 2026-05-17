@@ -78,8 +78,22 @@ class BarSet:
         self._df = df.copy()
 
     def to_dataframe(self) -> pd.DataFrame:
-        """Return a copy of the underlying DataFrame."""
+        """Return a copy of the underlying DataFrame.
+
+        Public contract: mutating the returned frame does not affect this BarSet.
+        Trusted internal callers that never mutate the result should use
+        :meth:`_df_view` instead.
+        """
         return self._df.copy()
+
+    def _df_view(self) -> pd.DataFrame:
+        """Return the underlying DataFrame without copying.
+
+        For read-only internal callers only. The caller MUST NOT mutate the
+        returned frame; doing so corrupts BarSet state. Public callers should
+        always use :meth:`to_dataframe`.
+        """
+        return self._df
 
     def latest(self) -> Bar:
         """Return the most recent bar.
