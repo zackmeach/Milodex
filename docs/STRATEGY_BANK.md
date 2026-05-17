@@ -17,7 +17,7 @@ Six strategies remain at backtest stage and are blocked from promotion. See the 
 
 ## As of date and source of truth
 
-This document reflects master at commit `ecd437f` (2026-05-15).
+This document reflects master at commit `7d5fd0c` (2026-05-16).
 
 Stages and metrics are unchanged from the 2026-05-07 baseline (commit `8fe357c`): six strategies at paper, six blocked at backtest. The only event-store change since is a fresh `lifecycle_exempt` paper record for `regime.daily.sma200_rotation.spy_shy.v1` (`recorded_at = 2026-05-15T19:06:35Z`, from the phase-one paper-lifecycle work in PR #146). It re-affirms the existing regime paper status under policy R-PRM-004 — it does not change the strategy's stage, evidence run, or walk-forward metrics, which remain as listed in the paper-stage table below.
 
@@ -122,7 +122,7 @@ Per-window Sharpe instability is a real concern here. The four windows produced:
 
 ## Backtest-stage strategies — blocked
 
-Gate codes: `[S]` = Sharpe < 0.5, `[D]` = MaxDD > 15%, `[N]` = trade count below the strategy's configured `backtest.min_trades_required` floor.
+Gate codes: `[S]` = Sharpe below the capital-readiness floor, `[D]` = MaxDD above the capital-readiness ceiling, `[N]` = trade count below the strategy's configured `backtest.min_trades_required` floor. Authoritative threshold values are in `src/milodex/promotion/policy.py` / ADR 0052.
 
 Walk-forward methodology and canonical window 2020-01-01 to 2024-12-31 per ADR 0021 and ADR 0030.
 
@@ -158,7 +158,7 @@ Walk-forward validation splits the canonical evaluation window (2020-01-01 to 20
 
 The walk-forward approach is required per ADR 0030, which establishes that backtest runs are exploratory and that whole-period (in-sample) results are inadmissible for promotion gating. The seasonality strategy in this bank is a concrete illustration of why: its whole-period Sharpe was +0.33 while its OOS aggregate was -0.27.
 
-Gates (ADR 0009 / ADR 0020): Sharpe > 0.5, MaxDD < 15%, and trade count at or above the strategy's configured `backtest.min_trades_required` floor. All three gates must pass simultaneously for a statistical promotion. The regime strategy (`sma200_rotation`) is exempt from these gates under policy R-PRM-004 (lifecycle-exempt promotion type), because a regime strategy that trades infrequently by design cannot accumulate enough OOS trades in a 5-year window for ordinary statistical gates. The exemption is explicit in the `promotions` table (`promotion_type = 'lifecycle_exempt'`).
+Gates (ADR 0009 / ADR 0020 / ADR 0052): authoritative capital-readiness threshold values (Sharpe, MaxDD, trade-count floor) are defined in `src/milodex/promotion/policy.py`. All three gates must pass simultaneously for a statistical promotion. The regime strategy (`sma200_rotation`) is exempt from these gates under policy R-PRM-004 (lifecycle-exempt promotion type), because a regime strategy that trades infrequently by design cannot accumulate enough OOS trades in a 5-year window for ordinary statistical gates. The exemption is explicit in the `promotions` table (`promotion_type = 'lifecycle_exempt'`).
 
 ---
 

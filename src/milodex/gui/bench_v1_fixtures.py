@@ -1,5 +1,7 @@
 """Bench v1 demo fixture rows — curated state-space coverage.
 
+ADR-0049-era visual-prototype demo data only. Not a production path.
+
 Per ADR 0049 Decision 5, the v1 prototype must exercise the full Action
 menu state space. Real ``Freshness`` / ``GateResult`` derivation from
 event history is v2 work; v1 fixture data populates these directly.

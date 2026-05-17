@@ -10,18 +10,17 @@ evidence requirements, advisory-lock peek, governance refusals — is owned
 by the facade and the modules it routes into (``milodex.promotion``,
 ``milodex.core.advisory_lock``, …). The bridge:
 
-* exposes ``proposeDemote`` and ``submitDemote`` as QML-callable slots,
+* exposes propose/submit slot pairs for all six submit-capable action
+  families (demote, freeze-manifest, promote-to-paper, backtest, start-
+  paper-runner, stop-paper-runner — Phases C2 through F),
 * caches the live ``CommandProposal`` between propose and submit so the
   proposal identity (``proposal_id``) survives the round-trip without QML
   needing to reconstruct dataclasses,
 * refreshes the Bench read model on a successful submit (single permitted
-  reach into ``_PollingReadModel._kick_refresh``), and
+  reach into ``BenchState._kick_refresh``), and
 * emits a ``submitCompleted`` signal QML surfaces can listen to.
 
-Backtest evidence generation is wired through ``proposeBacktest`` /
-``submitBacktest``. Paper runner controls are wired through
-``proposeStartPaperRunner`` / ``submitStartPaperRunner`` and
-``proposeStopPaperRunner`` / ``submitStopPaperRunner``.
+``submitCapableActionFamilies()`` enumerates all six wired families.
 """
 
 from __future__ import annotations
@@ -62,13 +61,19 @@ def _resolve_operator_identity() -> str:
 
 
 class BenchCommandBridge(QObject):
-    """Qt-side bridge to the Bench command facade (ADR 0051 Phase D1).
+    """Qt-side bridge to the Bench command facade (ADR 0051 Phase F).
 
-    The demotion / walk-back action family (Phase C2) and the freeze-manifest
-    action family (Phase D1), canonical backtest evidence generation,
-    promote-to-paper, and paper runner start/controlled-stop are
-    submit-capable. Every other action family remains preview-only and is
-    *not* exposed here.
+    All six action families are submit-capable:
+    - demote / walk-back (Phase C2)
+    - freeze-manifest (Phase D1)
+    - promote-to-paper (Phase D3)
+    - canonical backtest evidence generation (Phase E)
+    - start paper runner (Phase F)
+    - stop paper runner / controlled-stop (Phase F)
+
+    Exposed via ``submitCapableActionFamilies()``. No other Bench action
+    families are wired; preview-only families are handled by the read-model
+    surface (ADR 0049).
     """
 
     # Emitted after every submit attempt — successful, blocked, or errored.
@@ -280,9 +285,7 @@ class BenchCommandBridge(QObject):
             try:
                 self._bench_state._kick_refresh()  # noqa: SLF001
             except Exception:  # noqa: BLE001
-                logger.exception(
-                    "BenchState refresh after submit_freeze_manifest failed."
-                )
+                logger.exception("BenchState refresh after submit_freeze_manifest failed.")
 
         self.submitCompleted.emit(payload)
         return payload
@@ -347,9 +350,7 @@ class BenchCommandBridge(QObject):
         """Build a promote-to-paper proposal and cache it by id."""
         strategy_id = str(inputs.get("strategy_id", ""))
         recommendation_raw = inputs.get("recommendation")
-        recommendation = (
-            str(recommendation_raw) if recommendation_raw is not None else None
-        )
+        recommendation = str(recommendation_raw) if recommendation_raw is not None else None
         run_id_raw = inputs.get("run_id")
         run_id = str(run_id_raw) if run_id_raw else None
         proposal = self._facade.propose_promote_to_paper(
