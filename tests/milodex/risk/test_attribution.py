@@ -361,3 +361,51 @@ def test_count_positions_by_strategy_skips_zero_quantity(store):
 
     assert "QQQ" not in counts
     assert counts.get("regime") == 1
+
+
+def test_attribute_position_over_sell_does_not_drive_running_balance_negative(store):
+    """An over-sell (SELL exceeding prior BUYs) must not under-count the owner.
+
+    Regression for the negative-balance reopen bug. A broker position
+    cannot be net-short in this system, so a trade-history SELL that
+    exceeds prior submitted BUYs (data error / partial-fill mismatch /
+    out-of-system manual sell) is a data artifact, not a real short.
+
+    Sequence: strategy_a opens 10, an oversized SELL of 14 lands, then
+    strategy_a buys 3 more (the broker still reports the symbol held).
+    Without clamping the running balance at zero on the sell side, the
+    phantom -4 "debt" must be repaid before a zero->non-zero opening can
+    re-fire, so strategy_a's re-buy never re-opens the chain and the
+    symbol resolves to OPERATOR — silently dropping the position from
+    strategy_a's ADR-0029 per-strategy cap (a fail-open under-count).
+    Clamping treats the over-sell as a full liquidation; strategy_a's
+    later BUY then legitimately re-opens, attributing the held symbol
+    back to strategy_a.
+    """
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=3),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=14,
+        strategy_name=None,
+        submitted_by="operator",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=3,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="SPY", event_store=store) == "strategy_a"

@@ -69,35 +69,69 @@ class TestNoLiveModeDrift:
     # ------------------------------------------------------------------
 
     def test_evaluate_invokes_trading_mode_check(self):
-        """``RiskEvaluator.evaluate`` must call ``_check_trading_mode``.
+        """``RiskEvaluator.evaluate`` must invoke ``_check_trading_mode``.
 
-        Removing the call would silently bypass the paper-only fence at
+        Removing the check would silently bypass the paper-only fence at
         runtime. The behavioral consequence is tested in
         ``tests/milodex/execution/test_service.py::test_paper_submit_requires_paper_mode``;
         this test pins the *existence* of the wiring so a refactor that
-        deletes the line fails here even before any execution-service
-        test runs.
+        deletes it fails here even before any execution-service test runs.
 
-        We parse the method's AST rather than regex-match the source
-        because regex would match a commented-out invocation as a false
-        negative — and a commented-out invocation IS the regression we
+        ``evaluate`` dispatches the check suite by name through
+        ``_run_check`` over the ``_CHECKS`` registry (fail-closed
+        wrapper). We AST-parse the ``_CHECKS`` tuple rather than
+        regex-match the source because a commented-out entry disappears
+        from the AST — and a commented-out check IS the regression we
         most want to catch ("just disable the check temporarily" is the
-        most plausible bad refactor).
+        most plausible bad refactor). We additionally assert ``evaluate``
+        actually dispatches every ``_CHECKS`` entry through
+        ``_run_check`` so the registry cannot be made inert.
         """
-        source = textwrap.dedent(inspect.getsource(RiskEvaluator.evaluate))
-        tree = ast.parse(source)
-        calls_to_check = [
+        # 1. ``_check_trading_mode`` is present in the AST of the
+        #    ``_CHECKS`` registry literal (commenting it out removes it).
+        class_source = textwrap.dedent(inspect.getsource(RiskEvaluator))
+        class_tree = ast.parse(class_source)
+        checks_literals: list[str] = []
+        for node in ast.walk(class_tree):
+            if (
+                isinstance(node, ast.Assign)
+                and any(isinstance(t, ast.Name) and t.id == "_CHECKS" for t in node.targets)
+                and isinstance(node.value, ast.Tuple)
+            ):
+                checks_literals = [
+                    elt.value
+                    for elt in node.value.elts
+                    if isinstance(elt, ast.Constant) and isinstance(elt.value, str)
+                ]
+        assert "_check_trading_mode" in checks_literals, (
+            "RiskEvaluator._CHECKS must include '_check_trading_mode' "
+            "(found no such entry in the AST of the registry tuple). "
+            "Removing or commenting it out violates ADR 0004 "
+            "(paper-only) and R-EXE-007 runtime defense-in-depth."
+        )
+        # The registry must match the live tuple (guards against the AST
+        # parse silently going stale relative to the runtime attribute).
+        assert "_check_trading_mode" in RiskEvaluator._CHECKS
+
+        # 2. ``evaluate`` actually dispatches the registry through
+        #    ``_run_check`` — the registry must not be made inert.
+        evaluate_source = textwrap.dedent(inspect.getsource(RiskEvaluator.evaluate))
+        evaluate_tree = ast.parse(evaluate_source)
+        dispatches = [
             node
-            for node in ast.walk(tree)
+            for node in ast.walk(evaluate_tree)
             if isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "_check_trading_mode"
+            and node.func.attr == "_run_check"
         ]
-        assert calls_to_check, (
-            "RiskEvaluator.evaluate must invoke _check_trading_mode "
-            "(found no AST Call to that method). Removing or commenting "
-            "out this check violates ADR 0004 (paper-only) and "
-            "R-EXE-007 runtime defense-in-depth."
+        references_checks = any(
+            isinstance(node, ast.Attribute) and node.attr == "_CHECKS"
+            for node in ast.walk(evaluate_tree)
+        )
+        assert dispatches and references_checks, (
+            "RiskEvaluator.evaluate must dispatch the _CHECKS registry "
+            "through _run_check. Bypassing the registry or the "
+            "fail-closed wrapper violates R-EXE-007 defense-in-depth."
         )
 
     def test_check_trading_mode_rejects_live_mode(self):

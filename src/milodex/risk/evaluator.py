@@ -93,22 +93,28 @@ class EvaluationContext:
 class RiskEvaluator:
     """Evaluate a trade request against Milodex paper-mode risk rules."""
 
+    _CHECKS = (
+        "_check_kill_switch",
+        "_check_trading_mode",
+        "_check_strategy_stage",
+        "_check_manifest_drift",
+        "_check_market_open",
+        "_check_data_staleness",
+        "_check_daily_loss",
+        "_check_order_value",
+        "_check_single_position_limit",
+        "_check_total_exposure",
+        "_check_concurrent_positions",
+        "_check_strategy_concurrent_positions",
+        "_check_duplicate_order",
+    )
+
     def evaluate(self, context: EvaluationContext) -> RiskDecision:
-        checks = [
-            self._check_kill_switch(context),
-            self._check_trading_mode(context),
-            self._check_strategy_stage(context),
-            self._check_manifest_drift(context),
-            self._check_market_open(context),
-            self._check_data_staleness(context),
-            self._check_daily_loss(context),
-            self._check_order_value(context),
-            self._check_single_position_limit(context),
-            self._check_total_exposure(context),
-            self._check_concurrent_positions(context),
-            self._check_strategy_concurrent_positions(context),
-            self._check_duplicate_order(context),
-        ]
+        # Fail-closed wrapper: an unexpected exception inside any single
+        # check must NOT propagate out of evaluate() — that would leave the
+        # call site with neither an explicit allow nor block. Convert it to
+        # a blocking RiskCheckResult so the trade is refused, not undefined.
+        checks = [self._run_check(name, context) for name in self._CHECKS]
 
         allowed = all(check.passed for check in checks)
         reason_codes = [
@@ -120,6 +126,31 @@ class RiskEvaluator:
             summary=summary,
             checks=checks,
             reason_codes=reason_codes,
+        )
+
+    def _run_check(self, name: str, context: EvaluationContext) -> RiskCheckResult:
+        try:
+            return getattr(self, name)(context)
+        except RuntimeError:
+            # ``_check_manifest_drift`` intentionally raises RuntimeError when
+            # a promoted stage is missing ``runtime_config_hash`` — that is a
+            # caller-wiring programmer error that MUST stay loud (ADR 0015) so
+            # it cannot silently regress into a swallowed trade rejection.
+            if name == "_check_manifest_drift":
+                raise
+            return self._fail_closed_result(name)
+        except Exception:
+            # Fail closed: any unanticipated error blocks the trade rather
+            # than aborting evaluate() and leaving the decision undefined.
+            return self._fail_closed_result(name)
+
+    @staticmethod
+    def _fail_closed_result(check_name: str) -> RiskCheckResult:
+        return RiskCheckResult(
+            name=check_name.removeprefix("_check_"),
+            passed=False,
+            message=f"Risk check '{check_name}' raised an unexpected error; failing closed.",
+            reason_code="risk_check_error",
         )
 
     def _check_kill_switch(self, context: EvaluationContext) -> RiskCheckResult:
@@ -282,7 +313,14 @@ class RiskEvaluator:
                 reason_code="no_latest_bar",
             )
 
-        age = datetime.now(tz=UTC) - context.latest_bar.timestamp
+        # Normalize to UTC-aware before subtracting: a naive bar timestamp
+        # would raise TypeError against an aware ``now`` (offset-naive vs
+        # offset-aware). A naive timestamp is assumed UTC — the system
+        # stores and compares all market data in UTC.
+        bar_ts = context.latest_bar.timestamp
+        if bar_ts.tzinfo is None:
+            bar_ts = bar_ts.replace(tzinfo=UTC)
+        age = datetime.now(tz=UTC) - bar_ts
         max_age = timedelta(seconds=context.risk_defaults.max_data_staleness_seconds)
         if age > max_age:
             return RiskCheckResult(
@@ -523,6 +561,42 @@ class RiskEvaluator:
                 message="Recent matching order found within duplicate-order window.",
                 reason_code="duplicate_order_window",
             )
+
+        # Durable backstop: ``context.recent_orders`` is truncated at the
+        # broker's limit=100 fetch, so with >100 orders inside the window
+        # the matching prior order is silently dropped — precisely when
+        # order volume is high. The event store is the authoritative,
+        # untruncated trade history. Query it for the same symbol/side
+        # within the same window. If the query errors, FAIL CLOSED: a
+        # dedup veto that cannot verify must block, not silently allow.
+        if context.event_store is not None:
+            try:
+                durable_matches = context.event_store.count_recent_submitted_orders(
+                    symbol=context.intent.normalized_symbol(),
+                    side=context.intent.side.value,
+                    since=now - window,
+                )
+            except Exception:
+                return RiskCheckResult(
+                    name="duplicate_order",
+                    passed=False,
+                    message=(
+                        "Duplicate-order history query failed; failing closed "
+                        "(cannot verify the order is not a duplicate)."
+                    ),
+                    reason_code="duplicate_order_window",
+                )
+            if durable_matches > 0:
+                return RiskCheckResult(
+                    name="duplicate_order",
+                    passed=False,
+                    message=(
+                        "Recent matching order found in durable history within "
+                        "duplicate-order window."
+                    ),
+                    reason_code="duplicate_order_window",
+                )
+
         return RiskCheckResult("duplicate_order", True, "No duplicate orders detected.")
 
     def _effective_daily_loss_pct(self, context: EvaluationContext) -> float:

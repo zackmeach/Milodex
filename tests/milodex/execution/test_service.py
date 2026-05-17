@@ -706,3 +706,288 @@ def test_submit_paper_records_pending_broker_status(
     assert len(trades) == 1
     assert trades[0].broker_status == "pending"
     assert trades[0].broker_order_id == "order-pending-1"
+
+
+def test_frozen_manifest_hash_resolved_from_runner_bound_stage(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    monkeypatch,
+):
+    """The frozen-manifest lookup must key off the runner-bound expected_stage.
+
+    Regression for the manifest-drift TOCTOU race. ``service.py`` resolves
+    the frozen manifest hash via ``get_active_manifest_hash(name, stage,
+    ...)``; the evaluator keys its drift exemption off
+    ``intent.expected_stage``. If the on-disk YAML stage flips between
+    reads (e.g. paper -> micro_live), a hash frozen for the *wrong* stage
+    can satisfy a paper runner's drift check, partially defeating the
+    ADR-0015 drift guarantee. Both sides of the drift comparison must use
+    the same stage: the runner-bound ``expected_stage`` when present.
+
+    Here the YAML stage is ``micro_live`` but the runner bound
+    ``expected_stage="paper"`` at startup. The frozen-manifest resolver
+    MUST be queried with ``"paper"`` (the runner-bound stage), not
+    ``"micro_live"`` (the mutable YAML field).
+    """
+    strategy_path = tmp_path / "strategy_micro.yaml"
+    strategy_path.write_text(
+        """
+strategy:
+  name: "paper_momentum"
+  version: 1
+  description: "Test strategy"
+  enabled: true
+  universe: ["SPY"]
+  parameters: {}
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+  risk:
+    max_position_pct: 0.10
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+  stage: "micro_live"
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.0
+    min_trades_required: 30
+""".strip(),
+        encoding="utf-8",
+    )
+
+    captured_stages: list[str] = []
+
+    import milodex.promotion.manifest as manifest_module
+
+    def _spy_get_active_manifest_hash(strategy_id, stage, event_store):
+        captured_stages.append(stage)
+        # Return a hash that matches the runtime config hash so the drift
+        # check passes for the (correct) paper-stage lookup.
+        from milodex.strategies.loader import compute_config_hash
+
+        return compute_config_hash(strategy_path)
+
+    monkeypatch.setattr(manifest_module, "get_active_manifest_hash", _spy_get_active_manifest_hash)
+
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+
+    intent = TradeIntent(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=5,
+        order_type=OrderType.MARKET,
+        strategy_config_path=strategy_path,
+        expected_stage="paper",
+    )
+    result = service.submit_paper(intent)
+
+    assert captured_stages, "frozen-manifest resolver was never called"
+    assert captured_stages == ["paper"], (
+        "frozen manifest hash must be resolved from the runner-bound "
+        f"expected_stage ('paper'), not the mutable YAML stage; got {captured_stages}"
+    )
+    # Drift check passes because both sides used the paper stage.
+    assert result.status == ExecutionStatus.SUBMITTED
+
+
+def test_cancel_order_logs_broker_get_order_error(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    caplog,
+):
+    """A raising broker ``get_order`` during cancel must be logged, not swallowed.
+
+    Regression for the silent ``except Exception: pass`` in
+    ``cancel_order``. Broker errors during shutdown / kill-switch
+    cancellation were hidden, returning ``(cancelled, None)`` with no
+    trace. The return contract is unchanged — the order is still reported
+    cancelled — but the swallowed exception must now be logged with
+    context so the failure is auditable.
+    """
+
+    class _RaisingGetOrderBroker(StubBroker):
+        def get_order(self, order_id: str) -> Order:
+            raise RuntimeError("broker get_order exploded during cancel")
+
+    broker = _RaisingGetOrderBroker(
+        account=sample_account,
+        orders=[submitted_order],
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    store = KillSwitchStateStore(tmp_path / "kill_switch.json")
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+    )
+
+    import logging
+
+    with caplog.at_level(logging.WARNING):
+        cancelled, order = service.cancel_order(submitted_order.id)
+
+    # Return contract preserved.
+    assert cancelled is True
+    assert order is None
+    # The swallowed exception is now logged with context.
+    assert any(
+        "broker get_order exploded during cancel" in record.getMessage()
+        or "broker get_order exploded during cancel" in str(record.exc_info)
+        for record in caplog.records
+    ), f"expected the broker error to be logged; got {[r.getMessage() for r in caplog.records]}"
+
+
+def _seed_submitted_trade(
+    event_store: EventStore,
+    *,
+    symbol: str,
+    side: str,
+    recorded_at: datetime,
+) -> None:
+    """Insert a paired explanation+submitted-trade row into the event store.
+
+    Uses ``submitted_by="operator"`` so the dual-ancestor rule (migration
+    008) does not require a ``strategy_runs`` row — a realistic
+    operator-submitted prior order is a valid dedup case.
+    """
+    from milodex.core.event_store import ExplanationEvent, TradeEvent
+
+    explanation_id = event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=recorded_at,
+            decision_type="submit",
+            status="submitted",
+            strategy_name=None,
+            strategy_stage=None,
+            strategy_config_path=None,
+            config_hash=None,
+            symbol=symbol,
+            side=side,
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="operator",
+            market_open=True,
+            latest_bar_timestamp=recorded_at,
+            latest_bar_close=100.0,
+            account_equity=10_000.0,
+            account_cash=10_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="Allowed",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+        )
+    )
+    event_store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=recorded_at,
+            status="submitted",
+            source="paper",
+            symbol=symbol,
+            side=side,
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=100.0,
+            estimated_order_value=100.0,
+            strategy_name=None,
+            strategy_stage=None,
+            strategy_config_path=None,
+            submitted_by="operator",
+            broker_order_id="broker-seed-1",
+            broker_status="filled",
+            message=None,
+        )
+    )
+
+
+def test_duplicate_order_detected_via_event_store_when_broker_fetch_truncated(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A true duplicate beyond the broker's limit=100 fetch must still veto.
+
+    Regression for the duplicate-order truncation hole. The dedup veto
+    sourced ``recent_orders`` from ``broker.get_orders(limit=100)``. With
+    more than 100 orders inside the dedup window, the matching prior order
+    is truncated out of the broker fetch and the veto silently fails —
+    exactly when order volume is high. The durable event store is the
+    authoritative, untruncated trade/order history; the dedup window must
+    be sourced from it.
+
+    Here the broker returns 100 NON-matching orders (so the broker-only
+    scan finds nothing), but the event store holds a real submitted
+    SPY/BUY 30s ago — inside the 60s window. The SPY/BUY submit must be
+    BLOCKED with ``duplicate_order_window``.
+    """
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _seed_submitted_trade(
+        event_store,
+        symbol="SPY",
+        side="buy",
+        recorded_at=datetime.now(tz=UTC) - timedelta(seconds=30),
+    )
+
+    # 100 broker orders that do NOT match (different symbol) — the broker
+    # truncated fetch yields zero SPY/BUY matches on its own.
+    noise_orders = [
+        Order(
+            id=f"noise-{i}",
+            symbol="QQQ",
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=1.0,
+            time_in_force=TimeInForce.DAY,
+            status=OrderStatus.FILLED,
+            submitted_at=datetime.now(tz=UTC) - timedelta(seconds=10),
+        )
+        for i in range(100)
+    ]
+    broker = StubBroker(
+        account=sample_account,
+        orders=noise_orders,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.BLOCKED
+    assert "duplicate_order_window" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
