@@ -10,15 +10,14 @@ returns a structured ``CommandResult`` whose only ``Blocker`` is
 PR at a time in Phases C–F (demote → freeze/promote → backtest → runner).
 
 Allowed dependencies:
-- ``milodex.promotion`` (state machine, manifest, evidence)
+- ``milodex.promotion`` (state machine, manifest, evidence, run_evidence, stage_compat)
+- ``milodex.backtesting.walk_forward_runner`` (derive_walk_forward_spans, run_walk_forward)
 - ``milodex.strategies.loader`` (config inspection)
 - ``milodex.core.advisory_lock`` (peek-only)
 - ``milodex.core.event_store`` (read-only types; no writes from this module)
-- ``milodex.cli.commands.strategy`` (paper-mode / stage-compatibility table —
-  the CLI is currently the source of truth; a future PR may graduate the
-  table to a shared module without changing semantics)
 
 Forbidden dependencies:
+- ``milodex.cli.*`` (facade must not reach into CLI internals)
 - ``PySide6`` and any QML construct
 - ``milodex.broker.*`` direct calls
 - ``milodex.strategies.runner`` construction
@@ -37,15 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from milodex.backtesting.engine import _trading_days_in_range
-from milodex.backtesting.walk_forward_runner import compute_window_spans, run_walk_forward
-from milodex.cli.commands.promotion import (
-    _compute_post_update_hash as _cli_compute_post_update_hash,
-)
-from milodex.cli.commands.promotion import (
-    _metrics_from_run as _cli_metrics_from_run,
-)
-from milodex.cli.commands.strategy import _ALLOWED_STAGES_BY_MODE
+from milodex.backtesting.walk_forward_runner import derive_walk_forward_spans, run_walk_forward
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.promotion import (
     MAX_DRAWDOWN_PCT,
@@ -57,21 +48,13 @@ from milodex.promotion import (
     validate_stage_transition,
 )
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
+from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
+from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE
 from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.promotion.state_machine import transition as _governance_transition
 from milodex.risk.policy import RiskPolicy
 from milodex.strategies.loader import load_strategy_config
 from milodex.strategies.paper_runner_control import runner_lock_name
-
-# Phase D2 (backend `submit_promote_to_paper`) reuses two private helpers from
-# the CLI promotion module — `_metrics_from_run` (resolves OOS metrics from a
-# backtest run id) and `_compute_post_update_hash` (computes the canonical
-# YAML hash AFTER the stage is rewritten, which `transition()` then verifies).
-# This is the same fragility shape already noted for `_ALLOWED_STAGES_BY_MODE`
-# (Phase C2 review finding E1): the CLI module is the de-facto source of
-# truth for inputs the facade also needs. A future refactor should graduate
-# both helpers to a public `milodex.promotion` surface; until then, reusing
-# the CLI internals beats duplicating the logic and risking drift.
 
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
@@ -490,9 +473,7 @@ class BenchCommandFacade:
         # Evidence inputs — same shape the CLI requires non-blank at submit.
         # Per R-PRM-008: a recommendation and at least one known risk.
         recommendation_ok = bool(recommendation and recommendation.strip())
-        preconditions.append(
-            Precondition("recommendation_present", passed=recommendation_ok)
-        )
+        preconditions.append(Precondition("recommendation_present", passed=recommendation_ok))
         risks_ok = any(r and r.strip() for r in known_risks_list)
         preconditions.append(Precondition("known_risks_present", passed=risks_ok))
         if not recommendation_ok:
@@ -500,8 +481,7 @@ class BenchCommandFacade:
                 Blocker(
                     reason_code="missing_recommendation",
                     message=(
-                        "Promotion to paper requires a non-blank --recommendation "
-                        "(R-PRM-008)."
+                        "Promotion to paper requires a non-blank --recommendation (R-PRM-008)."
                     ),
                     context={},
                 )
@@ -647,9 +627,7 @@ class BenchCommandFacade:
         # tests/milodex/commands/test_bench_facade.py::
         # test_propose_demote_to_disabled_refused_when_gui_submit_true.
         gui_disabled_ok = not (gui_submit and to_stage == "disabled")
-        preconditions.append(
-            Precondition("disabled_demote_gui_ready", passed=gui_disabled_ok)
-        )
+        preconditions.append(Precondition("disabled_demote_gui_ready", passed=gui_disabled_ok))
         if not gui_disabled_ok:
             blockers.append(
                 Blocker(
@@ -765,7 +743,7 @@ class BenchCommandFacade:
         else:
             preconditions.append(Precondition("trading_mode_paper", passed=True))
 
-        allowed_stages = _ALLOWED_STAGES_BY_MODE.get("paper", frozenset({"paper"}))
+        allowed_stages = ALLOWED_STAGES_BY_MODE.get("paper", frozenset({"paper"}))
         if config.stage not in allowed_stages:
             blockers.append(
                 Blocker(
@@ -884,7 +862,7 @@ class BenchCommandFacade:
                 "strategy_runs row cleanly. NOT the kill switch."
             ),
             "eventual_callee": (
-                "milodex.strategies.runner.StrategyRunner.shutdown(mode=\"controlled\")"
+                'milodex.strategies.runner.StrategyRunner.shutdown(mode="controlled")'
             ),
             "writes_durable_state": True,
             "exit_reason": "controlled_stop",
@@ -1002,13 +980,8 @@ class BenchCommandFacade:
         try:
             engine = self._backtest_engine_factory(proposal.strategy_id, **engine_kwargs)
             if walk_forward:
-                all_bars = engine.prefetch_bars(start, end)
-                total_trading_days = len(_trading_days_in_range(all_bars, start, end))
-                window_count = int(
-                    engine._loaded.config.backtest.get("walk_forward_windows", 4)  # noqa: SLF001
-                )
-                train_days, test_days, step_days = compute_window_spans(
-                    total_trading_days, window_count
+                all_bars, train_days, test_days, step_days = derive_walk_forward_spans(
+                    engine, start, end
                 )
                 result = run_walk_forward(
                     engine,
@@ -1272,15 +1245,13 @@ class BenchCommandFacade:
                 ],
             )
 
-        # Resolve OOS metrics from the backtest run. `_cli_metrics_from_run`
+        # Resolve OOS metrics from the backtest run. `metrics_from_run`
         # raises ValueError when the run id is unknown — convert to a blocker.
         # For lifecycle_exempt promotions, `run_id` may be None and
-        # `_cli_metrics_from_run` returns (None, None, None), which
+        # `metrics_from_run` returns (None, None, None), which
         # `check_gate(lifecycle_exempt=True, …)` accepts.
         try:
-            sharpe_ratio, max_drawdown_pct, trade_count = _cli_metrics_from_run(
-                run_id, event_store
-            )
+            sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(run_id, event_store)
         except ValueError as exc:
             return CommandResult(
                 proposal_id=proposal.proposal_id,
@@ -1325,7 +1296,7 @@ class BenchCommandFacade:
         # rewritten — `transition()` re-derives this and raises ValueError on
         # mismatch. We use the same CLI helper to keep the two derivations in
         # lockstep.
-        manifest_hash = _cli_compute_post_update_hash(config.raw_data, to_stage)
+        manifest_hash = compute_post_update_hash(config.raw_data, to_stage)
 
         evidence = assemble_evidence_package(
             strategy_id=config.strategy_id,
@@ -1613,9 +1584,8 @@ class BenchCommandFacade:
                 submitted_at=self._now(),
             )
 
-        session_id = (
-            str(getattr(result, "session_id", "") or "")
-            or self._latest_open_session_id(proposal.strategy_id)
+        session_id = str(getattr(result, "session_id", "") or "") or self._latest_open_session_id(
+            proposal.strategy_id
         )
         durable_refs = {
             "strategy_id": proposal.strategy_id,
@@ -1682,10 +1652,7 @@ class BenchCommandFacade:
                 blockers=[
                     Blocker(
                         reason_code="no_active_runner",
-                        message=(
-                            f"No active paper-runner session for "
-                            f"'{proposal.strategy_id}'."
-                        ),
+                        message=(f"No active paper-runner session for '{proposal.strategy_id}'."),
                         context={"lock_name": runner_lock_name(proposal.strategy_id)},
                     )
                 ],
@@ -1756,9 +1723,7 @@ class BenchCommandFacade:
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    def _resolve_config(
-        self, strategy_id: str
-    ) -> tuple[StrategyConfig | None, Blocker | None]:
+    def _resolve_config(self, strategy_id: str) -> tuple[StrategyConfig | None, Blocker | None]:
         """Locate the YAML for ``strategy_id`` under ``config_dir``.
 
         Returns ``(config, None)`` on success or ``(None, blocker)`` on
@@ -1849,9 +1814,7 @@ class BenchCommandFacade:
         value = getattr(policy, "value", policy)
         return str(value)
 
-    def _require_event_store(
-        self, proposal: CommandProposal
-    ) -> EventStore | CommandResult:
+    def _require_event_store(self, proposal: CommandProposal) -> EventStore | CommandResult:
         """Return the live event store or a structured blocker.
 
         Submit paths need a durable backend; without one we refuse cleanly
@@ -1904,11 +1867,7 @@ class BenchCommandFacade:
             runs = self._event_store_factory().list_strategy_runs()
         except Exception:  # noqa: BLE001 - best-effort durable ref enrichment.
             return None
-        open_runs = [
-            run
-            for run in runs
-            if run.strategy_id == strategy_id and run.ended_at is None
-        ]
+        open_runs = [run for run in runs if run.strategy_id == strategy_id and run.ended_at is None]
         if not open_runs:
             return None
         return str(open_runs[-1].session_id)
@@ -1936,9 +1895,7 @@ class BenchCommandFacade:
             proposal_id=_new_proposal_id(),
         )
 
-    def _phase_b_blocked(
-        self, proposal: CommandProposal, action_family: str
-    ) -> CommandResult:
+    def _phase_b_blocked(self, proposal: CommandProposal, action_family: str) -> CommandResult:
         return CommandResult(
             proposal_id=proposal.proposal_id,
             action_family=action_family,

@@ -19,7 +19,7 @@ from typing import Any
 from milodex.backtesting.engine import BacktestResult
 from milodex.backtesting.walk_forward_runner import (
     WalkForwardResult,
-    compute_window_spans,
+    derive_walk_forward_spans,
     run_walk_forward,
 )
 from milodex.cli._shared import (
@@ -101,14 +101,7 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
 
 def _run_walk_forward(engine, start, end, args) -> CommandResult:
-    from milodex.backtesting.engine import _trading_days_in_range
-
-    loaded = engine._loaded  # noqa: SLF001
-    wf_windows_count = int(loaded.config.backtest.get("walk_forward_windows", 4))
-
-    all_bars = engine.prefetch_bars(start, end)
-    total_days = len(_trading_days_in_range(all_bars, start, end))
-    train_days, test_days, step_days = compute_window_spans(total_days, wf_windows_count)
+    all_bars, train_days, test_days, step_days = derive_walk_forward_spans(engine, start, end)
 
     result = run_walk_forward(
         engine,
@@ -124,9 +117,7 @@ def _run_walk_forward(engine, start, end, args) -> CommandResult:
     return _build_walk_forward_result(result, min_trade_count=_min_trade_count_from_engine(engine))
 
 
-def _build_backtest_result(
-    result: BacktestResult, *, min_trade_count: int = 30
-) -> CommandResult:
+def _build_backtest_result(result: BacktestResult, *, min_trade_count: int = 30) -> CommandResult:
     trade_summary = f"{result.trade_count} ({result.buy_count} buys, {result.sell_count} sells)"
     lines = [
         "Backtest Result",

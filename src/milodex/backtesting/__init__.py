@@ -13,6 +13,8 @@ from milodex.backtesting.walk_forward_runner import (
     WalkForwardResult,
     WalkForwardStability,
     WalkForwardWindow,
+    compute_window_spans,
+    derive_walk_forward_spans,
     run_walk_forward,
 )
 
@@ -25,6 +27,8 @@ __all__ = [
     "WalkForwardSplitter",
     "WalkForwardStability",
     "WalkForwardWindow",
+    "compute_window_spans",
+    "derive_walk_forward_spans",
     "run_batch",
     "run_walk_forward",
 ]
