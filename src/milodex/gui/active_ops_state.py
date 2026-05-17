@@ -196,7 +196,7 @@ def _query_active_ops(
         if locks_dir is not None:
             lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
             try:
-                holder = lock._read_holder()  # noqa: SLF001
+                holder = lock.current_holder()
                 if holder is not None:
                     runner_lock = "held"
             except Exception as exc:  # noqa: BLE001
