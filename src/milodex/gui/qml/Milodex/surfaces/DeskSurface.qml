@@ -652,7 +652,7 @@ Item {
                 Column {
                     id: throughputCol
                     Layout.fillWidth: true
-                    Layout.preferredWidth: 4
+                    Layout.preferredWidth: 3
                     Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
@@ -817,7 +817,7 @@ Item {
                 // ---- VI · MARKET TAPE -----------------------------
                 Column {
                     Layout.fillWidth: true
-                    Layout.preferredWidth: 4
+                    Layout.preferredWidth: 3
                     Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
