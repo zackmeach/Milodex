@@ -162,6 +162,16 @@ Item {
         }
     }
 
+    // Editorial section standfirst (master section idiom, ref :653-659).
+    component Standfirst: Text {
+        width:          parent ? parent.width : implicitWidth
+        color:          Theme.color.text.secondary
+        font.family:    Theme.typography.body.md.family
+        font.pixelSize: Theme.typography.body.sm.size
+        font.italic:    true
+        wrapMode:       Text.WordWrap
+    }
+
     // ------------------------------------------------------------------
     // Scroll container
     // ------------------------------------------------------------------
@@ -250,6 +260,7 @@ Item {
                     spacing: Theme.space[3]
 
                     SectionHeader { width: parent.width; numeral: "I"; title: "Risk & Mode" }
+                    Standfirst { text: "risk posture and operating mode, on live broker state" }
 
                     // Kill-switch / guard headline
                     Text {
@@ -377,6 +388,7 @@ Item {
                             font.features:  Theme.typography.data.sm.features
                         }
                     }
+                    Standfirst { text: "realised P/L for the selected window, with snapshot freshness stated plainly" }
 
                     SegmentedToggle {
                         width: parent.width
@@ -546,6 +558,7 @@ Item {
                             font.features:  Theme.typography.data.sm.features
                         }
                     }
+                    Standfirst { text: "what is running right now in this session" }
 
                     SectionStatus {
                         status: ActiveOpsState.dataStatus
@@ -654,6 +667,7 @@ Item {
                     })
 
                     SectionHeader { width: parent.width; numeral: "IV"; title: "Risk Layer Throughput" }
+                    Standfirst { text: "how work moved through the risk gate, stage by stage" }
 
                     SegmentedToggle {
                         width: parent.width
@@ -703,6 +717,7 @@ Item {
                     readonly property var rollups: AttentionState.rollups
 
                     SectionHeader { width: parent.width; numeral: "V"; title: "Strategy Attention" }
+                    Standfirst { text: "strategies that need an operator's eye, by reason" }
 
                     SectionStatus {
                         status: AttentionState.dataStatus
@@ -819,6 +834,7 @@ Item {
                             font.features:  Theme.typography.data.sm.features
                         }
                     }
+                    Standfirst { text: "instrument status for the market-data feed" }
 
                     SectionStatus {
                         status: MarketTapeState.dataStatus
@@ -900,6 +916,7 @@ Item {
                         font.features:  Theme.typography.data.sm.features
                     }
                 }
+                Standfirst { text: "the chronological record of orders, signals, and fills" }
 
                 SegmentedToggle {
                     options: feedCol._filterOptions
