@@ -31,7 +31,7 @@ Column {
 
     Item {
         width:          parent.width
-        implicitHeight: letterText.implicitHeight
+        implicitHeight: root.numeral !== "" ? letterText.implicitHeight : nameText.implicitHeight
 
         Text {
             id: letterText
@@ -50,7 +50,8 @@ Column {
             id: nameText
             anchors.left:       root.numeral !== "" ? letterText.right : parent.left
             anchors.leftMargin: root.numeral !== "" ? Theme.space[3] : 0
-            anchors.baseline:   letterText.baseline
+            anchors.baseline:   root.numeral !== "" ? letterText.baseline : undefined
+            anchors.top:        root.numeral !== "" ? undefined : parent.top
             text:               root.title
             color:              Theme.color.text.secondary
             font.family:         Theme.typography.label.xs.family
@@ -63,7 +64,8 @@ Column {
         Item {
             id: rightSlotArea
             anchors.right:    parent.right
-            anchors.baseline: letterText.baseline
+            anchors.baseline: root.numeral !== "" ? letterText.baseline : undefined
+            anchors.top:      root.numeral !== "" ? undefined : parent.top
             implicitWidth:    childrenRect.width
             implicitHeight:   childrenRect.height
         }
