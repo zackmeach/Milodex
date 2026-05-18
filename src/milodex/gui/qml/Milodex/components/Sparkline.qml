@@ -9,16 +9,18 @@
 // Repaints automatically when `series` or `width` change.
 //
 // Tokens consumed:
-//   color.text.disabled — baseline (the zero line)
-//   color.text.muted    — axis tick labels (when shown)
-//   status.positive     — line + area for non-negative final value
-//   status.negative     — line + area when terminal value is negative
+//   color.text.disabled  — baseline (the zero line)
+//   color.text.muted     — axis tick labels (when shown)
+//   status.positive      — line + area for non-negative final value
+//   status.negative      — line + area when terminal value is negative
+//   color.border.regular — hairline stroke (when hairline:true)
 //
 // Public API:
 //   series   : array of numbers — the cumulative P&L points
 //   showGrid : bool — render dashed grid lines at min/0/max (default false)
 //   showAxis : bool — render "09:30" / "NOW" tick labels (default false)
 //   areaAlpha: real — area fill alpha (default 0.15; calm variant uses 0.08)
+//   hairline : bool — single calm stroke; no area/dot/grid (default false)
 
 import QtQuick
 import Milodex 1.0
@@ -141,9 +143,9 @@ Item {
             ctx.stroke()
 
             // -- End-point dot --
-            if (!root.hairline) {
             var endX = xAt(root.series.length - 1)
             var endY = yAt(terminal)
+            if (!root.hairline) {
             ctx.fillStyle = lineColor
             ctx.beginPath()
             ctx.arc(endX, endY, 2.5, 0, Math.PI * 2)

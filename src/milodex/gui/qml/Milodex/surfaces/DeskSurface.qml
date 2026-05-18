@@ -459,7 +459,6 @@ Item {
                             series: PerformanceState.sparkline
                             showAxis: false
                             showGrid: false
-                            areaAlpha: 0
                             hairline: true
                         }
 

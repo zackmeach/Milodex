@@ -115,8 +115,13 @@ def test_no_foreign_chrome_idioms() -> None:
 
 @_skip_no_qt
 def test_desk_loads_clean_after_sparkline_change() -> None:
-    """DeskSurface must still load with zero QML errors after the Sparkline
-    hairline opt-in (guards against a Canvas onPaint exception)."""
+    """DeskSurface must still load with zero LOAD-TIME QML errors after the
+    Sparkline hairline opt-in.
+
+    Note: this does NOT catch Canvas onPaint runtime exceptions (Qt swallows
+    those); FRONT-safety rests on the change being strictly additive + the
+    full-suite run.
+    """
     script = _HARNESS_E.format(
         import_root=repr(str(_QML_IMPORT_ROOT)),
         desk=repr(str(_DESK_SURFACE)),
