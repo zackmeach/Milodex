@@ -6,9 +6,9 @@ Personal autonomous trading system. See `docs/VISION.md` for the full project vi
 
 ```bash
 pip install -e ".[dev]"      # Install in editable mode with dev deps
-pytest                        # Run tests
-ruff check src/ tests/        # Lint
-ruff format src/ tests/       # Format
+python -m pytest             # Run tests (bare `pytest`/`ruff` may not be on PATH; use `python -m`)
+python -m ruff check src/ tests/    # Lint
+python -m ruff format src/ tests/   # Format
 ```
 
 ## Architecture
@@ -70,3 +70,6 @@ Requires `.env` (see `.env.example`): `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `TR
 - Backtest slippage defaults to 0.1–0.2% — don't assume zero slippage
 - Pattern day trader rule: under $25k capital means no same-day round trips (daily swing avoids this)
 - **`.venv` must be a stdlib `python -m venv`, not a `uv venv` trampoline.** A uv/trampoline `.venv\Scripts\python.exe` re-execs the *base* interpreter, so the code runs under the base Python's site-packages — if the base has a broken/missing dep (e.g. corrupt pandas), runners die on import. Symptom: GUI-launched runners produce no explanations / "phantom" runners; fix + 5-min diagnostic in `docs/TROUBLESHOOTING.md`. The redirector+base-child PID *pair* per process is normal Windows venv behaviour — not a bug.
+- **Daily (`1D`) strategies are a no-op while the market is OPEN** (`runner.py` market-hours gate returns `[]` before any fetch). "Runner running but 0 explanations" during market hours is BY DESIGN, not a stall — it evaluates after close + the lockin window. Don't debug a non-bug.
+- **Diagnostic surface:** event store `data/milodex.db` (SQLite) — `strategy_runs.ended_at IS NULL` = open/"running" (no liveness check; a dead one shows as phantom until #161 bootstrap reconcile); `explanations` = per-decision audit keyed by `session_id`; advisory locks in `data/locks/*.lock`; per-runner logs `logs/runner.<sid>.<ts>.log`. Inspect columns via `pragma table_info`.
+- **Controlled-stop ("Stop Trading") needs a live, cooperative runner** to consume the request file. It hangs/no-ops on a wedged or already-dead runner — for those, hard-kill the PID and clear `data/locks/*.lock` instead.
