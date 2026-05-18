@@ -69,3 +69,4 @@ Requires `.env` (see `.env.example`): `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `TR
 - `.env` is gitignored — never commit API keys. Use `.env.example` as template.
 - Backtest slippage defaults to 0.1–0.2% — don't assume zero slippage
 - Pattern day trader rule: under $25k capital means no same-day round trips (daily swing avoids this)
+- **`.venv` must be a stdlib `python -m venv`, not a `uv venv` trampoline.** A uv/trampoline `.venv\Scripts\python.exe` re-execs the *base* interpreter, so the code runs under the base Python's site-packages — if the base has a broken/missing dep (e.g. corrupt pandas), runners die on import. Symptom: GUI-launched runners produce no explanations / "phantom" runners; fix + 5-min diagnostic in `docs/TROUBLESHOOTING.md`. The redirector+base-child PID *pair* per process is normal Windows venv behaviour — not a bug.
