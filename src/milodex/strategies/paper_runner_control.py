@@ -12,6 +12,12 @@ from typing import Any
 
 _INTERPRETER_PROBE_TIMEOUT_SECONDS = 15
 
+# The runner is launched as ``python -m milodex.cli.main strategy run``.
+# Probe that exact entrypoint, not the shallow ``milodex`` package: a
+# half-broken interpreter (e.g. one with a corrupt pandas) can import the
+# package yet fail the real import chain — the actual first-GUI-run cause.
+_INTERPRETER_PROBE_IMPORT = "milodex.cli.main"
+
 
 class PaperRunnerLaunchError(RuntimeError):
     """Raised when a paper runner is refused *before* any process is spawned.
@@ -122,18 +128,31 @@ class PaperRunnerControl:
         handle = log_path.open("a", encoding="utf-8")  # noqa: SIM115 - closed by caller
         return handle, subprocess.STDOUT, handle
 
+    def _interpreter_probe_command(self) -> list[str]:
+        """Return the argv that proves the interpreter can run a runner.
+
+        Imports the real runner entrypoint (``milodex.cli.main``), not the
+        shallow ``milodex`` package, so a half-broken interpreter that can
+        import the package but not the full launch chain is still caught.
+        """
+        return [
+            self._python_executable,
+            "-c",
+            f"import {_INTERPRETER_PROBE_IMPORT}",
+        ]
+
     def _verify_interpreter(self) -> str | None:
         """Return a refusal reason if the interpreter can't run a runner.
 
-        The root cause of the first-GUI-run wedge was a GUI process running
-        under an interpreter without ``milodex`` installed: every runner it
-        spawned died on ``import``. Probe ``import milodex`` in the chosen
-        interpreter and fail loudly rather than spawn a doomed child.
-        Returns ``None`` when the interpreter is usable.
+        The first-GUI-run wedge came from a GUI process whose interpreter
+        could ``import milodex`` but blew up importing the runner entrypoint
+        (a corrupt pandas in a non-venv Python). Probe the real entrypoint
+        and fail loudly rather than spawn a doomed detached child. Returns
+        ``None`` when the interpreter is usable.
         """
         try:
             completed = subprocess.run(  # noqa: S603
-                [self._python_executable, "-c", "import milodex"],
+                self._interpreter_probe_command(),
                 capture_output=True,
                 timeout=_INTERPRETER_PROBE_TIMEOUT_SECONDS,
                 check=False,
@@ -148,10 +167,10 @@ class PaperRunnerControl:
             detail = completed.stderr.decode("utf-8", "replace").strip().splitlines()
             tail = detail[-1] if detail else f"exit code {completed.returncode}"
             return (
-                f"Interpreter {self._python_executable!r} cannot import "
-                f"milodex ({tail}). The paper runner was not started — "
-                "this usually means the GUI is running outside the project "
-                "virtualenv."
+                f"Interpreter {self._python_executable!r} cannot import the "
+                f"runner entrypoint {_INTERPRETER_PROBE_IMPORT!r} ({tail}). "
+                "The paper runner was not started — this usually means the "
+                "GUI is running outside the project virtualenv."
             )
         return None
 

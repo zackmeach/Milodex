@@ -97,8 +97,20 @@ def test_open_runner_stdio_writes_to_log_path(tmp_path: Path) -> None:
     assert "child-output" in log_path.read_text(encoding="utf-8")
 
 
+def test_interpreter_probe_imports_the_runner_entrypoint(tmp_path: Path) -> None:
+    # Must probe the *real* runner entrypoint, not the shallow package:
+    # a half-broken interpreter can `import milodex` yet fail to
+    # `import milodex.cli.main` (the actual `-m` target the runner uses).
+    control = PaperRunnerControl(locks_dir=tmp_path)
+
+    command = control._interpreter_probe_command()  # noqa: SLF001
+
+    assert command[1] == "-c"
+    assert command[2] == "import milodex.cli.main"
+
+
 def test_verify_interpreter_passes_for_current_interpreter(tmp_path: Path) -> None:
-    # The test interpreter is the project venv: ``import milodex`` works.
+    # The test interpreter is the project venv: the runner entrypoint imports.
     control = PaperRunnerControl(locks_dir=tmp_path)
 
     assert control._verify_interpreter() is None  # noqa: SLF001
