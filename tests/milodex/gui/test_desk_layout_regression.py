@@ -113,6 +113,17 @@ def test_no_foreign_chrome_idioms() -> None:
     _run(script, "no foreign chrome idioms (toggle/funnel)")
 
 
+@_skip_no_qt
+def test_desk_loads_clean_after_sparkline_change() -> None:
+    """DeskSurface must still load with zero QML errors after the Sparkline
+    hairline opt-in (guards against a Canvas onPaint exception)."""
+    script = _HARNESS_E.format(
+        import_root=repr(str(_QML_IMPORT_ROOT)),
+        desk=repr(str(_DESK_SURFACE)),
+    )
+    _run(script, "DeskSurface clean-load post-sparkline")
+
+
 _HARNESS_A = r'''
 import os, sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -606,5 +617,116 @@ if violations:
 
 print("NO_FOREIGN_CHROME (" + str(len(toggles)) + " toggles, "
       + str(len(funnels)) + " funnels)")
+sys.exit(0)
+'''
+
+_HARNESS_E = r'''
+import os, sys, tempfile
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from pathlib import Path
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui.operational_state import OperationalState
+from milodex.gui.strategy_bank_state import StrategyBankState
+from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState
+from milodex.gui.performance_state import PerformanceState
+from milodex.gui.risk_throughput_state import RiskThroughputState
+from milodex.gui.active_ops_state import ActiveOpsState
+from milodex.gui.attention_state import AttentionState
+from milodex.gui.market_tape_state import MarketTapeState
+from milodex.gui.activity_feed_state import ActivityFeedState
+from milodex.commands.bench import BenchCommandFacade
+from milodex.gui.bench_command_bridge import BenchCommandBridge
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+
+tm = ThemeManager()
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(active=False, reason=None, last_triggered_at=None)
+
+def _failing_broker():
+    raise RuntimeError("regression-test: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker,
+    kill_switch_store=ks_store,
+    trading_mode="paper",
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+
+_ne = Path("/__nonexistent_desk_layout_test__")
+sb = StrategyBankState(db_path=_ne)
+front = FrontPageState(db_path=_ne, configs_dir=Path("configs"))
+bench = BenchState(db_path=_ne, configs_dir=Path("configs"))
+kanban = KanbanState(db_path=_ne, configs_dir=Path("configs"))
+ledger = LedgerState(db_path=_ne)
+performance = PerformanceState(db_path=_ne, cache_dir=_ne)
+risk_throughput = RiskThroughputState(db_path=_ne)
+active_ops = ActiveOpsState(db_path=_ne, configs_dir=Path("configs"), locks_dir=_ne)
+attention = AttentionState(db_path=_ne)
+market_tape = MarketTapeState(cache_dir=_ne)
+activity_feed = ActivityFeedState(db_path=_ne)
+
+_root = Path(tempfile.mkdtemp(prefix="milodex_desklayout_"))
+(_root / "configs").mkdir()
+(_root / "locks").mkdir()
+facade = BenchCommandFacade(
+    config_dir=_root / "configs",
+    locks_dir=_root / "locks",
+    get_trading_mode=lambda: "paper",
+)
+bridge = BenchCommandBridge(facade, bench_state=bench)
+
+register_qml_types(
+    theme_manager=tm,
+    operational_state=op,
+    strategy_bank_state=sb,
+    front_page_state=front,
+    bench_state=bench,
+    kanban_state=kanban,
+    ledger_state=ledger,
+    performance_state=performance,
+    risk_throughput_state=risk_throughput,
+    active_ops_state=active_ops,
+    attention_state=attention,
+    market_tape_state=market_tape,
+    activity_feed_state=activity_feed,
+    bench_command_bridge=bridge,
+)
+
+view = QQuickView()
+view.engine().addImportPath({import_root})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1600, 1100)
+view.setSource(QUrl.fromLocalFile({desk}))
+
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+
+view.show()
+QTimer.singleShot(900, app.quit)
+app.exec()
+
+errs = view.errors() if hasattr(view, "errors") else []
+if view.status() == QQuickView.Error or errs:
+    for e in errs: print(str(e.toString()), file=sys.stderr)
+    sys.exit(5)
+print("DESK_CLEAN_LOAD")
 sys.exit(0)
 '''

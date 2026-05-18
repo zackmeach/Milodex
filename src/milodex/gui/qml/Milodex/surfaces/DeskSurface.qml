@@ -458,8 +458,9 @@ Item {
                             height: Theme.space[7] * 2
                             series: PerformanceState.sparkline
                             showAxis: false
-                            showGrid: true
-                            areaAlpha: 0.12
+                            showGrid: false
+                            areaAlpha: 0
+                            hairline: true
                         }
 
                         Row {

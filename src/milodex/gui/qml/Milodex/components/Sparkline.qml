@@ -34,6 +34,7 @@ Item {
     property bool   showGrid:  false
     property bool   showAxis:  false
     property real   areaAlpha: 0.15
+    property bool   hairline:  false
 
     implicitWidth:  360
     implicitHeight: 64
@@ -43,6 +44,7 @@ Item {
     onShowGridChanged:  canvas.requestPaint()
     onShowAxisChanged:  canvas.requestPaint()
     onAreaAlphaChanged: canvas.requestPaint()
+    onHairlineChanged:  canvas.requestPaint()
     onWidthChanged:     canvas.requestPaint()
     onHeightChanged:    canvas.requestPaint()
 
@@ -84,6 +86,7 @@ Item {
             var terminal = root.series[root.series.length - 1]
             var isNeg = terminal < 0
             var lineColor = isNeg ? Theme.status.negative : Theme.status.positive
+            if (root.hairline) lineColor = Theme.color.border.regular
 
             // -- Grid lines (optional) --
             if (root.showGrid) {
@@ -114,6 +117,7 @@ Item {
             ctx.stroke()
 
             // -- Area fill --
+            if (!root.hairline) {
             ctx.fillStyle = Qt.rgba(lineColor.r, lineColor.g, lineColor.b, root.areaAlpha)
             ctx.beginPath()
             ctx.moveTo(xAt(0), yZero)
@@ -123,6 +127,7 @@ Item {
             ctx.lineTo(xAt(root.series.length - 1), yZero)
             ctx.closePath()
             ctx.fill()
+            }
 
             // -- Line --
             ctx.strokeStyle = lineColor
@@ -136,12 +141,14 @@ Item {
             ctx.stroke()
 
             // -- End-point dot --
+            if (!root.hairline) {
             var endX = xAt(root.series.length - 1)
             var endY = yAt(terminal)
             ctx.fillStyle = lineColor
             ctx.beginPath()
             ctx.arc(endX, endY, 2.5, 0, Math.PI * 2)
             ctx.fill()
+            }
 
             // -- Axis tick labels --
             if (root.showAxis) {
