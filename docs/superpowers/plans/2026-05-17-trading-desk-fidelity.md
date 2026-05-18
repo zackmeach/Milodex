@@ -503,6 +503,8 @@ delegate: FunnelRow {
 
 Also delete the now-unused `maxValue` readonly property (lines ~646-653) since nothing reads it after the bar is gone (YAGNI; verify no other reference with a grep before deleting).
 
+> **Caution (gloss key matching):** `_stageGloss[modelData.label]` keys must match the `risk_throughput_state.py` stage labels *exactly* (case + whitespace). A mismatch silently yields `""` and the `|| ""` fallback drops the gloss — a **soft** failure (label still renders, no crash). After Step 5, eyeball Section IV in the G4 run to confirm every stage shows its em-dash gloss; a bare label means a key typo, not a bug.
+
 - [ ] **Step 5: Run G3 + non-zero-height + full suite + lint**
 
 Run: `uv run --extra dev pytest tests/milodex/gui/test_desk_layout_regression.py -q` → all PASS (`test_no_foreign_chrome_idioms` now green for funnels too).
@@ -554,6 +556,8 @@ sys.exit(0)
 ```
 
 Run it now: `uv run --extra dev pytest tests/milodex/gui/test_desk_layout_regression.py::test_desk_loads_clean_after_sparkline_change -q` → PASS (baseline; it must stay green through this task).
+
+> **Caution (what this guard does and doesn't prove):** `_HARNESS_E` only catches *load-time* QML errors. Qt swallows Canvas `onPaint` runtime exceptions, so a paint bug in the new `hairline` branch would NOT fail this test. It is a smoke guard, not FRONT-regression proof. The real protection is structural: the change is provably additive (default `hairline:false` path byte-identical), reinforced by the full-suite run in Step 4. Do not over-trust this single test.
 
 - [ ] **Step 2: Add the `hairline` opt-in to `Sparkline.qml`**
 
