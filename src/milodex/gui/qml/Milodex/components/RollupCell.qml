@@ -17,7 +17,7 @@
 // Public API:
 //   label : string — metric label (e.g. "Day P&L")
 //   value : string — formatted value (e.g. "+$1,240")
-//   tone  : string — "positive"|"negative"|"warning"|"muted"|"data"
+//   tone  : string — "brand"|"positive"|"negative"|"warning"|"muted"|"data"
 
 import QtQuick
 import Milodex 1.0
@@ -30,7 +30,7 @@ Item {
     property string tone:  "data"
 
     // Tone → editorial token mapping (centralised here per spec §5).
-    // keep in sync with ActivityTable.qml's tone→color mapping
+    // keep in sync with ActivityTable.qml's tone→color mapping (brand is RollupCell-only — ActivityTable rows never carry display tones)
     // No Behavior — state changes are instant.
     readonly property color _valueColor: {
         if (root.tone === "brand")    return Theme.color.brand.primary

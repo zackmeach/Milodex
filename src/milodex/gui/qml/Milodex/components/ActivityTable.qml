@@ -37,7 +37,7 @@ Item {
     property string kindFilter: ""
 
     // Tone → editorial token mapping (centralised per spec §5).
-    // keep in sync with RollupCell.qml's tone→color mapping
+    // keep in sync with RollupCell.qml's tone→color mapping (RollupCell additionally has a display-only "brand" tone with no ActivityTable equivalent — do not add it here)
     function _toneColor(tone) {
         if (tone === "positive") return Theme.status.positive
         if (tone === "negative") return Theme.status.negative
