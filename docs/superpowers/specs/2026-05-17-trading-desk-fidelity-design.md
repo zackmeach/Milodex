@@ -19,7 +19,10 @@ layer in place** to the old surface's exact visual language.
 
 **The reference is one file:** the old `DeskSurface.qml` as it exists on
 `master` (commit `757afe7`), 1326 lines. Every token binding below is
-transcribed from it with line numbers cited inline. The reference is *not*
+transcribed from it with line numbers cited inline — save the two
+primitives explicitly marked *invented to the app idiom* (the type-only
+toggle, §2 P4; the sparkline stroke, §3 II), which obey the same design
+law without a literal reference line to transcribe. The reference is *not*
 the Claude Design mockup (explicitly retired by the operator).
 
 This is a **restyle-only** pass. It moves tokens and structure. It does not
