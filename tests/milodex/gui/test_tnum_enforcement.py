@@ -54,11 +54,15 @@ _QML_ROOT = _REPO_ROOT / "src" / "milodex" / "gui" / "qml" / "Milodex"
 # declaration.
 NUMERIC_QML_FILES: tuple[str, ...] = (
     # Components
+    "components/ActivityTable.qml",
     "components/BenchRow.qml",
     "components/BenchEvidenceModal.qml",
     "components/BenchConfirmationModal.qml",
-    "components/StrategyRow.qml",
+    "components/FunnelRow.qml",
     "components/GateTable.qml",
+    "components/SectionHeader.qml",
+    "components/StrategyRow.qml",
+    "components/TapeRow.qml",
     # Surfaces
     "surfaces/AnchorSurface.qml",
     "surfaces/BenchSurface.qml",

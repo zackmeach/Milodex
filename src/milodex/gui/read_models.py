@@ -405,30 +405,6 @@ class LedgerState(_PollingReadModel):
     timeFilter = Property(str, _get_time_filter, notify=filtersChanged)  # noqa: N815
 
 
-class DeskState(_PollingReadModel):
-    """Read model for the dense DESK cockpit."""
-
-    snapshotChanged = Signal()  # noqa: N815
-
-    def __init__(self, db_path: Path, configs_dir: Path, refresh_interval_ms: int = 30_000) -> None:
-        self._snapshot: dict[str, Any] = _empty_desk_snapshot()
-        super().__init__(
-            builder=lambda: build_desk_snapshot(db_path, configs_dir),
-            refresh_interval_ms=refresh_interval_ms,
-        )
-
-    def _apply_result(self, result: dict[str, Any]) -> None:
-        snapshot = dict(result.get("snapshot") or {})
-        if snapshot != self._snapshot:
-            self._snapshot = snapshot
-            self.snapshotChanged.emit()
-
-    def _get_snapshot(self) -> dict:
-        return self._snapshot
-
-    snapshot = Property("QVariantMap", _get_snapshot, notify=snapshotChanged)
-
-
 def build_front_page_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
     rows = _strategy_rows(db_path, configs_dir)
     stage_counts = _stage_counts(rows)
@@ -525,43 +501,6 @@ def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
 
 def build_ledger_snapshot(db_path: Path) -> dict[str, Any]:
     return {"entries": _ledger_entries(db_path), "lastRefreshedAt": _now_iso()}
-
-
-def build_desk_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
-    rows = _strategy_rows(db_path, configs_dir)
-    stage_counts = _stage_counts(rows)
-    queue = []
-    for row in sorted(rows, key=lambda r: _queue_rank(r)):
-        if row.status_kind not in {"positive", "warning"}:
-            continue
-        item = row.as_qml()
-        item.update(
-            {
-                "from": row.stage,
-                "to": _next_stage(row.stage),
-                "days": "view",
-                "note": f"{row.status_word} {row.status_tail}".strip(),
-            }
-        )
-        queue.append(item)
-        if len(queue) >= 6:
-            break
-    snapshot = _empty_desk_snapshot()
-    snapshot.update(
-        {
-            "stageCounts": stage_counts,
-            "stageRows": _desk_stage_rows(stage_counts, len(rows)),
-            "strategyTotal": len(rows),
-            "promotionQueue": queue,
-            "runners": _runner_rows(db_path),
-            "events": _event_rows(db_path),
-            "system": _system_snapshot(db_path),
-            "pnl": _latest_pnl(db_path),
-            "market": _market_placeholder(),
-            "lastRefreshedAt": _now_iso(),
-        }
-    )
-    return {"snapshot": snapshot, "lastRefreshedAt": snapshot["lastRefreshedAt"]}
 
 
 def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
@@ -1125,43 +1064,6 @@ def _ledger_entries(db_path: Path) -> list[dict[str, Any]]:
     return sorted(entries, key=lambda entry: str(entry.get("timestamp") or ""), reverse=True)
 
 
-def _runner_rows(db_path: Path) -> list[dict[str, Any]]:
-    if not db_path.exists():
-        return []
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        rows = conn.execute(
-            """
-            SELECT id, session_id, strategy_id, started_at, ended_at, exit_reason
-            FROM strategy_runs
-            ORDER BY id DESC
-            LIMIT 20
-            """
-        ).fetchall()
-    except sqlite3.Error:
-        return []
-    finally:
-        conn.close()
-    return [
-        {
-            # Use the autoincrement run id as the display PID — a short,
-            # human-scannable run sequence number rather than the UUID-like
-            # session_id (which elides to a hash-soup like "85c27...").
-            # The full session_id stays available via sessionId for any
-            # downstream wiring that needs to correlate to the event store.
-            "pid": row["id"],
-            "sessionId": row["session_id"],
-            "strategyId": row["strategy_id"],
-            "name": _short_strategy_name(row["strategy_id"]),
-            "startedAt": row["started_at"],
-            "state": "running" if row["ended_at"] in (None, "") else "stopped",
-            "detail": row["exit_reason"] or "session active",
-        }
-        for row in rows
-    ]
-
-
 def _latest_session_states(db_path: Path) -> dict[str, dict[str, Any]]:
     if not db_path.exists():
         return {}
@@ -1248,23 +1150,6 @@ def _latest_orchestration_jobs(db_path: Path) -> dict[str, dict[str, str]]:
     }
 
 
-def _event_rows(db_path: Path) -> list[dict[str, Any]]:
-    entries = _ledger_entries(db_path)[:12]
-    return [
-        {
-            "ts": _short_time(str(entry["timestamp"])),
-            "timestamp": entry["timestamp"],
-            "kind": entry["outcome"],
-            "subject": entry["subject"],
-            "transition": entry["transition"],
-            "reason": entry["reason"],
-            "body": f"{entry['subject']} {entry['transition']}: {entry['reason']}",
-            "kindType": entry["outcomeKind"],
-        }
-        for entry in entries
-    ]
-
-
 def _latest_pnl(db_path: Path) -> dict[str, Any]:
     if not db_path.exists():
         return {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
@@ -1296,16 +1181,6 @@ def _latest_pnl(db_path: Path) -> dict[str, Any]:
     }
 
 
-def _system_snapshot(db_path: Path) -> dict[str, Any]:
-    return {
-        "dbPresent": db_path.exists(),
-        "riskMode": "paper locked",
-        "feedLatency": "n/a",
-        "drawdown": "n/a",
-        "capitalDeployed": "n/a",
-    }
-
-
 def _market_placeholder() -> dict[str, Any]:
     return {
         "regime": "UNKNOWN",
@@ -1333,38 +1208,6 @@ def _queue_rank(row: _StrategyRow) -> tuple[int, float]:
 
 def _stage_counts(rows: list[_StrategyRow]) -> dict[str, int]:
     return {stage: sum(1 for row in rows if row.stage == stage) for stage in _VISIBLE_STAGES}
-
-
-def _desk_stage_rows(stage_counts: dict[str, int], total: int) -> list[dict[str, Any]]:
-    stages = [
-        ("i.", "IDLE", "idle", "awaiting first run"),
-        ("ii.", "BACKTEST", "backtest", "historical evidence"),
-        ("iii.", "PAPER", "paper", "live feed, no capital"),
-        ("iv.", "MICRO LIVE", "micro_live", "live capital, capped"),
-        ("v.", "LIVE", "live", "full attribution"),
-    ]
-    return [
-        {
-            "tick": tick,
-            "name": name,
-            "stage": stage,
-            "deck": deck,
-            "strategyCount": stage_counts.get(stage, 0),
-            "running": 0,
-            "fillPct": 0.0 if total <= 0 else stage_counts.get(stage, 0) / total,
-        }
-        for tick, name, stage, deck in stages
-    ]
-
-
-def _next_stage(stage: str) -> str:
-    if stage == "backtest":
-        return "paper"
-    if stage == "paper":
-        return "micro_live"
-    if stage == "micro_live":
-        return "live"
-    return stage
 
 
 def _stage_label(stage: str) -> str:
@@ -1577,10 +1420,6 @@ def _today_label() -> str:
     return now.strftime("%A, %B %d").replace(" 0", " ")
 
 
-def _short_time(timestamp: str) -> str:
-    return timestamp[11:19] if len(timestamp) >= 19 else timestamp
-
-
 def _compact_timestamp(timestamp: str) -> str:
     if not timestamp:
         return ""
@@ -1618,15 +1457,3 @@ def _empty_front_summary() -> dict[str, Any]:
     }
 
 
-def _empty_desk_snapshot() -> dict[str, Any]:
-    return {
-        "stageCounts": {stage: 0 for stage in _VISIBLE_STAGES},
-        "stageRows": [],
-        "strategyTotal": 0,
-        "promotionQueue": [],
-        "runners": [],
-        "events": [],
-        "system": {},
-        "pnl": {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]},
-        "market": _market_placeholder(),
-    }

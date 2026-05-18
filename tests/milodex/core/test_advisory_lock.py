@@ -212,6 +212,34 @@ def test_refresh_is_safe_to_call_repeatedly(tmp_path):
         lock.release()
 
 
+def test_current_holder_returns_none_when_no_lock_exists(tmp_path):
+    """current_holder() returns None when no lock file is present."""
+    lock = AdvisoryLock("milodex.runtime", locks_dir=tmp_path)
+
+    assert lock.current_holder() is None
+
+
+def test_current_holder_returns_holder_when_lock_is_held(tmp_path):
+    """current_holder() returns the live holder when the lock file exists."""
+    lock = AdvisoryLock("milodex.runtime", locks_dir=tmp_path)
+    lock.acquire()
+    try:
+        holder = lock.current_holder()
+        assert holder is not None
+        assert holder.pid == os.getpid()
+    finally:
+        lock.release()
+
+
+def test_current_holder_does_not_create_lock_file(tmp_path):
+    """current_holder() on an unheld lock must not create or modify the lock file."""
+    lock = AdvisoryLock("milodex.runtime", locks_dir=tmp_path)
+
+    lock.current_holder()
+
+    assert not lock.path.exists()
+
+
 def _pick_stale_pid() -> int:
     """Return a PID that almost certainly does not refer to a live process."""
     for candidate in (987654, 876543, 765432):

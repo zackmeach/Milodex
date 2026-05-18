@@ -91,7 +91,13 @@ from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState, DeskState
+from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState
+from milodex.gui.performance_state import PerformanceState
+from milodex.gui.risk_throughput_state import RiskThroughputState
+from milodex.gui.active_ops_state import ActiveOpsState
+from milodex.gui.attention_state import AttentionState
+from milodex.gui.market_tape_state import MarketTapeState
+from milodex.gui.activity_feed_state import ActivityFeedState
 
 app = QGuiApplication.instance() or QGuiApplication(sys.argv)
 load_fonts()
@@ -122,7 +128,20 @@ front = FrontPageState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=
 bench = BenchState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 kanban = KanbanState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
 ledger = LedgerState(db_path=Path("/__nonexistent_smoke_test__"))
-desk = DeskState(db_path=Path("/__nonexistent_smoke_test__"), configs_dir=Path("configs"))
+
+# Trading Desk read-models. Nonexistent db/cache paths → each section
+# renders its quiet inline error/empty state; the surface still loads
+# cleanly (per-section error isolation — spec §5). This is exactly the
+# no-data path PR 8 must validate.
+_nonexistent = Path("/__nonexistent_smoke_test__")
+performance = PerformanceState(db_path=_nonexistent, cache_dir=_nonexistent)
+risk_throughput = RiskThroughputState(db_path=_nonexistent)
+active_ops = ActiveOpsState(
+    db_path=_nonexistent, configs_dir=Path("configs"), locks_dir=_nonexistent
+)
+attention = AttentionState(db_path=_nonexistent)
+market_tape = MarketTapeState(cache_dir=_nonexistent)
+activity_feed = ActivityFeedState(db_path=_nonexistent)
 
 # Real BenchCommandBridge backed by a real facade over a throwaway tmpdir.
 # The bridge must be registered as a QML singleton instance so QML references
@@ -147,7 +166,12 @@ register_qml_types(
     bench_state=bench,
     kanban_state=kanban,
     ledger_state=ledger,
-    desk_state=desk,
+    performance_state=performance,
+    risk_throughput_state=risk_throughput,
+    active_ops_state=active_ops,
+    attention_state=attention,
+    market_tape_state=market_tape,
+    activity_feed_state=activity_feed,
     bench_command_bridge=bench_command_bridge,
 )
 
@@ -214,6 +238,62 @@ def test_main_qml_loads_clean() -> None:
     qml_path = _MILODEX_QML_DIR / _MAIN_QML
     assert qml_path.exists(), f"Main.qml missing: {qml_path}"
     _run_and_assert(_build_script(qml_path), _MAIN_QML)
+
+
+def test_trading_desk_singletons_resolve_in_qml() -> None:
+    """PR 8: all six Trading Desk read-models resolve as QML singletons.
+
+    A probe QML component imports ``Milodex 1.0`` and binds one
+    Q_PROPERTY from each of the six new singletons. If any singleton is
+    not registered, QML emits a warning at component creation and the
+    subprocess exits non-zero. This is the explicit "6 singletons
+    resolve in the QML context" assertion for the DeskSurface rewrite,
+    complementary to the full-surface load in
+    ``test_surface_qml_loads_clean[surfaces/DeskSurface.qml]``.
+    """
+    probe_qml = (
+        "import QtQuick\n"
+        "import Milodex 1.0\n"
+        "QtObject {\n"
+        "    property var a: PerformanceState.bySlice\n"
+        "    property var b: RiskThroughputState.bySlice\n"
+        "    property var c: ActiveOpsState.runners\n"
+        "    property var d: AttentionState.rollups\n"
+        "    property var e: MarketTapeState.rows\n"
+        "    property var f: ActivityFeedState.rows\n"
+        "    property string g: PerformanceState.dataStatus\n"
+        "}\n"
+    )
+    script = _build_script(_MILODEX_QML_DIR / "surfaces" / "DeskSurface.qml")
+    probe_block = (
+        "from PySide6.QtCore import QUrl\n"
+        "from PySide6.QtQml import QQmlComponent\n"
+        f"probe_src = {probe_qml!r}\n"
+        "_warnings = []\n"
+        "engine = QQmlApplicationEngine()\n"
+        "engine.warnings.connect(lambda msgs: _warnings.extend(str(m) for m in msgs))\n"
+        f"engine.addImportPath({str(_QML_IMPORT_ROOT)!r})\n"
+        "component = QQmlComponent(engine)\n"
+        "component.setData(probe_src.encode('utf-8'), QUrl())\n"
+        "obj = component.create()\n"
+        "errors = [w for w in _warnings if w]\n"
+        "if errors:\n"
+        "    for e in errors:\n"
+        "        print(f'QML_WARNING: {e}', file=sys.stderr)\n"
+        "    sys.exit(3)\n"
+        "if obj is None:\n"
+        "    print('PROBE_CREATE_FAILED: ' + component.errorString(), file=sys.stderr)\n"
+        "    sys.exit(4)\n"
+        "if obj.property('g') != 'loading':\n"
+        "    print(f'UNEXPECTED_DATA_STATUS: {obj.property(\"g\")!r}', file=sys.stderr)\n"
+        "    sys.exit(5)\n"
+        "print('PROBE_OK')\n"
+        "sys.exit(0)\n"
+    )
+    marker = "_warnings: list[str] = []"
+    setup, _sep, _rest = script.partition(marker)
+    composed_script = setup + probe_block
+    _run_and_assert(composed_script, "Trading Desk 6-singleton probe")
 
 
 def test_bench_command_bridge_resolves_in_qml() -> None:

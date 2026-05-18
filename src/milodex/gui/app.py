@@ -118,23 +118,29 @@ def run_app() -> int:
     from milodex.commands.bench import BenchCommandFacade
     from milodex.config import (
         get_bundled_resource_dir,
+        get_cache_dir,
         get_data_dir,
         get_locks_dir,
         get_trading_mode,
     )
     from milodex.core.event_store import EventStore
     from milodex.data.alpaca_provider import AlpacaDataProvider
+    from milodex.gui.active_ops_state import ActiveOpsState
+    from milodex.gui.activity_feed_state import ActivityFeedState
+    from milodex.gui.attention_state import AttentionState
     from milodex.gui.bench_command_bridge import BenchCommandBridge
     from milodex.gui.fonts import load_fonts
+    from milodex.gui.market_tape_state import MarketTapeState
     from milodex.gui.operational_state import OperationalState
+    from milodex.gui.performance_state import PerformanceState
     from milodex.gui.qml_setup import register_qml_types
     from milodex.gui.read_models import (
         BenchState,
-        DeskState,
         FrontPageState,
         KanbanState,
         LedgerState,
     )
+    from milodex.gui.risk_throughput_state import RiskThroughputState
     from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
     from milodex.strategies.loader import StrategyLoader
@@ -195,13 +201,26 @@ def run_app() -> int:
     data_dir = get_data_dir()
     db_path = data_dir / "milodex.db"
     configs_dir = get_bundled_resource_dir() / "configs"
+    cache_dir = get_cache_dir()
+    locks_dir = get_locks_dir()
 
     strategy_bank_state = StrategyBankState(db_path=db_path)
     front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
     bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
     kanban_state = KanbanState(db_path=db_path, configs_dir=configs_dir)
     ledger_state = LedgerState(db_path=db_path)
-    desk_state = DeskState(db_path=db_path, configs_dir=configs_dir)
+
+    # Trading Desk read-models (spec §3 IA→read-model map). PerformanceState
+    # and MarketTapeState read the Parquet market cache; ActiveOpsState needs
+    # the strategy configs + advisory-lock/stop-sentinel dirs.
+    performance_state = PerformanceState(db_path=db_path, cache_dir=cache_dir)
+    risk_throughput_state = RiskThroughputState(db_path=db_path)
+    active_ops_state = ActiveOpsState(
+        db_path=db_path, configs_dir=configs_dir, locks_dir=locks_dir
+    )
+    attention_state = AttentionState(db_path=db_path)
+    market_tape_state = MarketTapeState(cache_dir=cache_dir)
+    activity_feed_state = ActivityFeedState(db_path=db_path)
 
     def get_event_store() -> EventStore:
         return EventStore(db_path)
@@ -237,7 +256,12 @@ def run_app() -> int:
         bench_state=bench_state,
         kanban_state=kanban_state,
         ledger_state=ledger_state,
-        desk_state=desk_state,
+        performance_state=performance_state,
+        risk_throughput_state=risk_throughput_state,
+        active_ops_state=active_ops_state,
+        attention_state=attention_state,
+        market_tape_state=market_tape_state,
+        activity_feed_state=activity_feed_state,
         bench_command_bridge=bench_command_bridge,
     )
     logger.info("run_app: active theme = %r", theme_manager.theme)
@@ -250,7 +274,12 @@ def run_app() -> int:
     bench_state.start()
     kanban_state.start()
     ledger_state.start()
-    desk_state.start()
+    performance_state.start()
+    risk_throughput_state.start()
+    active_ops_state.start()
+    attention_state.start()
+    market_tape_state.start()
+    activity_feed_state.start()
 
     # --- 4. Engine ------------------------------------------------------------
     engine = QQmlApplicationEngine()
@@ -275,7 +304,12 @@ def run_app() -> int:
         bench_state.stop()
         kanban_state.stop()
         ledger_state.stop()
-        desk_state.stop()
+        performance_state.stop()
+        risk_throughput_state.stop()
+        active_ops_state.stop()
+        attention_state.stop()
+        market_tape_state.stop()
+        activity_feed_state.stop()
         return 1
 
     logger.info(
@@ -291,7 +325,12 @@ def run_app() -> int:
     app.aboutToQuit.connect(bench_state.stop)
     app.aboutToQuit.connect(kanban_state.stop)
     app.aboutToQuit.connect(ledger_state.stop)
-    app.aboutToQuit.connect(desk_state.stop)
+    app.aboutToQuit.connect(performance_state.stop)
+    app.aboutToQuit.connect(risk_throughput_state.stop)
+    app.aboutToQuit.connect(active_ops_state.stop)
+    app.aboutToQuit.connect(attention_state.stop)
+    app.aboutToQuit.connect(market_tape_state.stop)
+    app.aboutToQuit.connect(activity_feed_state.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()

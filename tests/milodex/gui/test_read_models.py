@@ -318,39 +318,13 @@ def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> 
     assert all("T" not in entry["displayTimestamp"] for entry in entries)
 
 
-def test_desk_snapshot_exposes_stage_ladder_rows(tmp_path: Path) -> None:
-    from milodex.gui.read_models import build_desk_snapshot
-
-    configs = tmp_path / "configs"
-    configs.mkdir()
-    _write_strategy_config(configs, "meanrev.daily.rsi2pullback.v1", stage="paper")
-    db = tmp_path / "milodex.db"
-    _create_db(db)
-
-    snapshot = build_desk_snapshot(db, configs)["snapshot"]
-
-    assert snapshot["strategyTotal"] == 1
-    rows = {row["stage"]: row for row in snapshot["stageRows"]}
-    assert rows["paper"]["strategyCount"] == 1
-    assert rows["paper"]["fillPct"] == 1.0
-
-
-def test_desk_events_expose_structured_event_fields(tmp_path: Path) -> None:
-    from milodex.gui.read_models import build_desk_snapshot
-
-    strategy_id = "meanrev.daily.rsi2pullback.v1"
-    configs = tmp_path / "configs"
-    configs.mkdir()
-    _write_strategy_config(configs, strategy_id, stage="paper")
-    db = tmp_path / "milodex.db"
-    _create_db(db)
-    _seed_promotion(db, strategy_id)
-
-    event = build_desk_snapshot(db, configs)["snapshot"]["events"][0]
-
-    assert event["subject"] == "Rsi2Pullback"
-    assert event["transition"] == "backtest -> paper"
-    assert event["reason"] == "gate pass"
+# NOTE: the mock ``build_desk_snapshot`` and its two tests
+# (test_desk_snapshot_exposes_stage_ladder_rows /
+# test_desk_events_expose_structured_event_fields) were removed in PR 8 of
+# the Trading Desk redesign. The DESK surface is now driven by the six
+# dedicated read-models (PerformanceState, RiskThroughputState,
+# ActiveOpsState, AttentionState, MarketTapeState, ActivityFeedState),
+# each covered by its own test module.
 
 
 def _write_regime_config(configs_dir: Path, strategy_id: str, stage: str = "paper") -> Path:

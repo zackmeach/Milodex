@@ -1,17 +1,30 @@
-// DeskSurface.qml — The Trading Desk (dense cockpit view).
+// DeskSurface.qml — The Trading Desk (7-section live cockpit).
 //
-// Newspaper front page: a hero band with three cells (Session, P/L,
-// Market regime) and a 3-column body with eight sections (A through H)
-// covering the strategy ladder, system & risk, promotion queue, runners,
-// event ticker, today's tape, sector heat, and the day's calendar.
+// Spec: docs/superpowers/specs/2026-05-16-trading-desk-redesign-design.md §5.
+// IA: header band → Row 1 (I Risk&Mode · II Performance&Trust · III Active
+// Ops) → hairline → Row 2 (IV Risk Throughput · V Strategy Attention · VI
+// Market Tape) → hairline → VII Order/Signal Tape (full-width).
 //
-// Editorial-print conventions throughout: A./B./C. section labels (cap
-// letter + period), italic standfirsts, em-dashes, hairline rules,
-// tabular numerals, mono numerics with `tnum`.  No iconography — color
-// + language carry the signal.
+// Binding model (spec §3 IA→read-model map; QML binds Q_PROPERTYs only,
+// never queries):
+//   I   Risk & Mode          ← OperationalState (+ DB-present indicator)
+//   II  Performance & Trust   ← PerformanceState; "Today" P/L from
+//                               OperationalState.dailyPnl; stale treatment
+//   III Active Operations     ← ActiveOpsState
+//   IV  Risk Layer Throughput ← RiskThroughputState
+//   V   Strategy Attention    ← AttentionState
+//   VI  Market Tape           ← MarketTapeState (timestamp-only)
+//   VII Order / Signal Tape   ← ActivityFeedState (client-side filter)
 //
-// PR1: mock data inline.  Real data wiring (per the OperationalState +
-// StrategyBankState pattern) lands in a follow-up PR.
+// Slice toggles (II, IV) are pure client-side indices into the precomputed
+// bySlice maps — toggling never triggers a re-query.
+//
+// Animation discipline (locked): state changes instant; P&L figures never
+// crossfade; no idle animation. Chrome (Main.qml strip / kill banner) is
+// untouched and out of scope.
+//
+// Token-binding contract: NO hardcoded hex / size literals — Theme tokens
+// only. PR-7 components are composed, not re-implemented inline.
 
 import QtQuick
 import QtQuick.Layouts
@@ -22,249 +35,148 @@ Item {
 
     property real captureContentHeight: scroller.contentHeight
 
-    readonly property var liveSnapshot: DeskState.snapshot || ({})
-    readonly property var deskPnl: liveSnapshot.pnl || ({ today: 0, todayPct: 0, sparkline: [0] })
-    readonly property var deskSystem: liveSnapshot.system || ({})
-    readonly property var deskMarket: liveSnapshot.market || ({ regime: "UNKNOWN", regimeNote: "Market tape not wired yet.", tape: [] })
-    readonly property bool marketKnown: (deskMarket.regime || "UNKNOWN") !== "UNKNOWN"
-    readonly property var tapeRows: (deskMarket.tape && deskMarket.tape.length > 0) ? deskMarket.tape : []
-    readonly property var queueRows: (liveSnapshot.promotionQueue && liveSnapshot.promotionQueue.length > 0) ? liveSnapshot.promotionQueue : []
-    readonly property var runnerRows: (liveSnapshot.runners && liveSnapshot.runners.length > 0) ? liveSnapshot.runners : []
-    readonly property var eventRows: (liveSnapshot.events && liveSnapshot.events.length > 0) ? liveSnapshot.events : []
-    readonly property var stageRows: liveSnapshot.stageRows || []
-    readonly property var stageCounts: liveSnapshot.stageCounts || ({ idle: 0, backtest: 0, paper: 0, micro_live: 0, live: 0 })
-    readonly property int idleCount: Number(stageCounts.idle || 0)
-    readonly property int backtestCount: Number(stageCounts.backtest || 0)
-    readonly property int paperCount: Number(stageCounts.paper || 0)
-    readonly property int microLiveCount: Number(stageCounts.micro_live || 0)
-    readonly property int liveCount: Number(stageCounts.live || 0)
-    readonly property int strategyTotal: liveSnapshot.strategyTotal || 0
-    readonly property string brokerLine: OperationalState.brokerStatus === "connected" ? "Broker connected"
-                                     : OperationalState.brokerStatus === "error" ? "Broker error"
-                                     : "Broker stale"
-    readonly property string marketLine: OperationalState.marketOpen ? "Market open" : "Market closed"
-    readonly property string riskLine: OperationalState.killSwitchActive ? "Kill switch fired" : "Guard ready"
-    readonly property color riskColor: OperationalState.killSwitchActive ? Theme.status.negative : Theme.status.positive
+    // ------------------------------------------------------------------
+    // Slice selection — pure client-side index into precomputed bySlice
+    // maps. Sections II and IV each own an independent slice.
+    // ------------------------------------------------------------------
+    property string perfSlice:       "Week"
+    property string throughputSlice: "Week"
 
-    function formatMoney(value) {
+    readonly property var sliceOptions: [
+        { label: "Today",     value: "Today" },
+        { label: "Week",      value: "Week" },
+        { label: "Month",     value: "Month" },
+        { label: "YTD",       value: "YTD" },
+        { label: "All-Paper", value: "All-Paper" }
+    ]
+
+    // ------------------------------------------------------------------
+    // Pure formatting helpers (no literals that bind to the design system;
+    // these are value-formatting only, not tokens).
+    // ------------------------------------------------------------------
+    function fmtMoney(value) {
         var n = Number(value || 0)
         var sign = n < 0 ? "-" : ""
-        var abs = Math.abs(n)
-        return sign + "$" + abs.toLocaleString(Qt.locale("en_US"), "f", 2)
+        return sign + "$" + Math.abs(n).toLocaleString(Qt.locale("en_US"), "f", 2)
     }
 
-    function formatPct(value) {
-        var n = Number(value || 0)
+    function fmtPct(value) {
+        if (value === null || value === undefined)
+            return "—"
+        var n = Number(value) * 100
         var sign = n > 0 ? "+" : ""
         return sign + n.toFixed(2) + "%"
     }
 
-    function stageFill(stage) {
-        if (root.strategyTotal <= 0) return 0
-        return Math.max(0, Math.min(1, Number(root.stageCounts[stage] || 0) / root.strategyTotal))
+    // Returns "positive" | "negative" | "muted" for a numeric value.
+    function toneOf(value) {
+        if (value === null || value === undefined)
+            return "muted"
+        var n = Number(value)
+        if (n > 0) return "positive"
+        if (n < 0) return "negative"
+        return "muted"
     }
 
-    function eventDetailText(modelData) {
-        var detail = modelData.reason || modelData.body || ""
-        if (detail.length <= 150) return detail
-        return detail.slice(0, 147) + "..."
+    function shortTime(iso) {
+        if (!iso)
+            return "—"
+        var s = String(iso)
+        // ISO "YYYY-MM-DDTHH:MM:SS..." → "HH:MM"
+        if (s.length >= 16 && s.indexOf("T") === 10)
+            return s.substring(11, 16)
+        return s
     }
-
-    // ------------------------------------------------------------------
-    // Mock data — mirrors dashboard-data.js shape
-    // ------------------------------------------------------------------
-
-    readonly property var session: ({
-        state: "open",
-        hoursIn: 3, minsIn: 2,
-        hoursLeft: 3, minsLeft: 28,
-        weatherLine: "Friday, May 8 — a quiet first hour, breadth firming through the lunch ladle."
-    })
-
-    readonly property var positions: ({
-        open: 11, longs: 7, shorts: 4, gross: 71, net: 18  // pct
-    })
-
-    readonly property var pnl: ({
-        today: "1,247.36", todayPct: "+0.42",
-        mtd: "+$4,892.18", ytd: "−$12,104.55",
-        realized: "$612.40", unrealized: "$634.96",
-        sparkline: [0, 120, 80, 240, 180, 90, 60, 220, 380, 290, 410, 580,
-                    720, 690, 840, 920, 1010, 1140, 1080, 1180, 1247.36]
-    })
-
-    readonly property var market: ({
-        regime: "RISK-ON",
-        regimeNote: "SPY > SMA200, breadth firm, VIX easy.",
-        spy: "562.18",      spyDelta: "+0.33%",
-        qqqDelta: "+0.64%", iwmDelta: "−0.22%",
-        vix: "13.84",       tenY: "4.31%"
-    })
-
-    readonly property var ladder: [
-        { tick: "i.",   name: "IDLE",       deck: "awaiting first run",   count: 2, running: 0, fillPct: 0.00 },
-        { tick: "ii.",  name: "BACKTEST",   deck: "historical evidence",  count: 3, running: 2, fillPct: 0.67 },
-        { tick: "iii.", name: "PAPER",      deck: "live feed, no capital", count: 4, running: 3, fillPct: 0.75 },
-        { tick: "iv.",  name: "MICRO LIVE", deck: "live capital, capped", count: 2, running: 2, fillPct: 1.00 },
-        { tick: "v.",   name: "LIVE",       deck: "full attribution",     count: 1, running: 1, fillPct: 1.00 }
-    ]
-
-    readonly property var system: ({
-        uptime: "7d 14h", feedLatency: "38 ms",
-        cpu: 0.34, mem: 0.58,
-        capitalDeployed: "$184k", capitalTotal: "of 300k",
-        drawdown: "−3.4", drawdownNote: "% from MTD high",
-        var95: "$2,140", concentration: "18", concentrationNote: "% top name"
-    })
-
-    readonly property var promotionQueue: [
-        { name: "ATR Channel Breakout",        from: "paper",    to: "micro", days: "3d", note: "gates passing — capital stages locked" },
-        { name: "Time-Series Momentum",        from: "paper",    to: "micro", days: "8d", note: "gates passing — capital stages locked" },
-        { name: "BBands Lower-Band Mean Rev.", from: "paper",    to: "micro", days: "1d", note: "gates passing — capital stages locked" },
-        { name: "Donchian 20/10",              from: "backtest", to: "paper", days: "1d", note: "walk-forward complete" },
-        { name: "RSI-2 Pullback",              from: "micro",    to: "live",  days: "5d", note: "locked by ADR 0004" }
-    ]
-
-    readonly property var runners: [
-        { pid: 81204, name: "Donchian 20/10",            detail: "walk-forward 87%", state: "running" },
-        { pid: 81211, name: "52-Week High Proximity",    detail: "in-sample 41%",    state: "running" },
-        { pid: 81012, name: "ATR Channel Breakout",      detail: "day 88",           state: "running" },
-        { pid: 80877, name: "Time-Series Momentum",      detail: "day 92",           state: "running" },
-        { pid: 80831, name: "BBands Mean Reversion",     detail: "day 71",           state: "running" },
-        { pid: 80790, name: "NR7 Inside-Day Breakout",   detail: "awaiting reparam", state: "paused"  },
-        { pid: 80541, name: "RSI-2 Pullback",            detail: "day 62 · 4 open",  state: "running" },
-        { pid: 80540, name: "XSec Sector Rotation",      detail: "session boundary", state: "paused"  },
-        { pid: 80112, name: "SPY/SHY Regime Rotation",   detail: "day 184 · 1 open", state: "running" }
-    ]
-
-    readonly property var events: [
-        { ts: "14:31:08", kind: "TRADE", body: "RSI-2 Pullback bought NVDA · 14 sh @ 1107.42",          src: "micro" },
-        { ts: "14:28:51", kind: "INFO",  body: "Walk-forward fold 7/8 complete · Donchian 20/10",        src: "backtest" },
-        { ts: "14:21:19", kind: "RUN",   body: "SPY/SHY Regime Rotation rebalance check — held SPY",     src: "live" },
-        { ts: "14:15:02", kind: "WARN",  body: "Concentration on AAPL approaching 18% gate",             src: "risk" },
-        { ts: "14:08:44", kind: "TRADE", body: "SPY/SHY Regime Rotation sold COKE · 22 sh @ 71.30",      src: "live" },
-        { ts: "13:42:00", kind: "RUN",   body: "NR7 Inside-Day Breakout paused — sharpe below threshold", src: "paper" }
-    ]
-
-    readonly property var tape: [
-        { sym: "SPY",  name: "S&P 500",         last: "562.18", pct: "+0.33%", up: true  },
-        { sym: "QQQ",  name: "Nasdaq 100",      last: "491.07", pct: "+0.64%", up: true  },
-        { sym: "IWM",  name: "Russell 2000",    last: "218.44", pct: "−0.22%", up: false },
-        { sym: "DIA",  name: "Dow 30",          last: "432.01", pct: "+0.18%", up: true  },
-        { sym: "EFA",  name: "Developed ex-US", last:  "86.55", pct: "+0.42%", up: true  },
-        { sym: "EEM",  name: "Emerging mkts",   last:  "47.10", pct: "−0.31%", up: false },
-        { sym: "TLT",  name: "20yr Treasuries", last:  "88.92", pct: "−0.78%", up: false },
-        { sym: "GLD",  name: "Gold",            last: "232.40", pct: "+0.55%", up: true  },
-        { sym: "VIX",  name: "Volatility idx",  last:  "13.84", pct: "−3.21%", up: false }
-    ]
-
-    readonly property var sectors: [
-        { code: "XLK",  pct: "+0.92%", up: true  },
-        { code: "XLY",  pct: "+0.61%", up: true  },
-        { code: "XLC",  pct: "+0.48%", up: true  },
-        { code: "XLI",  pct: "+0.21%", up: true  },
-        { code: "XLF",  pct: "+0.04%", up: true  },
-        { code: "XLV",  pct: "−0.12%", up: false },
-        { code: "XLB",  pct: "−0.34%", up: false },
-        { code: "XLP",  pct: "−0.41%", up: false },
-        { code: "XLRE", pct: "−0.55%", up: false },
-        { code: "XLU",  pct: "−0.68%", up: false },
-        { code: "XLE",  pct: "−0.83%", up: false }
-    ]
-
-    readonly property var calendar: [
-        { time: "08:30",     what: "Initial Jobless Claims",     result: "218k vs. 220k est.",    imp: "MED",  done: true  },
-        { time: "10:00",     what: "Wholesale Inventories",      result: "+0.1% vs. flat",        imp: "LOW",  done: true  },
-        { time: "13:00",     what: "30Y Treasury Auction",       result: "tail 0.4 bp",           imp: "MED",  done: true  },
-        { time: "14:00",     what: "FOMC speakers — Williams",   result: "in progress",           imp: "MED",  done: false },
-        { time: "16:30",     what: "Fed Balance Sheet (H.4.1)",  result: "—",                     imp: "LOW",  done: false },
-        { time: "Tomorrow",  what: "Core PPI (Apr)",             result: "cons. +0.2% m/m",       imp: "HIGH", done: false }
-    ]
 
     // ------------------------------------------------------------------
     // Background
     // ------------------------------------------------------------------
-
     Rectangle { anchors.fill: parent; color: Theme.color.surface.canvas }
 
     // ------------------------------------------------------------------
-    // Reusable inline components
+    // Reusable per-section status banner (loading / error isolation).
+    // One section's error never blanks the surface.
     // ------------------------------------------------------------------
-
-    // Lettered section header per DESIGN_SYSTEM.md v0.2 §7.9.
-    //
-    // Letter (A. / B. / C. …) in display-serif Newsreader, parchment
-    // (color.brand.primary), weight 500 — not italic, not muted.
-    // Section name in label.xs tracked uppercase, text.secondary.
-    // Optional right-aligned meta in data.sm mono with tnum, text.muted —
-    // baseline-aligned with the letter.
-    // Full-width 1px border.subtle hairline rule below the header,
-    // space[2] (8px) below the header bottom edge per §7.9 spacing
-    // contract. Section content begins below the rule with the parent
-    // Column's spacing.
-    //
-    // Replaces the v0.1 pattern (text.muted italic 14px letter, no
-    // hairline rule, separately-anchored right-meta Text per call site).
-    component SectionLabel: Column {
-        id: sectionLabelRoot
-        property string letter: ""
-        property string name: ""
-        property string meta: ""
+    component SectionStatus: Column {
+        id: secStatus
+        property string status: "ready"
+        property string errorMessage: ""
+        property bool   hasData: false
         width: parent ? parent.width : 0
         spacing: Theme.space[2]
+        visible: secStatus.status !== "ready" || !secStatus.hasData
 
-        Item {
+        Text {
+            visible: secStatus.status === "loading" && !secStatus.hasData
             width: parent.width
-            implicitHeight: letterText.implicitHeight
-
-            Text {
-                id: letterText
-                anchors.left: parent.left
-                anchors.top:  parent.top
-                text:  sectionLabelRoot.letter
-                color: Theme.color.brand.primary
-                font.family:    Theme.typography.display.sm.family
-                font.pixelSize: Theme.typography.display.sm.size
-                font.weight:    Theme.typography.display.sm.weight
-            }
-
-            Text {
-                id: nameText
-                anchors.left:       letterText.right
-                anchors.leftMargin: Theme.space[3]
-                anchors.baseline:   letterText.baseline
-                text:  sectionLabelRoot.name
-                color: Theme.color.text.secondary
-                font.family:         Theme.typography.label.xs.family
-                font.pixelSize:      Theme.typography.label.xs.size
-                font.weight:         Theme.typography.label.xs.weight
-                font.letterSpacing:  Theme.typography.label.xs.letterSpacing
-                font.capitalization: Font.AllUppercase
-            }
-
-            Text {
-                visible: sectionLabelRoot.meta !== ""
-                text:    sectionLabelRoot.meta
-                color:   Theme.color.text.muted
-                font.family:    Theme.typography.data.sm.family
-                font.pixelSize: Theme.typography.data.sm.size
-                font.features:  Theme.typography.data.sm.features
-                anchors.right:    parent.right
-                anchors.baseline: letterText.baseline
-            }
+            text: "Loading…"
+            color: Theme.color.text.muted
+            font.family:    Theme.typography.body.sm.family
+            font.pixelSize: Theme.typography.body.sm.size
+            font.italic:    true
         }
-
-        Rectangle {
-            width:  parent.width
-            height: 1
-            color:  Theme.color.border.subtle
+        Text {
+            visible: secStatus.status === "error"
+            width: parent.width
+            text: secStatus.errorMessage !== ""
+                  ? "Unavailable — " + secStatus.errorMessage
+                  : "Unavailable."
+            color: Theme.status.warning
+            font.family:    Theme.typography.body.sm.family
+            font.pixelSize: Theme.typography.body.sm.size
+            font.italic:    true
+            wrapMode: Text.WordWrap
         }
+        Text {
+            visible: secStatus.status === "ready" && !secStatus.hasData
+            width: parent.width
+            text: "No data yet."
+            color: Theme.color.text.muted
+            font.family:    Theme.typography.body.sm.family
+            font.pixelSize: Theme.typography.body.sm.size
+            font.italic:    true
+        }
+    }
+
+    // A small labelled key/value used in Section I.
+    component KeyStat: Column {
+        property string k: ""
+        property string v: ""
+        property color  vColor: Theme.color.text.primary
+        spacing: Theme.space[1]
+        Text {
+            text: parent.k
+            color: Theme.color.text.muted
+            font.family:         Theme.typography.label.xs.family
+            font.pixelSize:      Theme.typography.label.xs.size
+            font.weight:         Theme.typography.label.xs.weight
+            font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+            font.capitalization: Font.AllUppercase
+        }
+        Text {
+            text: parent.v
+            color: parent.vColor
+            font.family:    Theme.typography.data.md.family
+            font.pixelSize: Theme.typography.data.md.size
+            font.features:  Theme.typography.data.md.features
+        }
+    }
+
+    // Editorial section standfirst — master section idiom, reference
+    // DeskSurface.qml@757afe7:653-659. Deliberate scale split: body.md.family
+    // (typeface) + body.sm.size (scale) — do not normalize to one scale.
+    component Standfirst: Text {
+        width:          parent ? parent.width : implicitWidth
+        color:          Theme.color.text.secondary
+        font.family:    Theme.typography.body.md.family
+        font.pixelSize: Theme.typography.body.sm.size
+        font.italic:    true
+        wrapMode:       Text.WordWrap
     }
 
     // ------------------------------------------------------------------
     // Scroll container
     // ------------------------------------------------------------------
-
     Flickable {
         id: scroller
         anchors.fill: parent
@@ -272,6 +184,8 @@ Item {
         contentHeight: pageColumn.implicitHeight + Theme.space[7] * 2
         clip:          true
         flickableDirection: Flickable.VerticalFlick
+        // Deterministic desktop scrolling: wheel scrolls, click-drag does not.
+        interactive: false
 
         Column {
             id: pageColumn
@@ -280,20 +194,20 @@ Item {
             topPadding: Theme.space[7]
             spacing: Theme.space[6]
 
-            // ============================================================
-            // PAGE HEADER
-            // ============================================================
+            // ========================================================
+            // HEADER BAND — kicker / title / standfirst
+            // ========================================================
             Column {
                 width: parent.width
                 spacing: Theme.space[2]
 
                 Text {
-                    text: "Daily Dashboard · Detailed View"
+                    text: "Live Operations · The Trading Desk"
                     color: Theme.color.text.muted
-                    font.family:        Theme.typography.label.xs.family
-                    font.pixelSize:     Theme.typography.label.xs.size
-                    font.weight:        Theme.typography.label.xs.weight
-                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                    font.family:         Theme.typography.label.xs.family
+                    font.pixelSize:      Theme.typography.label.xs.size
+                    font.weight:         Theme.typography.label.xs.weight
+                    font.letterSpacing:  Theme.typography.label.xs.letterSpacing
                     font.capitalization: Font.AllUppercase
                 }
 
@@ -303,15 +217,12 @@ Item {
 
                     Row {
                         spacing: 0
-                        Layout.fillWidth: false
-
                         Text {
                             text:  "The Trading Desk"
                             color: Theme.color.brand.primary
                             font.family:    Theme.typography.display.lg.family
                             font.pixelSize: Theme.typography.display.lg.size
                             font.weight:    Theme.typography.display.lg.weight
-                            font.letterSpacing: -0.4
                         }
                         Text {
                             text:  "."
@@ -323,504 +234,468 @@ Item {
                     }
                     Text {
                         Layout.fillWidth: true
-                        text: "the operator's working spread — risk posture, the strategy bench, and the wider market weather, all on one fold."
+                        text: "the operator's working spread — risk posture, performance, live operations, and market weather on one fold, on live data."
                         color: Theme.color.text.secondary
                         font.family:    Theme.typography.body.md.family
-                        font.pixelSize: Theme.typography.body.md.size + 1
+                        font.pixelSize: Theme.typography.body.md.size
                         font.italic:    true
                         wrapMode:       Text.WordWrap
                     }
                 }
             }
 
-            // Top hairline
             Rectangle { width: parent.width; height: 1; color: Theme.color.border.regular }
 
-            // ============================================================
-            // HERO BAND — three cells: Risk & Mode | P/L | Market
-            // ============================================================
+            // ========================================================
+            // ROW 1 — I Risk & Mode · II Performance & Trust · III Active Ops
+            // ========================================================
             RowLayout {
                 width: parent.width
                 spacing: Theme.space[6]
 
-                // -- Cell 1: RISK & MODE --
+                // ---- I · RISK & MODE -------------------------------
                 Column {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
-                    spacing: Theme.space[2]
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignTop
+                    spacing: Theme.space[3]
 
-                    Row {
-                        spacing: Theme.space[2]
-                        Rectangle {
-                            width: 6; height: 6; radius: 3
-                            color: root.riskColor
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                        Text {
-                            text: "Risk & Mode"
-                            color: Theme.color.text.secondary
-                            font.family:        Theme.typography.label.xs.family
-                            font.pixelSize:     Theme.typography.label.xs.size
-                            font.weight:        Theme.typography.label.xs.weight
-                            font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                            font.capitalization: Font.AllUppercase
-                            anchors.verticalCenter: parent.verticalCenter
-                        }
-                    }
+                    SectionHeader { width: parent.width; numeral: "I"; title: "Risk & Mode" }
+                    Standfirst { text: "risk posture and operating mode, on live broker state" }
+
+                    // Kill-switch / guard headline
                     Text {
                         width: parent.width
-                        text: root.riskLine
-                        color: root.riskColor
-                        font.family:    Theme.typography.display.md.family
-                        font.pixelSize: Theme.typography.display.md.size
-                        font.weight:    Theme.typography.display.md.weight
+                        text: OperationalState.killSwitchActive
+                              ? "Kill switch fired"
+                              : "Guard ready"
+                        color: OperationalState.killSwitchActive
+                               ? Theme.status.negative
+                               : Theme.status.positive
+                        font.family:    Theme.typography.display.sm.family
+                        font.pixelSize: Theme.typography.display.sm.size
+                        font.weight:    Theme.typography.display.sm.weight
                         wrapMode: Text.WordWrap
                     }
                     Text {
                         width: parent.width
                         text: OperationalState.killSwitchActive
-                              ? "Manual reset required. Trading halted."
-                              : (OperationalState.tradingMode.toUpperCase() + " mode. " + root.marketLine + ".")
+                              ? (OperationalState.killSwitchReason !== ""
+                                 ? OperationalState.killSwitchReason
+                                 : "Manual reset required. Trading halted.")
+                              : (OperationalState.tradingMode.toUpperCase()
+                                 + " mode · "
+                                 + (OperationalState.marketOpen ? "market open" : "market closed"))
                         color: Theme.color.text.secondary
-                        font.family: Theme.typography.body.md.family
-                        font.pixelSize: Theme.typography.body.sm.size
-                        font.italic: true
-                        wrapMode: Text.WordWrap
-                    }
-                    // Mini-stats row
-                    Row {
-                        spacing: Theme.space[6]
-                        Repeater {
-                            model: [
-                                { l: "Mode",   v: OperationalState.tradingMode.toUpperCase() },
-                                { l: "Broker", v: OperationalState.brokerStatus.toUpperCase() },
-                                { l: "Market", v: OperationalState.marketOpen ? "OPEN" : "CLOSED" }
-                            ]
-                            delegate: Column {
-                                spacing: 2
-                                Text {
-                                    text: modelData.l
-                                    color: Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Theme.typography.label.xs.weight
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
-                                }
-                                Text {
-                                    text: modelData.v
-                                    color: Theme.color.text.primary
-                                    font.family:    Theme.typography.data.md.family
-                                    font.pixelSize: Theme.typography.data.md.size + 2
-                                    font.features:  Theme.typography.data.md.features
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.fillHeight: true
-                    color: Theme.color.border.subtle
-                }
-
-                // -- Cell 2: P/L --
-                Column {
-                    Layout.fillWidth: true
-                    Layout.preferredWidth: 4
-                    spacing: Theme.space[2]
-
-                    Text {
-                        text: "P/L · Today"
-                        color: Theme.color.text.secondary
-                        font.family:        Theme.typography.label.xs.family
-                        font.pixelSize:     Theme.typography.label.xs.size
-                        font.weight:        Theme.typography.label.xs.weight
-                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                        font.capitalization: Font.AllUppercase
-                    }
-                    // Hero P/L number
-                    Row {
-                        spacing: 0
-                        Text {
-                            text:  root.formatMoney(root.deskPnl.today)
-                            color: Theme.color.brand.primary
-                            font.family:    Theme.typography.display.xl.family
-                            font.pixelSize: Theme.typography.display.xl.size
-                            font.weight:    Theme.typography.display.xl.weight
-                            font.letterSpacing: -1.0
-                        }
-                    }
-                    // Sparkline
-                    Sparkline {
-                        width: parent.width
-                        height: 60
-                        series: root.deskPnl.sparkline
-                        showAxis: false
-                        showGrid: true
-                        areaAlpha: 0.12
-                    }
-                    // Mini-stats row
-                    Row {
-                        spacing: Theme.space[5]
-                        Repeater {
-                            model: [
-                                { l: "Day %", v: root.formatPct(root.deskPnl.todayPct), kind: Number(root.deskPnl.todayPct || 0) < 0 ? "neg" : "pos" },
-                                { l: "Snapshot", v: root.liveSnapshot.lastRefreshedAt ? "ready" : "pending", kind: "dim" }
-                            ]
-                            delegate: Column {
-                                spacing: 2
-                                Text {
-                                    text: modelData.l
-                                    color: Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Theme.typography.label.xs.weight
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
-                                }
-                                Text {
-                                    text: modelData.v
-                                    color: modelData.kind === "pos" ? Theme.status.positive
-                                          : modelData.kind === "neg" ? Theme.status.negative
-                                          : Theme.color.text.muted
-                                    font.family:    Theme.typography.data.md.family
-                                    font.pixelSize: Theme.typography.data.md.size
-                                    font.features:  Theme.typography.data.md.features
-                                }
-                            }
-                        }
-                    }
-                }
-
-                Rectangle {
-                    Layout.preferredWidth: 1
-                    Layout.fillHeight: true
-                    color: Theme.color.border.subtle
-                }
-
-                // -- Cell 3: MARKET --
-                Column {
-                    Layout.fillWidth: true
-                    Layout.preferredWidth: 3
-                    spacing: Theme.space[2]
-
-                    Text {
-                        text: "Market · Regime"
-                        color: Theme.color.text.secondary
-                        font.family:        Theme.typography.label.xs.family
-                        font.pixelSize:     Theme.typography.label.xs.size
-                        font.weight:        Theme.typography.label.xs.weight
-                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                        font.capitalization: Font.AllUppercase
-                    }
-
-                    // Market status pill
-                    Rectangle {
-                        implicitWidth: regimeLabel.implicitWidth + Theme.space[3] * 2
-                        implicitHeight: regimeLabel.implicitHeight + Theme.space[2]
-                        color: Theme.color.surface.base
-                        border.color: root.marketKnown ? Theme.status.info : Theme.color.border.regular
-                        border.width: 1
-                        radius: Theme.radius.sm
-
-                        Row {
-                            anchors.centerIn: parent
-                            spacing: Theme.space[1]
-                            Rectangle {
-                                width: 6; height: 6; radius: 3
-                                color: root.marketKnown ? Theme.status.info : Theme.status.warning
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                            Text {
-                                id: regimeLabel
-                                text: root.marketKnown ? root.deskMarket.regime : "Not wired"
-                                color: root.marketKnown ? Theme.status.info : Theme.status.warning
-                                font.family:    Theme.typography.display.sm.family
-                                font.pixelSize: Theme.typography.display.sm.size
-                                font.weight:    Theme.typography.display.sm.weight
-                                anchors.verticalCenter: parent.verticalCenter
-                            }
-                        }
-                    }
-
-                    Row {
-                        visible: root.marketKnown
-                        spacing: Theme.space[2]
-                        Text {
-                            text: Number(root.deskMarket.spyPct || 0).toFixed(2) + "%"
-                            color: Theme.color.brand.primary
-                            font.family:    Theme.typography.display.tally.family
-                            font.pixelSize: Theme.typography.display.tally.size
-                            font.weight:    Font.Medium
-                            font.letterSpacing: -0.3
-                        }
-                        Text {
-                            text: "SPY"
-                            color: Theme.color.text.muted
-                            font.family:        Theme.typography.label.xs.family
-                            font.pixelSize:     Theme.typography.label.xs.size
-                            font.weight:        Theme.typography.label.xs.weight
-                            font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                            font.capitalization: Font.AllUppercase
-                            anchors.bottom: parent.bottom
-                            anchors.bottomMargin: 6
-                        }
-                        Text {
-                            text: root.formatPct(root.deskMarket.spyPct)
-                            color: Number(root.deskMarket.spyPct || 0) < 0 ? Theme.status.negative : Theme.status.positive
-                            font.family:    Theme.typography.data.md.family
-                            font.pixelSize: Theme.typography.data.md.size + 1
-                            font.features:  Theme.typography.data.md.features
-                            anchors.bottom: parent.bottom
-                            anchors.bottomMargin: 6
-                        }
-                    }
-
-                    Text {
-                        text: root.marketKnown ? root.deskMarket.regimeNote : (root.deskMarket.weatherLine || root.deskMarket.regimeNote || "Market tape not wired yet.")
-                        color: Theme.color.text.secondary
-                        font.family:    Theme.typography.body.md.family
+                        font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
                         font.italic:    true
+                        wrapMode: Text.WordWrap
                     }
 
-                    // Mini-stats row
                     Row {
+                        width: parent.width
                         spacing: Theme.space[6]
-                        Repeater {
-                            visible: root.marketKnown
-                            model: [
-                                { l: "SPY",  v: root.formatPct(root.deskMarket.spyPct), kind: Number(root.deskMarket.spyPct || 0) < 0 ? "neg" : "pos" },
-                                { l: "QQQ",  v: root.formatPct(root.deskMarket.qqqPct), kind: Number(root.deskMarket.qqqPct || 0) < 0 ? "neg" : "pos" },
-                                { l: "IWM",  v: root.formatPct(root.deskMarket.iwmPct), kind: Number(root.deskMarket.iwmPct || 0) < 0 ? "neg" : "pos" }
-                            ]
-                            delegate: Column {
-                                spacing: 2
-                                Text {
-                                    text: modelData.l
-                                    color: Theme.color.text.muted
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Theme.typography.label.xs.weight
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    font.capitalization: Font.AllUppercase
-                                }
-                                Text {
-                                    text: modelData.v
-                                    color: modelData.kind === "pos" ? Theme.status.positive
-                                          : modelData.kind === "neg" ? Theme.status.negative
+                        KeyStat {
+                            k: "Mode"
+                            v: OperationalState.tradingMode.toUpperCase()
+                        }
+                        KeyStat {
+                            k: "Broker"
+                            v: OperationalState.brokerStatus.toUpperCase()
+                            vColor: OperationalState.brokerStatus === "connected"
+                                    ? Theme.status.positive
+                                    : OperationalState.brokerStatus === "error"
+                                      ? Theme.status.negative
+                                      : Theme.color.text.muted
+                        }
+                        KeyStat {
+                            k: "Market"
+                            v: OperationalState.marketOpen ? "OPEN" : "CLOSED"
+                        }
+                    }
+                    Row {
+                        width: parent.width
+                        spacing: Theme.space[6]
+                        KeyStat {
+                            k: "Open Pos."
+                            v: String(OperationalState.openPositionsCount)
+                        }
+                        KeyStat {
+                            // DB-present indicator (spec §3 / §5 Section I):
+                            // a non-empty PerformanceState refresh timestamp
+                            // means the event store DB was readable.
+                            k: "Data Store"
+                            v: PerformanceState.dataStatus === "error"
+                               ? "UNREADABLE"
+                               : (PerformanceState.lastRefreshedAt !== "" ? "PRESENT" : "PENDING")
+                            vColor: PerformanceState.dataStatus === "error"
+                                    ? Theme.status.negative
+                                    : (PerformanceState.lastRefreshedAt !== ""
+                                       ? Theme.status.positive
+                                       : Theme.color.text.muted)
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        visible: OperationalState.brokerStatus === "error"
+                                 && OperationalState.brokerErrorMessage !== ""
+                        text: "Broker: " + OperationalState.brokerErrorMessage
+                        color: Theme.color.text.muted
+                        font.family:    Theme.typography.body.sm.family
+                        font.pixelSize: Theme.typography.body.sm.size
+                        font.italic:    true
+                        wrapMode: Text.WordWrap
+                    }
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    color: Theme.color.border.subtle
+                }
+
+                // ---- II · PERFORMANCE & TRUST ----------------------
+                Column {
+                    id: perfCol
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 4
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignTop
+                    spacing: Theme.space[3]
+
+                    readonly property bool isToday: root.perfSlice === "Today"
+                    readonly property var slice: PerformanceState.bySlice[root.perfSlice] || ({})
+                    readonly property var bench: PerformanceState.benchmarkBySlice[root.perfSlice] || ({})
+                    // Stale treatment applies to Section II only and only to
+                    // the hero (not the live-broker Today figure).
+                    // showStale is true only when a snapshot exists AND it is old.
+                    readonly property bool hasSnapshot: PerformanceState.hasSnapshot
+                    readonly property bool showStale: PerformanceState.isStale && !isToday
+                    readonly property bool hasData: PerformanceState.dataStatus !== "error"
+                                                    && PerformanceState.lastRefreshedAt !== ""
+
+                    SectionHeader {
+                        width: parent.width
+                        numeral: "II"
+                        title: "Performance & Trust"
+                        Text {
+                            text: PerformanceState.lastRefreshedAt !== ""
+                                  ? "as of " + root.shortTime(PerformanceState.lastRefreshedAt)
+                                  : ""
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.data.sm.family
+                            font.pixelSize: Theme.typography.data.sm.size
+                            font.features:  Theme.typography.data.sm.features
+                        }
+                    }
+                    Standfirst { text: "realised P/L for the selected window, with snapshot freshness stated plainly" }
+
+                    SegmentedToggle {
+                        width: parent.width
+                        options: root.sliceOptions
+                        current: root.perfSlice
+                        onActivated: function(value) { root.perfSlice = value }
+                    }
+
+                    SectionStatus {
+                        status: PerformanceState.dataStatus
+                        errorMessage: PerformanceState.dataErrorMessage
+                        hasData: PerformanceState.lastRefreshedAt !== ""
+                    }
+
+                    // Empty state — no snapshot at all (honest "no data yet").
+                    SectionStatus {
+                        visible: perfCol.hasData && !perfCol.hasSnapshot
+                        status: "ready"
+                        errorMessage: ""
+                        hasData: false
+                    }
+
+                    // Stale hero — muted "stale as of <date>" (spec-locked).
+                    // Only shown when a snapshot exists AND it is older than threshold.
+                    Column {
+                        visible: perfCol.hasData && perfCol.hasSnapshot && perfCol.showStale
+                        width: parent.width
+                        spacing: Theme.space[1]
+                        Text {
+                            text: "P/L · " + root.perfSlice
+                            color: Theme.color.text.muted
+                            font.family:         Theme.typography.label.xs.family
+                            font.pixelSize:      Theme.typography.label.xs.size
+                            font.weight:         Theme.typography.label.xs.weight
+                            font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+                            font.capitalization: Font.AllUppercase
+                        }
+                        Text {
+                            text: "stale as of " + (PerformanceState.staleAsOf !== ""
+                                                    ? PerformanceState.staleAsOf
+                                                    : "unknown")
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.display.sm.family
+                            font.pixelSize: Theme.typography.display.sm.size
+                            font.weight:    Theme.typography.display.sm.weight
+                            font.italic:    true
+                        }
+                        Text {
+                            width: perfCol.width
+                            text: "Snapshot older than the freshness threshold — not presented as current."
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.body.sm.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.italic:    true
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+
+                    // Fresh hero — Today binds OperationalState.dailyPnl;
+                    // Week+ bind PerformanceState.bySlice[slice].return.
+                    Column {
+                        visible: perfCol.hasData && perfCol.hasSnapshot && !perfCol.showStale
+                        width: parent.width
+                        spacing: Theme.space[3]
+
+                        RollupCell {
+                            width: parent.width
+                            label: "P/L · " + root.perfSlice
+                            value: perfCol.isToday
+                                   ? root.fmtMoney(OperationalState.dailyPnl)
+                                   : root.fmtPct(perfCol.slice.return)
+                            tone: perfCol.isToday
+                                  ? root.toneOf(OperationalState.dailyPnl)
+                                  : root.toneOf(perfCol.slice.return)
+                        }
+
+                        Sparkline {
+                            width: parent.width
+                            height: Theme.space[7] * 2
+                            series: PerformanceState.sparkline
+                            showAxis: false
+                            showGrid: false
+                            hairline: true
+                        }
+
+                        Row {
+                            width: parent.width
+                            spacing: Theme.space[6]
+                            visible: !perfCol.isToday
+                            KeyStat {
+                                k: "Drawdown"
+                                v: root.fmtPct(perfCol.slice.drawdown)
+                                vColor: Theme.status.negative
+                            }
+                            KeyStat {
+                                k: "SPY"
+                                v: root.fmtPct(perfCol.bench.spyReturn)
+                            }
+                            KeyStat {
+                                k: "Excess"
+                                v: root.fmtPct(perfCol.bench.excess)
+                                vColor: root.toneOf(perfCol.bench.excess) === "positive"
+                                        ? Theme.status.positive
+                                        : root.toneOf(perfCol.bench.excess) === "negative"
+                                          ? Theme.status.negative
                                           : Theme.color.text.primary
-                                    font.family:    Theme.typography.data.md.family
-                                    font.pixelSize: Theme.typography.data.md.size + 1
-                                    font.features:  Theme.typography.data.md.features
-                                }
                             }
                         }
+                        Text {
+                            width: parent.width
+                            visible: perfCol.isToday
+                            text: "Live broker daily P/L. Period slices use end-of-day portfolio snapshots."
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.body.sm.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.italic:    true
+                            wrapMode: Text.WordWrap
+                        }
+                    }
+                }
+
+                Rectangle {
+                    Layout.preferredWidth: 1
+                    Layout.fillHeight: true
+                    color: Theme.color.border.subtle
+                }
+
+                // ---- III · ACTIVE OPERATIONS ----------------------
+                Column {
+                    id: activeOpsCol
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 3
+                    Layout.preferredHeight: implicitHeight
+                    Layout.alignment: Qt.AlignTop
+                    spacing: Theme.space[3]
+
+                    property string selectedRunner: ""
+
+                    readonly property var _runnerOptions: {
+                        var out = []
+                        var rs = ActiveOpsState.runners
+                        for (var i = 0; i < rs.length; i++)
+                            out.push({ id: rs[i].strategyId, label: rs[i].strategyId })
+                        return out
+                    }
+                    readonly property var _selected: {
+                        var rs = ActiveOpsState.runners
+                        if (rs.length === 0) return ({})
+                        var want = activeOpsCol.selectedRunner
+                        for (var i = 0; i < rs.length; i++) {
+                            if (rs[i].strategyId === want) return rs[i]
+                        }
+                        return rs[0]
+                    }
+
+                    SectionHeader {
+                        width: parent.width
+                        numeral: "III"
+                        title: "Active Operations"
+                        Text {
+                            text: ActiveOpsState.runners.length > 0
+                                  ? ActiveOpsState.runners.length + " runners"
+                                  : ""
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.data.sm.family
+                            font.pixelSize: Theme.typography.data.sm.size
+                            font.features:  Theme.typography.data.sm.features
+                        }
+                    }
+                    Standfirst { text: "what is running right now in this session" }
+
+                    SectionStatus {
+                        status: ActiveOpsState.dataStatus
+                        errorMessage: ActiveOpsState.dataErrorMessage
+                        hasData: ActiveOpsState.runners.length > 0
+                    }
+
+                    RunnerSelect {
+                        width: parent.width
+                        visible: ActiveOpsState.runners.length > 0
+                        runners: activeOpsCol._runnerOptions
+                        current: activeOpsCol._selected.strategyId || ""
+                        onSelected: function(runnerId) { activeOpsCol.selectedRunner = runnerId }
+                    }
+
+                    GridLayout {
+                        width: parent.width
+                        visible: ActiveOpsState.runners.length > 0
+                        columns: 2
+                        rowSpacing:    Theme.space[3]
+                        columnSpacing: Theme.space[6]
+
+                        KeyStat {
+                            Layout.fillWidth: true
+                            k: "Session"
+                            v: (activeOpsCol._selected.sessionState || "—").toUpperCase()
+                            vColor: (activeOpsCol._selected.sessionState || "").indexOf("running") === 0
+                                    ? Theme.status.positive
+                                    : Theme.color.text.secondary
+                        }
+                        KeyStat {
+                            Layout.fillWidth: true
+                            k: "Cadence"
+                            v: activeOpsCol._selected.cadence || "—"
+                        }
+                        KeyStat {
+                            Layout.fillWidth: true
+                            k: "Heartbeat"
+                            v: activeOpsCol._selected.heartbeat || "—"
+                            vColor: (activeOpsCol._selected.heartbeat || "") === "on schedule"
+                                    ? Theme.status.positive
+                                    : (activeOpsCol._selected.heartbeat || "").indexOf("overdue") === 0
+                                      ? Theme.status.warning
+                                      : Theme.color.text.muted
+                        }
+                        KeyStat {
+                            Layout.fillWidth: true
+                            k: "Lock"
+                            v: (activeOpsCol._selected.runnerLock || "—").toUpperCase()
+                        }
+                        KeyStat {
+                            Layout.fillWidth: true
+                            k: "Stop Req."
+                            v: activeOpsCol._selected.stopRequested ? "YES" : "NO"
+                            vColor: activeOpsCol._selected.stopRequested
+                                    ? Theme.status.warning
+                                    : Theme.color.text.secondary
+                        }
+                        KeyStat {
+                            Layout.fillWidth: true
+                            k: "Session Age"
+                            v: activeOpsCol._selected.sessionAge || "—"
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        visible: ActiveOpsState.runners.length > 0
+                        text: activeOpsCol._selected.lastEval
+                              ? "last eval " + root.shortTime(activeOpsCol._selected.lastEval)
+                              : "no evaluations recorded"
+                        color: Theme.color.text.muted
+                        font.family:    Theme.typography.body.sm.family
+                        font.pixelSize: Theme.typography.body.sm.size
+                        font.italic:    true
                     }
                 }
             }
 
-            // Hairline below hero
             Rectangle { width: parent.width; height: 1; color: Theme.color.border.regular }
 
-            // ============================================================
-            // BODY — 3-column layout
-            // ============================================================
+            // ========================================================
+            // ROW 2 — IV Risk Throughput · V Strategy Attention · VI Market Tape
+            // ========================================================
             RowLayout {
                 width: parent.width
                 spacing: Theme.space[6]
 
-                // ============= LEFT COLUMN =============
+                // ---- IV · RISK LAYER THROUGHPUT -------------------
                 Column {
+                    id: throughputCol
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
-                    spacing: Theme.space[6]
+                    spacing: Theme.space[3]
 
-                    // -- A. STRATEGY LADDER --
-                    Column {
+                    readonly property var stages: RiskThroughputState.bySlice[root.throughputSlice] || []
+                    readonly property var _stageGloss: ({
+                        "Evaluations":     "gate inputs",
+                        "Signals":         "raised",
+                        "Orders Proposed": "pre-risk",
+                        "Risk-Approved":   "passed gate",
+                        "Rejected":        "blocked",
+                        "Submitted":       "sent to broker",
+                        "Filled":          "executed"
+                    })
+
+                    SectionHeader { width: parent.width; numeral: "IV"; title: "Risk Layer Throughput" }
+                    Standfirst { text: "how work moved through the risk gate, stage by stage" }
+
+                    SegmentedToggle {
                         width: parent.width
-                        spacing: Theme.space[3]
-
-                        SectionLabel {
-                            id: ladderHead
-                            letter: "A."
-                            name: "Strategy Ladder"
-                            meta: root.strategyTotal + " configs"
-                        }
-                        Text {
-                            text: "how the bench stacks today, by promotion stage"
-                            color: Theme.color.text.secondary
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                        }
-
-                        // Ladder rows
-                        Column {
-                            width: parent.width
-                            spacing: Theme.space[3]
-
-                            Repeater {
-                                model: root.stageRows
-                                delegate: Column {
-                                    width: parent.width
-                                    spacing: 4
-
-                                    Item {
-                                        width: parent.width
-                                        height: 22
-
-                                        Row {
-                                            spacing: Theme.space[2]
-                                            anchors.left: parent.left
-                                            anchors.verticalCenter: parent.verticalCenter
-
-                                            Text {
-                                                text: modelData.tick
-                                                color: Theme.color.text.muted
-                                                font.family:    Theme.typography.display.sm.family
-                                                font.pixelSize: Theme.typography.data.sm.size
-                                                font.italic:    true
-                                                width: 22
-                                            }
-                                            Text {
-                                                text: modelData.name
-                                                color: Theme.color.text.primary
-                                                font.family:        Theme.typography.label.xs.family
-                                                font.pixelSize:     Theme.typography.label.xs.size
-                                                font.weight:        Font.DemiBold
-                                                font.letterSpacing: 1.6
-                                                font.capitalization: Font.AllUppercase
-                                            }
-                                            Text {
-                                                text: "— " + modelData.deck
-                                                color: Theme.color.text.secondary
-                                                font.family: Theme.typography.body.md.family
-                                                font.pixelSize: Theme.typography.body.sm.size
-                                                font.italic: true
-                                            }
-                                        }
-                                        Row {
-                                            spacing: Theme.space[3]
-                                            anchors.right: parent.right
-                                            anchors.verticalCenter: parent.verticalCenter
-
-                                            Text {
-                                                visible: modelData.running > 0
-                                                text: modelData.running + " running"
-                                                color: Theme.color.text.muted
-                                                font.family:    Theme.typography.body.md.family
-                                                font.pixelSize: Theme.typography.body.sm.size
-                                                font.italic:    true
-                                            }
-                                            Text {
-                                                visible: modelData.running === 0
-                                                text: "idle"
-                                                color: Theme.color.text.muted
-                                                font.family: Theme.typography.body.md.family
-                                                font.pixelSize: Theme.typography.body.sm.size
-                                                font.italic: true
-                                            }
-                                            Text {
-                                                text: ("0" + modelData.strategyCount).slice(-2)
-                                                color: Theme.color.text.primary
-                                                font.family:    Theme.typography.data.md.family
-                                                font.pixelSize: Theme.typography.data.md.size
-                                                font.features:  Theme.typography.data.md.features
-                                            }
-                                        }
-                                    }
-
-                                    // Stage fill bar
-                                    Item {
-                                        width: parent.width; height: 3
-                                        Rectangle {
-                                            anchors.fill: parent
-                                            color: Theme.color.border.subtle
-                                        }
-                                        Rectangle {
-                                            anchors.left:   parent.left
-                                            anchors.top:    parent.top
-                                            anchors.bottom: parent.bottom
-                                            width: parent.width * modelData.fillPct
-                                            color: modelData.fillPct >= 1.0 ? Theme.color.brand.accent
-                                                  : modelData.fillPct > 0   ? Theme.color.brand.primary
-                                                                            : "transparent"
-                                            opacity: 0.55
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        options: root.sliceOptions
+                        current: root.throughputSlice
+                        onActivated: function(value) { root.throughputSlice = value }
                     }
 
-                    // -- B. SYSTEM & RISK --
+                    SectionStatus {
+                        status: RiskThroughputState.dataStatus
+                        errorMessage: RiskThroughputState.dataErrorMessage
+                        hasData: RiskThroughputState.lastRefreshedAt !== ""
+                    }
+
                     Column {
                         width: parent.width
-                        spacing: Theme.space[3]
-                        topPadding: Theme.space[3]
+                        spacing: Theme.space[2]
+                        visible: RiskThroughputState.dataStatus !== "error"
 
-                        SectionLabel { letter: "B."; name: "System & Risk" }
-                        Text {
-                            text: "resource ledger and the day's risk envelope"
-                            color: Theme.color.text.secondary
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                        }
-
-                        GridLayout {
-                            width: parent.width
-                            columns: 2
-                            rowSpacing:    Theme.space[3]
-                            columnSpacing: Theme.space[6]
-
-                            Repeater {
-                                model: [
-                                    { l: "Risk Mode",    v: root.deskSystem.riskMode || OperationalState.tradingMode, u: "", available: true },
-                                    { l: "Database",     v: root.deskSystem.dbPresent ? "present" : "not found", u: "", available: true },
-                                    { l: "Feed Latency", v: root.deskSystem.feedLatency && root.deskSystem.feedLatency !== "n/a" ? root.deskSystem.feedLatency : "not wired", u: "", available: false },
-                                    { l: "Capital Deployed", v: root.deskSystem.capitalDeployed && root.deskSystem.capitalDeployed !== "n/a" ? root.deskSystem.capitalDeployed : "not wired", u: "", available: false },
-                                    { l: "Drawdown",     v: root.deskSystem.drawdown && root.deskSystem.drawdown !== "n/a" ? root.deskSystem.drawdown : "not wired", u: "", available: false }
-                                ]
-                                delegate: Column {
-                                    Layout.fillWidth: true
-                                    spacing: 2
-                                    Text {
-                                        text: modelData.l
-                                        color: Theme.color.text.muted
-                                        font.family:        Theme.typography.label.xs.family
-                                        font.pixelSize:     Theme.typography.label.xs.size
-                                        font.weight:        Theme.typography.label.xs.weight
-                                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                        font.capitalization: Font.AllUppercase
-                                    }
-                                    Row {
-                                        spacing: 4
-                                        Text {
-                                            text: modelData.v
-                                            color: modelData.available
-                                                   ? (modelData.l === "Drawdown" ? Theme.status.negative : Theme.color.text.primary)
-                                                   : Theme.color.text.secondary
-                                            font.family:    Theme.typography.data.md.family
-                                            font.pixelSize: modelData.available ? Theme.typography.data.md.size + 1
-                                                                                : Theme.typography.data.sm.size
-                                            font.features:  Theme.typography.data.md.features
-                                        }
-                                        Text {
-                                            visible: modelData.u !== ""
-                                            text: modelData.u
-                                            color: Theme.color.text.muted
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                            anchors.bottom: parent.bottom
-                                        }
-                                    }
-                                }
+                        Repeater {
+                            model: throughputCol.stages
+                            delegate: FunnelRow {
+                                width: parent.width
+                                label: modelData.label
+                                gloss: throughputCol._stageGloss[modelData.label] || ""
+                                value: String(modelData.value)
                             }
                         }
                     }
@@ -832,221 +707,105 @@ Item {
                     color: Theme.color.border.subtle
                 }
 
-                // ============= CENTER COLUMN =============
+                // ---- V · STRATEGY ATTENTION -----------------------
                 Column {
+                    id: attentionCol
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
-                    spacing: Theme.space[6]
+                    spacing: Theme.space[3]
 
-                    // -- C. PROMOTION QUEUE --
-                    Column {
+                    readonly property var rollups: AttentionState.rollups
+
+                    SectionHeader { width: parent.width; numeral: "V"; title: "Strategy Attention" }
+                    Standfirst { text: "strategies that need an operator's eye, by reason" }
+
+                    SectionStatus {
+                        status: AttentionState.dataStatus
+                        errorMessage: AttentionState.dataErrorMessage
+                        hasData: AttentionState.lastRefreshedAt !== ""
+                    }
+
+                    GridLayout {
                         width: parent.width
-                        spacing: Theme.space[3]
+                        visible: AttentionState.dataStatus !== "error"
+                        columns: 3
+                        rowSpacing:    Theme.space[5]
+                        columnSpacing: Theme.space[5]
 
-                        SectionLabel {
-                            id: pqHead
-                            letter: "C."
-                            name: "Promotion Queue"
-                            meta: root.queueRows.length + " ready"
+                        RollupCell {
+                            Layout.fillWidth: true
+                            label: "Running Now"
+                            value: String(attentionCol.rollups.runningNow || 0)
+                            tone: "brand"
                         }
-                        Text {
-                            text: "strategies whose gates have passed and now wait at the next stage's door"
-                            color: Theme.color.text.secondary
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                            wrapMode: Text.WordWrap
-                            width: parent.width
+                        RollupCell {
+                            Layout.fillWidth: true
+                            label: "Paper Testing"
+                            value: String(attentionCol.rollups.paperTesting || 0)
+                            tone: "brand"
                         }
-
-                        Repeater {
-                            model: root.queueRows
-                            delegate: Column {
-                                width: parent.width
-                                bottomPadding: Theme.space[3]
-
-                                Rectangle { width: parent.width; height: 1; color: Theme.color.border.subtle }
-
-                                RowLayout {
-                                    width: parent.width
-                                    height: Math.max(queueText.implicitHeight, transitionRow.implicitHeight, readyText.implicitHeight) + Theme.space[4]
-                                    spacing: Theme.space[3]
-
-                                    Column {
-                                        id: queueText
-                                        Layout.fillWidth: true
-                                        Layout.minimumWidth: 160
-                                        Layout.alignment: Qt.AlignVCenter
-                                        spacing: 2
-                                        Text {
-                                            width: parent.width
-                                            text: modelData.name
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.md.size + 1
-                                            font.weight:    Font.Medium
-                                            elide: Text.ElideRight
-                                        }
-                                        Text {
-                                            width: parent.width
-                                            text: modelData.note
-                                            color: Theme.color.text.secondary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                            elide: Text.ElideRight
-                                        }
-                                    }
-
-                                    Row {
-                                        id: transitionRow
-                                        Layout.preferredWidth: 120
-                                        Layout.alignment: Qt.AlignVCenter
-                                        spacing: Theme.space[1]
-                                        Text {
-                                            text: modelData.from
-                                            color: Theme.color.text.secondary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                        }
-                                        Text {
-                                            text: "\u2192"
-                                            color: Theme.color.text.muted
-                                        }
-                                        Text {
-                                            text: modelData.to
-                                            color: Theme.color.text.primary
-                                            font.family:    Theme.typography.body.md.family
-                                            font.pixelSize: Theme.typography.body.sm.size
-                                            font.italic:    true
-                                        }
-                                    }
-
-                                    Column {
-                                        Layout.preferredWidth: 78
-                                        Layout.alignment: Qt.AlignVCenter
-                                        spacing: 2
-                                        Text {
-                                            id: readyText
-                                            width: parent.width
-                                            text: "ready " + modelData.days
-                                            color: Theme.color.text.muted
-                                            font.family:    Theme.typography.data.sm.family
-                                            font.pixelSize: Theme.typography.data.sm.size
-                                            font.features:  Theme.typography.data.sm.features
-                                            horizontalAlignment: Text.AlignRight
-                                        }
-                                    }
-                                }
-
-                            }
+                        RollupCell {
+                            Layout.fillWidth: true
+                            label: "Backtest Only"
+                            value: String(attentionCol.rollups.backtestOnly || 0)
+                            tone: "muted"
                         }
-
-                        Text {
-                            visible: root.queueRows.length === 0
-                            width: parent.width
-                            text: "No strategies are waiting at the next gate."
-                            color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                            wrapMode: Text.WordWrap
+                        RollupCell {
+                            Layout.fillWidth: true
+                            label: "Needs Review"
+                            value: String(attentionCol.rollups.needsReview || 0)
+                            tone: Number(attentionCol.rollups.needsReview || 0) > 0 ? "warning" : "muted"
+                        }
+                        RollupCell {
+                            Layout.fillWidth: true
+                            label: "Underperforming"
+                            value: String(attentionCol.rollups.underperforming || 0)
+                            tone: Number(attentionCol.rollups.underperforming || 0) > 0 ? "negative" : "muted"
                         }
                     }
 
-                    // -- D. RUNNERS --
+                    Rectangle {
+                        width: parent.width
+                        height: 1
+                        color: Theme.color.border.subtle
+                        visible: AttentionState.driftList.length > 0
+                    }
+
                     Column {
                         width: parent.width
-                        spacing: Theme.space[3]
-
-                        SectionLabel {
-                            id: runHead
-                            letter: "D."
-                            name: "Runners"
-                            meta: root.runnerRows.length + " observed"
-                        }
-                        Text {
-                            text: "processes alive in the current session"
-                            color: Theme.color.text.secondary
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                        }
+                        spacing: Theme.space[2]
+                        visible: AttentionState.driftList.length > 0
 
                         Repeater {
-                            model: root.runnerRows
-                            delegate: Item {
+                            model: AttentionState.driftList
+                            delegate: RowLayout {
                                 width: parent.width
-                                height: 22
-
-                                Row {
-                                    spacing: Theme.space[3]
-                                    anchors.left: parent.left
-                                    anchors.verticalCenter: parent.verticalCenter
-
-                                    Text {
-                                        // Short integer run id (e.g. "1234") —
-                                        // the read model maps strategy_runs.id
-                                        // here, not the UUID-like session_id.
-                                        text: modelData.pid
-                                        color: Theme.color.text.muted
-                                        font.family:    Theme.typography.data.sm.family
-                                        font.pixelSize: Theme.typography.data.sm.size
-                                        font.features:  Theme.typography.data.sm.features
-                                        width: 40
-                                        horizontalAlignment: Text.AlignRight
-                                        elide: Text.ElideRight
-                                        clip: true
-                                    }
-                                    Text {
-                                        text: modelData.name
-                                        color: Theme.color.text.primary
-                                        font.family:    Theme.typography.body.md.family
-                                        font.pixelSize: Theme.typography.body.sm.size
-                                        font.weight:    Font.Medium
-                                    }
-                                    // Mid-line `· detail` removed (PR #126):
-                                    // it duplicated the right-aligned status
-                                    // pill (controlled_stop ≈ STOPPED). The
-                                    // right-aligned pill is now the single
-                                    // authoritative status reading per row.
+                                spacing: Theme.space[3]
+                                Text {
+                                    Layout.preferredWidth: 160
+                                    text: modelData.name
+                                    color: Theme.color.text.primary
+                                    font.family:    Theme.typography.body.sm.family
+                                    font.pixelSize: Theme.typography.body.sm.size
+                                    font.weight:    Font.Medium
+                                    elide: Text.ElideRight
                                 }
-                                Row {
-                                    spacing: 4
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-
-                                    Rectangle {
-                                        width: 6; height: 6; radius: 3
-                                        color: modelData.state === "running" ? Theme.status.positive : Theme.status.warning
-                                        anchors.verticalCenter: parent.verticalCenter
-                                    }
-                                    Text {
-                                        text: modelData.state.toUpperCase()
-                                        color: modelData.state === "running" ? Theme.status.positive : Theme.status.warning
-                                        font.family:        Theme.typography.label.xs.family
-                                        font.pixelSize:     Theme.typography.label.xs.size
-                                        font.weight:        Font.DemiBold
-                                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                                    }
+                                Text {
+                                    Layout.fillWidth: true
+                                    text: modelData.note
+                                    color: modelData.tone === "warn"
+                                           ? Theme.status.warning
+                                           : Theme.color.text.secondary
+                                    font.family:    Theme.typography.body.sm.family
+                                    font.pixelSize: Theme.typography.body.sm.size
+                                    font.italic:    true
+                                    elide: Text.ElideRight
                                 }
                             }
                         }
-
-                        Text {
-                            visible: root.runnerRows.length === 0
-                            width: parent.width
-                            text: "No strategy-run sessions are active in the event store."
-                            color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                            wrapMode: Text.WordWrap
-                        }
                     }
-
                 }
 
                 Rectangle {
@@ -1055,271 +814,138 @@ Item {
                     color: Theme.color.border.subtle
                 }
 
-                // ============= RIGHT COLUMN =============
+                // ---- VI · MARKET TAPE -----------------------------
                 Column {
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
+                    Layout.preferredHeight: implicitHeight
                     Layout.alignment: Qt.AlignTop
-                    spacing: Theme.space[6]
+                    spacing: Theme.space[3]
 
-                    // -- F. TODAY'S TAPE --
-                    Column {
+                    SectionHeader {
                         width: parent.width
-                        spacing: Theme.space[3]
-
-                        SectionLabel { letter: "F."; name: "Today's Tape" }
+                        numeral: "VI"
+                        title: "Market Tape"
                         Text {
-                            text: root.tapeRows.length === 0
-                                  ? "instrument status for the market-data feed"
-                                  : "major indices, rates, vol — reading the wider weather"
-                            color: Theme.color.text.secondary
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                            wrapMode: Text.WordWrap
-                            width: parent.width
-                        }
-
-                        Repeater {
-                            model: root.tapeRows
-                            delegate: Item {
-                                width: parent.width
-                                height: 24
-
-                                Row {
-                                    anchors.fill: parent
-                                    spacing: Theme.space[2]
-
-                                    Text {
-                                        text: modelData.sym
-                                        color: Theme.color.text.primary
-                                        font.family:    Theme.typography.data.md.family
-                                        font.pixelSize: Theme.typography.data.md.size
-                                        font.features:  Theme.typography.data.md.features
-                                        font.weight:    Font.Medium
-                                        width: 44
-                                        anchors.verticalCenter: parent.verticalCenter
-                                    }
-                                    Text {
-                                        text: modelData.name
-                                        color: Theme.color.text.muted
-                                        font.family: Theme.typography.body.md.family
-                                        font.pixelSize: Theme.typography.body.sm.size
-                                        font.italic: true
-                                        anchors.verticalCenter: parent.verticalCenter
-                                    }
-                                }
-                                Row {
-                                    anchors.right: parent.right
-                                    anchors.verticalCenter: parent.verticalCenter
-                                    spacing: Theme.space[3]
-
-                                    Text {
-                                        text: modelData.last
-                                        color: Theme.color.text.primary
-                                        font.family:    Theme.typography.data.md.family
-                                        font.pixelSize: Theme.typography.data.md.size
-                                        font.features:  Theme.typography.data.md.features
-                                    }
-                                    Text {
-                                        text: modelData.pct
-                                        color: modelData.up ? Theme.status.positive : Theme.status.negative
-                                        font.family:    Theme.typography.data.md.family
-                                        font.pixelSize: Theme.typography.data.md.size
-                                        font.features:  Theme.typography.data.md.features
-                                        width: 60
-                                        horizontalAlignment: Text.AlignRight
-                                    }
-                                }
-                            }
-                        }
-
-                        Column {
-                            visible: root.tapeRows.length === 0
-                            width: parent.width
-                            spacing: Theme.space[2]
-
-                            Repeater {
-                                model: [
-                                    { l: "Market tape", v: "awaits data-feed read model" },
-                                    { l: "Portfolio snapshot", v: root.liveSnapshot.lastRefreshedAt ? "ready" : "pending" },
-                                    { l: "Broker state", v: OperationalState.brokerStatus }
-                                ]
-                                delegate: RowLayout {
-                                    width: parent.width
-                                    spacing: Theme.space[3]
-
-                                    Text {
-                                        text: modelData.l
-                                        color: Theme.color.text.secondary
-                                        font.family:    Theme.typography.body.md.family
-                                        font.pixelSize: Theme.typography.body.sm.size
-                                        Layout.fillWidth: true
-                                    }
-                                    Text {
-                                        text: modelData.v
-                                        color: Theme.color.text.muted
-                                        font.family:    Theme.typography.data.sm.family
-                                        font.pixelSize: Theme.typography.data.sm.size
-                                        font.features:  Theme.typography.data.sm.features
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // -- G. SECTOR HEAT --
-                    Column {
-                        width: parent.width
-                        spacing: Theme.space[3]
-                        topPadding: Theme.space[3]
-
-                        SectionLabel { letter: "G."; name: "Sector Heat" }
-                        Text {
-                            width: parent.width
-                            text: "Sector heatmap — not wired"
+                            text: MarketTapeState.lastRefreshedAt !== ""
+                                  ? "as of " + root.shortTime(MarketTapeState.lastRefreshedAt)
+                                  : ""
                             color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-
-                    // -- H. TODAY'S CALENDAR --
-                    Column {
-                        width: parent.width
-                        spacing: Theme.space[3]
-                        topPadding: Theme.space[3]
-
-                        SectionLabel { letter: "H."; name: "Today's Calendar" }
-                        Text {
-                            width: parent.width
-                            text: "Economic calendar — not wired"
-                            color: Theme.color.text.muted
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.sm.size
-                            font.italic:    true
-                            wrapMode: Text.WordWrap
-                        }
-                    }
-                }
-            }
-
-            // ============================================================
-            // FULL-WIDTH EVENT TICKER
-            // ============================================================
-            Column {
-                width: parent.width
-                spacing: Theme.space[3]
-
-                Rectangle { width: parent.width; height: 1; color: Theme.color.border.regular }
-
-                SectionLabel { letter: "E."; name: "Event Ticker" }
-                Text {
-                    text: "last hour's traffic — trades, runs, warnings"
-                    color: Theme.color.text.secondary
-                    font.family:    Theme.typography.body.md.family
-                    font.pixelSize: Theme.typography.body.sm.size
-                    font.italic:    true
-                }
-
-                Repeater {
-                    model: root.eventRows
-                    delegate: RowLayout {
-                        width: parent.width
-                        height: Math.max(eventCopy.implicitHeight, kindBadge.implicitHeight, eventTime.implicitHeight) + Theme.space[2]
-                        spacing: Theme.space[3]
-
-                        Text {
-                            id: eventTime
-                            text: modelData.ts
-                            color: Theme.color.text.secondary
                             font.family:    Theme.typography.data.sm.family
                             font.pixelSize: Theme.typography.data.sm.size
                             font.features:  Theme.typography.data.sm.features
-                            Layout.preferredWidth: 64
-                            Layout.alignment: Qt.AlignVCenter
                         }
+                    }
+                    Standfirst { text: "instrument status for the market-data feed" }
 
-                        Rectangle {
-                            id: kindBadge
-                            Layout.preferredWidth: kindLabelFull.implicitWidth + Theme.space[2]
-                            Layout.preferredHeight: kindLabelFull.implicitHeight + 2
-                            Layout.alignment: Qt.AlignVCenter
-                            color: "transparent"
-                            border.color: modelData.kind === "WARN"      ? Theme.status.warning
-                                        : modelData.kind === "TRADE"     ? Theme.color.brand.accent
-                                        : modelData.kind === "RUN"       ? Theme.status.info
-                                        : modelData.kind === "PROMOTED"  ? Theme.status.positive
-                                        : modelData.kind === "DEMOTED"   ? Theme.status.negative
-                                        : modelData.kind === "TRIGGERED" ? Theme.status.negative
-                                        : modelData.kind === "RESET"     ? Theme.status.info
-                                        : Theme.color.border.regular
-                            border.width: 1
-                            radius: Theme.radius.sm
+                    SectionStatus {
+                        status: MarketTapeState.dataStatus
+                        errorMessage: MarketTapeState.dataErrorMessage
+                        hasData: MarketTapeState.rows.length > 0
+                    }
 
-                            Text {
-                                id: kindLabelFull
-                                anchors.centerIn: parent
-                                text: modelData.kind
-                                color: modelData.kind === "WARN"      ? Theme.status.warning
-                                     : modelData.kind === "TRADE"     ? Theme.color.brand.accent
-                                     : modelData.kind === "RUN"       ? Theme.status.info
-                                     : modelData.kind === "PROMOTED"  ? Theme.status.positive
-                                     : modelData.kind === "DEMOTED"   ? Theme.status.negative
-                                     : modelData.kind === "TRIGGERED" ? Theme.status.negative
-                                     : modelData.kind === "RESET"     ? Theme.status.info
-                                     : Theme.color.text.muted
-                                font.family:        Theme.typography.label.xs.family
-                                font.pixelSize:     Theme.typography.label.xs.size - 1
-                                font.weight:        Font.DemiBold
-                                font.letterSpacing: 0.6
-                            }
-                        }
+                    Column {
+                        width: parent.width
+                        spacing: 0
+                        visible: MarketTapeState.dataStatus !== "error"
 
-                        Column {
-                            id: eventCopy
-                            Layout.fillWidth: true
-                            Layout.alignment: Qt.AlignVCenter
-                            spacing: 2
-
-                            Text {
+                        Repeater {
+                            model: MarketTapeState.rows
+                            delegate: TapeRow {
                                 width: parent.width
-                                text: (modelData.subject || "") + " " + (modelData.transition || "")
-                                color: Theme.color.text.primary
-                                font.family:    Theme.typography.data.sm.family
-                                font.pixelSize: Theme.typography.data.sm.size
-                                font.features:  Theme.typography.data.sm.features
-                                elide: Text.ElideRight
-                            }
-                            Text {
-                                width: parent.width
-                                text: root.eventDetailText(modelData)
-                                color: Theme.color.text.secondary
-                                font.family:    Theme.typography.body.md.family
-                                font.pixelSize: Theme.typography.body.sm.size
-                                wrapMode: Text.WordWrap
-                                maximumLineCount: 1
-                                elide: Text.ElideRight
+                                symbol: modelData.symbol
+                                close: modelData.close !== null && modelData.close !== undefined
+                                       ? Number(modelData.close).toLocaleString(Qt.locale("en_US"), "f", 2)
+                                       : "—"
+                                pctChange: root.fmtPct(modelData.pctChange)
+                                asOf: modelData.asOf ? String(modelData.asOf) : "—"
                             }
                         }
                     }
                 }
+            }
 
-                Text {
-                    visible: root.eventRows.length === 0
+            Rectangle { width: parent.width; height: 1; color: Theme.color.border.regular }
+
+            // ========================================================
+            // VII · ORDER / SIGNAL TAPE (full-width)
+            // ========================================================
+            Column {
+                id: feedCol
+                width: parent.width
+                spacing: Theme.space[3]
+
+                property string feedFilter: "All"
+
+                readonly property var _filterOptions: [
+                    { label: "All",        value: "All" },
+                    { label: "Orders",     value: "order" },
+                    { label: "Rejections", value: "rejection" },
+                    { label: "Signals",    value: "signal" },
+                    { label: "Fills",      value: "fill" }
+                ]
+
+                // Normalize ActivityFeedState rows {time,strategy,kind,detail,
+                // symbol,tone} → ActivityTable shape {ts,kind,subject,detail,
+                // tone}. Presentational mapping only; no query logic.
+                readonly property var _tableRows: {
+                    var src = ActivityFeedState.rows
+                    var out = []
+                    for (var i = 0; i < src.length; i++) {
+                        var r = src[i]
+                        out.push({
+                            ts: root.shortTime(r.time),
+                            kind: r.kind,
+                            subject: (r.strategy || "") + (r.symbol ? " · " + r.symbol : ""),
+                            detail: r.detail || "",
+                            tone: r.tone || "data"
+                        })
+                    }
+                    return out
+                }
+
+                SectionHeader {
                     width: parent.width
-                    text: "No material events recorded in the current desk snapshot."
-                    color: Theme.color.text.muted
-                    font.family:    Theme.typography.body.md.family
-                    font.pixelSize: Theme.typography.body.sm.size
-                    font.italic:    true
-                    wrapMode: Text.WordWrap
+                    numeral: "VII"
+                    title: "Order / Signal Tape"
+                    Text {
+                        text: ActivityFeedState.rows.length > 0
+                              ? ActivityFeedState.rows.length + " events"
+                              : ""
+                        color: Theme.color.text.muted
+                        font.family:    Theme.typography.data.sm.family
+                        font.pixelSize: Theme.typography.data.sm.size
+                        font.features:  Theme.typography.data.sm.features
+                    }
+                }
+                Standfirst { text: "the chronological record of orders, signals, and fills" }
+
+                SegmentedToggle {
+                    options: feedCol._filterOptions
+                    current: feedCol.feedFilter
+                    onActivated: function(value) { feedCol.feedFilter = value }
+                }
+
+                SectionStatus {
+                    status: ActivityFeedState.dataStatus
+                    errorMessage: ActivityFeedState.dataErrorMessage
+                    hasData: ActivityFeedState.rows.length > 0
+                }
+
+                ActivityTable {
+                    width: parent.width
+                    height: Theme.space[7] * 10
+                    visible: ActivityFeedState.dataStatus !== "error"
+                    rows: feedCol._tableRows
+                    // kindFilter drives the category toggle: "All" → "" (show
+                    // all kinds); other values are exact kind tokens that must
+                    // equal the row's kind field — no substring false-positives.
+                    kindFilter: feedCol.feedFilter === "All" ? "" : feedCol.feedFilter
+                    // filter is reserved for free-text search; leave empty by default.
+                    filter: ""
                 }
             }
 
-            // Bottom padding
             Item { width: parent.width; height: Theme.space[7] }
         }
     }

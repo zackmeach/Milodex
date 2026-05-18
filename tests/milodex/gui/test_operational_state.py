@@ -442,6 +442,46 @@ def test_reset_kill_switch_token_constant_value_is_canonical() -> None:
     assert RESET_KILL_SWITCH_TOKEN == "CONFIRM"
 
 
+# ---------------------------------------------------------------------------
+# daily_pnl — pure-logic and Qt tests
+# ---------------------------------------------------------------------------
+
+
+def test_account_snapshot_includes_daily_pnl() -> None:
+    from types import SimpleNamespace
+
+    from milodex.gui.operational_state import _account_to_snapshot
+
+    acct = SimpleNamespace(equity=1000.0, cash=500.0, buying_power=500.0, daily_pnl=12.34)
+    snap = _account_to_snapshot(account=acct, market_open=True, positions=[])
+    assert snap["daily_pnl"] == 12.34
+
+
+@_skip_no_qt
+def test_daily_pnl_updates_from_broker_poll(qapp) -> None:
+    """A successful broker poll populates dailyPnl from AccountInfo.daily_pnl."""
+    _ = qapp
+    from milodex.broker.models import AccountInfo
+
+    broker = MagicMock()
+    broker.get_account.return_value = AccountInfo(
+        equity=1000.0,
+        cash=400.0,
+        buying_power=800.0,
+        portfolio_value=1000.0,
+        daily_pnl=42.50,
+    )
+    broker.is_market_open.return_value = True
+    broker.get_positions.return_value = []
+    factory = MagicMock(return_value=broker)
+    state = _make_state(factory=factory)
+
+    state._kick_broker_poll()  # noqa: SLF001
+    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+
+    assert state.dailyPnl == 42.50  # noqa: N815
+
+
 @_skip_no_qt
 @pytest.mark.parametrize(
     "token",

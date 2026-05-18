@@ -229,6 +229,15 @@ class AdvisoryLock:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.release()
 
+    def current_holder(self) -> LockHolder | None:
+        """Read the current lock holder without acquiring or mutating anything.
+
+        Pure read-only inspection surface for observers (e.g. the dashboard).
+        Returns the same value as the internal stale-detection read; never
+        creates, refreshes, or releases the lock.
+        """
+        return self._read_holder()
+
     def _lock_is_past_max_age(self) -> bool:
         """Return ``True`` if the lock file is older than the stale threshold.
 

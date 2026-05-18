@@ -78,3 +78,6 @@ html/
 
 # Generated screenshot artifacts (headless capture tooling, see scripts/capture_gui_screenshots.py)
 artifacts/
+
+# Git worktrees (subagent-driven development)
+.worktrees/

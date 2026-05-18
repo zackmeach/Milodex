@@ -251,7 +251,7 @@ def _query_bank(db_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any
 
     Extracted as a module-level helper so it is testable without Qt.
     """
-    conn = sqlite3.connect(str(db_path))
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         paper = _fetch_paper(conn)
