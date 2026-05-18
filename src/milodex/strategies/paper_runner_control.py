@@ -72,10 +72,44 @@ class PaperRunnerControl:
         locks_dir: Path,
         python_executable: str | None = None,
         cwd: Path | None = None,
+        log_dir: Path | None = None,
     ) -> None:
         self._locks_dir = Path(locks_dir)
         self._python_executable = python_executable or sys.executable
         self._cwd = Path(cwd) if cwd is not None else None
+        self._log_dir = Path(log_dir) if log_dir is not None else None
+
+    def _runner_log_path(self, strategy_id: str) -> Path | None:
+        """Return the per-runner log file path, or ``None`` if unconfigured.
+
+        When no ``log_dir`` was supplied the child's stdio is discarded
+        (legacy ``DEVNULL`` behaviour). When configured, every launch gets
+        its own timestamped file so an early crash (e.g. wrong-interpreter
+        ``ImportError``) is recoverable instead of silently lost.
+        """
+        if self._log_dir is None:
+            return None
+        timestamp = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%S")
+        return self._log_dir / f"runner.{strategy_id}.{timestamp}.log"
+
+    @staticmethod
+    def _open_runner_stdio(
+        log_path: Path | None,
+    ) -> tuple[Any, Any, Any]:
+        """Resolve the child's stdout/stderr targets.
+
+        Returns ``(stdout, stderr, handle_to_close)``. When ``log_path`` is
+        ``None`` the child's output is discarded (legacy behaviour). When a
+        path is given, stdout and stderr are merged into that file so a
+        detached runner's early failure is no longer invisible. The caller
+        owns ``handle_to_close`` and must close it once the child has
+        inherited its own descriptor.
+        """
+        if log_path is None:
+            return subprocess.DEVNULL, subprocess.DEVNULL, None
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = log_path.open("a", encoding="utf-8")  # noqa: SIM115 - closed by caller
+        return handle, subprocess.STDOUT, handle
 
     def start(self, strategy_id: str) -> PaperRunnerStartResult:
         """Launch ``milodex strategy run`` for ``strategy_id`` asynchronously."""
@@ -90,10 +124,12 @@ class PaperRunnerControl:
             "run",
             strategy_id,
         )
+        log_path = self._runner_log_path(strategy_id)
+        stdout, stderr, log_handle = self._open_runner_stdio(log_path)
         popen_kwargs: dict[str, Any] = {
             "stdin": subprocess.DEVNULL,
-            "stdout": subprocess.DEVNULL,
-            "stderr": subprocess.DEVNULL,
+            "stdout": stdout,
+            "stderr": stderr,
         }
         if self._cwd is not None:
             popen_kwargs["cwd"] = str(self._cwd)
@@ -107,7 +143,13 @@ class PaperRunnerControl:
         else:
             popen_kwargs["start_new_session"] = True
 
-        process = subprocess.Popen(command, **popen_kwargs)  # noqa: S603
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)  # noqa: S603
+        finally:
+            # The child has dup'd its own descriptor; release our handle so
+            # the file is not held open by the (long-lived) GUI process.
+            if log_handle is not None:
+                log_handle.close()
         return PaperRunnerStartResult(
             strategy_id=strategy_id,
             pid=int(process.pid),
