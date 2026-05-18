@@ -100,8 +100,6 @@ def test_section_headers_have_editorial_primitives() -> None:
     _run(script, "SectionHeader editorial-primitive presence")
 
 
-# TODO(Task 3): remove xfail once FunnelRow is rebodied
-@pytest.mark.xfail(reason="FunnelRow bar removed in Task 3", strict=True)
 @_skip_no_qt
 def test_no_foreign_chrome_idioms() -> None:
     """No SegmentedToggle may contain ANY Rectangle descendant, and no
@@ -539,8 +537,8 @@ Item {{
         anchors.top: tg.bottom
         width: 400
         label: "Evaluations"
+        gloss: "gate inputs"
         value: "142"
-        proportion: 0.6
     }}
 }}
 """

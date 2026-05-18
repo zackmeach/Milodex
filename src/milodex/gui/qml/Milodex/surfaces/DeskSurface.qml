@@ -643,14 +643,15 @@ Item {
                     spacing: Theme.space[3]
 
                     readonly property var stages: RiskThroughputState.bySlice[root.throughputSlice] || []
-                    readonly property int maxValue: {
-                        var m = 0
-                        for (var i = 0; i < stages.length; i++) {
-                            var v = Number(stages[i].value || 0)
-                            if (v > m) m = v
-                        }
-                        return m
-                    }
+                    readonly property var _stageGloss: ({
+                        "Evaluations":     "gate inputs",
+                        "Signals":         "raised",
+                        "Orders Proposed": "pre-risk",
+                        "Risk-Approved":   "passed gate",
+                        "Rejected":        "blocked",
+                        "Submitted":       "sent to broker",
+                        "Filled":          "executed"
+                    })
 
                     SectionHeader { width: parent.width; numeral: "IV"; title: "Risk Layer Throughput" }
 
@@ -677,10 +678,8 @@ Item {
                             delegate: FunnelRow {
                                 width: parent.width
                                 label: modelData.label
+                                gloss: throughputCol._stageGloss[modelData.label] || ""
                                 value: String(modelData.value)
-                                proportion: throughputCol.maxValue > 0
-                                            ? Number(modelData.value) / throughputCol.maxValue
-                                            : 0
                             }
                         }
                     }

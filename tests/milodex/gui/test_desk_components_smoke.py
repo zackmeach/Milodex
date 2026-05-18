@@ -192,15 +192,15 @@ SegmentedToggle {
 
 @_skip_no_qt
 def test_funnel_row_loads_clean() -> None:
-    """FunnelRow loads with label, value, proportion, zero QML warnings."""
+    """FunnelRow loads with label, gloss, value, zero QML warnings."""
     qml = """
 import QtQuick
 import Milodex 1.0
 
 FunnelRow {
-    label:      "Screened"
-    value:      "142"
-    proportion: 0.71
+    label: "Screened"
+    gloss: "gate inputs"
+    value: "142"
     width: 300
     height: 28
 }
