@@ -72,13 +72,16 @@ Public API of `SectionHeader` is extended only by additive properties
 ### P2 — Italic serif standfirst slot
 
 One italic line directly under every `SectionHeader`. Treatment
-(matches master standfirst, line 326–331):
+transcribes the master **section** standfirst (master:653–659 — *not* the
+page-header standfirst at master:326–331, which is a different, larger
+size; do not confuse them):
 
 - `color: Theme.color.text.secondary`
 - `font.family: Theme.typography.body.md.family`
-- `font.pixelSize: Theme.typography.body.md.size + 1`
+- `font.pixelSize: Theme.typography.body.sm.size`
 - `font.italic: true`
-- `wrapMode: Text.WordWrap`
+- `wrapMode: Text.WordWrap` (additive — master section standfirst does not
+  set it; safe for multi-line, not a fidelity change)
 
 Per-section copy (final, not placeholder):
 
@@ -135,9 +138,18 @@ Rendered as:
 - One `MouseArea` per word; `onClicked` emits `activated(value)` only when
   `value !== current` (preserve existing guard).
 
-This also structurally eliminates the polish-loop defect class (no track /
-`anchors.fill` / child-height-bound-to-positioner geometry remains). The
-existing render-level regression tests stay (§4 G3, §5).
+**Defect-A supersession (read with §5).** `SegmentedToggle`'s current
+one-way-sizing scaffold (`_labelMetrics`, `_widthProbe`, `_segmentsWidth`,
+the positioned-`trackRow` top-down height model) *is* the Defect-A fix. P4
+deletes that scaffold by design — the type-only `Row` of `Text` has no
+positioner⇄`anchors.fill`⇄child-height cycle by construction, so the
+Defect-A class is **structurally moot for this component**, not "preserved
+intact." This is the explicit resolution of the apparent §5 conflict: §5's
+"one-way sizing" preserve clause scopes to the **DeskSurface RowLayout
+`Layout.preferredHeight` contract (Defect-B)**, which P4 does *not* touch.
+The polish-loop / non-zero-height **regression tests stay** (they now guard
+a structurally-immune component, which is fine — a passing guard is not a
+contradiction).
 
 ---
 
@@ -155,9 +167,12 @@ block idiom.)
 **II · Performance & Trust** — `Theme.typography.display.lg.*` serif P/L
 numeral `brand.primary` (negative → `brand.accent`); period switch = P4;
 `DAY %` / `SNAPSHOT` mono pair beneath. Sparkline restyled to a single
-`Theme.color.border.regular` 1px hairline stroke, no fill, no axis.
-Three-state freshness renders via the P2 standfirst slot (text only, no
-badge); **selection logic untouched** (§5).
+`Theme.color.border.regular` 1px hairline stroke, no fill, no axis —
+**invented to the app idiom, not transcribed** (the master `Sparkline`
+usage sets only `showAxis/showGrid/areaAlpha`, never a stroke-colour
+token; this is the same invented-not-transcribed status as P4, and ties to
+the §3 sparkline soft-spot note). Three-state freshness renders via the P2
+standfirst slot (text only, no badge); **selection logic untouched** (§5).
 
 **III · Active Operations** — rows: `name`
 (`Theme.typography.label.xs.*`) + right mono-tnum count;
@@ -205,12 +220,22 @@ literals; (b) opens master `DeskSurface.qml` at the cited lines and confirms
 structural match — serif letter present, hairline present, standfirst
 present, no box/bar. Checklist, not judgement; a Sonnet reviewer suffices.
 
-**G3 — Render-level structural guard.** Existing polish-loop +
-non-zero-section-height tests stay. Add: each `SectionHeader` instance
-exposes an objectName-tagged serif-letter `Text` and a `border.subtle`
-hairline `Rectangle`, asserted present via `QQuickItem` lookup in a
-`QQuickView`+`show()` test. Catches a silently dropped lettermark without a
-human looking. (Asserts structure, not beauty.)
+**G3 — Render-level structural guard (presence *and* absence).** Existing
+polish-loop + non-zero-section-height tests stay. Add two assertion
+classes in a `QQuickView`+`show()` test:
+
+- **Presence:** each `SectionHeader` instance exposes an objectName-tagged
+  serif-letter `Text` and a `border.subtle` hairline `Rectangle`, asserted
+  present via `QQuickItem` lookup. Catches a silently *dropped* lettermark.
+- **Absence:** no `SegmentedToggle` instance contains a background/track
+  `Rectangle` (color binds `surface.*` or has non-zero `radius`/`border`),
+  and no funnel (Section IV) row contains a magnitude-fill `Rectangle`.
+  Catches a silently *retained* foreign idiom — the precise mechanism that
+  produced the original regression (a passing presence-only guard while the
+  boxy pill survived). Without this, G1–G2 + G4 are the only thing standing
+  between a retained pill and ship; G3 must guard both directions.
+
+(Asserts structure, not beauty.)
 
 **G4 — Operator visual sign-off is a named blocking gate.** The plan lists,
 on the integrating PR, an explicit acceptance step: operator runs
@@ -239,9 +264,12 @@ rejected in review):**
 
 - All 6 read-model singletons + `OperationalState.dailyPnl`: no signature,
   query, or threading change.
-- The Defect-A/B layout-mechanics fixes (one-way sizing,
-  `Layout.preferredHeight` contract). P4 removes the polish-loop *cause*;
-  the regression tests remain.
+- **Defect-B** (the new DeskSurface RowLayout `Layout.preferredHeight`
+  height contract) is preserved untouched — P4 does not affect it.
+  **Defect-A** (the `SegmentedToggle` one-way-sizing scaffold) is
+  *superseded*, not preserved: P4's type-only body has no sizing cycle by
+  construction (see §2 P4 "Defect-A supersession"). The polish-loop /
+  non-zero-height regression tests remain green either way.
 - The three-state empty/stale/fresh gating (Section II) and the Section VI
   path-to-log fix: restyle changes their *typography*, never their *logic*
   or the conditions selecting each state.
