@@ -121,6 +121,7 @@ def run_app() -> int:
         get_cache_dir,
         get_data_dir,
         get_locks_dir,
+        get_logs_dir,
         get_trading_mode,
     )
     from milodex.core.event_store import EventStore
@@ -241,7 +242,10 @@ def run_app() -> int:
         get_trading_mode=lambda: trading_mode,
         event_store_factory=get_event_store,
         backtest_engine_factory=get_backtest_engine,
-        paper_runner_control=PaperRunnerControl(locks_dir=get_locks_dir()),
+        paper_runner_control=PaperRunnerControl(
+            locks_dir=get_locks_dir(),
+            log_dir=get_logs_dir(),
+        ),
     )
     bench_command_bridge = BenchCommandBridge(
         bench_command_facade,
