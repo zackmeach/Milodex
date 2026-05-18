@@ -8,7 +8,10 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from milodex.core.advisory_lock import LockHolder
 
 _INTERPRETER_PROBE_TIMEOUT_SECONDS = 15
 
@@ -174,11 +177,35 @@ class PaperRunnerControl:
             )
         return None
 
+    def _existing_live_runner(self, strategy_id: str) -> LockHolder | None:
+        """Return the live advisory-lock holder for ``strategy_id``, if any.
+
+        Read-only: never acquires, refreshes, or releases the lock. A stale
+        lock whose recorded PID is no longer alive is treated as absent so a
+        crashed runner does not permanently block relaunch. Mirrors the
+        liveness semantics ``AdvisoryLock.acquire`` itself uses.
+        """
+        from milodex.core.advisory_lock import AdvisoryLock, _process_exists
+
+        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=self._locks_dir)
+        holder = lock.current_holder()
+        if holder is not None and _process_exists(holder.pid):
+            return holder
+        return None
+
     def start(self, strategy_id: str) -> PaperRunnerStartResult:
         """Launch ``milodex strategy run`` for ``strategy_id`` asynchronously."""
         interpreter_problem = self._verify_interpreter()
         if interpreter_problem is not None:
             raise PaperRunnerLaunchError(interpreter_problem)
+        existing = self._existing_live_runner(strategy_id)
+        if existing is not None:
+            raise PaperRunnerLaunchError(
+                f"A paper runner for {strategy_id!r} is already running "
+                f"(pid {existing.pid} on {existing.hostname}, started "
+                f"{existing.started_at.isoformat()}). Refusing to launch a "
+                "duplicate — stop the existing runner first."
+            )
         self._locks_dir.mkdir(parents=True, exist_ok=True)
         stop_path = controlled_stop_request_path(self._locks_dir, strategy_id)
         stop_path.unlink(missing_ok=True)
