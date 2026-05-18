@@ -86,6 +86,20 @@ def test_desk_surface_rows_have_nonzero_height() -> None:
     _run(script, "DeskSurface Row-1/Row-2 non-zero height")
 
 
+@_skip_no_qt
+def test_section_headers_have_editorial_primitives() -> None:
+    """Every DeskSurface SectionHeader must expose the editorial primitives:
+    a serif-letter Text (objectName 'sectionHeaderLetter') and a
+    border.subtle hairline Rectangle (objectName 'sectionHeaderRule').
+    Catches a silently dropped lettermark (gate G3, presence half).
+    """
+    script = _HARNESS_C.format(
+        import_root=repr(str(_QML_IMPORT_ROOT)),
+        desk=repr(str(_DESK_SURFACE)),
+    )
+    _run(script, "SectionHeader editorial-primitive presence")
+
+
 _HARNESS_A = r'''
 import os, sys
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -333,5 +347,138 @@ if not (h4 > 0 and ph4 > 0):
     sys.exit(6)
 
 print("ROWS_NONZERO")
+sys.exit(0)
+'''
+
+_HARNESS_C = r'''
+import os, sys, tempfile
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from pathlib import Path
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui.operational_state import OperationalState
+from milodex.gui.strategy_bank_state import StrategyBankState
+from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState
+from milodex.gui.performance_state import PerformanceState
+from milodex.gui.risk_throughput_state import RiskThroughputState
+from milodex.gui.active_ops_state import ActiveOpsState
+from milodex.gui.attention_state import AttentionState
+from milodex.gui.market_tape_state import MarketTapeState
+from milodex.gui.activity_feed_state import ActivityFeedState
+from milodex.commands.bench import BenchCommandFacade
+from milodex.gui.bench_command_bridge import BenchCommandBridge
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+
+tm = ThemeManager()
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(active=False, reason=None, last_triggered_at=None)
+
+def _failing_broker():
+    raise RuntimeError("regression-test: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker,
+    kill_switch_store=ks_store,
+    trading_mode="paper",
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+
+_ne = Path("/__nonexistent_desk_layout_test__")
+sb = StrategyBankState(db_path=_ne)
+front = FrontPageState(db_path=_ne, configs_dir=Path("configs"))
+bench = BenchState(db_path=_ne, configs_dir=Path("configs"))
+kanban = KanbanState(db_path=_ne, configs_dir=Path("configs"))
+ledger = LedgerState(db_path=_ne)
+performance = PerformanceState(db_path=_ne, cache_dir=_ne)
+risk_throughput = RiskThroughputState(db_path=_ne)
+active_ops = ActiveOpsState(db_path=_ne, configs_dir=Path("configs"), locks_dir=_ne)
+attention = AttentionState(db_path=_ne)
+market_tape = MarketTapeState(cache_dir=_ne)
+activity_feed = ActivityFeedState(db_path=_ne)
+
+_root = Path(tempfile.mkdtemp(prefix="milodex_desklayout_"))
+(_root / "configs").mkdir()
+(_root / "locks").mkdir()
+facade = BenchCommandFacade(
+    config_dir=_root / "configs",
+    locks_dir=_root / "locks",
+    get_trading_mode=lambda: "paper",
+)
+bridge = BenchCommandBridge(facade, bench_state=bench)
+
+register_qml_types(
+    theme_manager=tm,
+    operational_state=op,
+    strategy_bank_state=sb,
+    front_page_state=front,
+    bench_state=bench,
+    kanban_state=kanban,
+    ledger_state=ledger,
+    performance_state=performance,
+    risk_throughput_state=risk_throughput,
+    active_ops_state=active_ops,
+    attention_state=attention,
+    market_tape_state=market_tape,
+    activity_feed_state=activity_feed,
+    bench_command_bridge=bridge,
+)
+
+view = QQuickView()
+view.engine().addImportPath({import_root})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1600, 1100)
+view.setSource(QUrl.fromLocalFile({desk}))
+
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+
+view.show()
+QTimer.singleShot(900, app.quit)
+app.exec()
+
+def _walk(item):
+    yield item
+    for c in item.childItems():
+        yield from _walk(c)
+
+headers = [it for it in _walk(root)
+           if it.property("title") not in (None, "")
+           and it.metaObject().className().startswith("SectionHeader")]
+if len(headers) < 7:
+    print("expected >=7 SectionHeaders, found " + str(len(headers)), file=sys.stderr)
+    sys.exit(4)
+
+bad = []
+for h in headers:
+    kids = list(_walk(h))
+    has_letter = any(k.property("objectName") == "sectionHeaderLetter" for k in kids)
+    has_rule   = any(k.property("objectName") == "sectionHeaderRule"   for k in kids)
+    if not (has_letter and has_rule):
+        bad.append((h.property("title"), has_letter, has_rule))
+
+if bad:
+    for t, l, r in bad:
+        print("MISSING PRIMITIVE title=" + str(t)
+              + " letter=" + str(l) + " rule=" + str(r), file=sys.stderr)
+    sys.exit(5)
+
+print("SECTION_HEADER_PRIMITIVES_OK (" + str(len(headers)) + " headers)")
 sys.exit(0)
 '''

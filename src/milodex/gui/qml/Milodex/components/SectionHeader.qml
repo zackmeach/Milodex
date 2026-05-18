@@ -1,79 +1,78 @@
-// SectionHeader.qml — Desk section header with optional numeral accent and right slot.
+// SectionHeader.qml — Editorial section-label band (master SectionLabel,
+// reference DeskSurface.qml@757afe7:208-262).
 //
 // Tokens consumed:
-//   color.text.primary     — title text
-//   color.text.muted       — numeral accent
-//   color.border.subtle    — bottom divider line
-//   typography.label.xs    — uppercase letter-spaced label for title
-//   typography.data.sm     — mono numeral
-//   space[2], space[3]     — vertical / horizontal padding
+//   color.brand.primary    — serif letter (numeral)
+//   color.text.secondary   — uppercase section name (title)
+//   color.text.muted       — right meta slot
+//   color.border.subtle    — hairline rule
+//   typography.display.sm  — letter (serif)
+//   typography.label.xs    — name (uppercase, letter-spaced)
+//   typography.data.sm     — meta slot (mono tnum)
+//   space[2], space[3]     — rule gap / letter→name gap
 //
-// Public API:
-//   numeral  : string  — optional mono count/label shown left of title (e.g. "14")
-//   title    : string  — section label text (rendered uppercase via label.xs)
-//   rightSlot: Item    — optional right-aligned item (default property alias)
+// Public API (unchanged — 7 DeskSurface call sites depend on it):
+//   numeral  : string  — the serif letter shown left of the name
+//   title    : string  — section name (rendered uppercase)
+//   rightSlot: Item    — default property alias; meta Text child(ren)
 
 import QtQuick
 import Milodex 1.0
 
-Item {
+Column {
     id: root
 
     property string numeral: ""
     property string title:   ""
-
-    // Right-slot: consumers place an Item child and it anchors to the right
-    // of the header row.  Uses default property alias onto a loader Item.
     default property alias rightSlot: rightSlotArea.children
 
-    implicitWidth:  200
-    implicitHeight: labelText.implicitHeight + Theme.space[2] * 2
+    width:   parent ? parent.width : implicitWidth
+    spacing: Theme.space[2]
 
-    // Bottom divider
-    Rectangle {
-        anchors.bottom: parent.bottom
-        anchors.left:   parent.left
-        anchors.right:  parent.right
-        height: 1
-        color:  Theme.color.border.subtle
-    }
-
-    // Numeral
-    Text {
-        id: numeralText
-        anchors.left:           parent.left
-        anchors.leftMargin:     0
-        anchors.verticalCenter: parent.verticalCenter
-        visible:                root.numeral !== ""
-        text:                   root.numeral
-        color:                  Theme.color.text.muted
-        font.family:            Theme.typography.data.sm.family
-        font.pixelSize:         Theme.typography.data.sm.size
-        font.weight:            Theme.typography.data.sm.weight
-        font.features:          Theme.typography.data.sm.features
-    }
-
-    // Title label
-    Text {
-        id: labelText
-        anchors.left:           root.numeral !== "" ? numeralText.right : parent.left
-        anchors.leftMargin:     root.numeral !== "" ? Theme.space[2] : 0
-        anchors.verticalCenter: parent.verticalCenter
-        text:                   root.title
-        color:                  Theme.color.text.primary
-        font.family:            Theme.typography.label.xs.family
-        font.pixelSize:         Theme.typography.label.xs.size
-        font.weight:            Theme.typography.label.xs.weight
-        font.letterSpacing:     Theme.typography.label.xs.letterSpacing
-        font.capitalization:    Font.AllUppercase
-    }
-
-    // Right-slot container
     Item {
-        id: rightSlotArea
-        anchors.right:          parent.right
-        anchors.verticalCenter: parent.verticalCenter
-        implicitWidth:          childrenRect.width
-        implicitHeight:         childrenRect.height
+        width:          parent.width
+        implicitHeight: letterText.implicitHeight
+
+        Text {
+            id: letterText
+            objectName:    "sectionHeaderLetter"
+            anchors.left:  parent.left
+            anchors.top:   parent.top
+            visible:       root.numeral !== ""
+            text:          root.numeral
+            color:         Theme.color.brand.primary
+            font.family:    Theme.typography.display.sm.family
+            font.pixelSize: Theme.typography.display.sm.size
+            font.weight:    Theme.typography.display.sm.weight
+        }
+
+        Text {
+            id: nameText
+            anchors.left:       root.numeral !== "" ? letterText.right : parent.left
+            anchors.leftMargin: root.numeral !== "" ? Theme.space[3] : 0
+            anchors.baseline:   letterText.baseline
+            text:               root.title
+            color:              Theme.color.text.secondary
+            font.family:         Theme.typography.label.xs.family
+            font.pixelSize:      Theme.typography.label.xs.size
+            font.weight:         Theme.typography.label.xs.weight
+            font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+            font.capitalization: Font.AllUppercase
+        }
+
+        Item {
+            id: rightSlotArea
+            anchors.right:    parent.right
+            anchors.baseline: letterText.baseline
+            implicitWidth:    childrenRect.width
+            implicitHeight:   childrenRect.height
+        }
+    }
+
+    Rectangle {
+        objectName: "sectionHeaderRule"
+        width:      parent.width
+        height:     1
+        color:      Theme.color.border.subtle
     }
 }
