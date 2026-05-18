@@ -3,6 +3,13 @@
 // Spec: 2026-05-17-trading-desk-fidelity-design.md §3 III. App idiom is
 // type + colour + hairline only. Behaviour & signal FROZEN (spec §5).
 //
+// DESIGN DECISION (operator-accepted 2026-05-18): the open dropdown is
+// intentionally borderless and floats over the §III KeyStat grid with no
+// opaque backing — the no-chrome law applies here too. The transient
+// open-state overlap was reviewed (code-review I-1) and accepted as-is.
+// Do NOT re-introduce a surface fill / panel to "fix" this without a
+// spec §3-III amendment.
+//
 // Tokens consumed:
 //   color.text.muted      — eyebrow / unselected / affordance
 //   color.text.primary    — current label
