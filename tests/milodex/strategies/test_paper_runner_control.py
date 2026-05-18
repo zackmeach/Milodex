@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from milodex.strategies.paper_runner_control import (
     PaperRunnerControl,
+    PaperRunnerLaunchError,
     consume_controlled_stop_request,
     controlled_stop_request_path,
 )
@@ -92,6 +95,96 @@ def test_open_runner_stdio_writes_to_log_path(tmp_path: Path) -> None:
 
     assert log_path.exists()
     assert "child-output" in log_path.read_text(encoding="utf-8")
+
+
+def test_interpreter_probe_imports_the_runner_entrypoint(tmp_path: Path) -> None:
+    # Must probe the *real* runner entrypoint, not the shallow package:
+    # a half-broken interpreter can `import milodex` yet fail to
+    # `import milodex.cli.main` (the actual `-m` target the runner uses).
+    control = PaperRunnerControl(locks_dir=tmp_path)
+
+    command = control._interpreter_probe_command()  # noqa: SLF001
+
+    assert command[1] == "-c"
+    assert command[2] == "import milodex.cli.main"
+
+
+def test_verify_interpreter_passes_for_current_interpreter(tmp_path: Path) -> None:
+    # The test interpreter is the project venv: the runner entrypoint imports.
+    control = PaperRunnerControl(locks_dir=tmp_path)
+
+    assert control._verify_interpreter() is None  # noqa: SLF001
+
+
+def test_verify_interpreter_fails_for_missing_interpreter(tmp_path: Path) -> None:
+    control = PaperRunnerControl(
+        locks_dir=tmp_path,
+        python_executable="C:/definitely/not/a/python.exe",
+    )
+
+    reason = control._verify_interpreter()  # noqa: SLF001
+
+    assert reason is not None
+    assert "C:/definitely/not/a/python.exe" in reason
+
+
+def test_start_refuses_when_interpreter_cannot_import_milodex(tmp_path: Path) -> None:
+    control = PaperRunnerControl(
+        locks_dir=tmp_path,
+        python_executable="C:/definitely/not/a/python.exe",
+    )
+
+    with pytest.raises(PaperRunnerLaunchError) as excinfo:
+        control.start("sample.daily.example.curated.v1")
+
+    assert "C:/definitely/not/a/python.exe" in str(excinfo.value)
+
+
+def test_existing_live_runner_is_none_when_no_lock(tmp_path: Path) -> None:
+    control = PaperRunnerControl(locks_dir=tmp_path)
+
+    assert (
+        control._existing_live_runner("sample.daily.example.curated.v1")  # noqa: SLF001
+        is None
+    )
+
+
+def test_existing_live_runner_detects_held_lock(tmp_path: Path) -> None:
+    import os
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    strategy_id = "sample.daily.example.curated.v1"
+    lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=tmp_path)
+    lock.acquire()
+    try:
+        control = PaperRunnerControl(locks_dir=tmp_path)
+
+        holder = control._existing_live_runner(strategy_id)  # noqa: SLF001
+
+        assert holder is not None
+        assert holder.pid == os.getpid()
+    finally:
+        lock.release()
+
+
+def test_start_refuses_when_live_runner_already_holds_lock(tmp_path: Path) -> None:
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    strategy_id = "sample.daily.example.curated.v1"
+    lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=tmp_path)
+    lock.acquire()
+    try:
+        control = PaperRunnerControl(locks_dir=tmp_path)
+
+        with pytest.raises(PaperRunnerLaunchError) as excinfo:
+            control.start(strategy_id)
+
+        assert "already running" in str(excinfo.value)
+    finally:
+        lock.release()
 
 
 def test_strategy_runner_check_sets_controlled_shutdown(tmp_path: Path) -> None:

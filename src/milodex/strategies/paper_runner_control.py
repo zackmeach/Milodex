@@ -8,7 +8,27 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from milodex.core.advisory_lock import LockHolder
+
+_INTERPRETER_PROBE_TIMEOUT_SECONDS = 15
+
+# The runner is launched as ``python -m milodex.cli.main strategy run``.
+# Probe that exact entrypoint, not the shallow ``milodex`` package: a
+# half-broken interpreter (e.g. one with a corrupt pandas) can import the
+# package yet fail the real import chain — the actual first-GUI-run cause.
+_INTERPRETER_PROBE_IMPORT = "milodex.cli.main"
+
+
+class PaperRunnerLaunchError(RuntimeError):
+    """Raised when a paper runner is refused *before* any process is spawned.
+
+    Distinct from a spawn failure: the launch never happened, so there is
+    no orphan process or held lock to clean up. The message is surfaced to
+    the operator via the Bench command facade.
+    """
 
 
 def runner_lock_name(strategy_id: str) -> str:
@@ -111,8 +131,81 @@ class PaperRunnerControl:
         handle = log_path.open("a", encoding="utf-8")  # noqa: SIM115 - closed by caller
         return handle, subprocess.STDOUT, handle
 
+    def _interpreter_probe_command(self) -> list[str]:
+        """Return the argv that proves the interpreter can run a runner.
+
+        Imports the real runner entrypoint (``milodex.cli.main``), not the
+        shallow ``milodex`` package, so a half-broken interpreter that can
+        import the package but not the full launch chain is still caught.
+        """
+        return [
+            self._python_executable,
+            "-c",
+            f"import {_INTERPRETER_PROBE_IMPORT}",
+        ]
+
+    def _verify_interpreter(self) -> str | None:
+        """Return a refusal reason if the interpreter can't run a runner.
+
+        The first-GUI-run wedge came from a GUI process whose interpreter
+        could ``import milodex`` but blew up importing the runner entrypoint
+        (a corrupt pandas in a non-venv Python). Probe the real entrypoint
+        and fail loudly rather than spawn a doomed detached child. Returns
+        ``None`` when the interpreter is usable.
+        """
+        try:
+            completed = subprocess.run(  # noqa: S603
+                self._interpreter_probe_command(),
+                capture_output=True,
+                timeout=_INTERPRETER_PROBE_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return (
+                f"Interpreter {self._python_executable!r} is not runnable "
+                f"({exc.__class__.__name__}: {exc}). The paper runner was "
+                "not started."
+            )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", "replace").strip().splitlines()
+            tail = detail[-1] if detail else f"exit code {completed.returncode}"
+            return (
+                f"Interpreter {self._python_executable!r} cannot import the "
+                f"runner entrypoint {_INTERPRETER_PROBE_IMPORT!r} ({tail}). "
+                "The paper runner was not started — this usually means the "
+                "GUI is running outside the project virtualenv."
+            )
+        return None
+
+    def _existing_live_runner(self, strategy_id: str) -> LockHolder | None:
+        """Return the live advisory-lock holder for ``strategy_id``, if any.
+
+        Read-only: never acquires, refreshes, or releases the lock. A stale
+        lock whose recorded PID is no longer alive is treated as absent so a
+        crashed runner does not permanently block relaunch. Mirrors the
+        liveness semantics ``AdvisoryLock.acquire`` itself uses.
+        """
+        from milodex.core.advisory_lock import AdvisoryLock, _process_exists
+
+        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=self._locks_dir)
+        holder = lock.current_holder()
+        if holder is not None and _process_exists(holder.pid):
+            return holder
+        return None
+
     def start(self, strategy_id: str) -> PaperRunnerStartResult:
         """Launch ``milodex strategy run`` for ``strategy_id`` asynchronously."""
+        interpreter_problem = self._verify_interpreter()
+        if interpreter_problem is not None:
+            raise PaperRunnerLaunchError(interpreter_problem)
+        existing = self._existing_live_runner(strategy_id)
+        if existing is not None:
+            raise PaperRunnerLaunchError(
+                f"A paper runner for {strategy_id!r} is already running "
+                f"(pid {existing.pid} on {existing.hostname}, started "
+                f"{existing.started_at.isoformat()}). Refusing to launch a "
+                "duplicate — stop the existing runner first."
+            )
         self._locks_dir.mkdir(parents=True, exist_ok=True)
         stop_path = controlled_stop_request_path(self._locks_dir, strategy_id)
         stop_path.unlink(missing_ok=True)
