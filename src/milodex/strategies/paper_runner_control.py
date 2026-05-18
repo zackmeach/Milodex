@@ -10,6 +10,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+_INTERPRETER_PROBE_TIMEOUT_SECONDS = 15
+
+
+class PaperRunnerLaunchError(RuntimeError):
+    """Raised when a paper runner is refused *before* any process is spawned.
+
+    Distinct from a spawn failure: the launch never happened, so there is
+    no orphan process or held lock to clean up. The message is surfaced to
+    the operator via the Bench command facade.
+    """
+
 
 def runner_lock_name(strategy_id: str) -> str:
     """Return the advisory-lock namespace for a paper runner."""
@@ -111,8 +122,44 @@ class PaperRunnerControl:
         handle = log_path.open("a", encoding="utf-8")  # noqa: SIM115 - closed by caller
         return handle, subprocess.STDOUT, handle
 
+    def _verify_interpreter(self) -> str | None:
+        """Return a refusal reason if the interpreter can't run a runner.
+
+        The root cause of the first-GUI-run wedge was a GUI process running
+        under an interpreter without ``milodex`` installed: every runner it
+        spawned died on ``import``. Probe ``import milodex`` in the chosen
+        interpreter and fail loudly rather than spawn a doomed child.
+        Returns ``None`` when the interpreter is usable.
+        """
+        try:
+            completed = subprocess.run(  # noqa: S603
+                [self._python_executable, "-c", "import milodex"],
+                capture_output=True,
+                timeout=_INTERPRETER_PROBE_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            return (
+                f"Interpreter {self._python_executable!r} is not runnable "
+                f"({exc.__class__.__name__}: {exc}). The paper runner was "
+                "not started."
+            )
+        if completed.returncode != 0:
+            detail = completed.stderr.decode("utf-8", "replace").strip().splitlines()
+            tail = detail[-1] if detail else f"exit code {completed.returncode}"
+            return (
+                f"Interpreter {self._python_executable!r} cannot import "
+                f"milodex ({tail}). The paper runner was not started — "
+                "this usually means the GUI is running outside the project "
+                "virtualenv."
+            )
+        return None
+
     def start(self, strategy_id: str) -> PaperRunnerStartResult:
         """Launch ``milodex strategy run`` for ``strategy_id`` asynchronously."""
+        interpreter_problem = self._verify_interpreter()
+        if interpreter_problem is not None:
+            raise PaperRunnerLaunchError(interpreter_problem)
         self._locks_dir.mkdir(parents=True, exist_ok=True)
         stop_path = controlled_stop_request_path(self._locks_dir, strategy_id)
         stop_path.unlink(missing_ok=True)

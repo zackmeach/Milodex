@@ -5,8 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from milodex.strategies.paper_runner_control import (
     PaperRunnerControl,
+    PaperRunnerLaunchError,
     consume_controlled_stop_request,
     controlled_stop_request_path,
 )
@@ -92,6 +95,37 @@ def test_open_runner_stdio_writes_to_log_path(tmp_path: Path) -> None:
 
     assert log_path.exists()
     assert "child-output" in log_path.read_text(encoding="utf-8")
+
+
+def test_verify_interpreter_passes_for_current_interpreter(tmp_path: Path) -> None:
+    # The test interpreter is the project venv: ``import milodex`` works.
+    control = PaperRunnerControl(locks_dir=tmp_path)
+
+    assert control._verify_interpreter() is None  # noqa: SLF001
+
+
+def test_verify_interpreter_fails_for_missing_interpreter(tmp_path: Path) -> None:
+    control = PaperRunnerControl(
+        locks_dir=tmp_path,
+        python_executable="C:/definitely/not/a/python.exe",
+    )
+
+    reason = control._verify_interpreter()  # noqa: SLF001
+
+    assert reason is not None
+    assert "C:/definitely/not/a/python.exe" in reason
+
+
+def test_start_refuses_when_interpreter_cannot_import_milodex(tmp_path: Path) -> None:
+    control = PaperRunnerControl(
+        locks_dir=tmp_path,
+        python_executable="C:/definitely/not/a/python.exe",
+    )
+
+    with pytest.raises(PaperRunnerLaunchError) as excinfo:
+        control.start("sample.daily.example.curated.v1")
+
+    assert "C:/definitely/not/a/python.exe" in str(excinfo.value)
 
 
 def test_strategy_runner_check_sets_controlled_shutdown(tmp_path: Path) -> None:
