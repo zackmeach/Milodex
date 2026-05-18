@@ -6,7 +6,6 @@
 // Tokens consumed:
 //   color.text.primary    — value (mono tnum)
 //   color.text.secondary  — stage label
-//   color.text.muted      — em-dash gloss
 //   color.border.subtle   — per-row hairline
 //   typography.data.sm    — value
 //   typography.body.sm    — label + gloss
@@ -34,6 +33,8 @@ Item {
         id: labelText
         anchors.left:           parent.left
         anchors.verticalCenter: parent.verticalCenter
+        anchors.right:          valueText.left
+        anchors.rightMargin:    Theme.space[2]
         text:                   root.gloss !== ""
                                 ? root.label + " — " + root.gloss
                                 : root.label
