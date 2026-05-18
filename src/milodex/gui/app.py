@@ -205,6 +205,30 @@ def run_app() -> int:
     cache_dir = get_cache_dir()
     locks_dir = get_locks_dir()
 
+    # Bootstrap reconciliation: close phantom open strategy_runs left by
+    # hard-killed runners *before* any read model renders, so the active-ops
+    # view never shows a dead runner as live. Liveness-gated — a genuinely
+    # running runner (live advisory lock) is left untouched. Never block the
+    # GUI on a reconciliation failure.
+    try:
+        from datetime import UTC, datetime
+
+        from milodex.strategies.orphan_reconciliation import (
+            reconcile_orphaned_runs_on_bootstrap,
+        )
+
+        reconciled = reconcile_orphaned_runs_on_bootstrap(
+            EventStore(db_path), locks_dir, now=datetime.now(tz=UTC)
+        )
+        if reconciled:
+            logger.warning(
+                "Bootstrap reconciled %d orphaned strategy run(s): %s",
+                len(reconciled),
+                ", ".join(reconciled),
+            )
+    except Exception:
+        logger.exception("Bootstrap orphan reconciliation failed; continuing")
+
     strategy_bank_state = StrategyBankState(db_path=db_path)
     front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
     bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
