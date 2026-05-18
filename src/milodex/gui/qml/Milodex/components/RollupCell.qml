@@ -2,6 +2,7 @@
 //
 // Tokens consumed:
 //   color.text.muted           — label
+//   color.brand.primary        — tone "brand"
 //   color.text.primary         — tone "data"
 //   color.text.muted           — tone "muted"
 //   status.positive            — tone "positive"
@@ -32,6 +33,7 @@ Item {
     // keep in sync with ActivityTable.qml's tone→color mapping
     // No Behavior — state changes are instant.
     readonly property color _valueColor: {
+        if (root.tone === "brand")    return Theme.color.brand.primary
         if (root.tone === "positive") return Theme.status.positive
         if (root.tone === "negative") return Theme.status.negative
         if (root.tone === "warning")  return Theme.status.warning

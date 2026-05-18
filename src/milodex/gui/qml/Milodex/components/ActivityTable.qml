@@ -153,6 +153,7 @@ Item {
             color:            Theme.color.text.muted
             font.family:      Theme.typography.body.sm.family
             font.pixelSize:   Theme.typography.body.sm.size
+            font.italic:      true
         }
 
         delegate: Item {

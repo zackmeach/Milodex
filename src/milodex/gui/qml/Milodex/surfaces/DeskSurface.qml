@@ -721,13 +721,13 @@ Item {
                             Layout.fillWidth: true
                             label: "Running Now"
                             value: String(attentionCol.rollups.runningNow || 0)
-                            tone: "data"
+                            tone: "brand"
                         }
                         RollupCell {
                             Layout.fillWidth: true
                             label: "Paper Testing"
                             value: String(attentionCol.rollups.paperTesting || 0)
-                            tone: "data"
+                            tone: "brand"
                         }
                         RollupCell {
                             Layout.fillWidth: true
