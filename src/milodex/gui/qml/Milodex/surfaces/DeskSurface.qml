@@ -162,7 +162,9 @@ Item {
         }
     }
 
-    // Editorial section standfirst (master section idiom, ref :653-659).
+    // Editorial section standfirst — master section idiom, reference
+    // DeskSurface.qml@757afe7:653-659. Deliberate scale split: body.md.family
+    // (typeface) + body.sm.size (scale) — do not normalize to one scale.
     component Standfirst: Text {
         width:          parent ? parent.width : implicitWidth
         color:          Theme.color.text.secondary
