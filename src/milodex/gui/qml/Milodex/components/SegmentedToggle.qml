@@ -9,6 +9,7 @@
 //   color.text.muted     — unselected word
 //   typography.label.xs  — uppercase letter-spaced words
 //   space[4]             — inter-word gap
+//   space[1]             — invisible tap-target inset
 //
 // MOTION DISCIPLINE: state changes are instant — no Behavior on color.
 //
@@ -45,7 +46,8 @@ Row {
             font.capitalization: Font.AllUppercase
 
             MouseArea {
-                anchors.fill: parent
+                anchors.fill:    parent
+                anchors.margins: -Theme.space[1]
                 onClicked: {
                     if (modelData.value !== root.current)
                         root.activated(modelData.value)
