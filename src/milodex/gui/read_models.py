@@ -347,6 +347,7 @@ class LedgerState(_PollingReadModel):
         self._strategy_filter = "all"
         self._outcome_filter = "all"
         self._time_filter = "all"
+        self._group_filter = "all"
         _configs = configs_dir if configs_dir is not None else Path("configs")
         super().__init__(
             builder=lambda: build_ledger_snapshot(db_path, _configs),
@@ -359,12 +360,30 @@ class LedgerState(_PollingReadModel):
             self._all_entries = entries
             self._refilter()
 
+    # Outcome-group → outcomeKind membership map (Task 22 / issue 09).
+    _GROUP_KINDS: dict[str, frozenset[str]] = {
+        "promotion": frozenset({"promoted", "demoted", "returned"}),
+        "lifecycle": frozenset({"started", "stopped"}),
+        "backtest": frozenset({"backtested", "backtested_strong", "backtested_paper", "backtested_weak"}),
+        "system": frozenset({"fired", "info", "added"}),
+    }
+
     @Slot(str, str, str, str)
     def setLedgerFilter(self, stage: str, strategy_id: str, outcome: str, time_range: str) -> None:  # noqa: N802
         self._stage_filter = stage or "all"
         self._strategy_filter = strategy_id or "all"
         self._outcome_filter = outcome or "all"
         self._time_filter = time_range or "all"
+        self._group_filter = "all"
+        self.filtersChanged.emit()
+        self._refilter()
+
+    @Slot(str)
+    def setGroupFilter(self, group: str) -> None:  # noqa: N802
+        """Filter by outcome group. Pass 'all' to clear. Resets outcome/stage filters."""
+        self._group_filter = group or "all"
+        self._outcome_filter = "all"
+        self._stage_filter = "all"
         self.filtersChanged.emit()
         self._refilter()
 
@@ -374,12 +393,15 @@ class LedgerState(_PollingReadModel):
 
     def _refilter(self) -> None:
         filtered: list[dict[str, Any]] = []
+        group_kinds = self._GROUP_KINDS.get(self._group_filter)
         for entry in self._all_entries:
             if self._stage_filter != "all" and entry.get("stage") != self._stage_filter:
                 continue
             if self._strategy_filter != "all" and entry.get("strategyId") != self._strategy_filter:
                 continue
             if self._outcome_filter != "all" and entry.get("outcomeKind") != self._outcome_filter:
+                continue
+            if group_kinds is not None and entry.get("outcomeKind") not in group_kinds:
                 continue
             # Time ranges are intentionally simple for Phase 5: "all" and "recent".
             if self._time_filter == "recent" and not bool(entry.get("recent")):
@@ -404,11 +426,15 @@ class LedgerState(_PollingReadModel):
     def _get_time_filter(self) -> str:
         return self._time_filter
 
+    def _get_group_filter(self) -> str:
+        return self._group_filter
+
     entries = Property("QVariantList", _get_entries, notify=entriesChanged)
     stageFilter = Property(str, _get_stage_filter, notify=filtersChanged)  # noqa: N815
     strategyFilter = Property(str, _get_strategy_filter, notify=filtersChanged)  # noqa: N815
     outcomeFilter = Property(str, _get_outcome_filter, notify=filtersChanged)  # noqa: N815
     timeFilter = Property(str, _get_time_filter, notify=filtersChanged)  # noqa: N815
+    groupFilter = Property(str, _get_group_filter, notify=filtersChanged)  # noqa: N815
 
 
 def build_front_page_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:

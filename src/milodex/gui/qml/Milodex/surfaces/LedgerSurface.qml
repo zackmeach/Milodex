@@ -160,8 +160,66 @@ Item {
                 }
 
                 // ====================================================
-                // FILTER ROW — visual stub for PR1
+                // FILTER ROWS — two rows: outcome groups + clear
                 // ====================================================
+
+                // Row 1: outcome-group chips (Promotion / Lifecycle / Backtest / System)
+                Row {
+                    spacing: Theme.space[2]
+
+                    Text {
+                        text: "GROUP —"
+                        color: Theme.color.text.muted
+                        font.family:        Theme.typography.label.xs.family
+                        font.pixelSize:     Theme.typography.label.xs.size
+                        font.weight:        Theme.typography.label.xs.weight
+                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                        anchors.verticalCenter: parent.verticalCenter
+                    }
+
+                    Repeater {
+                        model: [
+                            { label: "Promotion", group: "promotion" },
+                            { label: "Lifecycle", group: "lifecycle" },
+                            { label: "Backtest",  group: "backtest"  },
+                            { label: "System",    group: "system"    }
+                        ]
+                        delegate: Rectangle {
+                            readonly property bool activeFilter: LedgerState.groupFilter === modelData.group
+                            implicitWidth:  groupLabel.implicitWidth + Theme.space[3] * 2
+                            implicitHeight: groupLabel.implicitHeight + Theme.space[2] * 1.5
+                            color: activeFilter ? Theme.color.surface.raised : "transparent"
+                            border.color: activeFilter ? Theme.color.border.emphasis : Theme.color.border.regular
+                            border.width: 1
+                            radius: Theme.radius.sm
+
+                            Text {
+                                id: groupLabel
+                                anchors.centerIn: parent
+                                text:  modelData.label
+                                color: parent.activeFilter ? Theme.color.text.primary : Theme.color.text.secondary
+                                font.family:    Theme.typography.body.md.family
+                                font.pixelSize: Theme.typography.body.sm.size
+                                font.italic:    true
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    // Toggle: clicking an active group clears it.
+                                    if (LedgerState.groupFilter === modelData.group)
+                                        LedgerState.setGroupFilter("all")
+                                    else
+                                        LedgerState.setGroupFilter(modelData.group)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Row 2: stage / clear chips
                 Row {
                     spacing: Theme.space[2]
 
@@ -177,20 +235,19 @@ Item {
 
                     Repeater {
                         model: [
-                            { label: "all stages", stage: "all", strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
-                            { label: "paper stage", stage: "paper", strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
-                            { label: "promoted", stage: LedgerState.stageFilter, strategy: LedgerState.strategyFilter, outcome: "promoted", time: LedgerState.timeFilter },
-                            { label: "system events", stage: "system", strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
-                            { label: "clear", stage: "all", strategy: "all", outcome: "all", time: "all" }
+                            { label: "all",   stage: "all",   strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
+                            { label: "paper", stage: "paper", strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
+                            { label: "clear", stage: "all",   strategy: "all",                       outcome: "all",                     time: "all"                   }
                         ]
                         delegate: Rectangle {
                             readonly property bool activeFilter: modelData.label !== "clear"
                                                               && modelData.stage === LedgerState.stageFilter
+                                                              && LedgerState.groupFilter === "all"
                                                               && modelData.strategy === LedgerState.strategyFilter
                                                               && modelData.outcome === LedgerState.outcomeFilter
                                                               && modelData.time === LedgerState.timeFilter
-                            implicitWidth:  filterLabel.implicitWidth + Theme.space[3] * 2
-                            implicitHeight: filterLabel.implicitHeight + Theme.space[2] * 1.5
+                            implicitWidth:  filterLabel2.implicitWidth + Theme.space[3] * 2
+                            implicitHeight: filterLabel2.implicitHeight + Theme.space[2] * 1.5
                             color: activeFilter ? Theme.color.surface.raised
                                   : modelData.label === "clear" ? Theme.color.surface.base
                                   : "transparent"
@@ -199,7 +256,7 @@ Item {
                             radius: Theme.radius.sm
 
                             Text {
-                                id: filterLabel
+                                id: filterLabel2
                                 anchors.centerIn: parent
                                 text:  modelData.label
                                 color: parent.activeFilter ? Theme.color.text.primary : Theme.color.text.secondary
@@ -291,12 +348,25 @@ Item {
                                     text: modelData.outcome
                                     horizontalAlignment: Text.AlignRight
                                     color: {
-                                        if (modelData.outcomeKind === "promoted") return Theme.status.positive
-                                        if (modelData.outcomeKind === "refused")  return Theme.status.negative
-                                        if (modelData.outcomeKind === "fired")    return Theme.status.negative
-                                        if (modelData.outcomeKind === "demoted")  return Theme.status.negative
-                                        if (modelData.outcomeKind === "info")     return Theme.status.info
-                                        if (modelData.outcomeKind === "pending")  return Theme.status.warning
+                                        // Promotion group
+                                        if (modelData.outcomeKind === "promoted")          return Theme.status.positive
+                                        if (modelData.outcomeKind === "demoted")           return Theme.status.negative
+                                        if (modelData.outcomeKind === "returned")          return Theme.status.warning
+                                        // Legacy / unused kinds
+                                        if (modelData.outcomeKind === "refused")           return Theme.status.negative
+                                        if (modelData.outcomeKind === "pending")           return Theme.status.warning
+                                        // System group
+                                        if (modelData.outcomeKind === "fired")             return Theme.status.negative
+                                        if (modelData.outcomeKind === "info")              return Theme.status.info
+                                        if (modelData.outcomeKind === "added")             return Theme.color.text.muted
+                                        // Lifecycle group
+                                        if (modelData.outcomeKind === "started")           return Theme.status.info
+                                        if (modelData.outcomeKind === "stopped")           return Theme.color.text.secondary
+                                        // Backtest group — three-tone binding to policy thresholds
+                                        if (modelData.outcomeKind === "backtested_strong") return Theme.status.positive
+                                        if (modelData.outcomeKind === "backtested_paper")  return Theme.color.text.primary
+                                        if (modelData.outcomeKind === "backtested_weak")   return Theme.status.negative
+                                        if (modelData.outcomeKind === "backtested")        return Theme.color.text.muted
                                         return Theme.color.text.muted
                                     }
                                     font.family:        Theme.typography.label.xs.family
