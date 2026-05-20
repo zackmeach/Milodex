@@ -510,7 +510,7 @@ Current [`LedgerSurface.qml:178-209`](src/milodex/gui/qml/Milodex/surfaces/Ledge
 - Row 1: outcome kind groups — `Promotion` (promoted/demoted/returned) · `Lifecycle` (started/stopped) · `Backtest` (backtested) · `System` (fired/info/added)
 - Row 2: existing time-range / stage filters
 
-Click on a group expands an inline sub-row of specific kinds within that group, OR selecting a group filters to all kinds within it (decide during implementation; prefer the simpler "select group filters all kinds within").
+**Group selection behavior (locked):** selecting a group filters to all kinds within it. No sub-row expansion. This is the simpler primitive; if a future need emerges for finer-grained filtering, it can be added without re-architecting the chip row.
 
 ### Section VII expansion (operator's clarification)
 
@@ -748,7 +748,15 @@ Three sections separated by hairline dividers:
 - Add `timeFormat: "24h"` to `Main.qml::sessionBag` (the QtObject introduced in PR-3).
 - All `_compact_timestamp()` callsites in `read_models.py` return raw ISO; remove the Python-side format.
 - Add a QML helper component / inline function: `formatTimestamp(isoString, sessionBag.timeFormat)`.
-- All time displays in DeskSurface, LedgerSurface, BenchSurface, FrontSurface re-route through the helper. **This is a wider plumbing change than the original draft acknowledged** — every timestamp display in QML must be touched.
+- **Enumerated touch points** (every timestamp-rendering site that must re-route through the helper):
+  - `surfaces/DeskSurface.qml` — Section II "as of HH:MM" meta-slot timestamps; Section VII activity-row timestamps; Section VI Market Tape "as of" header
+  - `surfaces/LedgerSurface.qml` — every ledger row's `ts` display
+  - `surfaces/BenchSurface.qml` — strategy-row activity badges, "last activity" sub-text, any countdown timers
+  - `surfaces/FrontSurface.qml` — feature-card timestamps, hero "as of" timestamps
+  - `components/SectionHeader.qml` — right-slot meta when bound to a timestamp
+  - `components/BenchConfirmationModal.qml` — historical-evidence timestamps in the preview block
+  - Any other sub-component currently calling `_compact_timestamp(...)` in Python (grep `_compact_timestamp` to confirm full set during implementation)
+- This enumeration matters because PR-7c is sized "small-to-decent" — if a touch point is missed, the size estimate is wrong. Audit the enumeration during implementation; if more than ~8 distinct files need edits, escalate the size estimate to "decent."
 
 **Quit handler:**
 - Wire to a Python-side slot rather than direct `Qt.quit()`.
@@ -849,7 +857,9 @@ These are explicit steps that must run during implementation, not assumptions:
 2. **PR-4**: run `ls data/cache/*/VIX*` and grep the data-ingest writer before designing the fix. Outcome determines whether the fix is ingest-side or rendering-side.
 3. **PR-5**: run the sub-second-timestamp verification SQL before writing the migration. Outcome determines whether dedup logic needs tightening beyond the current PARTITION BY recorded_at.
 4. **PR-5 (audit before merge)**: `rg "portfolio_snapshots" src/milodex/promotion/` — confirm promotion logic doesn't read the table directly.
-5. **PR-7a**: justify each `_ABSOLUTE_CEILINGS` value in the ADR; do not ship with placeholder numbers.
+5. **PR-6**: verify timestamp-precision consistency across the 6 ledger event sources. Specifically, when a kill-switch fire and a `strategy_runs.ended_at` write happen ~milliseconds apart for the same event, do their ISO timestamps sort deterministically? Run a fixture-based test: trigger a kill-switch in a test DB, inspect both rows' `recorded_at` precision, and confirm the desired ordering (kill-switch row above the stop row) is stable. If precision differs (e.g., one source truncates to seconds), document the convention or normalize at read time.
+6. **PR-7a**: justify each `_ABSOLUTE_CEILINGS` value in the ADR; do not ship with placeholder numbers.
+7. **PR-7c**: before sizing, grep `_compact_timestamp` across the QML and Python surfaces to confirm the touch-point enumeration in §6 PR-7c is complete. If significantly more sites surface, re-estimate PR size.
 
 ---
 
