@@ -313,7 +313,13 @@ class BacktestEngine:
     # Private execution core
     # ------------------------------------------------------------------
 
-    def prefetch_bars(self, start_date: date, end_date: date) -> dict[str, BarSet]:
+    def prefetch_bars(
+        self,
+        start_date: date,
+        end_date: date,
+        *,
+        timeframe: Timeframe = Timeframe.DAY_1,
+    ) -> dict[str, BarSet]:
         """Fetch bars for the universe over ``[start_date - warmup, end_date]``.
 
         Exposed so the walk-forward runner can fetch once and re-use across
@@ -330,6 +336,11 @@ class BacktestEngine:
         2. ``configs/risk_defaults.yaml`` ``backtesting.min_universe_coverage_pct``
            — global default read once and cached.
         3. Hardcoded fallback ``0.80``.
+
+        Args:
+            timeframe: bar granularity to fetch. Defaults to DAY_1 for
+                backwards compatibility with daily-strategy callers. Intraday
+                backtests pass MINUTE_5 / MINUTE_15 / HOUR_1 etc.
         """
         universe = list(self._loaded.context.universe)
         if not universe:
@@ -338,7 +349,7 @@ class BacktestEngine:
         warmup_start = start_date - timedelta(days=self._warmup_calendar_days())
         bars = self._data_provider.get_bars(
             symbols=universe,
-            timeframe=Timeframe.DAY_1,
+            timeframe=timeframe,
             start=warmup_start,
             end=end_date,
         )
