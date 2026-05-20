@@ -1,4 +1,4 @@
-"""data bars and data fetch-universe commands."""
+"""data bars, data fetch-universe, and data warmup-tape commands."""
 
 from __future__ import annotations
 
@@ -69,10 +69,24 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Directory containing universe manifests (default: configs).",
     )
 
+    wt_parser = data_subparsers.add_parser(
+        "warmup-tape",
+        help="Fetch recent VIX history from Yahoo Finance and write it to the market cache.",
+    )
+    add_global_flags(wt_parser)
+    wt_parser.add_argument(
+        "--lookback-days",
+        type=int,
+        default=365,
+        help="Number of calendar days of history to fetch (default: 365).",
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.data_command == "fetch-universe":
         return _run_fetch_universe(args, ctx)
+    if args.data_command == "warmup-tape":
+        return _run_warmup_tape(args)
     if args.data_command != "bars":
         raise ValueError(f"Unsupported data command: {args.data_command}")
     provider = ctx.data_provider_factory()
@@ -288,3 +302,39 @@ def _date_range_warnings(
         if requested_end - last_bar_date > _DATE_RANGE_TOLERANCE:
             warnings.append({**common, "issue": "ends_before_requested_window"})
     return warnings
+
+
+def _run_warmup_tape(args: argparse.Namespace) -> CommandResult:
+    """Fetch VIX history from Yahoo Finance and write it to the market cache."""
+    from milodex.data.tape_cache_warmup import get_vix_cache_state, warmup_vix_cache
+
+    lookback_days: int = args.lookback_days
+    success = warmup_vix_cache(lookback_days=lookback_days)
+
+    state = get_vix_cache_state()
+
+    if success:
+        lines = [
+            "data warmup-tape: VIX cache refreshed",
+            f"  rows         : {state['row_count']}",
+            f"  latest date  : {state['latest_date']}",
+        ]
+        return CommandResult(
+            command="data.warmup-tape",
+            data={"success": True, **state},
+            human_lines=lines,
+        )
+    else:
+        lines = [
+            "data warmup-tape: VIX cache refresh FAILED — check logs for details.",
+            "  The tape will show '—' for VIX until a successful warmup.",
+        ]
+        return CommandResult(
+            command="data.warmup-tape",
+            status="error",
+            human_lines=lines,
+            errors=[{
+                "code": "vix_fetch_failed",
+                "message": "Yahoo Finance fetch returned no data",
+            }],
+        )

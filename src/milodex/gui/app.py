@@ -307,6 +307,19 @@ def run_app() -> int:
     risk_throughput_state.start()
     active_ops_state.start()
     attention_state.start()
+
+    # VIX warmup: fetch recent ^VIX history from Yahoo Finance and write it to
+    # the ParquetCache before the tape starts polling.  Failure is non-fatal —
+    # a missing VIX parquet simply means the tape renders VIX as "—" until the
+    # next successful warmup.  Alpaca free tier does not supply VIX (it is a
+    # CBOE index), so Yahoo is the only free path (see yahoo_provider.py).
+    try:
+        from milodex.data.tape_cache_warmup import warmup_vix_cache
+
+        warmup_vix_cache(cache_dir=cache_dir)
+    except Exception:  # noqa: BLE001
+        logger.warning("run_app: VIX cache warmup failed; VIX will display as '—' on tape")
+
     market_tape_state.start()
     activity_feed_state.start()
 

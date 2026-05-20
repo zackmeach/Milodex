@@ -18,6 +18,10 @@ dependencies = [
     "pytz>=2024.1",
     "PyYAML>=6.0",
     "rich>=13.7",
+    # yfinance: lightweight Yahoo Finance client used exclusively to fetch ^VIX
+    # history for the market tape.  Alpaca free tier does not ship VIX (it is a
+    # CBOE index, not an equity), so Yahoo is the only viable free path.
+    "yfinance>=0.2",
 ]
 
 [project.scripts]
