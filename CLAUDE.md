@@ -9,6 +9,7 @@ pip install -e ".[dev]"      # Install in editable mode with dev deps
 python -m pytest             # Run tests (bare `pytest`/`ruff` may not be on PATH; use `python -m`)
 python -m ruff check src/ tests/    # Lint
 python -m ruff format src/ tests/   # Format
+python -m milodex.cli.main <subcommand>   # CLI entry — `python -m milodex` does NOT work (no __main__.py at package root); always include `.cli.main`
 ```
 
 ## Architecture
@@ -68,7 +69,8 @@ Requires `.env` (see `.env.example`): `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `TR
 - `logs/` is gitignored except `.gitkeep` — don't commit log files
 - `.env` is gitignored — never commit API keys. Use `.env.example` as template.
 - Backtest slippage defaults to 0.1–0.2% — don't assume zero slippage
-- Pattern day trader rule: under $25k capital means no same-day round trips (daily swing avoids this)
+- Pattern day trader rule: **decommissioned by FINRA Regulatory Notice 26-10 effective 2026-06-04** ($25k minimum and day-trade-count thresholds eliminated; Alpaca implements on the effective date, not the 18-month phase-in). Pre-2026-06-04 the old rule (under $25k = no same-day round trips) still binds **margin accounts only**; cash accounts were never PDT-bound. The paper account is at $101k margin (multiplier=2), so PDT never bound in any case.
+- **Backtest engine is daily-only (until intraday-engine PR lands).** `BacktestEngine._simulate` hardcodes `timeframe=Timeframe.DAY_1` at `src/milodex/backtesting/engine.py:341` and iterates `for day in trading_days`. Any strategy with `tempo.bar_size != "1D"` receives daily bars at evaluate-time regardless of YAML config. Symptom: backtest reports "Trades: 0" silently. Quick test: run the unconditional intraday long benchmark (`benchmark.unconditional_intraday_long.spy.v1`) — if it reports 0 trades, the engine is on the daily path. Intraday support is in flight; see brainstorm 2026-05-20.
 - **`.venv` must be a stdlib `python -m venv`, not a `uv venv` trampoline.** A uv/trampoline `.venv\Scripts\python.exe` re-execs the *base* interpreter, so the code runs under the base Python's site-packages — if the base has a broken/missing dep (e.g. corrupt pandas), runners die on import. Symptom: GUI-launched runners produce no explanations / "phantom" runners; fix + 5-min diagnostic in `docs/TROUBLESHOOTING.md`. The redirector+base-child PID *pair* per process is normal Windows venv behaviour — not a bug.
 - **Daily (`1D`) strategies are a no-op while the market is OPEN** (`runner.py` market-hours gate returns `[]` before any fetch). "Runner running but 0 explanations" during market hours is BY DESIGN, not a stall — it evaluates after close + the lockin window. Don't debug a non-bug.
 - **Diagnostic surface:** event store `data/milodex.db` (SQLite) — `strategy_runs.ended_at IS NULL` = open/"running" (no liveness check; a dead one shows as phantom until #161 bootstrap reconcile); `explanations` = per-decision audit keyed by `session_id`; advisory locks in `data/locks/*.lock`; per-runner logs `logs/runner.<sid>.<ts>.log`. Inspect columns via `pragma table_info`.
