@@ -122,7 +122,7 @@ kill_switch:
 portfolio:
   max_single_position_pct: 1.00
   max_concurrent_positions: 3
-  max_total_exposure_pct: 1.00
+  max_total_exposure_pct: 0.85
 daily_limits:
   max_daily_loss_pct: 0.03
   max_trades_per_day: 20

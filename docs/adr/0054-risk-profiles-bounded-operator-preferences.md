@@ -131,7 +131,7 @@ risk policy from inside the harness.
 
 ## Consequences
 
-- `src/milodex/risk/config.py` gains `_ABSOLUTE_CEILINGS`, `CeilingViolation`,
+- `src/milodex/risk/config.py` gains `_ABSOLUTE_CEILINGS`, `CeilingViolationError`,
   `load_active_risk_profile()`, `get_active_profile_name()`, and helpers
   `_load_overlay()`, `_merge()`, `_get_by_path()`, `_validate_against_ceilings()`.
 

@@ -20,6 +20,8 @@ from typing import Any
 
 import yaml
 
+from milodex.config import get_data_dir
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ _ABSOLUTE_CEILINGS: dict[str, float] = {
 _KNOWN_PROFILES: frozenset[str] = frozenset({"conservative", "standard", "aggressive"})
 
 
-class CeilingViolation(RuntimeError):
+class CeilingViolationError(RuntimeError):
     """Raised when a risk profile's resolved values exceed an account-level ceiling.
 
     Per ADR 0054 §4: ceiling violations refuse startup, they do not silently fall back.
@@ -140,7 +142,11 @@ def _mapping(value: Any, label: str, path: Path) -> dict[str, Any]:
 
 
 def get_active_profile_name() -> str:
-    """Return the active profile name from ``data/risk_profile.txt``.
+    """Return the active profile name from ``{data_dir}/risk_profile.txt``.
+
+    Uses ``get_data_dir()`` so the path is consistent with the rest of the
+    system and benefits from the ``MILODEX_DATA_DIR`` env-var isolation used
+    in tests (see ``tests/conftest.py:_isolate_milodex_data_dirs``).
 
     Three-case fallback per ADR 0054 §2:
     - File absent or unreadable → ``"conservative"`` (silent, no warning).
@@ -148,7 +154,7 @@ def get_active_profile_name() -> str:
     - File present with content → return stripped, lower-cased value.
       The caller (``load_active_risk_profile``) validates against the allowlist.
     """
-    profile_file = Path("data/risk_profile.txt")
+    profile_file = get_data_dir() / "risk_profile.txt"
     if not profile_file.exists():
         return "conservative"
     try:
@@ -158,13 +164,14 @@ def get_active_profile_name() -> str:
         return "conservative"
 
 
-def _load_overlay(profile_name: str) -> dict[str, Any]:
+def _load_overlay(profile_name: str, configs_dir: Path | None = None) -> dict[str, Any]:
     """Load ``configs/risk_profiles/{profile_name}.yaml`` as a dict.
 
     Returns an empty dict when the file does not exist or fails to parse —
     the caller handles the unknown-profile case before calling here.
     """
-    path = Path("configs/risk_profiles") / f"{profile_name}.yaml"
+    base_dir = configs_dir or Path("configs")
+    path = base_dir / "risk_profiles" / f"{profile_name}.yaml"
     if not path.exists():
         return {}
     try:
@@ -197,14 +204,14 @@ def _get_by_path(d: dict[str, Any], dotted_path: str) -> Any:
 
 
 def _validate_against_ceilings(profile: dict[str, Any]) -> None:
-    """Raise ``CeilingViolation`` if any path in ``_ABSOLUTE_CEILINGS`` is exceeded.
+    """Raise ``CeilingViolationError`` if any path in ``_ABSOLUTE_CEILINGS`` is exceeded.
 
     Per ADR 0054 §4: ceilings refuse startup; they do not fall back silently.
     """
     for dotted_path, ceiling in _ABSOLUTE_CEILINGS.items():
         value = _get_by_path(profile, dotted_path)
         if value is not None and float(value) > ceiling:
-            raise CeilingViolation(
+            raise CeilingViolationError(
                 f"Profile value {dotted_path}={value} exceeds account-level ceiling "
                 f"{ceiling}. Edit the active overlay in configs/risk_profiles/ to comply. "
                 f"See ADR 0054 §4."
@@ -237,36 +244,46 @@ def load_active_risk_profile(
 ) -> RiskDefaults:
     """Load the active operator risk profile and return a validated ``RiskDefaults``.
 
-    Merges ``configs/risk_defaults.yaml`` (base) with the active profile overlay
-    from ``configs/risk_profiles/{name}.yaml``, validates the result against
-    ``_ABSOLUTE_CEILINGS``, and returns a ``RiskDefaults`` instance.
+    Merges the base risk-defaults YAML with the active profile overlay from
+    ``configs/risk_profiles/{name}.yaml`` (sibling to the base path), validates
+    the result against ``_ABSOLUTE_CEILINGS``, and returns a ``RiskDefaults``
+    instance.
 
     This is the **runtime consumer entry point** per ADR 0054.
     ``execution/service.py`` MUST route through this function.
     The backtest engine intentionally uses ``load_risk_defaults()`` instead
     (ADR 0054 §3: backtests evaluate strategy potential, not operator posture).
 
+    Profile file path: ``{get_data_dir()}/risk_profile.txt`` — consistent with
+    the rest of the system's use of ``get_data_dir()`` (env-var overrideable for
+    test isolation via ``MILODEX_DATA_DIR``).
+
     Three-case fallback semantics (ADR 0054):
-    - Missing ``data/risk_profile.txt`` → Conservative, silently.
+    - Missing ``risk_profile.txt`` → Conservative, silently.
     - Unknown profile name or malformed YAML → Conservative + WARNING log.
-    - Resolved values exceed a ceiling → raise ``CeilingViolation`` (refuse startup).
+    - Resolved values exceed a ceiling → raise ``CeilingViolationError`` (refuse startup).
     """
     _base_path = base_path or Path("configs/risk_defaults.yaml")
     with _base_path.open(encoding="utf-8") as fh:
         base: dict[str, Any] = yaml.safe_load(fh)
+
+    # configs_dir is the parent of risk_defaults.yaml (typically configs/).
+    # risk_profiles/ overlay directory is a sibling of the base YAML.
+    configs_dir = _base_path.parent
 
     active = get_active_profile_name()
 
     if active not in _KNOWN_PROFILES:
         logger.warning(
             "Risk profile %r is unknown; falling back to 'conservative'. "
-            "Edit data/risk_profile.txt to one of: %s. (ADR 0054 §2)",
+            "Edit %s to one of: %s. (ADR 0054 §2)",
             active,
+            get_data_dir() / "risk_profile.txt",
             ", ".join(sorted(_KNOWN_PROFILES)),
         )
         active = "conservative"
 
-    overlay = _load_overlay(active)
+    overlay = _load_overlay(active, configs_dir=configs_dir)
     merged = _merge(base, overlay)
     _validate_against_ceilings(merged)
     return _risk_defaults_from_dict(merged)

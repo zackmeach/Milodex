@@ -1,7 +1,7 @@
 """Tests for milodex.risk.config — absolute ceilings and risk-profile loader.
 
 Per ADR 0054: code-level ceilings are not YAML-editable; Conservative is the
-safe default; ceiling violations refuse startup (CeilingViolation); unknown
+safe default; ceiling violations refuse startup (CeilingViolationError); unknown
 profile names fall back to Conservative with a WARNING log.
 """
 
@@ -37,9 +37,9 @@ def test_absolute_ceilings_defined():
 
 
 def test_ceiling_violation_is_runtime_error():
-    from milodex.risk.config import CeilingViolation
+    from milodex.risk.config import CeilingViolationError
 
-    assert issubclass(CeilingViolation, RuntimeError)
+    assert issubclass(CeilingViolationError, RuntimeError)
 
 
 def test_all_three_shipped_profiles_pass_ceiling_validation():
@@ -54,7 +54,7 @@ def test_all_three_shipped_profiles_pass_ceiling_validation():
     for profile_name in ["conservative", "standard", "aggressive"]:
         overlay = _load_overlay(profile_name)
         merged = _merge(base, overlay)
-        _validate_against_ceilings(merged)  # raises CeilingViolation if bad
+        _validate_against_ceilings(merged)  # raises CeilingViolationError if bad
 
 
 # ---------------------------------------------------------------------------
@@ -99,7 +99,7 @@ def test_malformed_profile_falls_back_to_conservative_with_warning(
 
 
 def test_ceiling_violation_refuses_startup(tmp_path, monkeypatch):
-    """Profile resolving above a ceiling → CeilingViolation raised (refuse startup)."""
+    """Profile resolving above a ceiling → CeilingViolationError raised (refuse startup)."""
     monkeypatch.chdir(tmp_path)
 
     import shutil
@@ -118,7 +118,7 @@ def test_ceiling_violation_refuses_startup(tmp_path, monkeypatch):
     # The bridge allowlist won't include 'badprofile', so the loader will fall back
     # to conservative — we need to test _validate_against_ceilings directly for a
     # crafted merged dict that breaches the ceiling.
-    from milodex.risk.config import CeilingViolation, _validate_against_ceilings
+    from milodex.risk.config import CeilingViolationError, _validate_against_ceilings
 
     bad_merged = {
         "kill_switch": {"max_drawdown_pct": 0.99, "enabled": True, "require_manual_reset": True},
@@ -128,7 +128,7 @@ def test_ceiling_violation_refuses_startup(tmp_path, monkeypatch):
         "order_safety": {"max_order_value_pct": 0.15, "duplicate_order_window_seconds": 60,
                          "max_data_staleness_seconds": 300},
     }
-    with pytest.raises(CeilingViolation):
+    with pytest.raises(CeilingViolationError):
         _validate_against_ceilings(bad_merged)
 
 

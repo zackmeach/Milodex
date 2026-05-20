@@ -374,7 +374,16 @@ class ExecutionService:
                 trading_mode=trading_mode,
                 preview_only=preview_only,
                 kill_switch_state=self._kill_switch_store.get_state(),
-                risk_defaults=load_active_risk_profile(),  # ADR 0054: routes through active profile
+                # ADR 0054 §3: backtests use base risk_defaults (not the active
+                # operator profile) so historical replay evaluates strategy
+                # potential under stable reference constraints.
+                # Non-backtest paths route through load_active_risk_profile()
+                # so the active operator posture actually affects enforcement.
+                risk_defaults=(
+                    load_risk_defaults(self._risk_defaults_path)
+                    if is_backtest
+                    else load_active_risk_profile(base_path=self._risk_defaults_path)
+                ),
                 strategy_config=strategy_config,
                 runtime_config_hash=runtime_config_hash,
                 frozen_manifest_hash=frozen_manifest_hash,

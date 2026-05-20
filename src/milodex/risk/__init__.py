@@ -11,7 +11,7 @@ depends on ``risk/``, never the reverse.
 """
 
 from milodex.risk.config import (
-    CeilingViolation,
+    CeilingViolationError,
     RiskDefaults,
     load_active_risk_profile,
     load_backtesting_defaults,
@@ -30,7 +30,7 @@ from milodex.risk.policy import (
 __all__ = [
     "BYPASS_SUMMARY",
     "BacktestStructuralRiskEvaluator",
-    "CeilingViolation",
+    "CeilingViolationError",
     "EvaluationContext",
     "NullRiskEvaluator",
     "RiskCheckResult",
