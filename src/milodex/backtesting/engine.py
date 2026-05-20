@@ -130,6 +130,20 @@ class _PendingOrder:
     reasoning: object
 
 
+@dataclass
+class _IntradayPendingOrder:
+    """An intent emitted at intraday decision time T, awaiting fill at the next bar's open.
+
+    Sibling to :class:`_PendingOrder` for intraday simulation. Uses a full
+    UTC timestamp instead of a date so the drain loop can match against
+    per-timestamp open-price maps.
+    """
+
+    intent: TradeIntent
+    decision_timestamp: pd.Timestamp  # full UTC timestamp, not a date
+    reasoning: object  # carried for audit / no-action recording
+
+
 def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -> bool:
     """Return whether ``barset`` contains at least one row in the requested window."""
     if len(barset) == 0:
@@ -1185,6 +1199,248 @@ class BacktestEngine:
             sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["buys"] += 1
 
         return cash, buy_count, sell_count, skipped_count
+
+    def _drain_pending_at_timestamp(
+        self,
+        *,
+        pending: list[_IntradayPendingOrder],
+        opens: dict[str, float],
+        cash: float,
+        positions: dict[str, tuple[float, float]],
+        entry_state: dict[str, dict],
+        sim_broker: SimulatedBroker,
+        sim_data_provider: SimulatedDataProvider,
+        execution_service: ExecutionService,
+        timestamp: pd.Timestamp,
+        session_id: str,
+        db_run_id: int,
+        sym_fills: dict[str, dict[str, int]],
+    ) -> tuple[float, int, int, int, list[_IntradayPendingOrder]]:
+        """Drain pending intraday orders that have an open price available at this timestamp.
+
+        **Category 1 — missing-bar (new intraday semantic):** if a symbol is absent from
+        ``opens`` at this timestamp the order stays in ``remaining_pending``.
+        ``skipped`` is NOT incremented and ``_record_skipped_order`` is NOT called.
+
+        **Category 2 — true rejection (mirrors daily path):** every other failure
+        (sell without position, invalid open price, insufficient cash, execution-service
+        rejection) is counted as skipped and audited via ``_record_skipped_order``,
+        exactly as ``_drain_pending`` does.
+
+        Returns:
+            (cash, buy_count, sell_count, skipped_count, remaining_pending)
+        """
+        day = timestamp.date()
+
+        # Separate Category-1 orders (symbol not yet in opens) from those we must process.
+        remaining: list[_IntradayPendingOrder] = []
+        to_process: list[_IntradayPendingOrder] = []
+        for order in pending:
+            if order.intent.symbol.upper() not in opens:
+                remaining.append(order)
+            else:
+                to_process.append(order)
+
+        if not to_process:
+            return cash, 0, 0, 0, remaining
+
+        # Mirror daily _drain_pending: SELLs first to free cash, then BUYs.
+        sells = [p for p in to_process if p.intent.side is OrderSide.SELL]
+        buys = [p for p in to_process if p.intent.side is OrderSide.BUY]
+
+        equity_pre_drain = _compute_equity(cash, positions, opens)
+        self._sync_broker_state(
+            sim_broker=sim_broker,
+            sim_data_provider=sim_data_provider,
+            day=day,
+            closes=opens,
+            cash=cash,
+            equity=equity_pre_drain,
+            positions=positions,
+        )
+
+        sell_count = 0
+        skipped_count = 0
+        for p in sells:
+            sym = p.intent.symbol.upper()
+            if sym not in positions:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_sell_without_position",
+                    message=f"Skipped backtest sell for {sym}: no open position.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=equity_pre_drain,
+                    latest_price=opens.get(sym),
+                    unit_price=opens.get(sym),
+                    context={"reason_code": "backtest_sell_without_position"},
+                )
+                skipped_count += 1
+                continue
+            latest_open = opens.get(sym)
+            if latest_open is None:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_missing_next_open",
+                    message=f"Skipped backtest sell for {sym}: missing next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=equity_pre_drain,
+                    latest_price=None,
+                    unit_price=None,
+                    context={"reason_code": "backtest_missing_next_open"},
+                )
+                skipped_count += 1
+                continue
+            if not math.isfinite(latest_open) or latest_open <= 0:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_invalid_next_open",
+                    message=f"Skipped backtest sell for {sym}: invalid next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=equity_pre_drain,
+                    latest_price=latest_open,
+                    unit_price=latest_open,
+                    context={"reason_code": "backtest_invalid_next_open"},
+                )
+                skipped_count += 1
+                continue
+
+            qty, _ = positions[sym]
+            decorated = self._decorate_intent(p.intent, quantity_override=qty)
+            result = execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=p.reasoning,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            proceeds = fill_price * qty - self._commission
+            cash += proceeds
+            del positions[sym]
+            entry_state.pop(sym, None)
+            sell_count += 1
+            sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
+
+        # Re-sync after sells so BUY affordability checks reflect freed cash.
+        intermediate_equity = _compute_equity(cash, positions, opens)
+        self._sync_broker_state(
+            sim_broker=sim_broker,
+            sim_data_provider=sim_data_provider,
+            day=day,
+            closes=opens,
+            cash=cash,
+            equity=intermediate_equity,
+            positions=positions,
+        )
+
+        buy_count = 0
+        for p in buys:
+            sym = p.intent.symbol.upper()
+            if sym in positions:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_duplicate_position",
+                    message=f"Skipped backtest buy for {sym}: position already open.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=opens.get(sym),
+                    unit_price=opens.get(sym),
+                    context={"reason_code": "backtest_duplicate_position"},
+                )
+                skipped_count += 1
+                continue
+            qty = float(p.intent.quantity)
+            if qty <= 0:
+                continue
+            latest_open = opens.get(sym)
+            if latest_open is None:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_missing_next_open",
+                    message=f"Skipped backtest buy for {sym}: missing next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=None,
+                    unit_price=None,
+                    context={"reason_code": "backtest_missing_next_open"},
+                )
+                skipped_count += 1
+                continue
+            if not math.isfinite(latest_open) or latest_open <= 0:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_invalid_next_open",
+                    message=f"Skipped backtest buy for {sym}: invalid next open price.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=latest_open,
+                    unit_price=latest_open,
+                    context={"reason_code": "backtest_invalid_next_open"},
+                )
+                skipped_count += 1
+                continue
+            projected_fill = latest_open * (1.0 + self._slippage_pct)
+            cost = projected_fill * qty + self._commission
+            if cash < cost:
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_insufficient_cash",
+                    message=f"Skipped backtest buy for {sym}: insufficient cash.",
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=day,
+                    cash=cash,
+                    equity=intermediate_equity,
+                    latest_price=latest_open,
+                    unit_price=projected_fill,
+                    context={
+                        "reason_code": "backtest_insufficient_cash",
+                        "cash": cash,
+                        "projected_cost": cost,
+                    },
+                )
+                skipped_count += 1
+                continue
+
+            decorated = self._decorate_intent(p.intent)
+            result = execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=p.reasoning,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            realized_cost = fill_price * qty + self._commission
+            cash -= realized_cost
+            positions[sym] = (qty, fill_price)
+            entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
+            buy_count += 1
+            sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["buys"] += 1
+
+        return cash, buy_count, sell_count, skipped_count, remaining
 
     def _record_skipped_order(
         self,
