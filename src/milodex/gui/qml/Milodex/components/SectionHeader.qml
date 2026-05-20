@@ -63,11 +63,11 @@ Column {
 
         Item {
             id: rightSlotArea
-            anchors.right:    parent.right
-            anchors.baseline: root.numeral !== "" ? letterText.baseline : undefined
-            anchors.top:      root.numeral !== "" ? undefined : parent.top
-            implicitWidth:    childrenRect.width
-            implicitHeight:   childrenRect.height
+            anchors.right:         parent.right
+            anchors.verticalCenter: root.numeral !== "" ? letterText.verticalCenter : undefined
+            anchors.top:           root.numeral !== "" ? undefined : parent.top
+            implicitWidth:         childrenRect.width
+            implicitHeight:        childrenRect.height
         }
     }
 
