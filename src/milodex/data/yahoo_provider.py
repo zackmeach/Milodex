@@ -23,7 +23,7 @@ WARNING.  This keeps a Yahoo outage from breaking the broader cache refresh.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import yfinance
@@ -69,7 +69,7 @@ def fetch_vix_history(start: date, end: date) -> pd.DataFrame:
             start=start.isoformat(),
             end=(
                 date(end.year, end.month, end.day)
-                .__add__(__import__("datetime").timedelta(days=1))
+                .__add__(timedelta(days=1))
                 .isoformat()
             ),
             interval="1d",

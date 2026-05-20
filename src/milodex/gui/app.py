@@ -308,20 +308,17 @@ def run_app() -> int:
     active_ops_state.start()
     attention_state.start()
 
-    # VIX warmup: fetch recent ^VIX history from Yahoo Finance and write it to
-    # the ParquetCache before the tape starts polling.  Failure is non-fatal —
-    # a missing VIX parquet simply means the tape renders VIX as "—" until the
-    # next successful warmup.  Alpaca free tier does not supply VIX (it is a
-    # CBOE index), so Yahoo is the only free path (see yahoo_provider.py).
-    try:
-        from milodex.data.tape_cache_warmup import warmup_vix_cache
-
-        warmup_vix_cache(cache_dir=cache_dir)
-    except Exception:  # noqa: BLE001
-        logger.warning("run_app: VIX cache warmup failed; VIX will display as '—' on tape")
-
     market_tape_state.start()
     activity_feed_state.start()
+
+    # Run AFTER market_tape_state.start() so the GUI begins rendering the
+    # already-cached symbols immediately. VIX renders as "—" until the
+    # warmup completes and the next refresh tick picks it up — typically
+    # sub-second on a warm Yahoo connection, but can stall the call to
+    # 10+s on a bad network. Doing it here keeps the GUI responsive.
+    from milodex.data.tape_cache_warmup import warmup_vix_cache
+
+    warmup_vix_cache(cache_dir=cache_dir)
 
     # --- 4. Engine ------------------------------------------------------------
     engine = QQmlApplicationEngine()

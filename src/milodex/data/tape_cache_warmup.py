@@ -25,6 +25,8 @@ import logging
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pandas as pd
+
 from milodex.config import get_cache_dir
 from milodex.data.alpaca_provider import CACHE_VERSION
 from milodex.data.cache import ParquetCache
@@ -129,8 +131,6 @@ def get_vix_cache_state(
 
     if df is None or df.empty:
         return {"exists": False, "row_count": 0, "latest_date": None}
-
-    import pandas as pd
 
     latest = pd.to_datetime(df["timestamp"], utc=True).max().date()
     return {
