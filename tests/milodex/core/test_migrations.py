@@ -162,9 +162,9 @@ def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
         _run_migrations_up_to(conn, 9)
         _seed_pre_migration_rows(conn)
 
-    # Opening EventStore applies migration 010
+    # Opening EventStore applies migrations 010 and 011
     store = EventStore(db_path)
-    assert store.schema_version == 10
+    assert store.schema_version == 11
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -242,3 +242,38 @@ def test_010_migration_idempotent(tmp_path):
 
     assert broker_after_first == broker_after_second
     assert backtest_after_first == backtest_after_second
+
+
+def test_011_creates_risk_profile_changes_table(tmp_path):
+    """Migration 011 creates the risk_profile_changes audit table with the
+    correct schema (ADR 0054)."""
+    db_path = tmp_path / "milodex.db"
+
+    store = EventStore(db_path)
+    assert store.schema_version == 11
+
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='risk_profile_changes'"
+        )
+        assert cur.fetchone() is not None, "risk_profile_changes table must exist after migration 011"
+
+        cur = conn.execute("PRAGMA table_info(risk_profile_changes)")
+        cols = {row[1] for row in cur.fetchall()}
+        assert {
+            "id",
+            "recorded_at",
+            "from_profile",
+            "to_profile",
+            "actor",
+            "confirmation_method",
+            "context_mode",
+            "runners_active_count",
+            "success",
+            "failure_reason",
+        } <= cols
+
+        # Index must exist
+        cur = conn.execute("PRAGMA index_list(risk_profile_changes)")
+        index_names = {row[1] for row in cur.fetchall()}
+        assert "idx_risk_profile_changes_time" in index_names
