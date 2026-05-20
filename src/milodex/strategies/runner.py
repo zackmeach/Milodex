@@ -15,7 +15,8 @@ from uuid import uuid4
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
 from milodex.core.event_store import EventStore, StrategyRunEvent
-from milodex.data import DataProvider, Timeframe
+from milodex.data import DataProvider
+from milodex.data.timeframes import timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
@@ -423,7 +424,7 @@ class StrategyRunner:
     def _fetch_bars_by_symbol(self) -> dict[str, Any]:
         """Fetch bars for every universe symbol over the history window."""
         universe = list(self._loaded.context.universe)
-        timeframe = _timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
+        timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
         end = date.today()
         start = end - timedelta(days=self._history_window_days())
         return self._data_provider.get_bars(universe, timeframe, start, end)
@@ -557,17 +558,6 @@ class StrategyRunner:
         print("  [k] kill switch     - cancel open orders, halt, require manual reset")
         print("  [n] nevermind       - keep running")
         return input("Choose shutdown mode [c/k/n]: ")
-
-
-def _timeframe_from_bar_size(value: str) -> Timeframe:
-    mapping = {
-        "1D": Timeframe.DAY_1,
-        "1H": Timeframe.HOUR_1,
-        "15Min": Timeframe.MINUTE_15,
-        "5Min": Timeframe.MINUTE_5,
-        "1Min": Timeframe.MINUTE_1,
-    }
-    return mapping[value]
 
 
 def _resolve_poll_interval(tempo: dict[str, Any], explicit: float | None) -> float:
