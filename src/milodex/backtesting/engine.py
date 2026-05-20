@@ -1279,23 +1279,7 @@ class BacktestEngine:
                 )
                 skipped_count += 1
                 continue
-            latest_open = opens.get(sym)
-            if latest_open is None:
-                self._record_skipped_order(
-                    intent=p.intent,
-                    reason_code="backtest_missing_next_open",
-                    message=f"Skipped backtest sell for {sym}: missing next open price.",
-                    session_id=session_id,
-                    db_run_id=db_run_id,
-                    day=day,
-                    cash=cash,
-                    equity=equity_pre_drain,
-                    latest_price=None,
-                    unit_price=None,
-                    context={"reason_code": "backtest_missing_next_open"},
-                )
-                skipped_count += 1
-                continue
+            latest_open = opens[sym]  # partition guarantees key exists
             if not math.isfinite(latest_open) or latest_open <= 0:
                 self._record_skipped_order(
                     intent=p.intent,
@@ -1365,24 +1349,9 @@ class BacktestEngine:
                 continue
             qty = float(p.intent.quantity)
             if qty <= 0:
+                # Silent drop: mirrors daily _drain_pending behavior. Not counted as skipped.
                 continue
-            latest_open = opens.get(sym)
-            if latest_open is None:
-                self._record_skipped_order(
-                    intent=p.intent,
-                    reason_code="backtest_missing_next_open",
-                    message=f"Skipped backtest buy for {sym}: missing next open price.",
-                    session_id=session_id,
-                    db_run_id=db_run_id,
-                    day=day,
-                    cash=cash,
-                    equity=intermediate_equity,
-                    latest_price=None,
-                    unit_price=None,
-                    context={"reason_code": "backtest_missing_next_open"},
-                )
-                skipped_count += 1
-                continue
+            latest_open = opens[sym]  # partition guarantees key exists
             if not math.isfinite(latest_open) or latest_open <= 0:
                 self._record_skipped_order(
                     intent=p.intent,
