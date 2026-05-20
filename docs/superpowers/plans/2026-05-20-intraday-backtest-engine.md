@@ -12,6 +12,150 @@
 
 ---
 
+## Required Implementation Corrections (read FIRST — overrides individual task wording where they conflict)
+
+These corrections came from a plan-reviewer pass after grepping the actual engine code. Treat them as authoritative — if a Phase D/E task body conflicts with one of these, the correction wins.
+
+### Correction 1: Walk-forward must propagate the timeframe
+
+`prefetch_bars(start, end)` is called in two places: directly inside the engine at [engine.py:499](../../src/milodex/backtesting/engine.py) AND from the walk-forward orchestrator at `src/milodex/backtesting/walk_forward_runner.py` (function `run_walk_forward` / `derive_walk_forward_spans`). The walk-forward caller currently passes no timeframe argument. After defaulting `prefetch_bars` to `Timeframe.DAY_1`, single-run intraday backtests will work but `--walk-forward` will silently keep fetching daily bars for intraday configs.
+
+**Fix:** In Task C2 (or a new Task C2b), update `walk_forward_runner.py` to derive the timeframe from the loaded strategy's `tempo.bar_size` and pass it to `engine.prefetch_bars(...)`. Add a test in Phase F (Test #10, walk-forward isolation, can subsume this) that explicitly exercises intraday + `--walk-forward` together and asserts non-daily bar fetch.
+
+### Correction 2: `_PendingOrder` actual shape
+
+The current dataclass at [engine.py:123-129](../../src/milodex/backtesting/engine.py) is:
+
+```python
+@dataclass
+class _PendingOrder:
+    intent: TradeIntent
+    decision_day: date
+    reasoning: object
+```
+
+The plan's references to `decision_timestamp` and `decision_session_id` fields are **wrong** — those fields don't exist. The daily path depends on `decision_day` and `reasoning` for audit/no-action recording.
+
+**Fix:** Introduce a sibling dataclass for the intraday path. Do NOT mutate `_PendingOrder`:
+
+```python
+@dataclass
+class _IntradayPendingOrder:
+    intent: TradeIntent
+    decision_timestamp: pd.Timestamp   # full UTC timestamp, not a date
+    reasoning: object
+```
+
+Throughout Phase D/E plan content, where you see `_PendingOrder(intent=..., decision_timestamp=..., decision_session_id=...)`, treat it as `_IntradayPendingOrder(intent=..., decision_timestamp=..., reasoning=decision.reasoning)`. Drop the `decision_session_id` field — `session_id` is engine instance state, not pending-order state. (`_PendingOrder` doesn't carry session_id either.)
+
+### Correction 3: `_evaluate_strategy` must return the full `StrategyDecision`, not just intents
+
+The current daily path uses `decision.reasoning` for:
+- Audit recording of no-action cycles (the strategy emitted no intents)
+- Attaching reasoning to pending orders (via `_PendingOrder.reasoning`)
+- Skipped-order audit when execution fails
+
+If `_evaluate_strategy` returns only `list[TradeIntent]`, all that reasoning is lost.
+
+**Fix:** Signature is:
+
+```python
+def _evaluate_strategy(
+    self,
+    *,
+    bars_by_symbol_visible: dict[str, BarSet],
+    cash: float,
+    positions: dict[str, tuple[float, float]],
+    entry_state: dict[str, dict],
+) -> StrategyDecision:
+    """Returns the full StrategyDecision so callers can use .intents AND .reasoning."""
+```
+
+Callers extract `decision.intents` and `decision.reasoning` separately. The intraday path passes `decision.reasoning` to `_IntradayPendingOrder.reasoning`.
+
+Alternative if Task C3 extraction proves too risky: leave `strategy.evaluate(...)` inline in both paths and extract only `_build_strategy_context(...)`. Skip C3 in that case; daily and intraday each call `strategy.evaluate(...)` directly with their own context construction.
+
+### Correction 4: `_drain_pending_at_timestamp` must be an instance method with full skipped semantics
+
+The proposed module-level helper signature is wrong. The current `_drain_pending` (instance method on `BacktestEngine`) reaches into:
+- `self._commission`, `self._slippage_pct`
+- `self._decorate_intent(...)` — attaches metadata to the intent before execution
+- `self._record_skipped_order(...)` — writes audit events for non-fill failures
+- Engine-owned audit and analytics paths
+
+**Fix:** Make it an instance method:
+
+```python
+def _drain_pending_at_timestamp(
+    self,
+    *,
+    pending: list[_IntradayPendingOrder],
+    opens: dict[str, float],
+    cash: float,
+    positions: dict[str, tuple[float, float]],
+    entry_state: dict[str, dict],
+    sim_broker: SimulatedBroker,
+    sim_data_provider: SimulatedDataProvider,
+    execution_service: ExecutionService,
+    timestamp: pd.Timestamp,
+    session_id: str,
+    db_run_id: int,
+    sym_fills: dict[str, dict[str, int]],
+) -> tuple[float, int, int, int, list[_IntradayPendingOrder]]:
+    """Returns (cash, buys, sells, skipped, remaining_pending)."""
+```
+
+**Skipped semantics (important):**
+- Symbol absent from `opens` at this timestamp → order STAYS in `remaining_pending`. Do NOT increment `skipped`. Do NOT call `_record_skipped_order`.
+- Sell without position / invalid open / insufficient cash / execution-service rejection → STILL counts as `skipped` AND records via `_record_skipped_order` AND does NOT stay in pending (just like the daily path).
+
+Mirror `_drain_pending`'s body line-for-line for the second category; only the first category (missing-bar) is the new semantic.
+
+### Correction 5: `_simulate_intraday` must preserve persistence and audit behavior
+
+The proposed `_simulate_intraday` skeleton returns `_SimulationOutput` but skips:
+- Final broker sync (the daily path syncs the simulated broker after the loop)
+- `record_backtest_equity_snapshot(...)` calls per day (daily path emits one snapshot per day to `backtest_equity_snapshots` per ADR 0053)
+- Skipped audit events for stranded pending orders at backtest end (daily path uses `_record_skipped_order` with a specific reason code)
+
+**Fix:** In Task E1, after each day's mark-to-market, call `record_backtest_equity_snapshot(...)` exactly like the daily path does at [engine.py:872](../../src/milodex/backtesting/engine.py). After the day-loop ends, before computing `skipped_count`, iterate stranded pending orders and call `self._record_skipped_order(...)` for each with the same reason code the daily path uses for end-of-backtest stranding. Replicate any final broker sync the daily path performs.
+
+The implementer should diff `_simulate_daily` against the new `_simulate_intraday` AFTER Task E1 to confirm equivalent persistence/audit behavior is present.
+
+### Correction 6: Precompute per-symbol lookup structures to avoid O(events × bars) work
+
+The proposed `_opens_at_timestamp` and `_advance_cursors` helpers call `barset.to_dataframe()` and `pd.to_datetime(...)` inside the event loop. For 4 years × ~78 bars/session × ~250 sessions/year × N symbols, that's millions of redundant conversions.
+
+**Fix:** Add a precompute step at the top of `_simulate_intraday`:
+
+```python
+# Precompute once per simulation
+per_symbol_df: dict[str, pd.DataFrame] = {}
+per_symbol_ts_utc: dict[str, pd.DatetimeIndex] = {}
+per_symbol_open_by_ts: dict[str, dict[pd.Timestamp, float]] = {}
+
+for symbol, barset in all_bars.items():
+    df = barset.to_dataframe()
+    per_symbol_df[symbol] = df
+    ts_utc = pd.to_datetime(df["timestamp"], utc=True)
+    per_symbol_ts_utc[symbol] = pd.DatetimeIndex(ts_utc)
+    per_symbol_open_by_ts[symbol] = dict(zip(ts_utc.values, df["open"].astype(float).values, strict=True))
+```
+
+Then `_opens_at_timestamp(per_symbol_open_by_ts, ts)`, `_advance_cursors(cursors, per_symbol_ts_utc, ts, bar_size)`, and the event-timeline builder all read from these precomputed maps. No `to_dataframe()` calls inside the loop.
+
+The helper signatures in Phase D should accept these precomputed maps as parameters, not `dict[str, BarSet]`. Update each helper's test fixtures accordingly.
+
+### Correction 7 (smaller): Phase F test ordering
+
+Move at least Test 2 (smoke benchmark — exact trade counts) and Test 3 (no same-bar fill) to BEFORE Task E1 in Phase E. Write them, watch them fail with `NotImplementedError`, THEN implement `_simulate_intraday`. This keeps TDD honest for the highest-value tests.
+
+### Correction 8 (smaller): Daily regression — point at existing fixtures
+
+Phase B Task B1 currently says "implementer fills in based on Step 2 capture." Concretize: look at `tests/milodex/strategies/test_meanrev_ibs_lowclose.py` for the existing `_ohlc_barset` helper and IBS-style synthetic input. Reuse those patterns for the daily regression fixtures — don't invent new ones.
+
+---
+
 ## File Structure
 
 **Create:**
