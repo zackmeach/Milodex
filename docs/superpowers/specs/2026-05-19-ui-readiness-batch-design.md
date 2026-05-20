@@ -290,10 +290,10 @@ There is one additional anomaly: id=259, recorded_at `2024-12-31`, equity `$149,
 
 ### Schema
 
-In-framework SQL migration `src/milodex/core/migrations/006_backtest_equity_snapshots.sql`, modeled after [`008_explanations_backtest_run_id.sql`](src/milodex/core/migrations/008_explanations_backtest_run_id.sql):
+In-framework SQL migration `src/milodex/core/migrations/010_backtest_equity_snapshots.sql`, modeled after [`008_explanations_backtest_run_id.sql`](src/milodex/core/migrations/008_explanations_backtest_run_id.sql). **Migration number 010** — files 001 through 009 already exist; the schema-version gate would skip any lower-numbered file. (PR-7b's audit migration shifts to 011 accordingly.)
 
 ```sql
--- 006_backtest_equity_snapshots.sql
+-- 010_backtest_equity_snapshots.sql
 --
 -- ADR 0053: backtest equity snapshots get their own table; portfolio_snapshots
 -- becomes broker-only. Migration runs in BEGIN EXCLUSIVE per the framework
@@ -318,8 +318,28 @@ CREATE INDEX IF NOT EXISTS idx_backtest_equity_session
 CREATE INDEX IF NOT EXISTS idx_backtest_equity_strategy_time
     ON backtest_equity_snapshots (strategy_id, recorded_at);
 
--- One-time data migration: move the 277 :w-suffixed rows over.
--- backtest_run_id is NULL for migrated rows (no reliable mapping from string suffix).
+-- Quarantine table for forensic preservation of anomalous rows. Per operator's
+-- `feedback_inspect_before_deciding` rule, we preserve evidence rather than
+-- delete it. This table holds rows whose provenance can't be cleanly attributed.
+CREATE TABLE IF NOT EXISTS portfolio_snapshots_quarantine (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    original_id INTEGER NOT NULL,         -- the id this row had in portfolio_snapshots
+    recorded_at TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    strategy_id TEXT NOT NULL,
+    equity REAL NOT NULL,
+    cash REAL NOT NULL,
+    portfolio_value REAL NOT NULL,
+    daily_pnl REAL NOT NULL,
+    positions_json TEXT NOT NULL,
+    quarantine_reason TEXT NOT NULL,      -- why this row was moved
+    quarantined_at TEXT NOT NULL          -- ISO 8601
+);
+
+-- One-time data migration: move all walk-forward backtest rows over.
+-- backtest_run_id is NULL for migrated rows (no reliable mapping from
+-- string suffix); new writer (analytics/snapshots.py) populates it from
+-- engine context for future inserts.
 INSERT INTO backtest_equity_snapshots
     (recorded_at, session_id, strategy_id, backtest_run_id,
      equity, cash, portfolio_value, daily_pnl, positions_json)
@@ -330,9 +350,29 @@ WHERE session_id LIKE '%:w%';
 
 DELETE FROM portfolio_snapshots WHERE session_id LIKE '%:w%';
 
--- Stray $149K row: NOT deleted. Preserved as forensic evidence per the
--- operator's `feedback_inspect_before_deciding` rule. Excluded from read
--- queries via a value-ceiling filter (see PerformanceState change below).
+-- Quarantine the known stray pre-suffix-convention anomaly. Provenance:
+-- session_id '1ee1399f-c393-4cbe-87b1-f38b96747a00' carries equity $149,315
+-- recorded 2024-12-31 — no :w suffix yet appears anomalous (live broker
+-- account never had that equity; predates the broker-snapshot era which
+-- starts 2026-04-27). Move it, don't delete it.
+INSERT INTO portfolio_snapshots_quarantine
+    (original_id, recorded_at, session_id, strategy_id,
+     equity, cash, portfolio_value, daily_pnl, positions_json,
+     quarantine_reason, quarantined_at)
+SELECT id, recorded_at, session_id, strategy_id,
+       equity, cash, portfolio_value, daily_pnl, positions_json,
+       'pre-suffix-convention backtest anomaly; equity 149315 predates broker era 2026-04-27',
+       datetime('now')
+FROM portfolio_snapshots
+WHERE session_id = '1ee1399f-c393-4cbe-87b1-f38b96747a00';
+
+DELETE FROM portfolio_snapshots
+WHERE session_id = '1ee1399f-c393-4cbe-87b1-f38b96747a00';
+
+-- Note: if additional anomalies surface during the pre-implementation
+-- verification step (Section 9 step 3), add their session_ids here as
+-- explicit INSERT/DELETE pairs with documented reasons before the
+-- migration runs against production data.
 ```
 
 ### Writer redirect (helper level)
@@ -366,18 +406,12 @@ New method in [`event_store.py`](src/milodex/core/event_store.py): `append_backt
 
 [`analytics/reports.py:103`](src/milodex/analytics/reports.py:103) `build_trust_report()` currently calls `event_store.list_portfolio_snapshots_for_strategy(metrics.strategy_id)` to summarise backtest equity. Post-migration this returns zero rows for any backtest strategy. **Redirect this call** to `list_backtest_equity_snapshots_for_strategy()`.
 
-[`performance_state.py`](src/milodex/gui/performance_state.py) `_SQL_ALL_PAPER`: no SQL change for the join-back logic itself. Add a value-ceiling filter to exclude the stray forensic row:
-```sql
-SELECT recorded_at, equity FROM (
-    SELECT recorded_at, equity,
-           ROW_NUMBER() OVER (PARTITION BY recorded_at ORDER BY id DESC) AS rn
-    FROM portfolio_snapshots
-    WHERE equity < 1000000  -- defensive ceiling; excludes the $149K stray and any future anomaly
-) sub
-WHERE rn = 1
-ORDER BY recorded_at;
-```
-Document the ceiling as a value-defense, not a real account limit.
+[`performance_state.py`](src/milodex/gui/performance_state.py) `_SQL_ALL_PAPER`: **no SQL change required.** Because the migration quarantines anomalous rows to `portfolio_snapshots_quarantine`, the operational table `portfolio_snapshots` is clean by construction. The existing query reads as-is and produces the honest All-Paper number.
+
+Provenance-based quarantine is preferable to a read-time value filter because:
+- A value filter would have to be tuned to anomaly-specific numbers (the $149K row is below typical "clearly wrong" ceilings; my original draft proposed `equity < 1000000` which doesn't exclude it). Provenance via session_id is exact.
+- Quarantining preserves the forensic evidence in a dedicated table rather than hiding it behind a read predicate that future readers may not realize is filtering.
+- New anomalies surfaced post-migration require an explicit operator decision (review + add to migration's INSERT/DELETE list) rather than silent inclusion-or-exclusion based on a brittle threshold.
 
 ### Pre-implementation verification step
 
@@ -392,14 +426,19 @@ HAVING COUNT(*) > 1;
 ```
 If multiple rows per identical timestamp carry different equity values (e.g., during a shutdown wave), document the behavior and decide whether to dedup more aggressively (e.g., GROUP BY date-truncated timestamp).
 
-### Acceptance
+### Acceptance (invariants, not absolute counts)
 
-- Migration idempotent (running twice is a no-op past the first apply).
-- After migration: `portfolio_snapshots` has 37 rows (1 stray + 36 surviving non-:w; verify exact count post-run); `backtest_equity_snapshots` has 277 rows.
-- `BacktestEngine._simulate` writes only to `backtest_equity_snapshots`.
-- `analytics/reports.py:build_trust_report()` produces non-zero `snapshot_count` for backtest strategies post-migration.
-- Performance State ALL-PAPER return reads as a small honest percentage (~+0.83% based on live-only inspection).
-- Drawdown reads as a small negative number reflecting actual paper variance.
+Row counts vary with operator activity between today and merge time, so acceptance is expressed as data-shape invariants rather than specific row counts:
+
+- **Migration idempotent** — running twice is a no-op past the first apply (framework schema-version gate).
+- **No backtest rows remain in `portfolio_snapshots`** — `SELECT COUNT(*) FROM portfolio_snapshots WHERE session_id LIKE '%:w%'` returns 0.
+- **All previously-`:w%` rows preserved in `backtest_equity_snapshots`** — count-parity check: `(rows where session_id LIKE '%:w%' in backtest_equity_snapshots) >= (count observed pre-migration; 277 at spec-write time)`.
+- **Known anomalous row quarantined** — `SELECT COUNT(*) FROM portfolio_snapshots_quarantine WHERE session_id = '1ee1399f-c393-4cbe-87b1-f38b96747a00'` returns 1; that session_id appears nowhere in `portfolio_snapshots`.
+- **`portfolio_snapshots` carries only broker-era data** — `SELECT MIN(recorded_at) FROM portfolio_snapshots` returns a date no earlier than the first live broker snapshot (verify ≥ `2026-04-27` at spec-write time; treat earlier returns as residual pollution to investigate).
+- **`BacktestEngine._simulate` writes only to `backtest_equity_snapshots`** — verified by a test running a fixture backtest and grepping the resulting `portfolio_snapshots` count delta (should be 0).
+- **`analytics/reports.py:build_trust_report()` produces non-zero `snapshot_count`** for backtest strategies post-migration (the read-path redirect lands).
+- **PerformanceState ALL-PAPER return reads honestly** — sign and magnitude consistent with live-only inspection (single-digit percent, not 4-orders-of-magnitude). Sparkline contains only broker-era points.
+- **Drawdown reflects actual paper variance** — single-digit-percent magnitude or smaller, not -98%.
 
 ### Tests
 
@@ -546,7 +585,7 @@ The first risk-policy mutation surface in Milodex. Doctrine-bearing. Split into 
 **Decision:**
 1. Three named profiles: Conservative, Standard, Aggressive.
 2. **Default-to-Conservative on fresh install.** Per `docs/FOUNDER_INTENT.md:131` — a fresh installation runs at conservative posture.
-3. Profiles are **overlays** on top of the canonical `configs/risk_defaults.yaml` base. Conservative tightens, Aggressive loosens, Standard is the identity overlay.
+3. Profiles are **overlays** on top of the canonical `configs/risk_defaults.yaml` base. Conservative tightens, Aggressive loosens, Standard is the identity overlay. **Backtests intentionally use the base `risk_defaults.yaml` directly** — they evaluate strategy potential, not current operator posture; mixing the active profile into backtests would make results unstable across switches. The runtime risk-enforcement path (live/paper evaluation) reads the active profile; the backtest engine reads the base. This split is documented at `execution/service.py:376` (active profile path) and `backtesting/engine.py:175-182` (base path).
 4. **Account-level absolute ceilings are CODE CONSTANTS**, not editable YAML. Per founder intent: "the operator cannot disable the floor." Located in `src/milodex/risk/config.py` with documented justification per ceiling.
 5. **Profile switches are refused while any runner is active.** Operator must stop all runners first. (No mid-flight risk drift possible; honors the doctrine.)
 6. **Profile switches are refused while a triggered (unresolved) kill switch exists.** Once manually reset (per CLAUDE.md "Kill switch requires manual reset"), switches are allowed.
@@ -623,7 +662,7 @@ _ABSOLUTE_CEILINGS = {
 **Loader API** in `src/milodex/risk/config.py`:
 ```python
 def get_active_profile_name() -> str:
-    """Read data/risk_profile.txt; fallback to 'conservative' if absent."""
+    """Read data/risk_profile.txt; fallback to 'conservative' if absent or unreadable."""
 
 def _load_overlay(profile_name: str) -> dict:
     """Read configs/risk_profiles/{name}.yaml; return parsed dict or {} for identity."""
@@ -632,25 +671,49 @@ def _merge(base: dict, overlay: dict) -> dict:
     """Recursive dict merge; overlay wins."""
 
 def _validate_against_ceilings(profile: dict) -> None:
-    """Raise RuntimeError if any path in _ABSOLUTE_CEILINGS is exceeded."""
+    """Raise CeilingViolation if any path in _ABSOLUTE_CEILINGS is exceeded."""
 
 def load_active_risk_profile() -> dict:
-    """Load risk_defaults.yaml + active overlay, validate, return merged dict.
-    On invalid profile, refuse to start and fall back to Conservative."""
+    """Load risk_defaults.yaml + active overlay, validate, return merged dict."""
 ```
+
+**Fallback behavior — three distinct cases** (each handled explicitly, no contradictions):
+
+| Condition | Behavior | Audit row |
+|---|---|---|
+| `data/risk_profile.txt` absent (fresh install, never set) | **Silently default to Conservative.** This is the bootstrap case per ADR 0054 §2. | one row with `actor='startup'`, `confirmation_method='none'`, `success=1`, `failure_reason=NULL` |
+| `data/risk_profile.txt` present but contains an **unknown profile name** OR the corresponding YAML is malformed | **Fall back to Conservative with a loud visible warning + audit row.** Reasoning: locking the operator out of their own system over a recoverable file error is the wrong tradeoff; the loud warning makes the degradation observable so it gets fixed. | one row with `actor='startup'`, `confirmation_method='none'`, `success=0`, `failure_reason='malformed_or_unknown_profile'`. Warning surfaced via `logger.warning` AND an operator-visible banner (handled in PR-7c). |
+| Active profile's resolved values **violate the code-level ceilings** in `_ABSOLUTE_CEILINGS` | **Refuse startup.** This is a safety-integrity failure: an operator-edited overlay is attempting to exceed a non-negotiable account-level guardrail. The operator can fix the YAML and restart. Audit row written if possible (best-effort, since startup is failing). | one row with `actor='startup'`, `confirmation_method='none'`, `success=0`, `failure_reason='ceiling_violation_<path>'` if DB is reachable; otherwise stderr message + exit. |
+
+Justification for the asymmetry: a missing file is a benign bootstrap condition; a malformed file is a recoverable operational error; a ceiling violation is a deliberate attempt to override a safety guardrail and must not be allowed silently. The three responses match the severity of each case.
+
+**Runtime consumer integration** (critical — otherwise PR-7a "works" in tests but doesn't affect enforcement):
+
+The runtime risk-enforcement path is **exactly one call site**: [`execution/service.py:376`](src/milodex/execution/service.py:376), which currently calls `load_risk_defaults(self._risk_defaults_path)` on every evaluation. This call must be migrated to `load_active_risk_profile()`.
+
+**Acceptance criterion (must be tested):** every runtime risk consumer receives its config through `load_active_risk_profile()`, not by direct read of `risk_defaults.yaml`. Specifically:
+
+- [`execution/service.py:376`](src/milodex/execution/service.py:376) — **MIGRATE** to `load_active_risk_profile()`. This is the live/paper risk evaluation path. The active operator-selected profile must take effect here.
+- [`backtesting/engine.py:175-182`](src/milodex/backtesting/engine.py:175) — **INTENTIONALLY LEFT** reading the base `risk_defaults.yaml`. Rationale: backtests evaluate a strategy's economic potential against the base configuration; varying that with the operator's current posture would make backtest results unstable across profile switches. This decision is documented in ADR 0054.
+- [`cli/config_validation.py`](src/milodex/cli/config_validation.py) — config-validation read of the base; not a runtime consumer; left alone.
+- [`gui/read_models.py`](src/milodex/gui/read_models.py) — display-layer read of the base for showing current limits; should be migrated to read the *active* profile so the UI shows what's actually enforced. Update during PR-7c GUI work.
+- [`cli/commands/research.py`](src/milodex/cli/commands/research.py) — research-tool read; audit during implementation to determine whether it's a runtime consumer (enforces against trades) or analysis-only.
+
+**Enforcement test:** `tests/milodex/risk/test_runtime_consumer_routes_through_active_profile.py`. Sets active profile to Conservative; constructs an `ExecutionService`; invokes evaluation; asserts that the limits used match Conservative's overlay values, not base `risk_defaults.yaml` values. Without this test, PR-7a's risk-profile system can ship without actually enforcing.
 
 **Tests**
 - `tests/milodex/risk/test_config.py::test_default_to_conservative_when_file_absent`
 - `tests/milodex/risk/test_config.py::test_overlay_merge_correctness`
 - `tests/milodex/risk/test_config.py::test_validate_refuses_ceiling_violation` — write a malicious overlay that exceeds a ceiling; assert refusal.
-- `tests/milodex/risk/test_config.py::test_fallback_to_conservative_on_malformed_profile`
+- `tests/milodex/risk/test_config.py::test_fallback_to_conservative_on_malformed_profile` — write a malformed YAML; assert fallback + loud warning + audit row.
 - `tests/milodex/risk/test_config.py::test_all_three_shipped_profiles_pass_validation` — guards against accidentally shipping an Aggressive overlay that violates ceilings.
+- `tests/milodex/risk/test_runtime_consumer_routes_through_active_profile.py::test_execution_service_uses_active_profile` — the critical integration test above.
 
 ---
 
 ### PR-7b — Audit table + bridge (no GUI)
 
-**Migration:** `src/milodex/core/migrations/009_risk_profile_changes.sql`:
+**Migration:** `src/milodex/core/migrations/011_risk_profile_changes.sql` (PR-5 occupies 010; existing migrations stop at 009):
 
 ```sql
 CREATE TABLE IF NOT EXISTS risk_profile_changes (
@@ -855,11 +918,14 @@ These are explicit steps that must run during implementation, not assumptions:
 
 1. **PR-1**: run the repro SQL query before changing any logic. Outcome determines whether `_has_live_runner` is touched or left alone.
 2. **PR-4**: run `ls data/cache/*/VIX*` and grep the data-ingest writer before designing the fix. Outcome determines whether the fix is ingest-side or rendering-side.
-3. **PR-5**: run the sub-second-timestamp verification SQL before writing the migration. Outcome determines whether dedup logic needs tightening beyond the current PARTITION BY recorded_at.
-4. **PR-5 (audit before merge)**: `rg "portfolio_snapshots" src/milodex/promotion/` — confirm promotion logic doesn't read the table directly.
-5. **PR-6**: verify timestamp-precision consistency across the 6 ledger event sources. Specifically, when a kill-switch fire and a `strategy_runs.ended_at` write happen ~milliseconds apart for the same event, do their ISO timestamps sort deterministically? Run a fixture-based test: trigger a kill-switch in a test DB, inspect both rows' `recorded_at` precision, and confirm the desired ordering (kill-switch row above the stop row) is stable. If precision differs (e.g., one source truncates to seconds), document the convention or normalize at read time.
-6. **PR-7a**: justify each `_ABSOLUTE_CEILINGS` value in the ADR; do not ship with placeholder numbers.
-7. **PR-7c**: before sizing, grep `_compact_timestamp` across the QML and Python surfaces to confirm the touch-point enumeration in §6 PR-7c is complete. If significantly more sites surface, re-estimate PR size.
+3. **PR-5 (anomaly survey)**: before writing the migration, scan for additional anomalies beyond the known id=259 stray. Query: `SELECT id, recorded_at, session_id, strategy_id, equity FROM portfolio_snapshots WHERE session_id NOT LIKE '%:w%' AND (equity > <plausible_account_ceiling_eg_500000> OR recorded_at < '<broker_era_start_date>')`. Each anomaly surfaced gets its own explicit quarantine INSERT/DELETE block added to the migration with a documented reason.
+4. **PR-5 (sub-second timestamps)**: run the sub-second-timestamp verification SQL before writing the migration. Outcome determines whether dedup logic needs tightening beyond the current PARTITION BY recorded_at.
+5. **PR-5 (audit before merge)**: `rg "portfolio_snapshots" src/milodex/promotion/` — confirm promotion logic doesn't read the table directly. Also `rg "portfolio_snapshots" src/milodex/` end-to-end to ensure no reader was missed.
+6. **PR-5 (migration number)**: re-verify `ls src/milodex/core/migrations/` immediately before writing the migration file. At spec-write time the next available number is 010; if any other PR landed a migration in between, increment accordingly and update PR-7b's number to match.
+7. **PR-6**: verify timestamp-precision consistency across the 6 ledger event sources. Specifically, when a kill-switch fire and a `strategy_runs.ended_at` write happen ~milliseconds apart for the same event, do their ISO timestamps sort deterministically? Run a fixture-based test: trigger a kill-switch in a test DB, inspect both rows' `recorded_at` precision, and confirm the desired ordering (kill-switch row above the stop row) is stable. If precision differs (e.g., one source truncates to seconds), document the convention or normalize at read time.
+8. **PR-7a**: justify each `_ABSOLUTE_CEILINGS` value in the ADR; do not ship with placeholder numbers.
+9. **PR-7a (consumer audit)**: before merge, `rg "load_risk_defaults\(|risk_defaults_path" src/milodex/` and confirm only the documented exceptions remain on the base-config path. Every other runtime consumer must route through `load_active_risk_profile()`.
+10. **PR-7c**: before sizing, grep `_compact_timestamp` across the QML and Python surfaces to confirm the touch-point enumeration in §6 PR-7c is complete. If significantly more sites surface, re-estimate PR size.
 
 ---
 
