@@ -10,7 +10,9 @@ Milodex's `BacktestEngine` is daily-only by construction. It hardcodes `timefram
 
 The first intraday strategies — `breakout.orb.intraday.spy.v1` and `benchmark.unconditional_intraday_long.spy.v1` (commit `f587d65` on `feat/intraday-orb-spy-v1`) — produce zero trades silently when backtested. The benchmark, which trades unconditionally every full session and should produce ~3 round trips on a 3-day window, also produces zero trades. The diagnostic signature is conclusive: the engine is on the daily path regardless of the strategy's `tempo.bar_size = "5Min"`.
 
-This PR adds a second simulation path inside `BacktestEngine` to support non-daily bar sizes. The daily path is preserved unchanged. The intraday path iterates bars chronologically by decision-time, evaluates strategies once per timestamp using the full multi-symbol market slice available, and fills pending orders at the next available bar's open — never the same bar (no lookahead).
+This PR adds a second simulation path inside `BacktestEngine` to support non-daily bar sizes. The daily path is preserved unchanged. The intraday path iterates a chronological event timeline containing both fill events at bar starts and decision events at bar completions, evaluates strategies once per decision event using the full multi-symbol market slice visible at that point, and fills pending orders at the next available bar's open — never the same bar (no lookahead).
+
+**v1 scope on timestamping convention.** This PR explicitly assumes the Alpaca-style **interval-start timestamping** convention (a bar timestamped T covers `[T, T + bar_size)`). The §2 Conventions block documents how end-timestamped providers *would* be supported in principle, but v1 does NOT normalize for end-timestamped providers. If a future data source uses interval-end timestamps, that normalization is a separate PR — half-supporting it here would introduce silent-bug risk.
 
 ## Goals & Non-goals
 
@@ -215,7 +217,7 @@ Ten test cases:
 
    This protects against the implementer "fixing" a lookahead bug by under-shooting cursor advancement.
 
-5. **Multi-symbol visible history with missing current bar**. Build a 2-symbol universe where symbol B has a missing 10:05 bar. At decision-time 10:05, assert symbol A's 10:05 bar IS in `opens_at_timestamp`, symbol B is NOT in `opens_at_timestamp`, AND symbol B's prior history through 10:00 IS visible in `context.bars_by_symbol`.
+5. **Multi-symbol visible history with missing current bar**. Build a 2-symbol universe where symbol B has a missing 10:05 bar (B has 10:00 and 10:10 bars but no 10:05 bar). At event timestamp T=10:05, symbol A has a fill event for `bar_timestamp=10:05` (its bar starts) and symbol B has NO fill event at 10:05 (no bar starting). Both symbols have a decision event at T=10:05 (their respective 10:00 bars complete; B has a 10:00 bar). Assert: symbol A IS in `opens_at_timestamp(T=10:05)`, symbol B is NOT, AND symbol B's prior history through its 10:00 bar IS visible in `context.bars_by_symbol` after the cursor advancement.
 
 6. **Pending order survives missing current bar**. Setup: pending BUY for symbol B from a 10:00 decision; symbol B has no 10:05 bar; symbol B has a 10:10 bar. Assert:
    - At 10:05: order remains in `pending`; `skipped_count` does NOT increment.
