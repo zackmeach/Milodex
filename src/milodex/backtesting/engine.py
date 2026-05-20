@@ -35,7 +35,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import yaml
@@ -1583,3 +1583,54 @@ def _compute_equity(
 
 def _day_to_dt(day: date) -> datetime:
     return datetime.combine(day, datetime.min.time(), tzinfo=UTC)
+
+
+def _build_intraday_event_timeline(
+    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
+    day: date,
+    bar_size_minutes: int,
+) -> list[tuple[pd.Timestamp, dict[str, Any]]]:
+    """Return the chronological event timeline for one trading day.
+
+    Each entry is ``(timestamp, metadata)`` where ``metadata`` carries:
+    - ``fill_symbols``: list of symbols with a bar at ``bar_timestamp == timestamp``
+    - ``decision_symbols``: list of symbols with a bar at ``decision_time == timestamp``
+
+    The timeline is the chronological union of fill events (bar starts) and
+    decision events (bar completions) for all universe symbols whose bars
+    fall in ``day``. See spec §3 component #3.
+
+    Args:
+        per_symbol_ts_utc: precomputed UTC-tz-aware DatetimeIndex per symbol.
+            The Phase E ``_simulate_intraday`` builds these once at the top
+            of the simulation to avoid redundant ``to_dataframe()`` calls
+            inside the event loop (Correction 6).
+        day: the trading day to scope the timeline to (UTC dates may differ
+            from ET dates due to timezone; the helper filters on the UTC
+            timestamp's ``.date()`` value).
+        bar_size_minutes: bar size in minutes, used to compute
+            ``decision_time = bar_timestamp + bar_size``.
+    """
+    bar_size = pd.Timedelta(minutes=bar_size_minutes)
+    fill_map: dict[pd.Timestamp, list[str]] = {}
+    decision_map: dict[pd.Timestamp, list[str]] = {}
+
+    for symbol, ts_index in per_symbol_ts_utc.items():
+        for bar_ts in ts_index:
+            if bar_ts.date() != day:
+                continue
+            fill_map.setdefault(bar_ts, []).append(symbol)
+            decision_ts = bar_ts + bar_size
+            decision_map.setdefault(decision_ts, []).append(symbol)
+
+    all_event_times = sorted(set(fill_map.keys()) | set(decision_map.keys()))
+    return [
+        (
+            t,
+            {
+                "fill_symbols": fill_map.get(t, []),
+                "decision_symbols": decision_map.get(t, []),
+            },
+        )
+        for t in all_event_times
+    ]
