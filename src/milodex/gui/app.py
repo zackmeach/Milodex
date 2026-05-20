@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _make_app_controller(read_models: list[object]) -> "object":
+def _make_app_controller(read_models: list[object]) -> object:
     """Construct an ``AppController`` QObject with a ``quitRequested`` slot.
 
     Deferred import of PySide6 keeps the module importable in CLI paths that
@@ -290,9 +290,7 @@ def run_app() -> int:
     # the strategy configs + advisory-lock/stop-sentinel dirs.
     performance_state = PerformanceState(db_path=db_path, cache_dir=cache_dir)
     risk_throughput_state = RiskThroughputState(db_path=db_path)
-    active_ops_state = ActiveOpsState(
-        db_path=db_path, configs_dir=configs_dir, locks_dir=locks_dir
-    )
+    active_ops_state = ActiveOpsState(db_path=db_path, configs_dir=configs_dir, locks_dir=locks_dir)
     attention_state = AttentionState(db_path=db_path)
     market_tape_state = MarketTapeState(cache_dir=cache_dir)
     activity_feed_state = ActivityFeedState(db_path=db_path)
@@ -388,20 +386,22 @@ def run_app() -> int:
     # --- 4b. AppController (Task 37 / PR-7c) ----------------------------------
     # Exposes quitRequested() Slot to QML for the Risk Office drawer Quit button.
     # Clean shutdown: stop all polling read models → drain QThreadPool → quit.
-    app_controller = _make_app_controller([
-        operational_state,
-        strategy_bank_state,
-        front_page_state,
-        bench_state,
-        kanban_state,
-        ledger_state,
-        performance_state,
-        risk_throughput_state,
-        active_ops_state,
-        attention_state,
-        market_tape_state,
-        activity_feed_state,
-    ])
+    app_controller = _make_app_controller(
+        [
+            operational_state,
+            strategy_bank_state,
+            front_page_state,
+            bench_state,
+            kanban_state,
+            ledger_state,
+            performance_state,
+            risk_throughput_state,
+            active_ops_state,
+            attention_state,
+            market_tape_state,
+            activity_feed_state,
+        ]
+    )
     engine.rootContext().setContextProperty("AppController", app_controller)
 
     # --- 5. QML import path ---------------------------------------------------

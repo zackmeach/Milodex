@@ -85,7 +85,11 @@ mt = MarketTapeState(cache_dir=_ne)
 af = ActivityFeedState(db_path=_ne)
 _r = Path(tempfile.mkdtemp(prefix="milodex_drawer_test_"))
 (_r / "configs").mkdir(); (_r / "locks").mkdir()
-facade = BenchCommandFacade(config_dir=_r/"configs", locks_dir=_r/"locks", get_trading_mode=lambda: "paper")
+facade = BenchCommandFacade(
+    config_dir=_r / "configs",
+    locks_dir=_r / "locks",
+    get_trading_mode=lambda: "paper",
+)
 bcb = BenchCommandBridge(facade, bench_state=bench)
 rpb = RiskProfileBridge(db_path=_ne)
 register_qml_types(
@@ -120,7 +124,9 @@ def test_drawer_qml_loads_clean() -> None:
     script = _build_drawer_structure_script("load")
     result = subprocess.run(
         [sys.executable, "-c", script],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
     if result.returncode != 0:
         pytest.fail(

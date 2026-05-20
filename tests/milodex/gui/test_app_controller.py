@@ -8,8 +8,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 
 def test_quit_handler_stops_all_polling_read_models() -> None:
     """AppController.quitRequested() calls stop() on every read model passed in.
@@ -26,10 +24,10 @@ def test_quit_handler_stops_all_polling_read_models() -> None:
 
     # Patch QGuiApplication.quit and QThreadPool.globalInstance to avoid
     # needing a running Qt app.
-    import milodex.gui.app as _app_module  # noqa: F401 — not used directly
-
     from PySide6.QtCore import QThreadPool
     from PySide6.QtGui import QGuiApplication
+
+    import milodex.gui.app as _app_module  # noqa: F401 — not used directly
 
     # QGuiApplication.quit is a static method; patch at class level.
     original_quit = QGuiApplication.quit

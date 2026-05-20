@@ -189,6 +189,8 @@ from milodex.gui.active_ops_state import ActiveOpsState
 from milodex.gui.attention_state import AttentionState
 from milodex.gui.market_tape_state import MarketTapeState
 from milodex.gui.activity_feed_state import ActivityFeedState
+from milodex.gui.risk_profile_bridge import RiskProfileBridge
+from milodex.gui.app import _make_app_controller
 
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
@@ -225,6 +227,7 @@ active_ops_state = ActiveOpsState(db_path=db_path, configs_dir=configs_dir, lock
 attention_state = AttentionState(db_path=db_path)
 market_tape_state = MarketTapeState(cache_dir=db_path)
 activity_feed_state = ActivityFeedState(db_path=db_path)
+risk_profile_bridge = RiskProfileBridge(db_path=db_path)
 register_qml_types(
     theme_manager=tm,
     operational_state=op_state,
@@ -238,13 +241,17 @@ register_qml_types(
     attention_state=attention_state,
     market_tape_state=market_tape_state,
     activity_feed_state=activity_feed_state,
+    risk_profile_bridge=risk_profile_bridge,
 )
+
+_app_ctrl = _make_app_controller([])
 
 warnings_seen = []
 
 engine = QQmlApplicationEngine()
 engine.warnings.connect(lambda msgs: warnings_seen.extend(msgs))
 engine.addImportPath({import_path!r})
+engine.rootContext().setContextProperty("AppController", _app_ctrl)
 engine.load(QUrl.fromLocalFile({qml_path!r}))
 
 if not engine.rootObjects():
