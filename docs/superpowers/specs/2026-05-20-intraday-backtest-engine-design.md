@@ -95,11 +95,16 @@ Even if the implementation stores only one normalized timestamp internally, the 
 
 1. **`timeframe_from_bar_size(bar_size: str) -> Timeframe`** — shared helper near the `Timeframe` enum. Location: `src/milodex/data/timeframes.py` (new file) or in `src/milodex/data/models.py` if it stays clean. Used by both the runner and the backtest engine. The engine MUST NOT import strategy-runner code for this; both should import from the neutral data module. Existing helper at [runner.py:562](../../src/milodex/strategies/runner.py) gets relocated.
 
-2. **`_load_universe_bars(..., timeframe: Timeframe)`** — explicit timeframe argument. No config-reading inside the helper. Drops the hardcoded `Timeframe.DAY_1`. Pure function, easy to test.
+2. **`prefetch_bars(..., timeframe: Timeframe)`** — explicit timeframe argument. No config-reading inside the helper. Drops the hardcoded `Timeframe.DAY_1` at [engine.py:341](../../src/milodex/backtesting/engine.py). `prefetch_bars` is the SINGLE data-fetch entry point used by both single-pass and walk-forward backtests ([engine.py:499](../../src/milodex/backtesting/engine.py)). Fixing it here covers both call sites; there is no second hardcoded `DAY_1` to chase elsewhere — but the test plan must explicitly cover walk-forward + intraday tempo to prevent regression.
 
-3. **Per-day timestamp set / decision-time builder** — given a day and the loaded `all_bars`, returns the sorted chronological union of decision-times across symbols whose bars fall in the day. Normalizes provider timestamp convention to avoid lookahead.
+3. **Per-day timestamp set / decision-time builder** — given a day and the loaded `all_bars`, returns the sorted chronological union of decision-times across symbols whose bars fall in the day. Normalizes provider timestamp convention to avoid lookahead. **Day-bucketing rule:** bars are assigned to a "day" by their `bar_timestamp.date()` (the provider's label, not their `decision_time`). This keeps each session's last bar in its own session's day-bucket even when the bar's `decision_time` rolls into the next clock day. The existing `_build_ts_date_index` ([engine.py:1328](../../src/milodex/backtesting/engine.py)) computes `pd.to_datetime(df["timestamp"], utc=True).dt.date` — UTC date. For US RTH intraday bars this matches the ET trading-session date because US RTH bars (9:30 ET / 14:30 UTC through 16:00 ET / 21:00 UTC) never cross UTC midnight. **Assumption documented:** intraday bars are RTH-only. Pre-market or after-hours intraday would require a tz-aware date conversion; out of scope for v1.
 
-4. **Per-symbol cursors** — `cursors: dict[str, int]`. Cursor invariant: `cursor[symbol]` is the **exclusive end index** of the symbol's bar history currently visible to the strategy. Visible history is always `bars_df.iloc[:cursor[symbol]]`. Advanced as the iteration walks timestamps in chronological order. Persists across timestamps within a day and across day boundaries.
+4. **Per-symbol cursors** — `cursors: dict[str, int]`. Cursor invariant: `cursor[symbol]` is the **exclusive end index** of the symbol's bar history currently visible to the strategy. Visible history is always `bars_df.iloc[:cursor[symbol]]`. **Initialization:** at simulation start, `cursors[symbol] = 0` for every universe symbol (no history visible yet). **Advancement timing — load-bearing:** at each timestamp T, the order of operations is strictly:
+   1. **Drain pending orders at T** using opens from bars whose `bar_timestamp == T` (they were observable at T's open price, which is fixed at bar-start).
+   2. **Advance cursors:** for each symbol, advance `cursors[symbol]` by 1 for every bar at the cursor's current position whose `decision_time <= T`. After this step, `bars_df.iloc[:cursor[symbol]]` includes every bar whose `decision_time` is ≤ T for that symbol.
+   3. **Evaluate the strategy** with the post-advancement visible history.
+
+   This ordering guarantees no lookahead (bars whose `decision_time > T` are excluded from the strategy's view) AND no underdraw (bars whose `decision_time == T` ARE visible, because they're complete by definition at T). Cursors persist across timestamps within a day and across day boundaries — they advance monotonically through the chronological iteration.
 
 5. **`_opens_at_timestamp(bars_by_symbol, timestamp, ...) -> dict[str, float]`** — builds the symbol → open-price map for symbols that have a fillable bar at the given timestamp. Keeps data lookup separate from order execution. Symbols absent here are not fillable now, but may be fillable at a later timestamp.
 
@@ -117,7 +122,7 @@ CLI invocation
   → BacktestEngine._simulate(...)
       → bar_size = loaded.config.tempo["bar_size"]
       → timeframe = timeframe_from_bar_size(bar_size)
-      → all_bars = self._load_universe_bars(universe, timeframe, start, end)
+      → all_bars = self.prefetch_bars(universe, timeframe, start, end)
       → coverage check (existing `_barset_has_bar_in_range` + threshold resolution)
       → if bar_size == "1D":
             return self._simulate_daily(all_bars, trading_days, ...)
@@ -143,6 +148,8 @@ No change to the public surface, no change to consumers (`backtest_runs`, `backt
 
 - **Warmup window**. Stays calendar-day-based via the existing `_warmup_calendar_days()`. For intraday strategies with small lookbacks, this is generously over-sized — fine for correctness, free for performance with cached bars.
 
+- **DST transitions and half-day sessions**. The engine never assumes a fixed session close time. Session boundaries are derived from the bars present in each day-bucket: the "last bar of session" is whichever bar has the latest `bar_timestamp` in the day-bucket, regardless of whether the session is full (close 16:00 ET → last 5min bar timestamped 15:55) or half (close 13:00 ET → last 5min bar timestamped 12:55). DST transitions are handled implicitly via the UTC-date bucketing of `_build_ts_date_index` plus the RTH-only assumption (US RTH bars never cross UTC midnight in any season). Strategy-layer half-day skipping (as the ORB and benchmark strategies do via `is_half_day(session_date)`) is independent of engine behavior — the engine simply iterates whatever bars are present and lets the strategy decide whether to act.
+
 - **Coverage check applicability**. The existing `_barset_has_bar_in_range(symbol, start, end)` and the threshold resolution chain at [engine.py:366](../../src/milodex/backtesting/engine.py) work for intraday because they check bar presence in a date window regardless of granularity. **This is a coarse symbol-level presence check, not real intraday completeness validation.** A symbol with one 5min bar in the entire requested window passes as "covered." This is acceptable for v1 and documented as a known limitation. A future intraday data-quality layer can add expected-bars-per-session checks.
 
 - **Walk-forward windows**. Each window has its own `_simulate_intraday` call. Pending orders, positions, and cursors are derived only from the window's own fetched/warmup bars — they do not leak between windows.
@@ -161,7 +168,9 @@ For any strategy with `tempo.bar_size == "1D"`, `_simulate(...)` must produce a 
 - `skipped_count`: exact int equality
 - `final_equity`: within `abs(diff) < 0.01`
 
-The guarantee falls out of the implementation discipline: `_simulate_daily(...)` is the existing `_simulate` body, **moved without behavioral change**. The intraday code lives in `_simulate_intraday(...)`. Daily configs touch zero new code paths.
+The guarantee falls out of the implementation discipline: `_simulate_daily(...)` is the existing `_simulate` body, **moved without behavioral change**. The intraday code lives in `_simulate_intraday(...)`. Daily configs traverse the same logical simulation path as before.
+
+**Caveat — shared helper signature change.** `prefetch_bars` changes signature to accept an explicit `timeframe` parameter (vs the hardcoded `Timeframe.DAY_1`). Daily call sites pass `Timeframe.DAY_1` and the helper body is otherwise unchanged. To rule out subtle regression through the signature change, the daily regression suite (§5) runs *after* the signature refactor is complete — not just after the dispatch is added — and asserts the four daily fixtures produce identical output post-refactor. If a daily test fails after the signature change but passes after dispatch addition alone, the helper refactor introduced a regression.
 
 ## Testing Strategy
 
@@ -184,17 +193,24 @@ New module: `tests/milodex/backtesting/test_engine_intraday.py`.
 
 Ten test cases:
 
-1. **Timeframe dispatch test**. Given a config with `tempo.bar_size = "5Min"`, verify `_load_universe_bars` is called with `Timeframe.MIN_5`, not `Timeframe.DAY_1`. Catches the root wiring failure directly.
+1. **Timeframe dispatch test**. Given a config with `tempo.bar_size = "5Min"`, verify `prefetch_bars` is called with `Timeframe.MIN_5`, not `Timeframe.DAY_1`. Catches the root wiring failure directly.
 
-2. **Intraday smoke benchmark — exact trade counts**. Run the `benchmark.unconditional_intraday_long.spy.v1` config against 3 days of synthetic 5min SPY bars. Assert:
-   - `trade_count == 6`
-   - `buy_count == 3`
-   - `sell_count == 3`
-   - `round_trip_count == 3`
+2. **Intraday smoke benchmark — exact trade counts**. Run the `benchmark.unconditional_intraday_long.spy.v1` config against **4 days** of synthetic 5min SPY bars. The benchmark emits BUY at 10:00 ET decision-time and SELL at 15:55 ET decision-time each session. With "fills at next available bar's open" semantics, each session's BUY fills at that day's 10:05; each session's SELL fills at the NEXT session's 9:30. The final session's SELL has no future bar and strands. Assert:
+   - `buy_count == 4` (one fill per day at 10:05)
+   - `sell_count == 3` (days 1-3 sells fill on days 2-4 at 9:30; day 4 sell strands)
+   - `trade_count == 7` (4 buys + 3 sells filled)
+   - `round_trip_count == 3` (`min(buys, sells) per symbol`)
+   - `skipped_count == 1` (day 4's exit, stranded)
+
+   This exact-count contract validates BOTH the round-trip mechanism AND the documented session-boundary stranding behavior in one test.
 
 3. **No same-bar fill**. A trivial test strategy emits BUY on bar timestamped 10:00 ET. Assert the resulting fill price equals the 10:05 bar's open with slippage applied — NOT the 10:00 bar's open.
 
-4. **No-lookahead decision-time test**. Start-timestamped bars are not treated as completed at their start. A strategy attempting to "see" the 10:00 bar's close at decision-time 10:00 must NOT have that bar in its visible history; the visible history at decision-time 10:00 includes only bars whose decision-time is ≤ 10:00 — i.e., bars timestamped 9:55 and earlier (for 5min bars with start-timestamping).
+4. **No-lookahead decision-time test — both directions of off-by-one**. At iteration step T, visible history must contain exactly those bars whose `decision_time ≤ T`. Test asserts BOTH directions:
+   - **Inclusion (no under-shoot):** the bar with `decision_time == T` (i.e., `bar_timestamp == T - bar_size` for start-timestamped 5min bars; specifically the bar timestamped 9:55 at iteration step T = 10:00) MUST be in the strategy's visible history.
+   - **Exclusion (no over-shoot / lookahead):** the bar with `decision_time > T` (the bar timestamped 10:00 at iteration step T = 10:00, whose `decision_time = 10:05`) MUST NOT be in the strategy's visible history.
+
+   This protects against the implementer "fixing" a lookahead bug by under-shooting cursor advancement.
 
 5. **Multi-symbol visible history with missing current bar**. Build a 2-symbol universe where symbol B has a missing 10:05 bar. At decision-time 10:05, assert symbol A's 10:05 bar IS in `opens_at_timestamp`, symbol B is NOT in `opens_at_timestamp`, AND symbol B's prior history through 10:00 IS visible in `context.bars_by_symbol`.
 
