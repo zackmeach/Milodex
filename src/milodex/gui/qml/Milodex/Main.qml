@@ -70,6 +70,17 @@ Window {
 
     signal dropdownDismissedSignal()
 
+    // Session-scoped UI state shared across surface page switches (issue 12).
+    // Lives at Window root so it survives surfaceLoader unloads. Defaults match
+    // what DeskSurface used to initialize locally. Does NOT persist across app
+    // restart — survival is session-only by design.
+    QtObject {
+        id: sessionBag
+        objectName: "sessionBag"
+        property string perfSlice: "Week"
+        property string throughputSlice: "Week"
+    }
+
     MouseArea {
         id: dropdownOutsideClick
         anchors.fill: parent
@@ -102,11 +113,28 @@ Window {
     // closeRunnerDropdown(); the Connections block targets surfaceLoader.item
     // (which is DeskSurface when the desk tab is active) and ignores unknown
     // signals on other surfaces.
+    //
+    // Issue 12: perfSlice / throughputSlice write-back to sessionBag.
+    // When the operator changes a slice toggle inside DeskSurface, the surface
+    // emits perfSliceChanged / throughputSliceChanged (Qt auto-signals for
+    // Q_PROPERTY / property changes). These handlers write back into sessionBag
+    // so the next DeskSurface load (on page return) can restore the selection.
+    // ignoreUnknownSignals suppresses these handlers on non-Desk surfaces.
     Connections {
         target: surfaceLoader.item
         ignoreUnknownSignals: true
         function onRunnerDropdownOpened() { root._dropdownOpen = true }
         function onRunnerDropdownDismissed() { root._dropdownOpen = false }
+        function onPerfSliceChanged() {
+            if (surfaceLoader.item && surfaceLoader.item.perfSlice !== undefined) {
+                sessionBag.perfSlice = surfaceLoader.item.perfSlice
+            }
+        }
+        function onThroughputSliceChanged() {
+            if (surfaceLoader.item && surfaceLoader.item.throughputSlice !== undefined) {
+                sessionBag.throughputSlice = surfaceLoader.item.throughputSlice
+            }
+        }
     }
     onDropdownDismissedSignal: {
         if (surfaceLoader.item && typeof surfaceLoader.item.closeRunnerDropdown === "function") {
@@ -255,6 +283,18 @@ Window {
             right:  parent.right
             bottom: parent.bottom
         }
+
+        // Issue 12: seed slice selections from sessionBag when a new surface
+        // loads. The undefined-guard means non-Desk surfaces (which lack these
+        // properties) are silently skipped — same safety pattern as the
+        // Connections write-back handlers above.
+        onLoaded: {
+            if (surfaceLoader.item && surfaceLoader.item.perfSlice !== undefined) {
+                surfaceLoader.item.perfSlice = sessionBag.perfSlice
+                surfaceLoader.item.throughputSlice = sessionBag.throughputSlice
+            }
+        }
+
         // Surface routing.  The four primary surfaces are FRONT / BENCH /
         // LEDGER / DESK.  The earlier surfaces (anchor, strategy-bank,
         // design-system) remain in the codebase and are reachable by

@@ -1661,3 +1661,55 @@ def test_bench_pr_n_no_mutation_token_drift() -> None:
             assert token not in src, (
                 f"{path.name} must not contain mutation token {token!r} (ADR 0049)"
             )
+
+
+def test_session_bag_exists_with_correct_defaults() -> None:
+    """sessionBag QtObject must exist at Main.qml root with expected defaults.
+
+    Wiring smoke check for issue 12 — operator's perfSlice/throughputSlice
+    selections persist across page switches via this shared QtObject.
+    Defaults match the prior DeskSurface-local initialization (Week/Week).
+    """
+    # Load Main.qml via the full engine, then find the sessionBag QtObject by
+    # objectName and inspect its string properties via QObject.property().
+    probe_block = (
+        "from PySide6.QtCore import QUrl, QObject\n"
+        f"main_qml = {str(_MILODEX_QML_DIR / _MAIN_QML)!r}\n"
+        "_warnings = []\n"
+        "engine = QQmlApplicationEngine()\n"
+        "engine.warnings.connect(lambda msgs: _warnings.extend(str(m) for m in msgs))\n"
+        f"engine.addImportPath({str(_QML_IMPORT_ROOT)!r})\n"
+        "engine.load(QUrl.fromLocalFile(main_qml))\n"
+        "errors = [w for w in _warnings if w]\n"
+        "if errors:\n"
+        "    for e in errors:\n"
+        "        print(f'QML_WARNING: {e}', file=sys.stderr)\n"
+        "    sys.exit(3)\n"
+        "if not engine.rootObjects():\n"
+        "    print('LOAD_FAILED: no root objects', file=sys.stderr)\n"
+        "    sys.exit(2)\n"
+        "root_win = engine.rootObjects()[0]\n"
+        "# sessionBag is a QtObject — search by QObject base type with objectName.\n"
+        "bag = root_win.findChild(QObject, 'sessionBag')\n"
+        "if bag is None:\n"
+        "    print('SESSION_BAG_MISSING: findChild returned None', file=sys.stderr)\n"
+        "    sys.exit(6)\n"
+        "perf = bag.property('perfSlice')\n"
+        "throughput = bag.property('throughputSlice')\n"
+        "if perf != 'Week':\n"
+        "    print(f'BAD_PERF_SLICE: expected Week, got {perf!r}', file=sys.stderr)\n"
+        "    sys.exit(7)\n"
+        "if throughput != 'Week':\n"
+        "    print(f'BAD_THROUGHPUT_SLICE: expected Week, got {throughput!r}', file=sys.stderr)\n"
+        "    sys.exit(8)\n"
+        "print('SESSION_BAG_OK')\n"
+        "sys.exit(0)\n"
+    )
+    # Reuse the setup scaffolding from _build_script (QGuiApplication, QML
+    # type registration) but discard the actual load block. The probe does
+    # its own engine.load() of Main.qml.
+    script = _build_script(_MILODEX_QML_DIR / _MAIN_QML)
+    marker = "_warnings: list[str] = []"
+    setup, _sep, _rest = script.partition(marker)
+    composed_script = setup + probe_block
+    _run_and_assert(composed_script, "sessionBag defaults probe")

@@ -67,9 +67,16 @@ Item {
     // ------------------------------------------------------------------
     // Slice selection — pure client-side index into precomputed bySlice
     // maps. Sections II and IV each own an independent slice.
+    //
+    // Persisted across page switches via Main.qml sessionBag (issue 12).
+    // Session-only — does not survive app restart.
+    // Initial values are seeded by Main.qml's surfaceLoader.onLoaded handler;
+    // user changes flow back to sessionBag via the Connections write-back.
+    // Default string values ("") are safe — QML string properties default to
+    // "" and the bySlice map lookups fall back to ({}) via || ({}).
     // ------------------------------------------------------------------
-    property string perfSlice:       "Week"
-    property string throughputSlice: "Week"
+    property string perfSlice
+    property string throughputSlice
 
     readonly property var sliceOptions: [
         { label: "Today",     value: "Today" },
