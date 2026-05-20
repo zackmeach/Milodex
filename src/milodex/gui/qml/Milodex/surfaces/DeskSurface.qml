@@ -476,27 +476,38 @@ Item {
                             hairline: true
                         }
 
-                        Row {
+                        Item {
                             width: parent.width
-                            spacing: Theme.space[6]
-                            visible: !perfCol.isToday
-                            KeyStat {
-                                k: "Drawdown"
-                                v: root.fmtPct(perfCol.slice.drawdown)
-                                vColor: Theme.status.negative
+                            height: 44
+                            Loader {
+                                anchors.fill: parent
+                                active: !perfCol.isToday
+                                sourceComponent: drawdownSpyExcessComponent
                             }
-                            KeyStat {
-                                k: "SPY"
-                                v: root.fmtPct(perfCol.bench.spyReturn)
-                            }
-                            KeyStat {
-                                k: "Excess"
-                                v: root.fmtPct(perfCol.bench.excess)
-                                vColor: root.toneOf(perfCol.bench.excess) === "positive"
-                                        ? Theme.status.positive
-                                        : root.toneOf(perfCol.bench.excess) === "negative"
-                                          ? Theme.status.negative
-                                          : Theme.color.text.primary
+                        }
+                        Component {
+                            id: drawdownSpyExcessComponent
+                            Row {
+                                width: parent ? parent.width : 0
+                                spacing: Theme.space[6]
+                                KeyStat {
+                                    k: "Drawdown"
+                                    v: root.fmtPct(perfCol.slice.drawdown)
+                                    vColor: Theme.status.negative
+                                }
+                                KeyStat {
+                                    k: "SPY"
+                                    v: root.fmtPct(perfCol.bench.spyReturn)
+                                }
+                                KeyStat {
+                                    k: "Excess"
+                                    v: root.fmtPct(perfCol.bench.excess)
+                                    vColor: root.toneOf(perfCol.bench.excess) === "positive"
+                                            ? Theme.status.positive
+                                            : root.toneOf(perfCol.bench.excess) === "negative"
+                                              ? Theme.status.negative
+                                              : Theme.color.text.primary
+                                }
                             }
                         }
                         Text {
