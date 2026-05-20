@@ -36,7 +36,30 @@ Item {
     property string current: ""
     signal selected(string runnerId)
 
+    // Issue 05: dismiss signals for outside-click / ESC integration.
+    signal opened()
+    signal dismissed()
+
+    // _open: internal state. `expanded` is the public alias for Main.qml wiring.
     property bool _open: false
+    property bool expanded: _open
+    on_OpenChanged: {
+        if (_open) {
+            opened()
+        } else {
+            dismissed()
+        }
+    }
+    onExpandedChanged: {
+        if (expanded !== _open) _open = expanded
+    }
+
+    Keys.onEscapePressed: function(event) {
+        if (root._open) {
+            root._open = false
+            event.accepted = true
+        }
+    }
 
     readonly property string _currentLabel: {
         for (var i = 0; i < root.runners.length; i++) {

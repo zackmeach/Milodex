@@ -63,6 +63,47 @@ Window {
                                         ? topBar.height + surfaceLoader.item.captureContentHeight
                                         : height
 
+    // Issue 05: outside-click dismiss for RunnerSelect dropdown.
+    // _dropdownOpen drives the overlay visibility. Wired via surfaceLoader
+    // status change — see Connections block below.
+    property bool _dropdownOpen: false
+
+    signal dropdownDismissedSignal()
+
+    MouseArea {
+        id: dropdownOutsideClick
+        anchors.fill: parent
+        visible: root._dropdownOpen
+        z: 9000  // Above page content, below dropdown bounds (which sit higher in z).
+        onClicked: function(mouse) {
+            root._dropdownOpen = false
+            root.dropdownDismissedSignal()
+        }
+    }
+
+    // TODO(operator-verify-wiring): RunnerSelect lives inside DeskSurface which
+    // is loaded dynamically by surfaceLoader. Wiring opened/dismissed signals
+    // requires either a Connections target against surfaceLoader.item's nested
+    // child (not directly reachable in QML without objectName traversal) or a
+    // signal relay added to DeskSurface. The overlay is in place; completing the
+    // round-trip wiring requires one of:
+    //   (a) Adding a `signal runnerDropdownOpened()` + `signal runnerDropdownDismissed()`
+    //       to DeskSurface.qml and having RunnerSelect propagate through it, then
+    //       wiring here via: Connections { target: surfaceLoader.item; ... }
+    //   (b) Giving the RunnerSelect an objectName and traversing via Python/C++.
+    // Until that relay is added, the overlay renders but is never activated.
+    Connections {
+        target: surfaceLoader.item
+        ignoreUnknownSignals: true
+        function onRunnerDropdownOpened() { root._dropdownOpen = true }
+        function onRunnerDropdownDismissed() { root._dropdownOpen = false }
+    }
+    onDropdownDismissedSignal: {
+        if (surfaceLoader.item && typeof surfaceLoader.item.dismissRunnerDropdown === "function") {
+            surfaceLoader.item.dismissRunnerDropdown()
+        }
+    }
+
     // ------------------------------------------------------------------
     // Inline component: tab control.
     //
