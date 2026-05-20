@@ -311,13 +311,29 @@ Window {
     }
 
     // ------------------------------------------------------------------
+    // PR-7c: Elevated Posture Banner — persistent oxblood band below chrome
+    // when active risk profile is "aggressive" (ADR 0054 §8).
+    // ------------------------------------------------------------------
+
+    ElevatedPostureBanner {
+        id: elevatedBanner
+        anchors {
+            top:   topBar.bottom
+            left:  parent.left
+            right: parent.right
+        }
+        width: parent.width
+        activeProfile: root._activeProfile
+    }
+
+    // ------------------------------------------------------------------
     // Surface body -- single Loader swaps source by activeSurface
     // ------------------------------------------------------------------
 
     Loader {
         id: surfaceLoader
         anchors {
-            top:    topBar.bottom
+            top:    elevatedBanner.bottom
             left:   parent.left
             right:  parent.right
             bottom: parent.bottom
