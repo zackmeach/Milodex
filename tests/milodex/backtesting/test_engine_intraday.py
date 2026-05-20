@@ -384,3 +384,97 @@ def _build_synthetic_5min_session_ts_only(
     ts_list = [open_utc + pd.Timedelta(minutes=5 * i) for i in range(78)]
     ts_index = pd.DatetimeIndex(ts_list)
     return {symbol: ts_index for symbol in symbols}
+
+
+# ---------------------------------------------------------------------------
+# D5 — _advance_cursors
+# ---------------------------------------------------------------------------
+
+
+def test_advance_cursors_includes_bar_with_decision_time_eq_t() -> None:
+    """At T = 10:00 ET = 15:00 UTC for 5min bars, the 9:55 bar (decision_time
+    14:55 + 5min = 15:00 UTC) IS visible after advancement. Cursor advances
+    from 0 to 6 (six bars: 9:30, 9:35, 9:40, 9:45, 9:50, 9:55).
+    """
+    from milodex.backtesting.engine import _advance_cursors
+
+    per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
+    cursors = {"SPY": 0}
+    target = pd.Timestamp("2024-01-15 15:00:00+00:00")  # 10:00 ET = decision_time of 9:55 bar
+
+    advanced = _advance_cursors(
+        cursors=cursors,
+        per_symbol_ts_utc=per_symbol_ts_utc,
+        timestamp=target,
+        bar_size_minutes=5,
+    )
+
+    assert advanced is True
+    assert cursors["SPY"] == 6  # 6 bars whose decision_time <= 15:00 UTC
+
+
+def test_advance_cursors_excludes_bar_with_decision_time_gt_t() -> None:
+    """At T = 15:00 UTC, the 10:00 bar (decision_time 15:05 UTC) MUST NOT
+    be included. Cursor advances to exactly 6, not 7.
+    """
+    from milodex.backtesting.engine import _advance_cursors
+
+    per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
+    cursors = {"SPY": 0}
+    advanced = _advance_cursors(
+        cursors=cursors,
+        per_symbol_ts_utc=per_symbol_ts_utc,
+        timestamp=pd.Timestamp("2024-01-15 15:00:00+00:00"),
+        bar_size_minutes=5,
+    )
+    assert advanced is True
+    assert cursors["SPY"] == 6  # exclusive-end: bars 0..5 visible (9:30..9:55)
+    # The 10:00 bar (index 6) has decision_time 15:05 UTC > 15:00 UTC — NOT visible
+    visible_ts = per_symbol_ts_utc["SPY"][: cursors["SPY"]]
+    assert len(visible_ts) == 6
+    assert visible_ts[-1] == pd.Timestamp("2024-01-15 14:55:00+00:00")
+
+
+def test_advance_cursors_multiple_symbols_independent() -> None:
+    """Symbols advance independently. Drop the 9:30 bar from QQQ; at T=15:00
+    UTC, SPY advances to 6 (full opening 30 min), QQQ advances to 5.
+    """
+    from milodex.backtesting.engine import _advance_cursors
+
+    per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY", "QQQ"])
+    # Drop the first bar (9:30 / 14:30 UTC) from QQQ
+    per_symbol_ts_utc["QQQ"] = per_symbol_ts_utc["QQQ"][1:]
+    cursors = {"SPY": 0, "QQQ": 0}
+
+    _advance_cursors(
+        cursors=cursors,
+        per_symbol_ts_utc=per_symbol_ts_utc,
+        timestamp=pd.Timestamp("2024-01-15 15:00:00+00:00"),
+        bar_size_minutes=5,
+    )
+
+    assert cursors["SPY"] == 6
+    assert cursors["QQQ"] == 5  # missing 9:30 bar
+
+
+def test_advance_cursors_initial_zero_means_no_history() -> None:
+    """At simulation start, cursors[symbol] = 0 means iloc[:0] is empty —
+    no bars visible to the strategy.
+    """
+    from milodex.backtesting.engine import _advance_cursors
+
+    per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
+    cursors = {"SPY": 0}
+    visible_before = per_symbol_ts_utc["SPY"][: cursors["SPY"]]
+    assert len(visible_before) == 0  # exclusive-end: iloc[:0] is empty
+
+    # And a no-op advancement (target BEFORE any decision_time) leaves cursor at 0
+    early = pd.Timestamp("2024-01-15 13:00:00+00:00")  # pre-market
+    advanced = _advance_cursors(
+        cursors=cursors,
+        per_symbol_ts_utc=per_symbol_ts_utc,
+        timestamp=early,
+        bar_size_minutes=5,
+    )
+    assert advanced is False
+    assert cursors["SPY"] == 0

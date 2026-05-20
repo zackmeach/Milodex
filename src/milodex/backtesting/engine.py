@@ -1930,3 +1930,43 @@ def _mark_to_market_at_day_end(
             latest_close = float(df["close"].iloc[prior_indices[-1]])
         equity += qty * latest_close
     return equity
+
+
+def _advance_cursors(
+    cursors: dict[str, int],
+    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
+    timestamp: pd.Timestamp,
+    bar_size_minutes: int,
+) -> bool:
+    """Advance ``cursors[symbol]`` for each symbol whose next-unconsumed bar
+    has ``decision_time <= timestamp``. Return True if any cursor advanced.
+
+    Cursor invariant: ``cursor[symbol]`` is the EXCLUSIVE end index of the
+    symbol's visible bar history. Visible = ``df.iloc[:cursor[symbol]]``.
+
+    Args:
+        cursors: per-symbol exclusive-end-index map. MUTATED IN PLACE.
+        per_symbol_ts_utc: precomputed UTC-tz-aware DatetimeIndex per symbol
+            (Correction 6).
+        timestamp: the event timestamp to advance cursors up to.
+        bar_size_minutes: bar size in minutes (decision_time = bar_ts + bar_size).
+
+    Returns:
+        True if any cursor advanced; False otherwise. Phase E uses this to
+        decide whether to call _evaluate_strategy.
+    """
+    bar_size = pd.Timedelta(minutes=bar_size_minutes)
+    advanced = False
+    for symbol, ts_index in per_symbol_ts_utc.items():
+        idx = cursors.get(symbol, 0)
+        n = len(ts_index)
+        while idx < n:
+            bar_ts = ts_index[idx]
+            decision_time = bar_ts + bar_size
+            if decision_time <= timestamp:
+                idx += 1
+                advanced = True
+            else:
+                break
+        cursors[symbol] = idx
+    return advanced
