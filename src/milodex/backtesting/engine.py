@@ -60,6 +60,7 @@ from milodex.risk import (
     RiskPolicy,
     load_backtesting_defaults,
 )
+from milodex.strategies.base import StrategyDecision
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
@@ -819,15 +820,13 @@ class BacktestEngine:
                 positions=positions,
             )
 
-            context = replace(
-                self._loaded.context,
-                positions={sym: qty for sym, (qty, _) in positions.items()},
-                equity=equity,
+            decision = self._evaluate_strategy(
+                primary_bars=primary_bars,
                 bars_by_symbol=bars_by_symbol,
+                equity=equity,
+                positions=positions,
                 entry_state=entry_state,
             )
-
-            decision = self._loaded.strategy.evaluate(primary_bars, context)
             intents = decision.intents
 
             if not intents:
@@ -1350,6 +1349,29 @@ class BacktestEngine:
                 )
             )
         sim_broker.set_positions(reported_positions)
+
+    def _evaluate_strategy(
+        self,
+        *,
+        primary_bars: BarSet,
+        bars_by_symbol: dict[str, BarSet],
+        equity: float,
+        positions: dict[str, tuple[float, float]],
+        entry_state: dict[str, dict],
+    ) -> StrategyDecision:
+        """Build the strategy context, call evaluate(), and return the full StrategyDecision.
+
+        Shared between _simulate_daily and (in Phase E) _simulate_intraday. Pure
+        extraction — no behavior change.
+        """
+        context = replace(
+            self._loaded.context,
+            positions={sym: qty for sym, (qty, _) in positions.items()},
+            equity=equity,
+            bars_by_symbol=bars_by_symbol,
+            entry_state=entry_state,
+        )
+        return self._loaded.strategy.evaluate(primary_bars, context)
 
     def _warmup_calendar_days(self) -> int:
         """Return the number of calendar days to prepend before the run window.
