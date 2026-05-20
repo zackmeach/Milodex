@@ -62,12 +62,18 @@ def test_all_three_shipped_profiles_pass_ceiling_validation():
 # ---------------------------------------------------------------------------
 
 
-def test_default_to_conservative_when_file_absent(tmp_path, monkeypatch):
+def test_default_to_conservative_when_file_absent(tmp_path, monkeypatch, caplog):
     """ADR 0054 §2: missing data/risk_profile.txt → silently default to conservative."""
-    monkeypatch.chdir(tmp_path)
-    from milodex.risk.config import get_active_profile_name
+    monkeypatch.setenv("MILODEX_DATA_DIR", str(tmp_path / "data"))
+    with caplog.at_level(logging.WARNING, logger="milodex.risk.config"):
+        from milodex.risk.config import get_active_profile_name
 
-    assert get_active_profile_name() == "conservative"
+        result = get_active_profile_name()
+    assert result == "conservative"
+    # Silent-default invariant: no WARNING when file is simply absent (ADR §2).
+    assert caplog.records == [], (
+        f"Silent-default path should emit no warnings; got: {[r.message for r in caplog.records]}"
+    )
 
 
 def test_malformed_profile_falls_back_to_conservative_with_warning(

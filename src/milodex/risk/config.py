@@ -14,8 +14,10 @@ stays on the base ``load_risk_defaults()`` (ADR 0054 §3).
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
@@ -40,11 +42,11 @@ logger = logging.getLogger(__name__)
 # - daily_limits.max_daily_loss_pct = 0.08: above Aggressive's 0.05; single-
 #   session loss never exceeds 8% even under elevated posture.
 # ---------------------------------------------------------------------------
-_ABSOLUTE_CEILINGS: dict[str, float] = {
+_ABSOLUTE_CEILINGS: Mapping[str, float] = MappingProxyType({
     "kill_switch.max_drawdown_pct": 0.20,
     "portfolio.max_total_exposure_pct": 0.85,
     "daily_limits.max_daily_loss_pct": 0.08,
-}
+})
 
 # Permitted profile names. Explicit allowlist — not a file-system scan.
 _KNOWN_PROFILES: frozenset[str] = frozenset({"conservative", "standard", "aggressive"})
@@ -177,8 +179,22 @@ def _load_overlay(profile_name: str, configs_dir: Path | None = None) -> dict[st
     try:
         with path.open(encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
-        return data if isinstance(data, dict) else {}
-    except yaml.YAMLError:
+        if not isinstance(data, dict):
+            logger.warning(
+                "Risk profile overlay at %s is not a YAML mapping; got %s. "
+                "Falling back to base risk_defaults.",
+                path,
+                type(data).__name__,
+            )
+            return {}
+        return data
+    except yaml.YAMLError as exc:
+        logger.warning(
+            "Risk profile overlay at %s failed to parse: %s. "
+            "Falling back to base risk_defaults.",
+            path,
+            exc,
+        )
         return {}
 
 
@@ -204,13 +220,21 @@ def _get_by_path(d: dict[str, Any], dotted_path: str) -> Any:
 
 
 def _validate_against_ceilings(profile: dict[str, Any]) -> None:
-    """Raise ``CeilingViolationError`` if any path in ``_ABSOLUTE_CEILINGS`` is exceeded.
+    """Raise ``CeilingViolationError`` if any path in ``_ABSOLUTE_CEILINGS`` is exceeded
+    or is missing from the merged profile.
 
     Per ADR 0054 §4: ceilings refuse startup; they do not fall back silently.
+    Missing required paths are also refused — a missing key causes a confusing
+    downstream KeyError; raising here shifts the failure earlier with a clear message.
     """
     for dotted_path, ceiling in _ABSOLUTE_CEILINGS.items():
         value = _get_by_path(profile, dotted_path)
-        if value is not None and float(value) > ceiling:
+        if value is None:
+            raise CeilingViolationError(
+                f"Required risk-config path {dotted_path} is missing from merged profile; "
+                f"cannot validate against ceiling. See ADR 0054 §4."
+            )
+        if float(value) > ceiling:
             raise CeilingViolationError(
                 f"Profile value {dotted_path}={value} exceeds account-level ceiling "
                 f"{ceiling}. Edit the active overlay in configs/risk_profiles/ to comply. "

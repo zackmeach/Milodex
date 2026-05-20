@@ -2,6 +2,12 @@
 
 **Status:** Accepted (2026-05-20)
 
+> **Implementation phasing:** §1–§4, §9, §10 land with this ADR (PR-7a — the loader,
+> ceilings, conservative-default, `RiskDefaults` return type, no-strategy-control).
+> §5–§8 are documented decisions whose enforcement lands in PR-7b (the bridge + audit
+> table + GUI affordance). The boundary is deliberate — PR-7a is foundation-only with
+> no GUI work.
+
 ## Context
 
 The "Risk Office" badge (Issue 10, UI Readiness Batch 2026-05-19) is the first

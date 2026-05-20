@@ -236,6 +236,18 @@ def test_runner_submits_regime_signal_through_execution_service(
     risk_defaults_file: Path,
 ):
     config_path = make_regime_config_intraday(strategy_config_dir)
+    # ADR 0054 §4: max_total_exposure_pct ceiling is 0.85. allocation_pct=1.0
+    # would size a 100%-of-equity SHY order (~100% exposure), which exceeds the
+    # ceiling and causes the risk evaluator to reject it. Lower allocation to
+    # 0.80 so the order stays within the 0.85 ceiling (800 shares × $10 = $8000
+    # = 80% exposure on $10k equity). The fixture's max_total_exposure_pct stays
+    # at 0.85 — the scenario is rebalanced, not the ceiling.
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "allocation_pct: 1.0", "allocation_pct: 0.80"
+        ),
+        encoding="utf-8",
+    )
     provider = StubProvider(
         {
             "SPY": build_barset([10.0, 10.0, 10.0]),
@@ -1343,6 +1355,18 @@ def test_runner_suppresses_duplicate_same_bar_intents(
 ):
     """A repeated signal for the same latest bar must not spam execution records."""
     config_path = make_regime_config_intraday(strategy_config_dir)
+    # ADR 0054 §4: max_total_exposure_pct ceiling is 0.85. allocation_pct=1.0
+    # would size a 100%-of-equity SHY order (~100% exposure), which exceeds the
+    # ceiling and causes the risk evaluator to reject it. Lower allocation to
+    # 0.80 so the order stays within the 0.85 ceiling (800 shares × $10 = $8000
+    # = 80% exposure on $10k equity). The fixture's max_total_exposure_pct stays
+    # at 0.85 — the scenario is rebalanced, not the ceiling.
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "allocation_pct: 1.0", "allocation_pct: 0.80"
+        ),
+        encoding="utf-8",
+    )
     provider = StubProvider(
         {
             "SPY": build_barset([10.0, 10.0, 10.0]),
