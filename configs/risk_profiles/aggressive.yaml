@@ -1,0 +1,10 @@
+# Aggressive risk profile — overlay on configs/risk_defaults.yaml.
+# Bounded by code-level _ABSOLUTE_CEILINGS in src/milodex/risk/config.py (ADR 0054 §4).
+# Revisit ceiling values only via ADR 0054 amendment.
+kill_switch:
+  max_drawdown_pct: 0.15
+portfolio:
+  max_total_exposure_pct: 0.75
+  max_concurrent_positions: 15
+daily_limits:
+  max_daily_loss_pct: 0.05

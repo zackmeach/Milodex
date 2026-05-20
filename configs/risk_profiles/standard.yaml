@@ -1,0 +1,3 @@
+# Standard risk profile — identity overlay (mirrors configs/risk_defaults.yaml).
+# Empty by design: all values come from the base file unchanged.
+{}
