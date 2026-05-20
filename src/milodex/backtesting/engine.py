@@ -850,11 +850,11 @@ class BacktestEngine:
             pending = []
 
         # Final broker re-sync so the simulated account reflects post-buy state,
-        # then record one portfolio_snapshots row per simulation. The snapshot
-        # is keyed on `session_id` (= run_id for whole-period, window-id for
-        # walk-forward), so analytics can read snapshots independently of the
-        # trade ledger. Closes the runner/engine half of the
-        # `analytics/snapshots.py` scaffolded surface (R-XC-016).
+        # then record one backtest_equity_snapshots row per simulation (ADR 0053).
+        # The snapshot is keyed on `session_id` (= run_id for whole-period,
+        # window-id for walk-forward), so analytics can read snapshots
+        # independently of the trade ledger. Closes the runner/engine half of
+        # the `analytics/snapshots.py` scaffolded surface (R-XC-016).
         if trading_days:
             last_day = trading_days[-1]
             last_bars = _slice_bars_to_day(all_bars, last_day, ts_index)

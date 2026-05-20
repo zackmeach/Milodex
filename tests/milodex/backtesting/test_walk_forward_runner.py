@@ -515,14 +515,16 @@ def test_compute_stability_counts_positive_and_negative_windows():
 
 
 def test_walk_forward_records_one_snapshot_per_window():
-    """Each OOS window produces its own portfolio_snapshots row.
+    """Each OOS window produces its own backtest_equity_snapshots row (ADR 0053).
 
     The walk-forward orchestrator calls `engine.simulate_window` per window
     with a window-scoped session_id (`{run_id}:w{index}`). The engine writes
-    one snapshot per simulation, so N windows ⇒ N snapshots, each queryable
-    independently by session_id. This is what makes per-window equity-curve
-    analytics tractable later.
+    one snapshot per simulation to backtest_equity_snapshots (not
+    portfolio_snapshots — ADR 0053 split), so N windows ⇒ N snapshot rows,
+    each queryable independently by session_id.
     """
+    import sqlite3
+
     engine, store, bars_start = _make_engine(bar_count=30)
     result = run_walk_forward(
         engine,
@@ -534,15 +536,28 @@ def test_walk_forward_records_one_snapshot_per_window():
     )
 
     assert len(result.windows) > 0, "fixture must produce at least one OOS window"
-    for window in result.windows:
-        session_id = f"{result.run_id}:w{window.index}"
-        snapshots = store.list_portfolio_snapshots_for_session(session_id)
-        assert len(snapshots) == 1, (
-            f"window {window.index}: expected exactly one snapshot row at "
-            f"session_id={session_id!r}, found {len(snapshots)}"
-        )
-        # Snapshot equity matches the window's reported final_equity.
-        assert snapshots[0].equity == pytest.approx(window.final_equity)
+
+    # ADR 0053: walk-forward snapshots are in backtest_equity_snapshots, not portfolio_snapshots
+    with sqlite3.connect(store._path) as con:
+        con.row_factory = sqlite3.Row
+        for window in result.windows:
+            session_id = f"{result.run_id}:w{window.index}"
+            rows = con.execute(
+                "SELECT equity FROM backtest_equity_snapshots WHERE session_id = ?",
+                (session_id,),
+            ).fetchall()
+            assert len(rows) == 1, (
+                f"window {window.index}: expected exactly one backtest_equity_snapshots row at "
+                f"session_id={session_id!r}, found {len(rows)}"
+            )
+            # Snapshot equity matches the window's reported final_equity.
+            assert rows[0]["equity"] == pytest.approx(window.final_equity)
+
+            # portfolio_snapshots must NOT contain this session_id
+            broker_rows = store.list_portfolio_snapshots_for_session(session_id)
+            assert broker_rows == [], (
+                f"portfolio_snapshots must not contain walk-forward session {session_id!r} (ADR 0053)"
+            )
 
 
 # ---------------------------------------------------------------------------
