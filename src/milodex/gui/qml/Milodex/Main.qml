@@ -70,6 +70,10 @@ Window {
 
     signal dropdownDismissedSignal()
 
+    // PR-7c: active risk profile — initialised on Component.onCompleted,
+    // updated via onSwitchApplied from RiskProfileBridge.
+    property string _activeProfile: "conservative"
+
     // Session-scoped UI state shared across surface page switches (issue 12).
     // Lives at Window root so it survives surfaceLoader unloads. Defaults match
     // what DeskSurface used to initialize locally. Does NOT persist across app
@@ -292,6 +296,8 @@ Window {
             marketOpen: OperationalState.marketOpen
             tradingMode: OperationalState.tradingMode
             lastRefreshedAt: OperationalState.lastRefreshedAt
+            activeProfileName: root._activeProfile  // PR-7c: badge copy
+            onBadgeClicked: riskDrawer.open = !riskDrawer.open  // PR-7c: toggle drawer
         }
 
         // 1px hairline divider below the bar
@@ -365,6 +371,46 @@ Window {
     }
 
     // ------------------------------------------------------------------
+    // PR-7c: Risk Office Drawer (slide-in from right, z above surfaces)
+    // ------------------------------------------------------------------
+
+    // Outside-click overlay — dismisses the drawer when clicking outside it.
+    MouseArea {
+        id: drawerOutsideClick
+        anchors.fill: parent
+        visible: riskDrawer.open
+        z: 8999  // below drawer (9000) but above surface content
+        onClicked: riskDrawer.open = false
+    }
+
+    RiskOfficeDrawer {
+        id: riskDrawer
+        parent: root.contentItem   // parent to Window.contentItem so anchors work
+        anchors.top:    parent.top
+        anchors.bottom: parent.bottom
+        anchors.right:  parent.right
+        z: 9000
+        activeProfile: root._activeProfile
+
+        // Relay switchRequested up to the bridge (RiskProfileBridge QML singleton)
+        onSwitchRequested: function(target, token) {
+            RiskProfileBridge.attemptSwitch(target, token)
+        }
+        // quitRequested is wired in Task 37 (app.py slot)
+    }
+
+    // Wire RiskProfileBridge signals
+    Connections {
+        target: RiskProfileBridge
+        function onSwitchApplied(name) {
+            root._activeProfile = name
+        }
+        function onSwitchRefused(code, msg) {
+            riskDrawer.showError(msg)
+        }
+    }
+
+    // ------------------------------------------------------------------
     // Startup connectivity log
     // ------------------------------------------------------------------
 
@@ -372,5 +418,7 @@ Window {
         console.log(
             "[Milodex] Main.qml ready -- ThemeManager.theme = " + ThemeManager.theme
         )
+        // PR-7c: seed active profile from bridge
+        root._activeProfile = RiskProfileBridge.activeProfileName()
     }
 }

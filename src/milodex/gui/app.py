@@ -141,6 +141,7 @@ def run_app() -> int:
         KanbanState,
         LedgerState,
     )
+    from milodex.gui.risk_profile_bridge import RiskProfileBridge, record_startup_default
     from milodex.gui.risk_throughput_state import RiskThroughputState
     from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
@@ -277,6 +278,17 @@ def run_app() -> int:
         ledger_state=ledger_state,
     )
 
+    # PR-7c: Risk profile bridge + startup audit row.
+    # record_startup_default writes one audit row on first-ever launch (when
+    # data/risk_profile.txt is absent). Idempotent within 60 s.
+    # Wrapped in try/except so a DB failure (e.g. fresh checkout with no DB)
+    # never prevents the GUI from launching.
+    risk_profile_bridge = RiskProfileBridge(db_path=db_path)
+    try:
+        record_startup_default(db_path)
+    except Exception:
+        logger.exception("PR-7c: record_startup_default failed; continuing")
+
     register_qml_types(
         theme_manager=theme_manager,
         operational_state=operational_state,
@@ -292,6 +304,7 @@ def run_app() -> int:
         market_tape_state=market_tape_state,
         activity_feed_state=activity_feed_state,
         bench_command_bridge=bench_command_bridge,
+        risk_profile_bridge=risk_profile_bridge,
     )
     logger.info("run_app: active theme = %r", theme_manager.theme)
 

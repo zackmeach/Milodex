@@ -40,6 +40,7 @@ from milodex.commands.bench import BenchCommandFacade
 from milodex.gui.bench_command_bridge import BenchCommandBridge
 from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
+from milodex.gui.risk_profile_bridge import RiskProfileBridge
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.strategy_bank_state import StrategyBankState
@@ -93,6 +94,7 @@ facade = BenchCommandFacade(
     get_trading_mode=lambda: "paper",
 )
 bench_command_bridge = BenchCommandBridge(facade, bench_state=bench)
+risk_profile_bridge = RiskProfileBridge(db_path=_nonexistent)
 
 register_qml_types(
     theme_manager=tm,
@@ -109,6 +111,7 @@ register_qml_types(
     market_tape_state=market_tape,
     activity_feed_state=activity_feed,
     bench_command_bridge=bench_command_bridge,
+    risk_profile_bridge=risk_profile_bridge,
 )
 
 _warnings = []

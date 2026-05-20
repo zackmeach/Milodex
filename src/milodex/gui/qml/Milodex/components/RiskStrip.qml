@@ -1,4 +1,10 @@
 // RiskStrip.qml — compact institutional risk posture.
+//
+// PR-7c: The left-hand badge ("RISK OFFICE · <PROFILE>") is now a
+// clickable affordance that opens the Risk Office drawer.  A separate
+// badgeClicked signal lets Main.qml toggle the drawer without a direct
+// reference between RiskStrip and the drawer.  The activeProfileName
+// property carries the current profile label into the badge copy.
 
 import QtQuick
 import QtQuick.Layouts
@@ -13,6 +19,9 @@ Rectangle {
     property string tradingMode: "paper"
     property string lastRefreshedAt: ""
     property string exposureText: "No real exposure"
+    property string activeProfileName: "conservative"  // PR-7c: drives badge copy
+
+    signal badgeClicked()  // PR-7c: emitted when Risk Office badge is pressed
 
     readonly property bool brokerConnected: root.brokerStatus === "connected"
     readonly property color postureColor: root.killSwitchActive ? Theme.status.negative : Theme.status.positive
@@ -46,14 +55,34 @@ Rectangle {
             color: root.postureColor
         }
 
-        Text {
-            text: "RISK OFFICE"
-            color: Theme.color.text.primary
-            font.family:        Theme.typography.label.xs.family
-            font.pixelSize:     Theme.typography.label.xs.size
-            font.weight:        Font.DemiBold
-            font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.4
-            font.capitalization: Font.AllUppercase
+        // PR-7c: clickable badge — opens Risk Office drawer.
+        Item {
+            implicitWidth: badgeText.implicitWidth
+            implicitHeight: badgeText.implicitHeight
+
+            Text {
+                id: badgeText
+                text: "RISK OFFICE · " + root.activeProfileName.toUpperCase()
+                color: badgeMouse.containsMouse
+                       ? Theme.color.brand.primary
+                       : Theme.color.text.primary
+                font.family:        Theme.typography.label.xs.family
+                font.pixelSize:     Theme.typography.label.xs.size
+                font.weight:        Font.DemiBold
+                font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.4
+                font.capitalization: Font.AllUppercase
+                Behavior on color {
+                    ColorAnimation { duration: Theme.motion.fast }
+                }
+            }
+
+            MouseArea {
+                id: badgeMouse
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: root.badgeClicked()
+            }
         }
 
         Rectangle {

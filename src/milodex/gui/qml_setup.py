@@ -38,6 +38,7 @@ from milodex.gui.read_models import (
     KanbanState,
     LedgerState,
 )
+from milodex.gui.risk_profile_bridge import RiskProfileBridge
 from milodex.gui.risk_throughput_state import RiskThroughputState
 from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
@@ -66,6 +67,7 @@ _attention_state_instance: AttentionState | None = None
 _market_tape_state_instance: MarketTapeState | None = None
 _activity_feed_state_instance: ActivityFeedState | None = None
 _bench_command_bridge_instance: BenchCommandBridge | None = None
+_risk_profile_bridge_instance: RiskProfileBridge | None = None
 
 
 def register_qml_types(
@@ -83,6 +85,7 @@ def register_qml_types(
     market_tape_state: MarketTapeState | None = None,
     activity_feed_state: ActivityFeedState | None = None,
     bench_command_bridge: BenchCommandBridge | None = None,
+    risk_profile_bridge: RiskProfileBridge | None = None,
 ) -> ThemeManager:
     """Register Python QML types and return the :class:`ThemeManager` singleton.
 
@@ -130,6 +133,7 @@ def register_qml_types(
     global _ledger_state_instance, _performance_state_instance, _risk_throughput_state_instance
     global _active_ops_state_instance, _attention_state_instance, _market_tape_state_instance
     global _activity_feed_state_instance, _bench_command_bridge_instance
+    global _risk_profile_bridge_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
     qmlRegisterSingletonInstance(
@@ -288,5 +292,19 @@ def register_qml_types(
             bench_command_bridge,
         )
         _bench_command_bridge_instance = bench_command_bridge
+
+    if risk_profile_bridge is not None:
+        # ADR 0054 / PR-7c: register the risk-profile bridge so QML can call
+        # activeProfileName() and attemptSwitch() and receive profileChanged,
+        # switchApplied, and switchRefused signals.
+        qmlRegisterSingletonInstance(
+            RiskProfileBridge,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "RiskProfileBridge",
+            risk_profile_bridge,
+        )
+        _risk_profile_bridge_instance = risk_profile_bridge
 
     return instance
