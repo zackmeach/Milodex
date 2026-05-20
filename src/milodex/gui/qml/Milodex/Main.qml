@@ -81,17 +81,11 @@ Window {
         }
     }
 
-    // TODO(operator-verify-wiring): RunnerSelect lives inside DeskSurface which
-    // is loaded dynamically by surfaceLoader. Wiring opened/dismissed signals
-    // requires either a Connections target against surfaceLoader.item's nested
-    // child (not directly reachable in QML without objectName traversal) or a
-    // signal relay added to DeskSurface. The overlay is in place; completing the
-    // round-trip wiring requires one of:
-    //   (a) Adding a `signal runnerDropdownOpened()` + `signal runnerDropdownDismissed()`
-    //       to DeskSurface.qml and having RunnerSelect propagate through it, then
-    //       wiring here via: Connections { target: surfaceLoader.item; ... }
-    //   (b) Giving the RunnerSelect an objectName and traversing via Python/C++.
-    // Until that relay is added, the overlay renders but is never activated.
+    // Issue 05: connect to DeskSurface relay signals.
+    // DeskSurface declares runnerDropdownOpened / runnerDropdownDismissed and
+    // closeRunnerDropdown(); the Connections block targets surfaceLoader.item
+    // (which is DeskSurface when the desk tab is active) and ignores unknown
+    // signals on other surfaces.
     Connections {
         target: surfaceLoader.item
         ignoreUnknownSignals: true
@@ -99,8 +93,8 @@ Window {
         function onRunnerDropdownDismissed() { root._dropdownOpen = false }
     }
     onDropdownDismissedSignal: {
-        if (surfaceLoader.item && typeof surfaceLoader.item.dismissRunnerDropdown === "function") {
-            surfaceLoader.item.dismissRunnerDropdown()
+        if (surfaceLoader.item && typeof surfaceLoader.item.closeRunnerDropdown === "function") {
+            surfaceLoader.item.closeRunnerDropdown()
         }
     }
 

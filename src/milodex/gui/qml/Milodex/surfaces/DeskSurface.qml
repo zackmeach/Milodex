@@ -36,6 +36,29 @@ Item {
     property real captureContentHeight: scroller.contentHeight
 
     // ------------------------------------------------------------------
+    // Issue 05: RunnerSelect dropdown relay signals.
+    //
+    // RunnerSelect lives inside activeOpsCol (Section III). Main.qml cannot
+    // reach it directly because it is loaded inside a Loader. These relay
+    // signals and the closeRunnerDropdown() function bridge the boundary:
+    //   Main.qml Connections.onRunnerDropdownOpened  → sets _dropdownOpen = true
+    //   Main.qml Connections.onRunnerDropdownDismissed → sets _dropdownOpen = false
+    //   Main.qml onDropdownDismissedSignal → calls closeRunnerDropdown() here
+    // ------------------------------------------------------------------
+    signal runnerDropdownOpened()
+    signal runnerDropdownDismissed()
+
+    function closeRunnerDropdown() {
+        runnerSelectInst.expanded = false
+    }
+
+    Connections {
+        target: runnerSelectInst
+        function onOpened()    { root.runnerDropdownOpened() }
+        function onDismissed() { root.runnerDropdownDismissed() }
+    }
+
+    // ------------------------------------------------------------------
     // Slice selection — pure client-side index into precomputed bySlice
     // maps. Sections II and IV each own an independent slice.
     // ------------------------------------------------------------------
@@ -580,6 +603,7 @@ Item {
                     }
 
                     RunnerSelect {
+                        id: runnerSelectInst
                         width: parent.width
                         visible: ActiveOpsState.runners.length > 0
                         runners: activeOpsCol._runnerOptions
