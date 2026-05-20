@@ -1363,6 +1363,9 @@ class BacktestEngine:
 
         Shared between _simulate_daily and (in Phase E) _simulate_intraday. Pure
         extraction — no behavior change.
+
+        ``equity`` is the total portfolio mark-to-market value (cash + open positions),
+        not raw cash balance.
         """
         context = replace(
             self._loaded.context,
