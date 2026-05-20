@@ -3,12 +3,14 @@
 // Spec: 2026-05-17-trading-desk-fidelity-design.md §3 III. App idiom is
 // type + colour + hairline only. Behaviour & signal FROZEN (spec §5).
 //
-// DESIGN DECISION (operator-accepted 2026-05-18): the open dropdown is
-// intentionally borderless and floats over the §III KeyStat grid with no
-// opaque backing — the no-chrome law applies here too. The transient
-// open-state overlap was reviewed (code-review I-1) and accepted as-is.
-// Do NOT re-introduce a surface fill / panel to "fix" this without a
-// spec §3-III amendment.
+// DESIGN DECISION (2026-05-19 amendment): the open dropdown carries a
+// solid surface.canvas backing + border.regular outline. This overrides the
+// 2026-05-18 "intentionally borderless" decision per operator feedback that
+// the borderless dropdown was unreadable in practice when overlaying the
+// KeyStat grid below (issue 03 in the 2026-05-19 UI readiness batch).
+//
+// The dropdown still closes on outside-click (issue 05 amendment, same date)
+// and the CLOSE pill affordance is preserved.
 //
 // Tokens consumed:
 //   color.text.muted      — eyebrow / unselected / affordance
@@ -99,6 +101,19 @@ Item {
             anchors.fill: parent
             onClicked: root._open = !root._open
         }
+    }
+
+    Rectangle {
+        anchors.top:       triggerRow.bottom
+        anchors.topMargin: Theme.space[1]
+        anchors.left:      parent.left
+        width:             parent.width
+        height:            dropColumn.height
+        visible:           root._open
+        color:             Theme.color.surface.canvas
+        border.color:      Theme.color.border.regular
+        border.width:      1
+        z:                 9
     }
 
     Column {
