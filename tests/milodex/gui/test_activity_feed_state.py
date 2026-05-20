@@ -843,3 +843,172 @@ def test_kind_derivation_all_four_kinds(qapp, tmp_path) -> None:
     assert tones_by_strategy["s_fill"] == "positive"
 
     state.stop()
+
+
+# ---------------------------------------------------------------------------
+# Task 23 (PR-6): backtest_runs as third ActivityFeed source
+# ---------------------------------------------------------------------------
+
+
+def _create_fixture_db_with_backtests(path: Path) -> None:
+    """Create a minimal DB with explanations, trades, and backtest_runs tables."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE explanations (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at      TEXT NOT NULL,
+            decision_type    TEXT NOT NULL,
+            status           TEXT NOT NULL,
+            strategy_name    TEXT NOT NULL,
+            strategy_stage   TEXT NOT NULL,
+            symbol           TEXT NOT NULL,
+            side             TEXT NOT NULL,
+            quantity         REAL NOT NULL,
+            risk_allowed     INTEGER NOT NULL,
+            session_id       TEXT NOT NULL,
+            backtest_run_id  TEXT
+        );
+
+        CREATE TABLE trades (
+            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+            explanation_id        INTEGER,
+            recorded_at           TEXT NOT NULL,
+            status                TEXT NOT NULL,
+            source                TEXT,
+            symbol                TEXT NOT NULL,
+            side                  TEXT NOT NULL,
+            quantity              REAL NOT NULL,
+            strategy_name         TEXT NOT NULL,
+            strategy_stage        TEXT NOT NULL,
+            broker_order_id       TEXT,
+            broker_status         TEXT,
+            estimated_order_value REAL,
+            session_id            TEXT NOT NULL,
+            backtest_run_id       TEXT
+        );
+
+        CREATE TABLE backtest_runs (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id           TEXT NOT NULL UNIQUE,
+            strategy_id      TEXT NOT NULL,
+            config_path      TEXT,
+            config_hash      TEXT,
+            start_date       TEXT NOT NULL,
+            end_date         TEXT NOT NULL,
+            started_at       TEXT NOT NULL,
+            ended_at         TEXT,
+            status           TEXT NOT NULL,
+            slippage_pct     REAL,
+            commission_per_trade REAL,
+            metadata_json    TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _seed_completed_backtest(
+    db: Path,
+    *,
+    run_id: str = "run-1",
+    strategy_id: str = "momentum.daily.test.v1",
+    ended_at: str = "2026-05-10T12:00:00+00:00",
+    sharpe: float | None = 0.72,
+    max_drawdown_pct: float | None = 8.5,
+    trade_count: int | None = 120,
+) -> None:
+    import json as _json
+
+    metadata = {}
+    if sharpe is not None or max_drawdown_pct is not None or trade_count is not None:
+        metadata["oos_aggregate"] = {}
+        if sharpe is not None:
+            metadata["oos_aggregate"]["sharpe"] = sharpe
+        if max_drawdown_pct is not None:
+            metadata["oos_aggregate"]["max_drawdown_pct"] = max_drawdown_pct
+        if trade_count is not None:
+            metadata["oos_aggregate"]["trade_count"] = trade_count
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO backtest_runs
+            (run_id, strategy_id, start_date, end_date, started_at, ended_at,
+             status, metadata_json)
+        VALUES (?, ?, '2020-01-01', '2024-12-31', '2026-05-10T08:00:00+00:00',
+                ?, 'completed', ?)
+        """,
+        (run_id, strategy_id, ended_at, _json.dumps(metadata)),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_activity_feed_includes_backtest_results(tmp_path: Path) -> None:
+    """Section VII shows backtest results alongside orders/signals/fills/rejections."""
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db_with_backtests(db)
+
+    # Seed one completed backtest
+    _seed_completed_backtest(
+        db,
+        run_id="run-bt",
+        strategy_id="momentum.daily.test.v1",
+        ended_at="2026-05-10T12:00:00+00:00",
+        sharpe=0.72,
+    )
+
+    # Seed one paper explanation to confirm both sources appear
+    from datetime import UTC, datetime
+
+    exp_ts = datetime(2026, 5, 10, 11, 0, 0, tzinfo=UTC).isoformat()
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """INSERT INTO explanations
+           (recorded_at, decision_type, status, strategy_name, strategy_stage,
+            symbol, side, quantity, risk_allowed, session_id)
+           VALUES (?, 'submit', 'submitted', 'alpha', 'paper', 'SPY', 'buy', 10, 1, 'sess-1')""",
+        (exp_ts,),
+    )
+    conn.commit()
+    conn.close()
+
+    feed = _query_feed(db)
+
+    kinds = {r["kind"] for r in feed}
+    assert "backtest" in kinds, f"Expected 'backtest' kind in feed; got kinds={kinds}"
+    assert "signal" in kinds, f"Expected 'signal' kind in feed; got kinds={kinds}"
+
+    # Backtest row should carry strategy and detail
+    bt_rows = [r for r in feed if r["kind"] == "backtest"]
+    assert len(bt_rows) == 1
+    assert "Sharpe" in bt_rows[0]["detail"], f"Expected Sharpe in detail: {bt_rows[0]['detail']}"
+
+
+def test_activity_feed_excludes_incomplete_backtests(tmp_path: Path) -> None:
+    """Only status='completed' backtest_runs rows appear in the feed."""
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db_with_backtests(db)
+
+    conn = sqlite3.connect(str(db))
+    # incomplete (running) backtest — should NOT appear
+    conn.execute(
+        """INSERT INTO backtest_runs
+           (run_id, strategy_id, start_date, end_date, started_at, ended_at,
+            status, metadata_json)
+           VALUES ('run-running', 'momentum.daily.test.v1', '2020-01-01', '2024-12-31',
+                   '2026-05-10T08:00:00+00:00', NULL, 'running', '{}')""",
+    )
+    conn.commit()
+    conn.close()
+
+    feed = _query_feed(db)
+    assert not any(r["kind"] == "backtest" for r in feed), (
+        "Running/incomplete backtest should not appear in feed"
+    )

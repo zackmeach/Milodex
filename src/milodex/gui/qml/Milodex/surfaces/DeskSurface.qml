@@ -933,11 +933,12 @@ Item {
                 property string feedFilter: "All"
 
                 readonly property var _filterOptions: [
-                    { label: "All",        value: "All" },
-                    { label: "Orders",     value: "order" },
-                    { label: "Rejections", value: "rejection" },
-                    { label: "Signals",    value: "signal" },
-                    { label: "Fills",      value: "fill" }
+                    { label: "All",       value: "All"       },
+                    { label: "Orders",    value: "order"     },
+                    { label: "Rejections",value: "rejection" },
+                    { label: "Signals",   value: "signal"    },
+                    { label: "Fills",     value: "fill"      },
+                    { label: "Backtests", value: "backtest"  }
                 ]
 
                 // Normalize ActivityFeedState rows {time,strategy,kind,detail,

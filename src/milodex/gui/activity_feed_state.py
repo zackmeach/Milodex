@@ -1,8 +1,8 @@
 """Activity feed state exposed to QML.
 
-Owns a UNION of paper-scoped ``explanations``-derived rows and
-``trades``-derived rows, normalized to a common shape and ordered newest-first,
-capped at :const:`_FEED_CAP` rows.
+Owns a UNION of three sources: paper-scoped ``explanations``-derived rows,
+``trades``-derived rows, and completed ``backtest_runs`` rows; normalized to a
+common shape and ordered newest-first, capped at :const:`_FEED_CAP` rows.
 
 Threading model
 ---------------
@@ -27,30 +27,33 @@ Uses :const:`milodex.gui._dashboard_scope.EXPLANATION_PAPER_SQL` and
 :const:`milodex.gui._dashboard_scope.TRADE_PAPER_SQL` to exclude backtest rows.
 Each constant is applied to its own table's SELECT in the UNION — no join
 between tables is performed, so unqualified column names are unambiguous.
+Backtest rows come from ``backtest_runs WHERE status = 'completed'``.
 
 Feed shape
 ----------
 Each normalized row is a dict with keys:
-- ``time``     — ``recorded_at`` ISO text from the source row
-- ``strategy`` — ``strategy_name``
-- ``kind``     — one of: ``rejection``, ``signal``, ``order``, ``fill``
+- ``time``     — ISO timestamp from the source row
+- ``strategy`` — ``strategy_name`` (explanations/trades) or ``strategy_id`` (backtests)
+- ``kind``     — one of: ``rejection``, ``signal``, ``order``, ``fill``, ``backtest``
 - ``detail``   — concise human string (see formats below)
-- ``symbol``   — ``symbol``
+- ``symbol``   — ``symbol`` (empty string for backtest rows)
 - ``tone``     — one of: ``positive``, ``negative``, ``data``, ``muted``
 
 Detail string formats:
 - explanations: ``"{decision_type}/{status}"``  (e.g. ``"submit/submitted"``)
 - trades: ``"{side} {quantity} @ {status}/{broker_status}"``
   (e.g. ``"buy 10 @ submitted/pending"``;  broker_status renders as ``"pending"`` if NULL)
+- backtests: metric summary (e.g. ``"Sharpe 0.72 · max-dd 8.5% · n=120"``)
 
 Kind derivation:
 - explanations: ``kind='rejection'`` if ``risk_allowed = 0``; else ``kind='signal'``
 - trades: ``kind='order'`` if ``status = 'submitted'``; ``kind='fill'`` if
   ``broker_status = 'filled'``.  Trades that are neither are excluded.
+- backtests: ``kind='backtest'`` for all completed rows.
 
 Client-side filtering
 ---------------------
-The QML layer (PR 8) filters All / Orders / Rejections / Signals / Fills
+The QML layer filters All / Orders / Rejections / Signals / Fills / BACKTESTS
 client-side on the ``kind`` field.  No server-side filtering is performed here —
 the full capped feed is always returned.
 """
@@ -109,6 +112,8 @@ def _row_tone(kind: str, *, risk_allowed: int | None = None) -> str:  # noqa: AR
             return "data"
         case "signal":
             return "muted"
+        case "backtest":
+            return "data"
         case _:
             return "muted"
 
@@ -151,40 +156,71 @@ WHERE {TRADE_PAPER_SQL}
   AND (status = 'submitted' OR broker_status = 'filled')
 """
 
+_SQL_BACKTESTS = """
+SELECT
+    ended_at                                                        AS time,
+    strategy_id                                                     AS strategy,
+    'backtest'                                                      AS kind,
+    json_extract(metadata_json, '$.oos_aggregate.sharpe')           AS sharpe,
+    json_extract(metadata_json, '$.oos_aggregate.max_drawdown_pct') AS max_dd,
+    json_extract(metadata_json, '$.oos_aggregate.trade_count')      AS n
+FROM backtest_runs
+WHERE status = 'completed'
+  AND ended_at IS NOT NULL
+"""
+
+
+def _coerce_iso(time_raw: str) -> str:
+    """Coerce tz-naive ISO timestamp → UTC-aware ISO string."""
+    try:
+        dt = datetime.fromisoformat(time_raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt.isoformat()
+    except Exception:  # noqa: BLE001
+        return time_raw
+
+
+def _backtest_detail(sharpe: float | None, max_dd: float | None, n: int | None) -> str:
+    """Build a concise metric summary for a backtest feed row."""
+    parts = []
+    if sharpe is not None:
+        parts.append(f"Sharpe {sharpe:.2f}")
+    if max_dd is not None:
+        parts.append(f"max-dd {abs(max_dd) * 100:.1f}%")
+    if n is not None:
+        parts.append(f"n={n}")
+    return " · ".join(parts) or "completed"
+
 
 def _query_feed(db_path: Path) -> list[dict[str, Any]]:
-    """Return the normalized activity feed for the paper scope.
+    """Return the normalized activity feed (paper scope + completed backtests).
 
     Opens a read-only SQLite connection.  Raises on missing / unreadable DB.
 
     Returns a list of normalized dicts (see module docstring), ordered by
-    ``recorded_at`` DESC, capped at :const:`_FEED_CAP` entries.
+    timestamp DESC, capped at :const:`_FEED_CAP` entries.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         exp_rows = conn.execute(_SQL_EXPLANATIONS).fetchall()
         trade_rows = conn.execute(_SQL_TRADES).fetchall()
+        try:
+            bt_rows = conn.execute(_SQL_BACKTESTS).fetchall()
+        except sqlite3.OperationalError:
+            # backtest_runs table may not exist in legacy test DBs
+            bt_rows = []
     finally:
         conn.close()
 
     feed: list[dict[str, Any]] = []
 
     for row in exp_rows:
-        time_raw = row["time"]
-        # Coerce tz-naive → UTC
-        try:
-            dt = datetime.fromisoformat(time_raw)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            time_iso = dt.isoformat()
-        except Exception:  # noqa: BLE001
-            time_iso = time_raw
-
         kind = row["kind"]
         feed.append(
             {
-                "time": time_iso,
+                "time": _coerce_iso(row["time"]),
                 "strategy": row["strategy"],
                 "kind": kind,
                 "detail": row["detail"],
@@ -197,24 +233,26 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
         kind = row["kind"]
         if kind is None:
             continue  # defensive — WHERE clause should already exclude these
-
-        time_raw = row["time"]
-        try:
-            dt = datetime.fromisoformat(time_raw)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=UTC)
-            time_iso = dt.isoformat()
-        except Exception:  # noqa: BLE001
-            time_iso = time_raw
-
         feed.append(
             {
-                "time": time_iso,
+                "time": _coerce_iso(row["time"]),
                 "strategy": row["strategy"],
                 "kind": kind,
                 "detail": row["detail"],
                 "symbol": row["symbol"],
                 "tone": _row_tone(kind),
+            }
+        )
+
+    for row in bt_rows:
+        feed.append(
+            {
+                "time": _coerce_iso(row["time"]),
+                "strategy": row["strategy"],
+                "kind": "backtest",
+                "detail": _backtest_detail(row["sharpe"], row["max_dd"], row["n"]),
+                "symbol": "",
+                "tone": _row_tone("backtest"),
             }
         )
 
