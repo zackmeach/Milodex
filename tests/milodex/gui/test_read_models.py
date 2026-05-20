@@ -1338,3 +1338,215 @@ def test_bench_pr_n_action_preview_micro_live_capital_bearing(tmp_path: Path) ->
 _COPY_CAPITAL_LOCK_SHORT_TEST = (
     "Capital-bearing transitions remain locked while ADR 0004 is in force."
 )
+
+
+# ---------------------------------------------------------------------------
+# Task 21 (PR-6): 6-source ledger taxonomy
+# ---------------------------------------------------------------------------
+
+
+def _create_full_ledger_db(path: Path) -> None:
+    """Create a DB with all tables needed for 6-source ledger testing."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE promotions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recorded_at TEXT NOT NULL,
+            strategy_id TEXT NOT NULL,
+            from_stage TEXT NOT NULL,
+            to_stage TEXT NOT NULL,
+            promotion_type TEXT NOT NULL,
+            approved_by TEXT NOT NULL,
+            backtest_run_id TEXT,
+            sharpe_ratio REAL,
+            max_drawdown_pct REAL,
+            trade_count INTEGER,
+            notes TEXT
+        );
+        CREATE TABLE backtest_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL UNIQUE,
+            strategy_id TEXT NOT NULL,
+            config_path TEXT,
+            config_hash TEXT,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            status TEXT NOT NULL,
+            slippage_pct REAL,
+            commission_per_trade REAL,
+            metadata_json TEXT NOT NULL
+        );
+        CREATE TABLE kill_switch_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            recorded_at TEXT NOT NULL,
+            reason TEXT
+        );
+        CREATE TABLE strategy_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT NOT NULL,
+            strategy_id TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            ended_at TEXT,
+            exit_reason TEXT,
+            metadata_json TEXT NOT NULL
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_ledger_entries_includes_all_six_event_types(tmp_path: Path) -> None:
+    """Ledger sources: promotions, kill_switch, session start, session stop,
+    backtest completion, new strategy."""
+    import json as _json
+
+    from milodex.gui.read_models import build_ledger_snapshot
+
+    db = tmp_path / "milodex.db"
+    _create_full_ledger_db(db)
+    configs = tmp_path / "configs"
+    configs.mkdir()
+
+    sid = "meanrev.daily.rsi2pullback.v1"
+
+    # 1. Promotion row → outcomeKind='promoted'
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """INSERT INTO promotions
+           (recorded_at, strategy_id, from_stage, to_stage, promotion_type,
+            approved_by, notes)
+           VALUES ('2026-05-01T10:00:00+00:00', ?, 'backtest', 'paper',
+                   'statistical', 'test', 'gate pass')""",
+        (sid,),
+    )
+
+    # 2. Kill-switch row → outcomeKind='fired'
+    conn.execute(
+        "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
+        ("triggered", "2026-05-02T10:00:00+00:00", "daily loss cap"),
+    )
+
+    # 3. Session start → outcomeKind='started'
+    conn.execute(
+        """INSERT INTO strategy_runs
+           (session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json)
+           VALUES ('sess-1', ?, '2026-05-03T10:00:00+00:00', NULL, NULL, '{}')""",
+        (sid,),
+    )
+
+    # 4. Session stop (non-kill-switch) → outcomeKind='stopped'
+    conn.execute(
+        """INSERT INTO strategy_runs
+           (session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json)
+           VALUES ('sess-2', ?, '2026-05-04T09:00:00+00:00',
+                   '2026-05-04T16:00:00+00:00', 'controlled_stop', '{}')""",
+        (sid,),
+    )
+
+    # 5. Completed backtest → outcomeKind='backtested_strong' (Sharpe ≥ 0.5)
+    metadata = _json.dumps({"oos_aggregate": {"sharpe": 0.72, "max_drawdown_pct": 8.5, "trade_count": 120}})
+    conn.execute(
+        """INSERT INTO backtest_runs
+           (run_id, strategy_id, start_date, end_date, started_at, ended_at,
+            status, metadata_json)
+           VALUES ('run-bt-1', ?, '2020-01-01', '2024-12-31',
+                   '2026-05-05T08:00:00+00:00', '2026-05-05T08:30:00+00:00',
+                   'completed', ?)""",
+        (sid, metadata),
+    )
+
+    conn.commit()
+    conn.close()
+
+    # 6. New strategy via YAML mtime fallback (no event-store history for this sid)
+    yaml_sid = "momentum.daily.test_new.v1"
+    yaml_path = configs / "momentum_daily_test_new_v1.yaml"
+    yaml_path.write_text(
+        f"""
+strategy:
+  id: {yaml_sid}
+  family: momentum
+  template: daily
+  variant: test_new
+  version: 1
+  description: Test New Strategy
+  enabled: true
+  universe: [SPY]
+  parameters: {{}}
+  tempo:
+    bar_size: 1D
+  risk:
+    max_position_pct: 0.1
+    max_positions: 1
+    daily_loss_cap_pct: 0.03
+    stop_loss_pct: 0.05
+  stage: backtest
+  backtest:
+    commission_per_trade: 0
+    min_trades_required: 30
+  disable_conditions_additional: []
+""".strip(),
+        encoding="utf-8",
+    )
+
+    entries = build_ledger_snapshot(db, configs)["entries"]
+
+    # Must contain at least one of each required kind
+    kinds = {e["outcomeKind"] for e in entries}
+    assert "promoted" in kinds, f"Missing 'promoted' in {kinds}"
+    assert "fired" in kinds, f"Missing 'fired' in {kinds}"
+    assert "started" in kinds, f"Missing 'started' in {kinds}"
+    assert "stopped" in kinds, f"Missing 'stopped' in {kinds}"
+    assert any(k.startswith("backtested") for k in kinds), f"Missing 'backtested_*' in {kinds}"
+    assert "added" in kinds, f"Missing 'added' in {kinds}"
+
+    # Sort: DESC by timestamp
+    timestamps = [e["timestamp"] for e in entries if e.get("timestamp")]
+    assert timestamps == sorted(timestamps, reverse=True), "Entries are not sorted DESC"
+
+
+def test_kill_switch_does_not_emit_stop_row(tmp_path: Path) -> None:
+    """A session ended via kill_switch must NOT emit a 'STOPPED' row;
+    the kill_switch_events row stands alone."""
+    from milodex.gui.read_models import build_ledger_snapshot
+
+    db = tmp_path / "milodex.db"
+    _create_full_ledger_db(db)
+    configs = tmp_path / "configs"
+    configs.mkdir()
+
+    sid = "meanrev.daily.rsi2pullback.v1"
+    ts_ks = "2026-05-10T14:00:00+00:00"
+    ts_stop = "2026-05-10T14:00:00.005+00:00"  # 5ms later
+
+    conn = sqlite3.connect(str(db))
+    # Kill-switch fired at ts_ks
+    conn.execute(
+        "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
+        ("triggered", ts_ks, "daily loss cap"),
+    )
+    # Session closed at ts_stop with exit_reason='kill_switch' (should be excluded)
+    conn.execute(
+        """INSERT INTO strategy_runs
+           (session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json)
+           VALUES ('sess-ks', ?, '2026-05-10T09:00:00+00:00', ?, 'kill_switch', '{}')""",
+        (sid, ts_stop),
+    )
+    conn.commit()
+    conn.close()
+
+    entries = build_ledger_snapshot(db, configs)["entries"]
+
+    # Only the kill-switch row for this session's timestamp range
+    strategy_entries = [e for e in entries if e.get("strategyId") == sid or e.get("subject") == "kill switch"]
+    assert not any(e["outcomeKind"] == "stopped" for e in entries), (
+        "A 'stopped' row was emitted for a kill_switch session — it should be filtered out"
+    )
+    assert any(e["outcomeKind"] == "fired" for e in entries), (
+        "Expected a 'fired' row from kill_switch_events"
+    )

@@ -335,15 +335,21 @@ class LedgerState(_PollingReadModel):
     entriesChanged = Signal()  # noqa: N815
     filtersChanged = Signal()  # noqa: N815
 
-    def __init__(self, db_path: Path, refresh_interval_ms: int = 30_000) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        configs_dir: Path | None = None,
+        refresh_interval_ms: int = 30_000,
+    ) -> None:
         self._all_entries: list[dict[str, Any]] = []
         self._entries: list[dict[str, Any]] = []
         self._stage_filter = "all"
         self._strategy_filter = "all"
         self._outcome_filter = "all"
         self._time_filter = "all"
+        _configs = configs_dir if configs_dir is not None else Path("configs")
         super().__init__(
-            builder=lambda: build_ledger_snapshot(db_path),
+            builder=lambda: build_ledger_snapshot(db_path, _configs),
             refresh_interval_ms=refresh_interval_ms,
         )
 
@@ -499,8 +505,11 @@ def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
     }
 
 
-def build_ledger_snapshot(db_path: Path) -> dict[str, Any]:
-    return {"entries": _ledger_entries(db_path), "lastRefreshedAt": _now_iso()}
+def build_ledger_snapshot(db_path: Path, configs_dir: Path | None = None) -> dict[str, Any]:
+    # When configs_dir is None, pass a non-existent sentinel so _new_strategy_entries
+    # produces only event-store-backed rows (no YAML mtime fallback).
+    _configs = configs_dir if configs_dir is not None else Path("__no_configs__")
+    return {"entries": _ledger_entries(db_path, _configs), "lastRefreshedAt": _now_iso()}
 
 
 def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
@@ -1025,24 +1034,14 @@ def _latest_promotions(db_path: Path) -> dict[str, dict[str, Any]]:
     return {row["strategy_id"]: dict(row) for row in rows}
 
 
-def _ledger_entries(db_path: Path) -> list[dict[str, Any]]:
-    if not db_path.exists():
-        return []
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _promotion_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Ledger rows from the promotions table (promoted/demoted/returned)."""
     entries: list[dict[str, Any]] = []
     try:
-        promotion_rows = conn.execute(
-            "SELECT * FROM promotions ORDER BY id DESC LIMIT 200"
-        ).fetchall()
-        kill_rows = conn.execute(
-            "SELECT * FROM kill_switch_events ORDER BY id DESC LIMIT 100"
-        ).fetchall()
+        rows = conn.execute("SELECT * FROM promotions ORDER BY id DESC LIMIT 200").fetchall()
     except sqlite3.Error:
         return []
-    finally:
-        conn.close()
-    for row in promotion_rows:
+    for row in rows:
         promotion_type = str(row["promotion_type"])
         if promotion_type == "demotion":
             outcome_kind = "demoted"
@@ -1064,7 +1063,19 @@ def _ledger_entries(db_path: Path) -> list[dict[str, Any]]:
                 "recent": True,
             }
         )
-    for row in kill_rows:
+    return entries
+
+
+def _kill_switch_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Ledger rows from kill_switch_events."""
+    entries: list[dict[str, Any]] = []
+    try:
+        rows = conn.execute(
+            "SELECT * FROM kill_switch_events ORDER BY id DESC LIMIT 100"
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    for row in rows:
         entries.append(
             {
                 "timestamp": row["recorded_at"],
@@ -1079,7 +1090,245 @@ def _ledger_entries(db_path: Path) -> list[dict[str, Any]]:
                 "recent": True,
             }
         )
-    return sorted(entries, key=lambda entry: str(entry.get("timestamp") or ""), reverse=True)
+    return entries
+
+
+def _session_start_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Ledger rows for strategy session starts."""
+    entries: list[dict[str, Any]] = []
+    try:
+        rows = conn.execute(
+            """
+            SELECT strategy_id, started_at, session_id
+            FROM strategy_runs
+            WHERE started_at IS NOT NULL
+            ORDER BY started_at DESC LIMIT 200
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    for row in rows:
+        entries.append(
+            {
+                "timestamp": row["started_at"],
+                "displayTimestamp": _compact_timestamp(str(row["started_at"])),
+                "strategyId": row["strategy_id"],
+                "subject": _short_strategy_name(row["strategy_id"]),
+                "stage": "lifecycle",
+                "transition": "session",
+                "outcome": "STARTED",
+                "outcomeKind": "started",
+                "reason": "trading session began",
+                "recent": True,
+            }
+        )
+    return entries
+
+
+def _session_stop_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Sessions ended for operator-initiated reasons. EXCLUDES kill-switch
+    and orphan-recovered closures (those emit their own ledger rows from
+    kill_switch_events or are synthetic reconciliation rows)."""
+    entries: list[dict[str, Any]] = []
+    try:
+        rows = conn.execute(
+            """
+            SELECT strategy_id, ended_at, exit_reason, session_id
+            FROM strategy_runs
+            WHERE ended_at IS NOT NULL
+              AND exit_reason NOT IN ('kill_switch', 'orphan_recovered')
+            ORDER BY ended_at DESC LIMIT 200
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    for row in rows:
+        entries.append(
+            {
+                "timestamp": row["ended_at"],
+                "displayTimestamp": _compact_timestamp(str(row["ended_at"])),
+                "strategyId": row["strategy_id"],
+                "subject": _short_strategy_name(row["strategy_id"]),
+                "stage": "lifecycle",
+                "transition": "session",
+                "outcome": "STOPPED",
+                "outcomeKind": "stopped",
+                "reason": row["exit_reason"] or "stopped",
+                "recent": True,
+            }
+        )
+    return entries
+
+
+def _backtest_complete_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Ledger rows for completed backtest runs.
+
+    Actual columns (confirmed via PRAGMA): ended_at, status, metadata_json.
+    Sharpe lives at metadata_json.oos_aggregate.sharpe.
+    Three-tone color binding to promotion policy thresholds.
+    """
+    from milodex.promotion.policy import ACTIVE_PROMOTION_POLICY  # noqa: PLC0415
+
+    paper_gate = ACTIVE_PROMOTION_POLICY.paper_gate.min_sharpe
+    capital_gate = ACTIVE_PROMOTION_POLICY.capital_gate.min_sharpe
+
+    entries: list[dict[str, Any]] = []
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, strategy_id, ended_at, status,
+                   json_extract(metadata_json, '$.oos_aggregate.sharpe') AS sharpe,
+                   json_extract(metadata_json, '$.oos_aggregate.max_drawdown_pct') AS max_dd,
+                   json_extract(metadata_json, '$.oos_aggregate.trade_count') AS n
+            FROM backtest_runs
+            WHERE status = 'completed' AND ended_at IS NOT NULL
+            ORDER BY ended_at DESC LIMIT 200
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    for row in rows:
+        sharpe = row["sharpe"]
+        if sharpe is None:
+            kind = "backtested"
+        elif sharpe >= capital_gate:
+            kind = "backtested_strong"
+        elif sharpe >= paper_gate:
+            kind = "backtested_paper"
+        else:
+            kind = "backtested_weak"
+
+        reason_parts = []
+        if sharpe is not None:
+            reason_parts.append(f"Sharpe {sharpe:.2f}")
+        if row["max_dd"] is not None:
+            reason_parts.append(f"max-dd {abs(row['max_dd']) * 100:.1f}%")
+        if row["n"] is not None:
+            reason_parts.append(f"n={row['n']}")
+        reason = " · ".join(reason_parts) or "completed"
+
+        entries.append(
+            {
+                "timestamp": row["ended_at"],
+                "displayTimestamp": _compact_timestamp(str(row["ended_at"])),
+                "strategyId": row["strategy_id"],
+                "subject": _short_strategy_name(row["strategy_id"]),
+                "stage": "backtest",
+                "transition": "backtest",
+                "outcome": "COMPLETED",
+                "outcomeKind": kind,
+                "reason": reason,
+                "recent": True,
+            }
+        )
+    return entries
+
+
+def _new_strategy_entries(conn: sqlite3.Connection, configs_dir: Path) -> list[dict[str, Any]]:
+    """First appearance per strategy_id across event tables.
+
+    YAML mtime fallback only for strategies with no event-store history.
+    """
+    try:
+        rows = conn.execute(
+            """
+            WITH first_seen AS (
+                SELECT strategy_id, recorded_at AS first_at FROM promotions
+                UNION ALL
+                SELECT strategy_id, started_at FROM strategy_runs WHERE started_at IS NOT NULL
+                UNION ALL
+                SELECT strategy_id, started_at FROM backtest_runs WHERE started_at IS NOT NULL
+            )
+            SELECT strategy_id, MIN(first_at) AS first_at FROM first_seen GROUP BY strategy_id
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        rows = []
+
+    seen_with_history: dict[str, str] = {row["strategy_id"]: row["first_at"] for row in rows}
+
+    entries: list[dict[str, Any]] = []
+    for sid, first_at in seen_with_history.items():
+        entries.append(
+            {
+                "timestamp": first_at,
+                "displayTimestamp": _compact_timestamp(str(first_at)),
+                "strategyId": sid,
+                "subject": _short_strategy_name(sid),
+                "stage": "system",
+                "transition": "registration",
+                "outcome": "ADDED",
+                "outcomeKind": "added",
+                "reason": "strategy first appeared in event store",
+                "recent": True,
+            }
+        )
+
+    # Fallback: strategies present in configs/ with no event-store ancestry.
+    for yaml_path in Path(configs_dir).glob("*.yaml"):
+        sid = _strategy_id_from_yaml(yaml_path)
+        if sid and sid not in seen_with_history:
+            mtime_iso = datetime.fromtimestamp(
+                yaml_path.stat().st_mtime, tz=UTC
+            ).isoformat()
+            entries.append(
+                {
+                    "timestamp": mtime_iso,
+                    "displayTimestamp": _compact_timestamp(mtime_iso),
+                    "strategyId": sid,
+                    "subject": _short_strategy_name(sid),
+                    "stage": "system",
+                    "transition": "registration",
+                    "outcome": "ADDED",
+                    "outcomeKind": "added",
+                    "reason": "config file mtime (no event-store history)",
+                    "recent": True,
+                }
+            )
+    return entries
+
+
+_LEDGER_SOURCE_PRIORITY = {
+    "promoted": 0,
+    "demoted": 0,
+    "returned": 0,
+    "fired": 1,
+    "info": 1,
+    "started": 2,
+    "stopped": 2,
+    "backtested_strong": 3,
+    "backtested_paper": 3,
+    "backtested_weak": 3,
+    "backtested": 3,
+    "added": 4,
+}
+
+
+def _ledger_entries(db_path: Path, configs_dir: Path) -> list[dict[str, Any]]:
+    if not db_path.exists():
+        return []
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        entries: list[dict[str, Any]] = []
+        entries += _promotion_entries(conn)
+        entries += _kill_switch_entries(conn)
+        entries += _session_start_entries(conn)
+        entries += _session_stop_entries(conn)
+        entries += _backtest_complete_entries(conn)
+        entries += _new_strategy_entries(conn, configs_dir)
+    finally:
+        conn.close()
+    return sorted(
+        entries,
+        key=lambda e: (
+            # Primary: newest first
+            str(e.get("timestamp") or ""),
+            # Secondary: lower priority number = higher position when timestamps equal
+            -_LEDGER_SOURCE_PRIORITY.get(str(e.get("outcomeKind") or ""), 5),
+        ),
+        reverse=True,
+    )
 
 
 def _latest_session_states(db_path: Path) -> dict[str, dict[str, Any]]:
@@ -1401,6 +1650,18 @@ def _short_strategy_name(strategy_id: str) -> str:
     else:
         raw = strategy_id
     return raw.replace("_", " ").replace("-", " ").title()
+
+
+def _strategy_id_from_yaml(yaml_path: Path) -> str | None:
+    """Extract strategy.id from a YAML config file.  Returns None on any error."""
+    try:
+        with yaml_path.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        if isinstance(data, dict):
+            return str(data["strategy"]["id"])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
 
 
 def _float_or_none(*values: Any) -> float | None:

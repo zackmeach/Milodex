@@ -233,7 +233,7 @@ def run_app() -> int:
     front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
     bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
     kanban_state = KanbanState(db_path=db_path, configs_dir=configs_dir)
-    ledger_state = LedgerState(db_path=db_path)
+    ledger_state = LedgerState(db_path=db_path, configs_dir=configs_dir)
 
     # Trading Desk read-models (spec §3 IA→read-model map). PerformanceState
     # and MarketTapeState read the Parquet market cache; ActiveOpsState needs
