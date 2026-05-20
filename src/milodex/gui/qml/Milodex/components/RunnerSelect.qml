@@ -40,10 +40,17 @@ Item {
     signal opened()
     signal dismissed()
 
+    // I-2: guard signals so they only fire on true user-driven transitions,
+    // not during construction (initial _open = false would otherwise emit
+    // dismissed() before any interaction).
+    property bool _initialized: false
+    Component.onCompleted: { _initialized = true }
+
     // _open: internal state. `expanded` is the public alias for Main.qml wiring.
     property bool _open: false
     property bool expanded: _open
     on_OpenChanged: {
+        if (!_initialized) return
         if (_open) {
             opened()
         } else {
@@ -59,6 +66,15 @@ Item {
             root._open = false
             event.accepted = true
         }
+    }
+
+    // I-1: expose the dropdown container's scene-space bounding rect so
+    // Main.qml's overlay can exclude clicks that land inside the open dropdown.
+    // Returns Qt.rect(0,0,0,0) when closed (nothing to exclude).
+    function dropdownBoundsInScene() {
+        if (!_open) return Qt.rect(0, 0, 0, 0)
+        var p = dropContainer.mapToItem(null, 0, 0)
+        return Qt.rect(p.x, p.y, dropContainer.width, dropContainer.height)
     }
 
     readonly property string _currentLabel: {

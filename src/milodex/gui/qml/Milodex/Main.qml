@@ -75,7 +75,23 @@ Window {
         anchors.fill: parent
         visible: root._dropdownOpen
         z: 9000  // Above page content, below dropdown bounds (which sit higher in z).
+        // I-1: propagateComposedEvents allows mouse.accepted = false to pass
+        // the click through to sibling items (surfaceLoader subtree) when the
+        // click lands inside the open dropdown's bounding rect.
+        propagateComposedEvents: true
         onClicked: function(mouse) {
+            // Geometric exclusion: if the click is inside the open dropdown,
+            // do not dismiss — let the event fall through to the dropdown row.
+            var rect = (surfaceLoader.item && typeof surfaceLoader.item.runnerDropdownSceneRect === "function")
+                       ? surfaceLoader.item.runnerDropdownSceneRect()
+                       : Qt.rect(0, 0, 0, 0)
+            var inside = rect.width > 0
+                         && mouse.x >= rect.x && mouse.x <= rect.x + rect.width
+                         && mouse.y >= rect.y && mouse.y <= rect.y + rect.height
+            if (inside) {
+                mouse.accepted = false
+                return
+            }
             root._dropdownOpen = false
             root.dropdownDismissedSignal()
         }

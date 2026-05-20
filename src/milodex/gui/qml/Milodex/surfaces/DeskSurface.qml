@@ -52,6 +52,12 @@ Item {
         runnerSelectInst.expanded = false
     }
 
+    // I-1: relay the dropdown's scene rect to Main.qml's overlay hit-test.
+    // Main.qml cannot reach runnerSelectInst directly across the Loader boundary.
+    function runnerDropdownSceneRect() {
+        return runnerSelectInst.dropdownBoundsInScene()
+    }
+
     Connections {
         target: runnerSelectInst
         function onOpened()    { root.runnerDropdownOpened() }
@@ -501,6 +507,9 @@ Item {
 
                         Item {
                             width: parent.width
+                            // 44 = ceil(label.xs 12×1.40 + space[1] 4 + data.md 14×1.60) — matches the
+                            // natural SubGrid row height when DRAWDOWN/SPY/EXCESS is rendered. If those
+                            // theme tokens change, this constant must be re-derived.
                             height: 44
                             Loader {
                                 anchors.fill: parent
