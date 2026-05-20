@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 from milodex.backtesting.engine import BacktestEngine
 from milodex.broker.models import OrderSide, OrderType
@@ -478,3 +479,258 @@ def test_advance_cursors_initial_zero_means_no_history() -> None:
     )
     assert advanced is False
     assert cursors["SPY"] == 0
+
+
+# ---------------------------------------------------------------------------
+# E0 — TDD tests written BEFORE _simulate_intraday implementation
+# (Correction 7: highest-value tests fail-first so E1 has a target)
+# ---------------------------------------------------------------------------
+
+
+def _build_synthetic_5min_barset(date_strs: list[str], symbol: str = "SPY") -> BarSet:
+    """Build a multi-day OHLCV BarSet of 5min SPY bars for the given dates.
+
+    Each session is a full 9:30-16:00 ET (78 bars). Prices are deterministic:
+    open = 500 + (session_index * 0.10) + (bar_index * 0.01) to give unique,
+    OHLC-valid values. Volume = 100_000. This makes the open of bar N+1
+    predictable for the no-same-bar-fill test.
+    """
+    rows: list[dict] = []
+    for sess_idx, date_str in enumerate(date_strs):
+        open_et = pd.Timestamp(f"{date_str} 09:30:00").tz_localize("America/New_York")
+        open_utc = open_et.tz_convert("UTC")
+        for bar_idx in range(78):
+            bar_ts = open_utc + pd.Timedelta(minutes=5 * bar_idx)
+            base = 500.0 + sess_idx * 0.10 + bar_idx * 0.01
+            rows.append({
+                "timestamp": bar_ts,
+                "open": round(base, 4),
+                "high": round(base + 0.05, 4),
+                "low": round(base - 0.05, 4),
+                "close": round(base + 0.02, 4),
+                "volume": 100_000,
+                "vwap": round(base + 0.01, 4),
+            })
+
+    df = pd.DataFrame(rows)
+    return BarSet(df)
+
+
+def _make_intraday_engine(
+    loaded: MagicMock,
+    bars_by_symbol: dict[str, BarSet],
+    initial_equity: float = 100_000.0,
+) -> BacktestEngine:
+    """Wire a BacktestEngine for intraday (5min) tests with a mock data provider."""
+    provider = MagicMock()
+    provider.get_bars.return_value = bars_by_symbol
+    tmp_db = Path(tempfile.mktemp(suffix=".db"))
+    from milodex.core.event_store import EventStore
+
+    store = EventStore(tmp_db)
+    return BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        initial_equity=initial_equity,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+
+def _make_intraday_loaded_strategy(
+    strategy_id: str,
+    universe: tuple[str, ...],
+) -> MagicMock:
+    """Return a mock LoadedStrategy configured for 5min intraday backtest."""
+    from milodex.strategies.base import DecisionReasoning, StrategyContext, StrategyDecision
+
+    tmp_dir = Path(tempfile.mkdtemp())
+    yaml_text = """\
+strategy:
+  name: "intraday_e0_test"
+  version: 1
+  description: "E0 TDD fixture — 5min intraday."
+  enabled: true
+  universe: ["SPY"]
+  parameters: {}
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+  risk:
+    max_position_pct: 0.95
+    max_positions: 1
+    daily_loss_cap_pct: 0.05
+    stop_loss_pct: 0.10
+  stage: "backtest"
+  backtest:
+    slippage_pct: 0.0
+    commission_per_trade: 0.0
+    min_trades_required: 1
+"""
+    config_path = tmp_dir / "intraday_e0_test.yaml"
+    config_path.write_text(yaml_text, encoding="utf-8")
+
+    config = MagicMock()
+    config.strategy_id = strategy_id
+    config.family = "benchmark"
+    config.template = "unconditional_intraday_long"
+    config.stage = "backtest"
+    config.path = config_path
+    config.parameters = {}
+    config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "5Min"}
+    config.universe = universe
+    config.risk = {"max_position_pct": 0.95, "max_positions": 1}
+
+    context = StrategyContext(
+        strategy_id=strategy_id,
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="e0_test",
+        version=1,
+        config_hash="e0_test_hash",
+        parameters={},
+        universe=universe,
+        universe_ref=None,
+        disable_conditions=(),
+        config_path=str(config_path),
+        manifest={},
+    )
+
+    strategy = MagicMock()
+    strategy.evaluate.return_value = StrategyDecision(
+        intents=[],
+        reasoning=DecisionReasoning(rule="no_signal", narrative="e0 placeholder"),
+    )
+    strategy.max_lookback_periods.return_value = 0
+
+    loaded = MagicMock()
+    loaded.config = config
+    loaded.context = context
+    loaded.strategy = strategy
+    return loaded
+
+
+def test_intraday_smoke_benchmark_exact_counts() -> None:
+    """4-day benchmark backtest: BUY at post-OR bar (~10:00 ET), SELL at time-stop (~15:55 ET).
+
+    Per Correction 7: this test is written BEFORE _simulate_intraday's
+    implementation. Currently it expects NotImplementedError; after E1
+    lands, the test body must be updated to assert the exact counts:
+
+        buy_count == 4, sell_count == 3, trade_count == 7,
+        round_trip_count == 3, skipped_count == 1
+
+    Expected-counts rationale:
+      - 4 sessions → 4 BUY signals (one per session at the 10:00 ET bar)
+      - BUY at bar T fills at bar T+1's open → 4 fills = buy_count == 4
+      - 4 SELL signals (one per session at the 15:55 ET bar)
+      - First 3 SELLs fill at the next session's 9:30 open → sell_count == 3
+      - Last SELL on session 4 has no next bar → stranded → skipped_count == 1
+      - trade_count == buy_count + sell_count == 4 + 3 == 7
+      - round_trip_count == min(buy_count, sell_count) per symbol == 3
+
+    DO NOT delete this expected-counts comment when updating the test
+    body after E1. It is the contract for the assertions the implementer adds.
+
+    Stub note: The strategy is a MagicMock that will emit BUY/SELL intents
+    matching the benchmark's behavior when evaluate() is called by the real
+    _simulate_intraday loop. Until E1 lands and evaluate() is called, the
+    NotImplementedError fires before any strategy.evaluate() invocation.
+    For E1, replace the MagicMock strategy with BenchUnconditionalIntradayLongStrategy
+    and wire the context.parameters with opening_range_minutes=30,
+    exit_minutes_before_close=5, per_position_notional_pct=0.95 — or keep the
+    stub with a side_effect that mirrors the benchmark rule exactly.
+    """
+    # 4 full trading sessions (Mon–Thu, all regular sessions, no half-days)
+    session_dates = ["2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11"]
+    start_date = date(2024, 1, 8)
+    end_date = date(2024, 1, 11)
+
+    spy_bars = _build_synthetic_5min_barset(session_dates, symbol="SPY")
+    loaded = _make_intraday_loaded_strategy(
+        "benchmark.unconditional_intraday_long.spy.e0_test.v1", ("SPY",)
+    )
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+
+    # Per Correction 7: currently raises NotImplementedError because
+    # _simulate_intraday is a placeholder. After E1 lands, replace this
+    # raises block with positive assertions (see expected-counts above).
+    with pytest.raises(NotImplementedError):
+        engine.run(start_date, end_date)
+
+
+def test_intraday_no_same_bar_fill() -> None:
+    """BUY decision at bar N's close fills at bar N+1's open (not bar N's open/close).
+
+    Per Correction 7: written BEFORE _simulate_intraday implementation.
+    Currently raises NotImplementedError. After E1, this test must be
+    updated to assert:
+        - Trade fill price == bar_N_plus_1.open * (1 + slippage)
+        - With slippage=0.0: fill price == bar_N_plus_1.open exactly
+        - fill price != bar_N.open and fill price != bar_N.close
+
+    Scenario: single-session synthetic SPY bars with known per-bar open prices.
+    The stub strategy emits a BUY at bar index 4 (the 5th bar, 9:50 ET).
+    bar_4.open  = 500.04  (session 0, bar_idx=4: 500 + 0 + 4*0.01)
+    bar_4.close = 500.06  (base + 0.02)
+    bar_5.open  = 500.05  (session 0, bar_idx=5: 500 + 0 + 5*0.01) ← expected fill price
+
+    After E1, the test must inspect result.trades or the event store to
+    find the fill record and assert fill_price == 500.05 (bar_5.open, slippage=0).
+
+    DO NOT delete this expected-behavior comment when updating the test
+    after E1. It is the contract.
+    """
+    session_dates = ["2024-01-08"]
+    start_date = date(2024, 1, 8)
+    end_date = date(2024, 1, 8)
+
+    spy_bars = _build_synthetic_5min_barset(session_dates, symbol="SPY")
+    loaded = _make_intraday_loaded_strategy(
+        "stub.no_same_bar_fill.spy.e0_test.v1", ("SPY",)
+    )
+
+    # Emit BUY exactly at bar index 4 (9:50 ET = 14:50 UTC for 2024-01-08 EST session).
+    # The fill must land at bar index 5's open (9:55 ET bar open = 500.05).
+    # Any other bar — or the decision bar's own open/close — is a same-bar-fill bug.
+    bar_4_ts_utc = pd.Timestamp("2024-01-08 14:50:00+00:00")  # 9:50 ET
+
+    def _stub_evaluate(bars: BarSet, context):  # noqa: ANN001
+        from milodex.strategies.base import DecisionReasoning, StrategyDecision
+
+        df = bars.to_dataframe()
+        if df.empty:
+            return StrategyDecision(
+                intents=[],
+                reasoning=DecisionReasoning(rule="no_signal", narrative="empty bars"),
+            )
+        latest_ts = pd.Timestamp(df["timestamp"].iloc[-1])
+        if latest_ts.tz is None:
+            latest_ts = latest_ts.tz_localize("UTC")
+
+        if latest_ts == bar_4_ts_utc:
+            intent = TradeIntent(
+                symbol="SPY", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET
+            )
+            return StrategyDecision(
+                intents=[intent],
+                reasoning=DecisionReasoning(rule="stub.buy_bar4", narrative="TDD no-same-bar-fill"),
+            )
+        return StrategyDecision(
+            intents=[],
+            reasoning=DecisionReasoning(rule="no_signal", narrative="not target bar"),
+        )
+
+    loaded.strategy.evaluate.side_effect = _stub_evaluate
+
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+
+    # Per Correction 7: currently raises NotImplementedError because
+    # _simulate_intraday is a placeholder. After E1 lands, replace this
+    # raises block with assertions that the fill price == 500.05 (bar_5.open)
+    # and != 500.04 (bar_4.open) and != 500.06 (bar_4.close).
+    with pytest.raises(NotImplementedError):
+        engine.run(start_date, end_date)
