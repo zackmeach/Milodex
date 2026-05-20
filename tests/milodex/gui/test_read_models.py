@@ -1449,7 +1449,9 @@ def test_ledger_entries_includes_all_six_event_types(tmp_path: Path) -> None:
     )
 
     # 5. Completed backtest → outcomeKind='backtested_strong' (Sharpe ≥ 0.5)
-    metadata = _json.dumps({"oos_aggregate": {"sharpe": 0.72, "max_drawdown_pct": 8.5, "trade_count": 120}})
+    metadata = _json.dumps(
+        {"oos_aggregate": {"sharpe": 0.72, "max_drawdown_pct": 8.5, "trade_count": 120}}
+    )
     conn.execute(
         """INSERT INTO backtest_runs
            (run_id, strategy_id, start_date, end_date, started_at, ended_at,
@@ -1543,7 +1545,6 @@ def test_kill_switch_does_not_emit_stop_row(tmp_path: Path) -> None:
     entries = build_ledger_snapshot(db, configs)["entries"]
 
     # Only the kill-switch row for this session's timestamp range
-    strategy_entries = [e for e in entries if e.get("strategyId") == sid or e.get("subject") == "kill switch"]
     assert not any(e["outcomeKind"] == "stopped" for e in entries), (
         "A 'stopped' row was emitted for a kill_switch session — it should be filtered out"
     )
@@ -1611,7 +1612,10 @@ def test_kill_switch_orders_above_session_stop_when_simultaneous(tmp_path: Path)
 
     # The kill-switch row sorts before (or at the same position as) the session-start row.
     fired_idx = next(i for i, e in enumerate(entries) if e.get("outcomeKind") == "fired")
-    started_entries = [e for e in entries if e.get("outcomeKind") == "started" and e.get("strategyId") == sid]
+    started_entries = [
+        e for e in entries
+        if e.get("outcomeKind") == "started" and e.get("strategyId") == sid
+    ]
     if started_entries:
         started_idx = next(
             i for i, e in enumerate(entries)

@@ -364,7 +364,9 @@ class LedgerState(_PollingReadModel):
     _GROUP_KINDS: dict[str, frozenset[str]] = {
         "promotion": frozenset({"promoted", "demoted", "returned"}),
         "lifecycle": frozenset({"started", "stopped"}),
-        "backtest": frozenset({"backtested", "backtested_strong", "backtested_paper", "backtested_weak"}),
+        "backtest": frozenset(
+            {"backtested", "backtested_strong", "backtested_paper", "backtested_weak"}
+        ),
         "system": frozenset({"fired", "info", "added"}),
     }
 
