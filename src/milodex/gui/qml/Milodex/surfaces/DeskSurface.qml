@@ -72,11 +72,15 @@ Item {
     // Session-only — does not survive app restart.
     // Initial values are seeded by Main.qml's surfaceLoader.onLoaded handler;
     // user changes flow back to sessionBag via the Connections write-back.
-    // Default string values ("") are safe — QML string properties default to
-    // "" and the bySlice map lookups fall back to ({}) via || ({}).
+    // Default string values are "Week" — matches sessionBag's defaults and
+    // ensures SegmentedToggle.current is never "" (which would render
+    // all-unselected). The Main.qml seed handler fires on every surface load
+    // and still wins for any persisted user selection; these literals only
+    // matter if the seed handler is ever bypassed. Belt-and-suspenders:
+    // bySlice[""] || ({}) is still valid fallback protection inside the file.
     // ------------------------------------------------------------------
-    property string perfSlice
-    property string throughputSlice
+    property string perfSlice: "Week"
+    property string throughputSlice: "Week"
 
     readonly property var sliceOptions: [
         { label: "Today",     value: "Today" },

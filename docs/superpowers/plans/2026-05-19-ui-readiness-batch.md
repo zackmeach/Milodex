@@ -731,7 +731,7 @@ QtObject {
     id: sessionBag
     objectName: "sessionBag"
     property string perfSlice: "Week"
-    property string throughputSlice: "Month"
+    property string throughputSlice: "Week"  // throughputSlice defaults to Week — the plan's original "Month" was a typo caught by code-quality review on PR-3.
 }
 ```
 
@@ -740,7 +740,7 @@ QtObject {
 In `DeskSurface.qml` lines 43-44 (or wherever `perfSlice` / `throughputSlice` are declared as local properties), replace:
 ```qml
 property string perfSlice: "Week"
-property string throughputSlice: "Month"
+property string throughputSlice: "Week"
 ```
 With:
 ```qml
@@ -761,7 +761,7 @@ Expected: PASS.
 
 - [ ] **Step 5: Manual verification**
 
-Launch GUI; switch Section II to TODAY; navigate to Ledger; return to Desk → still TODAY. Switch Section IV to MONTH; same test. Quit and reopen → both reset to defaults (Week, Month).
+Launch GUI; switch Section II to TODAY; navigate to Ledger; return to Desk → still TODAY. Switch Section IV to MONTH; same test. Quit and reopen → both reset to defaults (Week, Week).
 
 - [ ] **Step 6: Commit**
 
@@ -771,7 +771,7 @@ git -C C:/Users/zdm80/Milodex commit -m "feat(desk): persist perfSlice and throu
 
 Session-scoped only (does not survive app restart). sessionBag QtObject
 lives at Main.qml root; DeskSurface aliases its slices through. Default
-values (Week, Month) preserved."
+values (Week, Week) preserved."
 ```
 
 ---
