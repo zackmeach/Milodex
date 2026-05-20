@@ -346,13 +346,15 @@ Item {
 
                         // ---- Section header (bench-brief §3) -------------------
                         Item {
+                            id: stageHeaderRow
                             width: parent.width
                             height: 54
 
                             // Left cluster: roman numeral · STAGE NAME · count
                             Row {
                                 anchors.left: parent.left
-                                anchors.verticalCenter: parent.verticalCenter
+                                anchors.bottom: stageHeaderRow.bottom
+                                anchors.bottomMargin: Math.round(stageHeaderRow.height * 0.35)
                                 spacing: Theme.space[2]
 
                                 // Roman numeral — Newsreader italic, text.muted
