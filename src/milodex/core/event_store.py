@@ -183,7 +183,12 @@ class StrategyManifestEvent:
 
 @dataclass(frozen=True)
 class PortfolioSnapshotEvent:
-    """Daily portfolio snapshot row (equity, cash, positions)."""
+    """Daily portfolio snapshot row (equity, cash, positions).
+
+    Broker-side account state only (ADR 0053). Written by
+    analytics.snapshots.record_daily_snapshot called from
+    StrategyRunner.shutdown. Do NOT write backtest simulation points here.
+    """
 
     recorded_at: datetime
     session_id: str
@@ -193,6 +198,27 @@ class PortfolioSnapshotEvent:
     portfolio_value: float
     daily_pnl: float
     positions: list[dict[str, Any]]
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class BacktestEquitySnapshotEvent:
+    """Simulated equity point from a backtest run (ADR 0053).
+
+    Written by analytics.snapshots.record_backtest_equity_snapshot called
+    from BacktestEngine._simulate. Stored in backtest_equity_snapshots,
+    never in portfolio_snapshots.
+    """
+
+    recorded_at: datetime
+    session_id: str
+    strategy_id: str
+    equity: float
+    cash: float
+    portfolio_value: float
+    daily_pnl: float | None          # nullable — backtests don't track this
+    positions: list[dict[str, Any]]
+    backtest_run_id: int | None = None  # FK to backtest_runs.id; None for legacy rows
     id: int | None = None
 
 
@@ -244,7 +270,7 @@ have no run ancestry by design and pass through unchecked.
 """
 
 
-MIN_COMPATIBLE_SCHEMA_VERSION = 9
+MIN_COMPATIBLE_SCHEMA_VERSION = 10
 """Minimum event-store schema version this build can safely operate on.
 
 Bumped whenever a migration introduces a column or table that older code
@@ -1251,6 +1277,49 @@ class EventStore:
             ).fetchall()
         return [_portfolio_snapshot_from_row(row) for row in rows]
 
+    def append_backtest_equity_snapshot(self, event: BacktestEquitySnapshotEvent) -> int:
+        """Insert a backtest equity snapshot row and return its autoincrement id."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO backtest_equity_snapshots (
+                    recorded_at,
+                    session_id,
+                    strategy_id,
+                    equity,
+                    cash,
+                    portfolio_value,
+                    daily_pnl,
+                    positions_json,
+                    backtest_run_id
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dt(event.recorded_at),
+                    event.session_id,
+                    event.strategy_id,
+                    event.equity,
+                    event.cash,
+                    event.portfolio_value,
+                    event.daily_pnl,
+                    _dump_json(event.positions),
+                    event.backtest_run_id,
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_backtest_equity_snapshots_for_strategy(
+        self, strategy_id: str
+    ) -> list[BacktestEquitySnapshotEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM backtest_equity_snapshots WHERE strategy_id = ? ORDER BY id ASC",
+                (strategy_id,),
+            ).fetchall()
+        return [_backtest_equity_snapshot_from_row(row) for row in rows]
+
     def _apply_migrations(self) -> None:
         """Apply forward-only migrations atomically and concurrency-safely.
 
@@ -1540,6 +1609,21 @@ def _portfolio_snapshot_from_row(row: sqlite3.Row) -> PortfolioSnapshotEvent:
         portfolio_value=float(row["portfolio_value"]),
         daily_pnl=float(row["daily_pnl"]),
         positions=list(_load_json(row["positions_json"])),
+    )
+
+
+def _backtest_equity_snapshot_from_row(row: sqlite3.Row) -> BacktestEquitySnapshotEvent:
+    return BacktestEquitySnapshotEvent(
+        id=int(row["id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        session_id=str(row["session_id"]),
+        strategy_id=str(row["strategy_id"]),
+        equity=float(row["equity"]),
+        cash=float(row["cash"]),
+        portfolio_value=float(row["portfolio_value"]),
+        daily_pnl=(None if row["daily_pnl"] is None else float(row["daily_pnl"])),
+        positions=list(_load_json(row["positions_json"])),
+        backtest_run_id=(None if row["backtest_run_id"] is None else int(row["backtest_run_id"])),
     )
 
 

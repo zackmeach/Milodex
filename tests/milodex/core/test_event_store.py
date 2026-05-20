@@ -9,12 +9,14 @@ import pytest
 
 from milodex.core.event_store import (
     MIN_COMPATIBLE_SCHEMA_VERSION,
+    BacktestEquitySnapshotEvent,
     BacktestRunEvent,
     EventStore,
     ExplanationEvent,
     KillSwitchEvent,
     OrchestrationBatchEvent,
     OrchestrationJobEvent,
+    PortfolioSnapshotEvent,
     PromotionEvent,
     StrategyManifestEvent,
     StrategyRunEvent,
@@ -41,7 +43,7 @@ def test_event_store_rejects_below_minimum_schema_version(tmp_path, monkeypatch)
 def test_event_store_min_compatible_matches_current_schema():
     """If MIN_COMPATIBLE_SCHEMA_VERSION ever exceeds the head migration, the
     guard would refuse a freshly-built store. Lock that contract."""
-    assert MIN_COMPATIBLE_SCHEMA_VERSION == 9
+    assert MIN_COMPATIBLE_SCHEMA_VERSION == 10
 
 
 def test_event_store_applies_initial_schema(tmp_path):
@@ -50,7 +52,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 9
+    assert store.schema_version == 10
     assert {
         "_schema_version",
         "explanations",
@@ -60,6 +62,8 @@ def test_event_store_applies_initial_schema(tmp_path):
         "backtest_runs",
         "promotions",
         "portfolio_snapshots",
+        "backtest_equity_snapshots",
+        "portfolio_snapshots_quarantine",
         "strategy_manifests",
         "orchestration_batches",
         "orchestration_jobs",
@@ -72,7 +76,7 @@ def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
     db_path = tmp_path / "milodex.db"
     store = EventStore(db_path)
 
-    assert store.schema_version == 9
+    assert store.schema_version == 10
     with sqlite3.connect(db_path) as con:
         batch_columns = {
             row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")
@@ -1042,9 +1046,9 @@ def test_migration_008_backfills_walk_forward_explanations(tmp_path):
     con.commit()
     con.close()
 
-    # Open with the live EventStore — this triggers migration 008.
+    # Open with the live EventStore — this triggers migrations 008-010.
     store = EventStore(db_path)
-    assert store.schema_version == 9
+    assert store.schema_version == 10
 
     rows = sorted(store.list_explanations(), key=lambda r: r.recorded_at)
     assert len(rows) == 4
@@ -1161,4 +1165,121 @@ def test_migration_008_is_idempotent(tmp_path):
     rows = store2.list_explanations()
     assert len(rows) == 1
     assert rows[0].backtest_run_id == db_run_id
-    assert store2.schema_version == 9
+    assert store2.schema_version == 10
+
+
+# ─── BacktestEquitySnapshotEvent CRUD (ADR 0053, migration 010) ──────────────
+
+
+def _make_backtest_equity_event(
+    store: EventStore,
+    *,
+    session_id: str = "run-abc:w0",
+    strategy_id: str = "test.strategy.v1",
+    equity: float = 1234.56,
+    backtest_run_id: int | None = None,
+) -> BacktestEquitySnapshotEvent:
+    ts = datetime(2025, 12, 15, tzinfo=UTC)
+    return BacktestEquitySnapshotEvent(
+        recorded_at=ts,
+        session_id=session_id,
+        strategy_id=strategy_id,
+        equity=equity,
+        cash=500.0,
+        portfolio_value=equity,
+        daily_pnl=None,
+        positions=[],
+        backtest_run_id=backtest_run_id,
+    )
+
+
+def test_append_backtest_equity_snapshot_returns_id(tmp_path):
+    """append_backtest_equity_snapshot returns an autoincrement integer id."""
+    store = EventStore(tmp_path / "milodex.db")
+    event = _make_backtest_equity_event(store)
+    row_id = store.append_backtest_equity_snapshot(event)
+    assert isinstance(row_id, int)
+    assert row_id >= 1
+
+
+def test_append_backtest_equity_snapshot_round_trips(tmp_path):
+    """Appended row is retrievable via list_backtest_equity_snapshots_for_strategy."""
+    store = EventStore(tmp_path / "milodex.db")
+    ts = datetime(2025, 12, 15, tzinfo=UTC)
+    event = BacktestEquitySnapshotEvent(
+        recorded_at=ts,
+        session_id="run-abc:w0",
+        strategy_id="test.strategy.v1",
+        equity=2500.0,
+        cash=800.0,
+        portfolio_value=2500.0,
+        daily_pnl=None,
+        positions=[{"symbol": "SPY", "quantity": 5}],
+        backtest_run_id=None,
+    )
+    store.append_backtest_equity_snapshot(event)
+
+    rows = store.list_backtest_equity_snapshots_for_strategy("test.strategy.v1")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r.strategy_id == "test.strategy.v1"
+    assert r.session_id == "run-abc:w0"
+    assert r.equity == 2500.0
+    assert r.cash == 800.0
+    assert r.portfolio_value == 2500.0
+    assert r.daily_pnl is None
+    assert r.positions == [{"symbol": "SPY", "quantity": 5}]
+    assert r.backtest_run_id is None
+
+
+def test_list_backtest_equity_snapshots_filters_by_strategy(tmp_path):
+    """list_backtest_equity_snapshots_for_strategy returns only matching strategy rows."""
+    store = EventStore(tmp_path / "milodex.db")
+    for i in range(3):
+        store.append_backtest_equity_snapshot(
+            _make_backtest_equity_event(store, strategy_id="strat.a", equity=1000.0 + i * 100)
+        )
+    for i in range(2):
+        store.append_backtest_equity_snapshot(
+            _make_backtest_equity_event(store, strategy_id="strat.b", equity=2000.0 + i * 100)
+        )
+
+    rows_a = store.list_backtest_equity_snapshots_for_strategy("strat.a")
+    rows_b = store.list_backtest_equity_snapshots_for_strategy("strat.b")
+    rows_c = store.list_backtest_equity_snapshots_for_strategy("strat.nonexistent")
+
+    assert len(rows_a) == 3
+    assert len(rows_b) == 2
+    assert len(rows_c) == 0
+
+
+def test_append_backtest_equity_snapshot_does_not_touch_portfolio_snapshots(tmp_path):
+    """Writing backtest equity snapshots leaves portfolio_snapshots unchanged."""
+    store = EventStore(tmp_path / "milodex.db")
+    # Add a broker snapshot first
+    broker_event = PortfolioSnapshotEvent(
+        recorded_at=datetime(2026, 4, 27, 21, 0, tzinfo=UTC),
+        session_id="broker-session-1",
+        strategy_id="test.strategy.v1",
+        equity=100000.0,
+        cash=50000.0,
+        portfolio_value=100000.0,
+        daily_pnl=25.0,
+        positions=[],
+    )
+    store.append_portfolio_snapshot(broker_event)
+
+    # Add three backtest equity snapshots
+    for i in range(3):
+        store.append_backtest_equity_snapshot(
+            _make_backtest_equity_event(store, session_id=f"run-abc:w{i}")
+        )
+
+    # portfolio_snapshots must still have exactly 1 row
+    broker_rows = store.list_portfolio_snapshots_for_strategy("test.strategy.v1")
+    assert len(broker_rows) == 1
+    assert broker_rows[0].equity == 100000.0
+
+    # backtest_equity_snapshots must have 3 rows
+    bt_rows = store.list_backtest_equity_snapshots_for_strategy("test.strategy.v1")
+    assert len(bt_rows) == 3
