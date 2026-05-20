@@ -763,8 +763,15 @@ class _FakeWalkForwardEngine:
         # ``BacktestEngine``; tests set it directly here rather than reaching
         # into ``_loaded``.
         self.walk_forward_windows: int = 2
+        # Minimal ``_loaded`` stub so derive_walk_forward_spans can read
+        # ``tempo["bar_size"]`` without hitting a real engine.
+        self._loaded = type("_L", (), {
+            "config": type("_C", (), {
+                "tempo": {"bar_size": "1D"}
+            })()
+        })()
 
-    def prefetch_bars(self, start: date, end: date) -> dict[str, BarSet]:
+    def prefetch_bars(self, start: date, end: date, *, timeframe=None) -> dict[str, BarSet]:  # noqa: ARG002
         self.prefetched = (start, end)
         return {"AAPL": _barset(start, 8)}
 

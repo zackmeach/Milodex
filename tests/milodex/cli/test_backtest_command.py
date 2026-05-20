@@ -224,6 +224,9 @@ def test_walk_forward_cli_reuses_prefetched_bars(monkeypatch):
     # consumed by ``derive_walk_forward_spans``; set it directly on the mock.
     engine.walk_forward_windows = 1
     engine.prefetch_bars.return_value = bars
+    # ``derive_walk_forward_spans`` now reads tempo["bar_size"] to derive the
+    # timeframe for the prefetch call; wire the mock so lookups resolve.
+    engine._loaded.config.tempo = {"bar_size": "1D"}
     ctx = MagicMock()
     ctx.get_backtest_engine.return_value = engine
     captured = {}

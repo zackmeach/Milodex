@@ -76,6 +76,7 @@ def _make_loaded_strategy(universe: tuple[str, ...]):
     config.path = yaml_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
 
     context = StrategyContext(
@@ -577,8 +578,15 @@ class _FakeDeriveEngine:
     def __init__(self, *, bars: dict, walk_forward_windows: int = 4) -> None:
         self._bars = bars
         self.walk_forward_windows = walk_forward_windows
+        # Minimal ``_loaded`` stub so derive_walk_forward_spans can read
+        # ``tempo["bar_size"]`` without hitting a real engine.
+        self._loaded = type("_L", (), {
+            "config": type("_C", (), {
+                "tempo": {"bar_size": "1D"}
+            })()
+        })()
 
-    def prefetch_bars(self, start: date, end: date) -> dict:  # noqa: ARG002
+    def prefetch_bars(self, start: date, end: date, *, timeframe=None) -> dict:  # noqa: ARG002
         return self._bars
 
 

@@ -507,7 +507,12 @@ class BacktestEngine:
         run_id: str,
         db_run_id: int,
     ) -> BacktestResult:
-        all_bars = self.prefetch_bars(start_date, end_date)
+        from milodex.data.timeframes import timeframe_from_bar_size
+
+        _bar_size = self._loaded.config.tempo["bar_size"]
+        all_bars = self.prefetch_bars(
+            start_date, end_date, timeframe=timeframe_from_bar_size(_bar_size)
+        )
         data_quality = self._scan_data_quality(all_bars, start_date, end_date)
         run_manifest = self._build_run_manifest(
             start_date=start_date,
@@ -628,6 +633,33 @@ class BacktestEngine:
         return metadata
 
     def _simulate(
+        self,
+        *,
+        all_bars: dict[str, BarSet],
+        trading_days: list[date],
+        db_run_id: int,
+        session_id: str,
+        initial_equity: float,
+    ) -> _SimulationOutput:
+        """Dispatch to the daily or intraday simulation path based on tempo.bar_size."""
+        bar_size = self._loaded.config.tempo["bar_size"]
+        if bar_size == "1D":
+            return self._simulate_daily(
+                all_bars=all_bars,
+                trading_days=trading_days,
+                db_run_id=db_run_id,
+                session_id=session_id,
+                initial_equity=initial_equity,
+            )
+        return self._simulate_intraday(
+            all_bars=all_bars,
+            trading_days=trading_days,
+            db_run_id=db_run_id,
+            session_id=session_id,
+            initial_equity=initial_equity,
+        )
+
+    def _simulate_daily(
         self,
         *,
         all_bars: dict[str, BarSet],
@@ -900,6 +932,24 @@ class BacktestEngine:
             final_equity=final_equity,
             round_trip_count=round_trip_count,
             skipped_count=skipped_count,
+        )
+
+    def _simulate_intraday(
+        self,
+        *,
+        all_bars: dict[str, BarSet],
+        trading_days: list[date],
+        db_run_id: int,
+        session_id: str,
+        initial_equity: float,
+    ) -> _SimulationOutput:
+        """Intraday simulation path. Implemented in Phase E.
+
+        See docs/superpowers/specs/2026-05-20-intraday-backtest-engine-design.md.
+        """
+        raise NotImplementedError(
+            "Intraday backtest engine is not yet implemented for this branch. "
+            "See docs/superpowers/plans/2026-05-20-intraday-backtest-engine.md."
         )
 
     def _drain_pending(

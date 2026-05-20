@@ -120,6 +120,7 @@ def _make_loaded(config_path: Path, *, universe: tuple[str, ...] = ("SPY", "AAPL
     config.path = config_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.risk = {
         "max_position_pct": 0.10,
         "max_positions": 1,

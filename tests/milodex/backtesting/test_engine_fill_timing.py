@@ -94,6 +94,7 @@ def _make_loaded_strategy(strategy_id: str, universe: tuple[str, ...]):
     config.path = config_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.001, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
 
     context = StrategyContext(

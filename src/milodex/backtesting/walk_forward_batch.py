@@ -24,6 +24,7 @@ from milodex.backtesting.walk_forward_runner import (
     compute_window_spans,
     run_walk_forward,
 )
+from milodex.data.timeframes import timeframe_from_bar_size
 from milodex.promotion.state_machine import check_gate
 from milodex.strategies.loader import resolve_universe_survivorship_corrected
 
@@ -410,12 +411,14 @@ def _screen_one(
     universe_ref = loaded.context.universe_ref
     warmup_days = engine._warmup_calendar_days()  # noqa: SLF001
     warmup_start = start_date - timedelta(days=warmup_days)
-    cache_key = (universe, warmup_start, end_date)
+    bar_size = loaded.config.tempo["bar_size"]
+    timeframe = timeframe_from_bar_size(bar_size)
+    cache_key = (universe, warmup_start, end_date, timeframe)
 
     if cache_key in bar_cache:
         all_bars = bar_cache[cache_key]
     else:
-        all_bars = engine.prefetch_bars(start_date, end_date)
+        all_bars = engine.prefetch_bars(start_date, end_date, timeframe=timeframe)
         bar_cache[cache_key] = all_bars
 
     total_days = len(_trading_days_in_range(all_bars, start_date, end_date))

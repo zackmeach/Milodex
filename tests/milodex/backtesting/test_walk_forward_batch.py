@@ -80,6 +80,7 @@ def _make_loaded(
         "commission_per_trade": 0.0,
         "min_trades_required": min_trades_required,
     }
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
 
     context = StrategyContext(

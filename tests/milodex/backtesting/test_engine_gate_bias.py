@@ -144,6 +144,7 @@ strategy:
     config.path = config_path
     config.parameters = parameters
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
     config.risk = {}
 

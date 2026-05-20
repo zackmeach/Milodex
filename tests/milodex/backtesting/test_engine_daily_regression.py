@@ -98,6 +98,7 @@ strategy:
     config.path = config_path
     config.parameters = effective_params
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
     config.risk = {"max_position_pct": 0.50, "max_positions": 4}
 

@@ -164,8 +164,10 @@ def derive_walk_forward_spans(
             if the window math yields a non-positive ``train_days``.
     """
     from milodex.backtesting.engine import _trading_days_in_range
+    from milodex.data.timeframes import timeframe_from_bar_size
 
-    all_bars = engine.prefetch_bars(start, end)
+    _bar_size = engine._loaded.config.tempo["bar_size"]  # noqa: SLF001
+    all_bars = engine.prefetch_bars(start, end, timeframe=timeframe_from_bar_size(_bar_size))
     total_days = len(_trading_days_in_range(all_bars, start, end))
     window_count = engine.walk_forward_windows
     train_days, test_days, step_days = compute_window_spans(total_days, window_count)
@@ -207,7 +209,12 @@ def run_walk_forward(
     eq_start = initial_equity if initial_equity is not None else engine._initial_equity  # noqa: SLF001
 
     if all_bars is None:
-        all_bars = engine.prefetch_bars(start_date, end_date)
+        from milodex.data.timeframes import timeframe_from_bar_size
+
+        _bar_size = engine._loaded.config.tempo["bar_size"]  # noqa: SLF001
+        all_bars = engine.prefetch_bars(
+            start_date, end_date, timeframe=timeframe_from_bar_size(_bar_size)
+        )
     from milodex.backtesting.engine import _trading_days_in_range
 
     trading_days = _trading_days_in_range(all_bars, start_date, end_date)
