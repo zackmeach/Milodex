@@ -28,6 +28,28 @@
 
 ---
 
+## PR-0: In-flight work absorbed (already landed)
+
+This plan was written assuming `codex/ui-wiring-stabilization` started clean off master. It did not. Two coherent features were in flight on the branch when implementation began and were folded in **before** PR-1 dispatch. Both are now committed; the plan is updated below to reflect the reduced scopes that result.
+
+**Absorbed work (three commits):**
+
+| Commit | Subject | Scope |
+|---|---|---|
+| `(merge)` | Merge `fix/orphan-reconcile-pid-reuse` | Brings in upstream PID-identity hardening: two-stage liveness check (PID + start-time) in `_has_live_runner`, stale-lock unlink in `reconcile_orphaned_runs_on_bootstrap`, + 170-line forensic write-up `docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md`. Source: production incident, host reset left phantom paper runners with PID-reused live processes mis-classified as live. |
+| `feat(promotion): add idle stage + return-to-idle action` | Bench-stage taxonomy extension | New `idle` stage between `disabled` and `backtest`; new `stage_return` promotion type with "RETURNED" ledger label; 3 strategy YAMLs moved `backtest → idle`; bench facade gains return-to-idle submit/preview; `_compute_bench_action_menu` replaces synthetic Fresh+Pass fallback with real evidence derivation from durable state. |
+| `chore(bench-v1): reconcile docstring + fixture` | Test/doc reconciliation | Two stragglers from the idle-stage work: the `re_run_verb` docstring still listed Fresh+Fail under no-verb cases (now updated — Fresh+Fail surfaces Initiate so the operator can recover from a failed run without manufacturing an Invalidation); and a fixture-based test had the stale expectation. |
+
+**Plan impact:**
+
+- **PR-1 (Runner-Launch Hygiene):** the orphan-reconcile portion is **already done and stronger than this plan proposed**. The merged work uses start-time identity (catches post-reboot PID reuse) rather than only bare `_process_exists`. PR-1 reduces to: **CREATE_NO_WINDOW subprocess flag only**. Task 1 (repro `is_session_running` regression) and Task 3 (repair regression) are likely no-ops now — run Task 1 first; if the post-merge state no longer reproduces, mark Task 3 N/A in the commit message.
+- **PR-6 (Ledger Taxonomy):** the `stage_return → RETURNED` ledger plumbing is **already done** (idle-stage commit modified `_ledger_entries` to emit `outcomeKind: returned` with "RETURNED" label, and `_latest_promotions` to exclude `stage_return` alongside `demotion`). PR-6's remaining scope: backtest_complete merge, kill_switch_events merge, session_start/session_stop merge, new_strategy merge, BACKTESTS filter chip on Section VII.
+- **PR-2/3/4/5/7a/7b/7c:** no conflict.
+
+**Verified state after PR-0:** full suite green (1754 passed, 2 skipped, 4 xfailed). PR-1 implementer starts from this baseline.
+
+---
+
 ## File Structure
 
 | File | Responsibility | PR | Change |
@@ -72,6 +94,8 @@
 **Goal:** No terminal popups on runner start; "Stop Trading" verb reappears for live paper-stage runners.
 
 **Scope check:** Two issues, possibly one fix file (subprocess flag) + one regression repair (read model). Stay narrow.
+
+**Scope update (post PR-0):** The orphan-reconciliation hardening is **already merged in** (see PR-0 above; commit 8bc472f). Task 2 (CREATE_NO_WINDOW) is the primary remaining work. Task 1 still runs as a pre-flight check: if the post-merge state no longer reproduces the `is_session_running` regression, mark Task 3 N/A and proceed to the boundary commit after Task 2.
 
 ---
 
@@ -1711,6 +1735,8 @@ Expected: full PASS.
 ## PR-6: Ledger Taxonomy + Section VII Expansion (issue 09)
 
 **Goal:** Ledger captures all 6 lifecycle event types. Section VII Activity Feed adds backtest results.
+
+**Scope update (post PR-0):** The `stage_return → RETURNED` ledger plumbing is **already merged in** (see PR-0 above; the idle-stage commit modified `_ledger_entries` to emit `outcomeKind: "returned"` with the "RETURNED" label, and `_latest_promotions` now excludes `stage_return` alongside `demotion`). Task 21 should treat the existing returned/demoted/promoted branches as a fixed baseline and add the four remaining sources (`backtest_complete`, `kill_switch_events`, `session_start`, `session_stop`, `new_strategy`) on top.
 
 ---
 
