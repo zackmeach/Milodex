@@ -195,6 +195,22 @@ def _seed_promotion(db: Path, strategy_id: str) -> None:
     conn.close()
 
 
+def _seed_stage_return(db: Path, strategy_id: str) -> None:
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO promotions
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type, approved_by,
+             backtest_run_id, notes)
+        VALUES ('2026-05-08T12:30:00+00:00', ?, 'idle', 'backtest', 'stage_return',
+                'bench_gui', 'run-2', 'Initiate Backtest via Bench GUI')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
 def test_bench_snapshot_groups_config_and_evidence(tmp_path: Path) -> None:
     from milodex.gui.read_models import build_bench_snapshot
 
@@ -295,6 +311,136 @@ def test_bench_actions_paper_row_has_correct_menu_structure(tmp_path: Path) -> N
     assert any(lbl in trading_labels for lbl in labels)
 
 
+def test_bench_backtest_row_without_evidence_does_not_offer_promotion(
+    tmp_path: Path,
+) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    labels = [a["label"] for a in row["actions"]]
+
+    assert "Promote to Paper" not in labels
+    assert "Initiate Backtest" in labels
+
+
+def test_bench_backtest_row_with_failing_evidence_does_not_offer_promotion(
+    tmp_path: Path,
+) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id, sharpe=0.2, max_drawdown_pct=20.0, trade_count=10)
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    labels = [a["label"] for a in row["actions"]]
+
+    assert "Promote to Paper" not in labels
+    assert "Initiate Backtest" in labels
+
+
+def test_bench_backtest_row_with_passing_evidence_offers_promotion(
+    tmp_path: Path,
+) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id, sharpe=0.8, max_drawdown_pct=6.0, trade_count=45)
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    labels = [a["label"] for a in row["actions"]]
+
+    assert "Promote to Paper" in labels
+
+
+def test_bench_idle_row_with_passing_backtest_evidence_can_initiate_backtest(
+    tmp_path: Path,
+) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="idle")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id, sharpe=0.8, max_drawdown_pct=6.0, trade_count=45)
+
+    snapshot = build_bench_snapshot(db, configs)
+    idle = next(section for section in snapshot["sections"] if section["stage"] == "idle")
+    row = idle["strategies"][0]
+    labels = [a["label"] for a in row["actions"]]
+
+    assert "Initiate Backtest" in labels
+    assert "Open Evidence" in labels
+
+
+def test_bench_in_flight_backtest_job_suppresses_duplicate_backtest_action(
+    tmp_path: Path,
+) -> None:
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO orchestration_batches (
+            batch_id, action_type, requested_by, requested_at, status, metadata_json
+        )
+        VALUES ('batch-1', 'backtest_walk_forward', 'operator',
+                '2026-05-10T12:00:00+00:00', 'running', '{}')
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO orchestration_jobs (
+            job_id, batch_id, strategy_id, action_type, requested_stage, status,
+            queued_at, progress_label, metadata_json
+        )
+        VALUES ('job-1', 'batch-1', ?, 'backtest_walk_forward', 'backtest', 'running',
+                '2026-05-10T12:00:00+00:00', 'walk-forward running', '{}')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    labels = [a["label"] for a in row["actions"]]
+
+    assert "Initiate Backtest" not in labels
+    assert "Refresh Backtest" not in labels
+
+
 def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> None:
     from milodex.gui.read_models import build_ledger_snapshot
 
@@ -316,6 +462,22 @@ def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> 
     assert any(entry["subject"] == "kill switch" for entry in entries)
     assert all(entry["displayTimestamp"] for entry in entries)
     assert all("T" not in entry["displayTimestamp"] for entry in entries)
+
+
+def test_ledger_snapshot_labels_idle_to_backtest_stage_return(tmp_path: Path) -> None:
+    from milodex.gui.read_models import build_ledger_snapshot
+
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_stage_return(db, strategy_id)
+
+    entries = build_ledger_snapshot(db)["entries"]
+
+    assert entries[0]["transition"] == "idle -> backtest"
+    assert entries[0]["outcome"] == "RETURNED"
+    assert entries[0]["outcomeKind"] == "returned"
+    assert entries[0]["reason"] == "Initiate Backtest via Bench GUI"
 
 
 # NOTE: the mock ``build_desk_snapshot`` and its two tests
@@ -904,6 +1066,8 @@ def test_bench_pr_n_action_preview_present_on_every_action(tmp_path: Path) -> No
             "stop_trading",
         } or (
             preview["actionKind"] == "promote" and preview["targetStage"] == "paper"
+        ) or (
+            preview["actionKind"] == "return" and preview["targetStage"] == "idle"
         )
         if submit_capable:
             assert preview["executable"] is True

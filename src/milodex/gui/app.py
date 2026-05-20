@@ -274,6 +274,7 @@ def run_app() -> int:
     bench_command_bridge = BenchCommandBridge(
         bench_command_facade,
         bench_state=bench_state,
+        ledger_state=ledger_state,
     )
 
     register_qml_types(

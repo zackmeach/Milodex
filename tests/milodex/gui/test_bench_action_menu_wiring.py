@@ -82,9 +82,10 @@ class TestVerbOrdering:
     """directional verbs must precede invocation verbs; informational always last."""
 
     def test_directional_before_invocation(self) -> None:
-        # PAPER row with synthetic Fresh+Pass evidence → has both directional
-        # (Demote to Backtest, Return to Idle) and invocation (Start Trading).
-        row = _FakeRow(stage="paper")
+        row = _FakeRow(
+            stage="paper",
+            evidence_by_stage={Stage.PAPER: EvidenceRecord(Freshness.FRESH, GateResult.PASS)},
+        )
         items = _menu(row)
         verb_classes = [item["verbClass"] for item in items]
         saw_invocation = False
@@ -119,8 +120,14 @@ class TestRequiredKeys:
                 assert "targetStage" in item, f"missing 'targetStage' for stage={stage}"
 
     def test_directional_items_have_non_empty_target_stage(self) -> None:
-        # BACKTEST row with synthetic Fresh+Pass → has "Promote to Paper" (directional).
-        items = _menu(_FakeRow(stage="backtest"))
+        items = _menu(
+            _FakeRow(
+                stage="backtest",
+                evidence_by_stage={
+                    Stage.BACKTEST: EvidenceRecord(Freshness.FRESH, GateResult.PASS),
+                },
+            )
+        )
         for item in items:
             if item["verbClass"] == "directional":
                 assert item["targetStage"] != "", (
@@ -228,7 +235,7 @@ class TestLegacyCodePathDeleted:
 
 
 class TestEvidenceRouting:
-    """When evidence_by_stage is provided, it overrides the synthetic fallback."""
+    """Menu items are driven by real evidence, not optimistic synthetic pass states."""
 
     def test_real_evidence_missing_pending_suppresses_initiate_for_in_flight(self) -> None:
         # IDLE row, BACKTEST run in flight → only Open Evidence (in-flight suppression).
@@ -254,17 +261,33 @@ class TestEvidenceRouting:
         labels = [item["label"] for item in _menu(row)]
         assert "Promote to Paper" in labels
 
-    def test_synthetic_fallback_backtest_surfaces_initiate(self) -> None:
-        # No evidence_by_stage → synthetic fallback for idle → Initiate Backtest surfaces.
+    def test_missing_idle_evidence_surfaces_initiate(self) -> None:
         row = _FakeRow(stage="idle")
         labels = [item["label"] for item in _menu(row)]
         assert "Initiate Backtest" in labels
 
-    def test_synthetic_fallback_paper_surfaces_start_trading(self) -> None:
-        # No evidence_by_stage → synthetic Fresh+Pass at PAPER stage → Start Trading surfaces.
+    def test_missing_backtest_evidence_does_not_promote_to_paper(self) -> None:
+        row = _FakeRow(stage="backtest")
+        labels = [item["label"] for item in _menu(row)]
+        assert "Promote to Paper" not in labels
+        assert "Initiate Backtest" in labels
+
+    def test_failing_backtest_evidence_still_surfaces_initiate(self) -> None:
+        row = _FakeRow(
+            stage="backtest",
+            evidence_by_stage={
+                Stage.BACKTEST: EvidenceRecord(Freshness.FRESH, GateResult.FAIL),
+            },
+        )
+        labels = [item["label"] for item in _menu(row)]
+        assert "Promote to Paper" not in labels
+        assert "Initiate Backtest" in labels
+
+    def test_missing_paper_evidence_still_surfaces_operational_start_only(self) -> None:
         row = _FakeRow(stage="paper")
         labels = [item["label"] for item in _menu(row)]
         assert "Start Trading" in labels
+        assert "Promote to Micro Live" not in labels
 
     def test_compute_menu_items_equivalence(self) -> None:
         """_compute_bench_action_menu with real evidence must match compute_menu_items directly."""

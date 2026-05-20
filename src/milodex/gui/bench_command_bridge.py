@@ -16,8 +16,8 @@ by the facade and the modules it routes into (``milodex.promotion``,
 * caches the live ``CommandProposal`` between propose and submit so the
   proposal identity (``proposal_id``) survives the round-trip without QML
   needing to reconstruct dataclasses,
-* refreshes the Bench read model on a successful submit (single permitted
-  reach into ``BenchState._kick_refresh``), and
+* refreshes the Bench and Ledger read models on a successful submit (single
+  permitted reach into ``_kick_refresh`` on each polling model), and
 * emits a ``submitCompleted`` signal QML surfaces can listen to.
 
 ``submitCapableActionFamilies()`` enumerates all six wired families.
@@ -26,10 +26,11 @@ by the facade and the modules it routes into (``milodex.promotion``,
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import date
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, Signal, Slot
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 
 from milodex.commands.bench import (
     ACTION_FAMILY_BACKTEST,
@@ -39,13 +40,52 @@ from milodex.commands.bench import (
     ACTION_FAMILY_START_PAPER_RUNNER,
     ACTION_FAMILY_STOP_PAPER_RUNNER,
     BenchCommandFacade,
+    Blocker,
     CommandProposal,
+    CommandResult,
 )
 
 if TYPE_CHECKING:
-    from milodex.gui.read_models import BenchState
+    from milodex.gui.read_models import BenchState, LedgerState
 
 logger = logging.getLogger(__name__)
+
+
+class _SubmitSignals(QObject):
+    completed = Signal("QVariantMap")
+
+
+class _SubmitRunnable(QRunnable):
+    def __init__(
+        self,
+        proposal: CommandProposal,
+        submitter: Callable[[CommandProposal], CommandResult],
+        signals: _SubmitSignals,
+    ) -> None:
+        super().__init__()
+        self._proposal = proposal
+        self._submitter = submitter
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:  # pragma: no cover - exercised through QObject lifecycle tests
+        try:
+            result = self._submitter(self._proposal)
+        except Exception as exc:  # noqa: BLE001 - bridge must surface final result.
+            logger.exception("Bench async submit failed.")
+            result = CommandResult(
+                proposal_id=self._proposal.proposal_id,
+                action_family=self._proposal.action_family,
+                status="error",
+                blockers=[
+                    Blocker(
+                        reason_code="bridge_async_submit_failed",
+                        message=f"Async submit failed: {exc}",
+                        context={"error_type": exc.__class__.__name__},
+                    )
+                ],
+            )
+        self._signals.completed.emit(result.to_dict())
 
 
 def _resolve_operator_identity() -> str:
@@ -79,22 +119,31 @@ class BenchCommandBridge(QObject):
     # Emitted after every submit attempt — successful, blocked, or errored.
     # Payload is the ``CommandResult.to_dict()`` mapping.
     submitCompleted = Signal("QVariantMap")  # noqa: N815
+    submitQueued = Signal("QVariantMap")  # noqa: N815
 
     def __init__(
         self,
         facade: BenchCommandFacade,
         *,
         bench_state: BenchState | None = None,
+        ledger_state: LedgerState | None = None,
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
         self._facade = facade
         self._bench_state = bench_state
+        self._ledger_state = ledger_state
         # Proposal cache. propose_demote stores the live CommandProposal here
         # so submit_demote can retrieve it by id without QML reconstructing
         # the dataclass. Each proposal is consumed exactly once; stale ids
         # produce a structured error result.
         self._proposals: dict[str, CommandProposal] = {}
+        self._thread_pool = QThreadPool()
+        self._submit_signals = _SubmitSignals(self)
+        self._submit_signals.completed.connect(
+            self._on_async_submit_completed,
+            Qt.ConnectionType.QueuedConnection,
+        )
 
     def _unknown_proposal_payload(
         self, proposal_id: str, *, action_family: str, submit_method: str, propose_method: str
@@ -123,12 +172,55 @@ class BenchCommandBridge(QObject):
         return payload
 
     def _refresh_after_submit(self, operation: str) -> None:
-        if self._bench_state is None:
-            return
-        try:
-            self._bench_state._kick_refresh()  # noqa: SLF001
-        except Exception:  # noqa: BLE001
-            logger.exception("BenchState refresh after %s failed.", operation)
+        if self._bench_state is not None:
+            try:
+                self._bench_state._kick_refresh()  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                logger.exception("BenchState refresh after %s failed.", operation)
+        if self._ledger_state is not None:
+            try:
+                self._ledger_state._kick_refresh()  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                logger.exception("LedgerState refresh after %s failed.", operation)
+
+    def _queued_payload(self, proposal: CommandProposal) -> dict[str, Any]:
+        return {
+            "proposal_id": proposal.proposal_id,
+            "action_family": proposal.action_family,
+            "strategy_id": proposal.strategy_id,
+            "bridge_status": "queued",
+            "blockers": [],
+            "warnings": [],
+        }
+
+    def _submit_async(
+        self,
+        proposal_id: str,
+        *,
+        action_family: str,
+        submit_method: str,
+        propose_method: str,
+        submitter: Callable[[CommandProposal], CommandResult],
+    ) -> dict[str, Any]:
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            return self._unknown_proposal_payload(
+                proposal_id,
+                action_family=action_family,
+                submit_method=submit_method,
+                propose_method=propose_method,
+            )
+
+        payload = self._queued_payload(proposal)
+        self.submitQueued.emit(payload)
+        self._thread_pool.start(_SubmitRunnable(proposal, submitter, self._submit_signals))
+        return payload
+
+    @Slot("QVariantMap")
+    def _on_async_submit_completed(self, payload: dict[str, Any]) -> None:
+        if str(payload.get("status") or "") == "submitted":
+            self._refresh_after_submit(str(payload.get("action_family") or "async_submit"))
+        self.submitCompleted.emit(payload)
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (demotion / walk-back only — ADR 0051 Phase C2)
@@ -202,19 +294,8 @@ class BenchCommandBridge(QObject):
         result = self._facade.submit_demote(proposal, gui_submit=True)
         payload = result.to_dict()
 
-        if result.status == "submitted" and self._bench_state is not None:
-            # Single permitted private reach. `_kick_refresh` is the only
-            # `BenchState` private surface the bridge touches; the contract is
-            # documented here and pinned by
-            # tests/milodex/gui/test_bench_command_bridge.py::
-            # test_submit_demote_logs_when_kick_refresh_raises. If it raises,
-            # the next polling tick recovers the read model on its own; we
-            # log via `logger.exception` so the failure is auditable rather
-            # than silently re-trying.
-            try:
-                self._bench_state._kick_refresh()  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                logger.exception("BenchState refresh after submit_demote failed.")
+        if result.status == "submitted":
+            self._refresh_after_submit("submit_demote")
 
         self.submitCompleted.emit(payload)
         return payload
@@ -276,16 +357,8 @@ class BenchCommandBridge(QObject):
         result = self._facade.submit_freeze_manifest(proposal)
         payload = result.to_dict()
 
-        if result.status == "submitted" and self._bench_state is not None:
-            # Single permitted private reach (same contract as the demote
-            # path). The next polling tick recovers the read model if this
-            # raises; we log via `logger.exception` so the failure is
-            # auditable. Pinned by
-            # test_submit_freeze_manifest_logs_when_kick_refresh_raises.
-            try:
-                self._bench_state._kick_refresh()  # noqa: SLF001
-            except Exception:  # noqa: BLE001
-                logger.exception("BenchState refresh after submit_freeze_manifest failed.")
+        if result.status == "submitted":
+            self._refresh_after_submit("submit_freeze_manifest")
 
         self.submitCompleted.emit(payload)
         return payload
@@ -340,6 +413,17 @@ class BenchCommandBridge(QObject):
 
         self.submitCompleted.emit(payload)
         return payload
+
+    @Slot(str, result="QVariantMap")
+    def submitBacktestAsync(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Queue a previously-proposed canonical backtest evidence run."""
+        return self._submit_async(
+            proposal_id,
+            action_family=ACTION_FAMILY_BACKTEST,
+            submit_method="submitBacktestAsync",
+            propose_method="proposeBacktest",
+            submitter=self._facade.submit_backtest,
+        )
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (promote to paper)
@@ -418,6 +502,17 @@ class BenchCommandBridge(QObject):
         self.submitCompleted.emit(payload)
         return payload
 
+    @Slot(str, result="QVariantMap")
+    def submitStartPaperRunnerAsync(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Queue a previously-proposed start-paper-runner request."""
+        return self._submit_async(
+            proposal_id,
+            action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+            submit_method="submitStartPaperRunnerAsync",
+            propose_method="proposeStartPaperRunner",
+            submitter=self._facade.submit_start_paper_runner,
+        )
+
     @Slot("QVariantMap", result="QVariantMap")
     def proposeStopPaperRunner(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
         """Build a stop-paper-runner proposal and cache it by id."""
@@ -446,6 +541,17 @@ class BenchCommandBridge(QObject):
 
         self.submitCompleted.emit(payload)
         return payload
+
+    @Slot(str, result="QVariantMap")
+    def submitStopPaperRunnerAsync(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
+        """Queue a previously-proposed controlled-stop request."""
+        return self._submit_async(
+            proposal_id,
+            action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+            submit_method="submitStopPaperRunnerAsync",
+            propose_method="proposeStopPaperRunner",
+            submitter=self._facade.submit_stop_paper_runner,
+        )
 
     # ------------------------------------------------------------------ #
     # Introspection (used by tests and operator surfaces)

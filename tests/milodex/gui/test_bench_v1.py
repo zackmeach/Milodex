@@ -416,16 +416,13 @@ class TestReRunVerb:
         evidence = EvidenceRecord(freshness=Freshness.INVALIDATED, gate_result=gate_result)
         assert re_run_verb(evidence, is_run_in_flight=False) == LABEL_INITIATE_BACKTEST
 
-    @pytest.mark.parametrize("gate_result", [GateResult.PASS, GateResult.FAIL])
-    def test_fresh_yields_no_re_run_verb_workflow_discipline(
-        self, gate_result: GateResult
-    ) -> None:
-        # Workflow discipline per ADR 0050 Decision 5: Fresh+Pass and
-        # Fresh+Fail produce no re-run verb. The operator must change
-        # something (config, parameters) which transitions evidence to
-        # Invalidated; only then does Initiate Backtest appear.
-        evidence = EvidenceRecord(freshness=Freshness.FRESH, gate_result=gate_result)
+    def test_fresh_pass_yields_no_re_run_verb_workflow_discipline(self) -> None:
+        evidence = EvidenceRecord(freshness=Freshness.FRESH, gate_result=GateResult.PASS)
         assert re_run_verb(evidence, is_run_in_flight=False) is None
+
+    def test_fresh_fail_yields_initiate_so_backtest_rows_can_recover(self) -> None:
+        evidence = EvidenceRecord(freshness=Freshness.FRESH, gate_result=GateResult.FAIL)
+        assert re_run_verb(evidence, is_run_in_flight=False) == LABEL_INITIATE_BACKTEST
 
     def test_live_evidence_not_applicable_yields_no_re_run_verb(self) -> None:
         # Per the comment in re_run_verb: LIVE-stage evidence has no
@@ -497,6 +494,18 @@ class TestComposerIdleRows:
             runs_in_flight={Stage.BACKTEST: True},
         )
         assert _labels(compute_menu_items(state)) == [LABEL_OPEN_EVIDENCE]
+
+    def test_idle_with_prior_backtest_fresh_pass_can_initiate_backtest(self) -> None:
+        state = BenchStrategyState(
+            current_stage=Stage.IDLE,
+            evidence_by_stage={
+                Stage.BACKTEST: EvidenceRecord(Freshness.FRESH, GateResult.PASS),
+            },
+        )
+        assert _labels(compute_menu_items(state)) == [
+            LABEL_INITIATE_BACKTEST,
+            LABEL_OPEN_EVIDENCE,
+        ]
 
     def test_idle_with_prior_paper_fresh_pass_and_no_backtest_history(self) -> None:
         state = BenchStrategyState(
@@ -594,9 +603,10 @@ class TestComposerBacktestRows:
                 Stage.BACKTEST: EvidenceRecord(Freshness.FRESH, GateResult.FAIL),
             },
         )
-        # No Promote (fail), no re-run (Fresh+Fail = workflow discipline).
+        # No Promote (fail), but the operator can immediately generate new evidence.
         assert _labels(compute_menu_items(state)) == [
             LABEL_RETURN_TO_IDLE,
+            LABEL_INITIATE_BACKTEST,
             LABEL_OPEN_EVIDENCE,
         ]
 
@@ -751,9 +761,7 @@ class TestEmptyMenuFloor:
         assert items[-1].verb_class == "informational"
 
     def test_open_evidence_present_when_every_state_changing_verb_hidden(self) -> None:
-        # Construct the worst case: BACKTEST with Fresh+Fail evidence
-        # (no promote per gate-fail; no re-run verb per workflow
-        # discipline; no Demote at BACKTEST).
+        # Construct a gate-failing BACKTEST row.
         state = BenchStrategyState(
             current_stage=Stage.BACKTEST,
             evidence_by_stage={

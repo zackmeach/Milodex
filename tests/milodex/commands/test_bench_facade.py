@@ -422,6 +422,21 @@ def test_propose_demote_admissible_for_paper_to_backtest(make_facade, config_dir
     assert proposal.projected_outcome["yaml_updated"] is True
 
 
+def test_propose_demote_admissible_for_backtest_to_idle(make_facade, config_dir: Path) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    proposal = facade.propose_demote(
+        STRATEGY_ID,
+        to_stage="idle",
+        reason="Shelf while evidence is rebuilt.",
+        gui_submit=True,
+    )
+    assert proposal.admissible, proposal.blockers
+    assert proposal.projected_outcome["from_stage"] == "backtest"
+    assert proposal.projected_outcome["to_stage"] == "idle"
+    assert proposal.projected_outcome["yaml_updated"] is True
+
+
 def test_propose_demote_requires_reason(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
@@ -793,7 +808,7 @@ def _make_backtest_proposal(*, walk_forward: bool) -> CommandProposal:
 
 
 def test_submit_backtest_runs_single_period_engine_and_returns_payload(
-    make_facade, config_dir: Path
+    make_facade, config_dir: Path, event_store: EventStore
 ) -> None:
     _write_strategy(config_dir, stage="backtest")
     engine = _FakeSingleBacktestEngine()
@@ -803,7 +818,7 @@ def test_submit_backtest_runs_single_period_engine_and_returns_payload(
 
     assert result.status == "submitted", result.blockers
     assert engine.calls == [(date(2020, 1, 1), date(2020, 1, 8), "bench-run")]
-    assert result.durable_refs == {
+    assert result.durable_refs.items() >= {
         "run_id": "bench-run",
         "strategy_id": STRATEGY_ID,
         "start": "2020-01-01",
@@ -811,11 +826,41 @@ def test_submit_backtest_runs_single_period_engine_and_returns_payload(
         "walk_forward": "false",
         "risk_policy": "bypass",
         "backtest_run_db_id": "101",
-    }
+    }.items()
+    assert result.durable_refs["orchestration_job_id"]
+    assert result.durable_refs["orchestration_batch_id"]
+    job = event_store.get_orchestration_job(result.durable_refs["orchestration_job_id"])
+    assert job is not None
+    assert job.status == "completed"
+    assert job.action_type == "backtest_single"
+    assert job.execution_ref == "bench-run"
     assert result.data["metrics"]["trade_count"] == 4
     assert result.data["skipped_count"] == 1
     assert result.data["data_quality_status"] == "pass"
     assert result.data["run_manifest"]["schema_version"] == 1
+
+
+def test_submit_backtest_from_idle_returns_strategy_to_backtest_stage(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_strategy(config_dir, stage="idle")
+    engine = _FakeSingleBacktestEngine()
+    facade = make_facade(backtest_engine_factory=lambda _strategy_id, **_kwargs: engine)
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["from_stage"] == "idle"
+    assert result.durable_refs["to_stage"] == "backtest"
+    assert result.durable_refs["stage_return_promotion_id"]
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
+
+    events = event_store.list_promotions_for_strategy(STRATEGY_ID)
+    assert len(events) == 1
+    assert events[0].from_stage == "idle"
+    assert events[0].to_stage == "backtest"
+    assert events[0].promotion_type == "stage_return"
+    assert events[0].backtest_run_id == "bench-run"
 
 
 def test_submit_backtest_runs_walk_forward_with_prefetched_bars(
@@ -990,6 +1035,30 @@ def test_submit_demote_to_backtest_updates_yaml_and_returns_durable_refs(
     assert len(events) == 1
     assert events[0].promotion_type == "demotion"
     assert events[0].to_stage == "backtest"
+
+
+def test_submit_demote_to_idle_updates_yaml_and_returns_durable_refs(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    proposal = _make_demote_proposal(
+        to_stage="idle",
+        reason="Shelf while evidence is rebuilt.",
+    )
+
+    result = facade.submit_demote(proposal, gui_submit=True)
+
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["from_stage"] == "backtest"
+    assert result.durable_refs["to_stage"] == "idle"
+    assert result.durable_refs["promotion_type"] == "demotion"
+    assert 'stage: "idle"' in config_path.read_text(encoding="utf-8")
+
+    events = event_store.list_promotions_for_strategy(STRATEGY_ID)
+    assert len(events) == 1
+    assert events[0].promotion_type == "demotion"
+    assert events[0].to_stage == "idle"
 
 
 def test_submit_demote_to_disabled_is_ledger_only(

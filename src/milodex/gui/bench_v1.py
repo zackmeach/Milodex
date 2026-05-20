@@ -362,12 +362,12 @@ def re_run_verb(evidence: EvidenceRecord, *, is_run_in_flight: bool) -> str | No
     if evidence.freshness == Freshness.INVALIDATED:
         return LABEL_INITIATE_BACKTEST
     if evidence.gate_result == GateResult.FAIL and evidence.freshness in {
+        Freshness.FRESH,
         Freshness.AGING,
         Freshness.STALE,
     }:
         return LABEL_INITIATE_BACKTEST
-    # Fresh+Pass, Fresh+Fail, and LIVE-stage NotApplicable do not
-    # surface a re-run verb by default.
+    # Fresh+Pass and LIVE-stage NotApplicable do not surface a re-run verb by default.
     return None
 
 
@@ -517,6 +517,8 @@ def compute_menu_items(state: BenchStrategyState) -> list[MenuItem]:
     if backtest_evidence is not None:
         backtest_in_flight = state.runs_in_flight.get(Stage.BACKTEST, False)
         verb = re_run_verb(backtest_evidence, is_run_in_flight=backtest_in_flight)
+        if verb is None and state.current_stage == Stage.IDLE and not backtest_in_flight:
+            verb = LABEL_INITIATE_BACKTEST
         if verb is not None:
             items.append(
                 MenuItem(

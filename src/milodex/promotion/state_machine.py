@@ -238,7 +238,7 @@ def transition(
     )
 
 
-_DEMOTE_TARGETS = frozenset({"backtest", "disabled"})
+_DEMOTE_TARGETS = frozenset({"idle", "backtest", "disabled"})
 
 
 def demote(
@@ -251,7 +251,7 @@ def demote(
     evidence_ref: str | None = None,
     now: datetime | None = None,
 ) -> PromotionEvent:
-    """Demote ``strategy_id`` to ``to_stage`` (``backtest`` or ``disabled``).
+    """Demote ``strategy_id`` to ``to_stage`` (``idle``, ``backtest``, or ``disabled``).
 
     Demotion is always allowed — operator intent is authoritative, no gate
     check runs (plan AD-6). Writes a ``PromotionEvent`` with
@@ -260,8 +260,8 @@ def demote(
     reversal chain that ``history`` will walk.
 
     Side effects:
-      - ``to_stage='backtest'``: updates the YAML ``stage:`` line from the
-        current stage to ``backtest`` so the runner treats it as pre-paper.
+      - ``to_stage='idle'`` / ``'backtest'``: updates the YAML ``stage:`` line
+        from the current stage so the runner treats it as non-paper.
       - ``to_stage='disabled'``: YAML untouched; the demotion lives only in
         the governance ledger. (Runtime refusal lands in slice 3.)
 
@@ -307,8 +307,8 @@ def demote(
     )
     promotion_id = event_store.append_promotion(promotion)
 
-    if to_stage == "backtest":
-        _update_stage_in_yaml(config_path, from_stage, "backtest")
+    if to_stage in {"idle", "backtest"}:
+        _update_stage_in_yaml(config_path, from_stage, to_stage)
 
     return PromotionEvent(
         strategy_id=promotion.strategy_id,

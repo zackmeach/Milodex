@@ -520,6 +520,8 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
         max_dd = _float_or_none(promotion.get("max_drawdown_pct"), metrics.get("max_drawdown_pct"))
         trade_count = _int_or_none(promotion.get("trade_count"), metrics.get("trade_count"))
         failures = tuple(_gate_failures(sharpe, max_dd, trade_count, config.family))
+        evidence_by_stage = _bench_evidence_by_stage(metrics, config.family)
+        runs_in_flight = _bench_runs_in_flight(job)
         status_kind, status_word, status_tail = _status_copy(
             config.stage, failures, sharpe, max_dd, trade_count
         )
@@ -562,6 +564,8 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
                 job_status=str(job.get("status") or ""),
                 job_action_type=str(job.get("action_type") or ""),
                 job_detail=str(job.get("detail") or ""),
+                evidence_by_stage=evidence_by_stage,
+                runs_in_flight=runs_in_flight,
             )
         )
     sorted_rows = sorted(rows, key=lambda row: (_VISIBLE_STAGES.index(row.stage), row.name.lower()))
@@ -584,25 +588,10 @@ def _compute_bench_action_menu(row: _StrategyRow) -> list[dict[str, Any]]:
     removed: this is the only code path that produces the ``actions`` key
     exposed to QML.
 
-    v1 scope: real Freshness / GateResult derivation from event history is
-    deferred to v2 (ADR 0049 Decision 5).  Until then we synthesise a minimal
-    BenchStrategyState using the fields already carried on _StrategyRow:
-
-    - ``evidence_by_stage``: populated from the dataclass field if non-empty
-      (set by future v2 read-model work).  When empty (the live path today),
-      we fall back to a synthetic mapping that treats the strategy's current
-      stage as Fresh+Pass so the menu has meaningful items to render.
-
-      # TODO(post-v1): derive evidence_by_stage from the event store rather
-      # than using a synthetic Fresh+Pass fallback.
-
-    - ``runs_in_flight``: populated from the dataclass field (also empty today
-      in the live path; future v2 work will set it from the open-runs view).
-
-      # TODO(post-v1): derive runs_in_flight from orchestration_jobs in the
-      # event store once the open-runs view is wired.
-
-    - ``is_session_running``: derived from ``session_state == "running"``.
+    Evidence is derived upstream from durable state: completed backtest metrics
+    drive BACKTEST Fresh+Pass/Fresh+Fail, missing backtests render as
+    Missing+Pending, and non-terminal orchestration jobs populate
+    ``runs_in_flight``. Operational paper controls still use session state.
 
     The returned list is a list of plain dicts so it serialises cleanly to
     QML's QVariantList.  Each dict carries:
@@ -615,22 +604,8 @@ def _compute_bench_action_menu(row: _StrategyRow) -> list[dict[str, Any]]:
     # Prefer the row's evidence_by_stage if it was populated upstream.
     evidence = row.evidence_by_stage
 
-    if not evidence and row.stage in _VISIBLE_STAGES:
-        # Synthetic fallback: treat the strategy as Fresh+Pass at its current
-        # stage so the menu renders meaningfully in the live UI without a
-        # populated event store.  For LIVE, use NOT_APPLICABLE (the only valid
-        # gate result at that stage).  IDLE rows with no prior history get a
-        # MISSING+PENDING BACKTEST record so Initiate Backtest surfaces.
-        # TODO(post-v1): replace this synthetic mapping with real evidence
-        # derived from the event store (freshness threshold config + gate
-        # evaluation against walk-forward metrics).
-        if row.stage == "idle":
-            evidence = {Stage.BACKTEST: EvidenceRecord(Freshness.MISSING, GateResult.PENDING)}
-        elif row.stage == "live":
-            evidence = {Stage.LIVE: EvidenceRecord(Freshness.FRESH, GateResult.NOT_APPLICABLE)}
-        else:
-            stage_enum = Stage(row.stage)
-            evidence = {stage_enum: EvidenceRecord(Freshness.FRESH, GateResult.PASS)}
+    if not evidence and row.stage in {"idle", "backtest"}:
+        evidence = {Stage.BACKTEST: EvidenceRecord(Freshness.MISSING, GateResult.PENDING)}
 
     try:
         current_stage = Stage(row.stage)
@@ -654,6 +629,42 @@ def _compute_bench_action_menu(row: _StrategyRow) -> list[dict[str, Any]]:
         }
         for item in items
     ]
+
+
+def _bench_evidence_by_stage(
+    metrics: dict[str, Any],
+    family: str,
+) -> dict[Stage, EvidenceRecord]:
+    sharpe = _float_or_none(metrics.get("sharpe"))
+    max_dd = _float_or_none(metrics.get("max_drawdown_pct"))
+    trade_count = _int_or_none(metrics.get("trade_count"))
+    has_completed_backtest = bool(metrics.get("run_id")) or any(
+        value is not None for value in (sharpe, max_dd, trade_count)
+    )
+    if not has_completed_backtest:
+        return {Stage.BACKTEST: EvidenceRecord(Freshness.MISSING, GateResult.PENDING)}
+
+    failures = _gate_failures(sharpe, max_dd, trade_count, family)
+    return {
+        Stage.BACKTEST: EvidenceRecord(
+            Freshness.FRESH,
+            GateResult.FAIL if failures else GateResult.PASS,
+        )
+    }
+
+
+def _bench_runs_in_flight(job: dict[str, Any]) -> dict[Stage, bool]:
+    if not job:
+        return {}
+    if str(job.get("status") or "") not in {"queued", "starting", "running"}:
+        return {}
+    if str(job.get("action_type") or "") in {
+        "backtest",
+        "backtest_single",
+        "backtest_walk_forward",
+    }:
+        return {Stage.BACKTEST: True}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -815,6 +826,8 @@ def _is_submit_capable_action(kind: str, target_stage: str, current_stage: str) 
         return True
     if kind == "promote":
         return target_stage == "paper"
+    if kind == "return":
+        return target_stage == "idle"
     if kind in {"start_trading", "stop_trading"}:
         return current_stage == "paper"
     return False
@@ -1000,7 +1013,7 @@ def _latest_promotions(db_path: Path) -> dict[str, dict[str, Any]]:
             INNER JOIN (
                 SELECT strategy_id, MAX(id) AS max_id
                 FROM promotions
-                WHERE promotion_type != 'demotion'
+                WHERE promotion_type NOT IN ('demotion', 'stage_return')
                 GROUP BY strategy_id
             ) latest ON latest.strategy_id = p.strategy_id AND latest.max_id = p.id
             """
@@ -1031,7 +1044,12 @@ def _ledger_entries(db_path: Path) -> list[dict[str, Any]]:
         conn.close()
     for row in promotion_rows:
         promotion_type = str(row["promotion_type"])
-        outcome_kind = "demoted" if promotion_type == "demotion" else "promoted"
+        if promotion_type == "demotion":
+            outcome_kind = "demoted"
+        elif promotion_type == "stage_return":
+            outcome_kind = "returned"
+        else:
+            outcome_kind = "promoted"
         entries.append(
             {
                 "timestamp": row["recorded_at"],
@@ -1040,7 +1058,7 @@ def _ledger_entries(db_path: Path) -> list[dict[str, Any]]:
                 "subject": _short_strategy_name(row["strategy_id"]),
                 "stage": row["to_stage"],
                 "transition": f"{row['from_stage']} -> {row['to_stage']}",
-                "outcome": "DEMOTED" if outcome_kind == "demoted" else "PROMOTED",
+                "outcome": _ledger_outcome_label(outcome_kind),
                 "outcomeKind": outcome_kind,
                 "reason": row["notes"] or promotion_type,
                 "recent": True,
@@ -1114,6 +1132,14 @@ def _latest_session_states(db_path: Path) -> dict[str, dict[str, Any]]:
             "detail": detail,
         }
     return result
+
+
+def _ledger_outcome_label(outcome_kind: str) -> str:
+    if outcome_kind == "demoted":
+        return "DEMOTED"
+    if outcome_kind == "returned":
+        return "RETURNED"
+    return "PROMOTED"
 
 
 def _latest_orchestration_jobs(db_path: Path) -> dict[str, dict[str, str]]:
@@ -1455,5 +1481,3 @@ def _empty_front_summary() -> dict[str, Any]:
         "market": _market_placeholder(),
         "pnl": {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]},
     }
-
-

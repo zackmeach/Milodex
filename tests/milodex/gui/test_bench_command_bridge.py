@@ -21,10 +21,12 @@ from __future__ import annotations
 
 import inspect
 import textwrap
+import threading
 from datetime import datetime
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 from milodex.backtesting.engine import BacktestResult
 from milodex.commands.bench import (
@@ -147,8 +149,17 @@ class _FakeBenchState:
         self.refresh_kicks += 1
 
 
+class _FakeLedgerState(_FakeBenchState):
+    """Same private refresh contract as LedgerState, isolated for assertions."""
+
+
 class _FakeSingleBacktestEngine:
+    def __init__(self, *, release_event: threading.Event | None = None) -> None:
+        self._release_event = release_event
+
     def run(self, start, end, *, run_id=None):  # noqa: ANN001
+        if self._release_event is not None:
+            self._release_event.wait(timeout=5)
         return BacktestResult(
             run_id=run_id or "bench-bridge-run",
             strategy_id=STRATEGY_ID,
@@ -169,6 +180,19 @@ class _FakeSingleBacktestEngine:
             data_quality={"status": "pass"},
             run_manifest={"schema_version": 1},
         )
+
+
+def _process_qt_until(predicate, *, timeout_ms: int = 2_000) -> bool:  # noqa: ANN001
+    app = QCoreApplication.instance() or QCoreApplication([])
+    deadline = threading.Event()
+    timer = QTimer()
+    timer.setSingleShot(True)
+    timer.timeout.connect(deadline.set)
+    timer.start(timeout_ms)
+    while not predicate() and not deadline.is_set():
+        app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 20)
+    timer.stop()
+    return bool(predicate())
 
 
 class _FakePaperRunnerControl:
@@ -502,6 +526,44 @@ def test_submit_backtest_unknown_or_consumed_id_returns_structured_error(
     assert second["blockers"][0]["reason_code"] == "unknown_proposal_id"
 
 
+def test_submit_backtest_async_returns_queued_and_emits_final_result(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    release = threading.Event()
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        backtest_engine_factory=lambda _strategy_id, **_kwargs: _FakeSingleBacktestEngine(
+            release_event=release
+        ),
+    )
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+    payloads: list[dict] = []
+    queued_payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+    bridge.submitQueued.connect(queued_payloads.append)
+
+    proposal = bridge.proposeBacktest(
+        {"strategy_id": STRATEGY_ID, "walk_forward": False, "initial_equity": 1000}
+    )
+    queued = bridge.submitBacktestAsync(proposal["proposal_id"])
+
+    assert queued["bridge_status"] == "queued"
+    assert queued["action_family"] == ACTION_FAMILY_BACKTEST
+    assert queued_payloads == [queued]
+    assert payloads == []
+
+    release.set()
+    assert _process_qt_until(lambda: len(payloads) == 1)
+    assert payloads[0]["status"] == "submitted"
+    assert payloads[0]["action_family"] == ACTION_FAMILY_BACKTEST
+    assert fake_state.refresh_kicks == 1
+
+
 # --------------------------------------------------------------------------- #
 # Paper runner submit bridge
 # --------------------------------------------------------------------------- #
@@ -605,6 +667,41 @@ def test_submit_paper_runner_unknown_or_consumed_ids_return_structured_errors(
     assert unknown_stop["blockers"][0]["reason_code"] == "unknown_proposal_id"
 
 
+def test_submit_paper_runner_async_methods_return_queued_and_emit_final_results(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        paper_runner_control=control,
+    )
+    bridge = BenchCommandBridge(facade, bench_state=_FakeBenchState())
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    start = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    start_queued = bridge.submitStartPaperRunnerAsync(start["proposal_id"])
+    assert start_queued["bridge_status"] == "queued"
+    assert _process_qt_until(lambda: len(payloads) == 1)
+
+    _seed_runner_lock(locks_dir)
+
+    stop = bridge.proposeStopPaperRunner({"strategy_id": STRATEGY_ID})
+    stop_queued = bridge.submitStopPaperRunnerAsync(stop["proposal_id"])
+    assert stop_queued["bridge_status"] == "queued"
+
+    assert _process_qt_until(lambda: len(payloads) == 2)
+    assert [payload["action_family"] for payload in payloads] == [
+        ACTION_FAMILY_START_PAPER_RUNNER,
+        ACTION_FAMILY_STOP_PAPER_RUNNER,
+    ]
+    assert all(payload["status"] == "submitted" for payload in payloads)
+
+
 # --------------------------------------------------------------------------- #
 # Promote-to-paper submit bridge
 # --------------------------------------------------------------------------- #
@@ -643,7 +740,12 @@ def test_submit_promote_to_paper_with_known_id_writes_event_and_refreshes(
     config_path = _write_strategy(config_dir, stage="backtest")
     _append_walk_forward_backtest_run(event_store, run_id="bt-gui-promote")
     fake_state = _FakeBenchState()
-    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+    fake_ledger_state = _FakeLedgerState()
+    bridge = BenchCommandBridge(
+        facade,
+        bench_state=fake_state,
+        ledger_state=fake_ledger_state,
+    )
     payloads: list[dict] = []
     bridge.submitCompleted.connect(payloads.append)
 
@@ -664,6 +766,7 @@ def test_submit_promote_to_paper_with_known_id_writes_event_and_refreshes(
     assert result["durable_refs"]["backtest_run_id"] == "bt-gui-promote"
     assert result["audit_event_id"]
     assert fake_state.refresh_kicks == 1
+    assert fake_ledger_state.refresh_kicks == 1
     assert len(payloads) == 1
     assert payloads[0]["status"] == "submitted"
     assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")

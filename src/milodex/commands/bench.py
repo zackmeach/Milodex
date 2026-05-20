@@ -27,9 +27,10 @@ Forbidden dependencies:
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,11 @@ import yaml
 
 from milodex.backtesting.walk_forward_runner import derive_walk_forward_spans, run_walk_forward
 from milodex.core.advisory_lock import AdvisoryLock
+from milodex.core.event_store import (
+    OrchestrationBatchEvent,
+    OrchestrationJobEvent,
+    PromotionEvent,
+)
 from milodex.promotion import (
     MAX_DRAWDOWN_PCT,
     MIN_SHARPE,
@@ -50,6 +56,7 @@ from milodex.promotion import (
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
 from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE
+from milodex.promotion.state_machine import _update_stage_in_yaml as _governance_update_stage
 from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.promotion.state_machine import transition as _governance_transition
 from milodex.risk.policy import RiskPolicy
@@ -59,6 +66,8 @@ from milodex.strategies.paper_runner_control import runner_lock_name
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
     from milodex.strategies.loader import StrategyConfig
+
+logger = logging.getLogger(__name__)
 
 
 # Action family identifiers. Kept as plain strings (not an Enum) so they
@@ -80,7 +89,7 @@ ACTION_FAMILIES: tuple[str, ...] = (
 )
 
 # Demotion targets the existing ``promotion.state_machine.demote`` accepts.
-DEMOTION_TARGETS: frozenset[str] = frozenset({"backtest", "disabled"})
+DEMOTION_TARGETS: frozenset[str] = frozenset({"idle", "backtest", "disabled"})
 
 # The Phase B sentinel blocker. Every submit_* returns this until the
 # corresponding action-family wiring PR lands.
@@ -564,7 +573,7 @@ class BenchCommandFacade:
     ) -> CommandProposal:
         """Propose a demotion or walk-back.
 
-        Targets are constrained to ``backtest`` or ``disabled`` — matches
+        Targets are constrained to ``idle``, ``backtest`` or ``disabled`` — matches
         ``promotion.state_machine.demote`` and the CLI's demote choices.
         Demotion is always allowed at the governance layer, but the facade
         still requires a non-blank reason so the audit record is reconstructable.
@@ -680,7 +689,7 @@ class BenchCommandFacade:
             "writes_durable_state": True,
             "from_stage": config.stage,
             "to_stage": to_stage,
-            "yaml_updated": to_stage == "backtest",
+            "yaml_updated": to_stage in {"idle", "backtest"},
         }
         return CommandProposal(
             action_family=ACTION_FAMILY_DEMOTE,
@@ -977,6 +986,14 @@ class BenchCommandFacade:
         if slippage is not None:
             engine_kwargs["slippage_pct"] = slippage
 
+        action_type = "backtest_walk_forward" if walk_forward else "backtest_single"
+        job_ref = self._create_orchestration_job(
+            proposal,
+            action_type=action_type,
+            requested_stage="backtest",
+            progress_label="running backtest",
+        )
+
         try:
             engine = self._backtest_engine_factory(proposal.strategy_id, **engine_kwargs)
             if walk_forward:
@@ -997,7 +1014,7 @@ class BenchCommandFacade:
             else:
                 result = engine.run(start, end, run_id=run_id)
         except Exception as exc:  # noqa: BLE001 - facade returns structured submit failures.
-            return CommandResult(
+            error_result = CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_BACKTEST,
                 status="error",
@@ -1010,16 +1027,61 @@ class BenchCommandFacade:
                 ],
                 submitted_at=self._now(),
             )
+            return self._finish_orchestration_job(job_ref, error_result)
 
-        return CommandResult(
+        durable_refs = self._backtest_durable_refs(result, walk_forward=walk_forward)
+        from_stage = str(revalidation.state_snapshot.get("stage") or "")
+        if from_stage == "idle":
+            config_path = Path(str(revalidation.state_snapshot.get("config_path") or ""))
+            try:
+                _governance_update_stage(config_path, "idle", "backtest")
+            except ValueError as exc:
+                error_result = CommandResult(
+                    proposal_id=proposal.proposal_id,
+                    action_family=ACTION_FAMILY_BACKTEST,
+                    status="error",
+                    durable_refs=durable_refs,
+                    blockers=[
+                        Blocker(
+                            reason_code="idle_to_backtest_stage_update_failed",
+                            message=str(exc),
+                            context={"config_path": str(config_path)},
+                        )
+                    ],
+                    submitted_at=self._now(),
+                )
+                return self._finish_orchestration_job(job_ref, error_result)
+            stage_return_id = required_store.append_promotion(
+                PromotionEvent(
+                    strategy_id=proposal.strategy_id,
+                    from_stage="idle",
+                    to_stage="backtest",
+                    promotion_type="stage_return",
+                    approved_by="bench_gui",
+                    recorded_at=self._now(),
+                    backtest_run_id=str(result.run_id),
+                    notes="Initiate Backtest via Bench GUI",
+                    evidence_json={
+                        "proposal_id": proposal.proposal_id,
+                        "action_family": proposal.action_family,
+                        "run_id": str(result.run_id),
+                    },
+                )
+            )
+            durable_refs["from_stage"] = "idle"
+            durable_refs["to_stage"] = "backtest"
+            durable_refs["stage_return_promotion_id"] = str(stage_return_id)
+
+        submit_result = CommandResult(
             proposal_id=proposal.proposal_id,
             action_family=ACTION_FAMILY_BACKTEST,
             status="submitted",
-            durable_refs=self._backtest_durable_refs(result, walk_forward=walk_forward),
+            durable_refs=durable_refs,
             data=self._backtest_result_data(result, walk_forward=walk_forward),
             submitted_at=self._now(),
             audit_event_id=str(result.run_id),
         )
+        return self._finish_orchestration_job(job_ref, submit_result)
 
     def submit_freeze_manifest(self, proposal: CommandProposal) -> CommandResult:
         """Second submit-capable action (ADR 0051 Phase D1).
@@ -1396,8 +1458,8 @@ class BenchCommandFacade:
 
         * append-only ``PromotionEvent`` with ``promotion_type='demotion'``
           and ``reverses_event_id`` chaining,
-        * YAML stage-line update when ``to_stage='backtest'`` (ledger-only
-          when ``to_stage='disabled'``),
+        * YAML stage-line update when ``to_stage='idle'`` or ``'backtest'``
+          (ledger-only when ``to_stage='disabled'``),
         * non-blank reason refusal and target-set enforcement.
 
         The facade does not duplicate those rules; it surfaces refusals as
@@ -1567,10 +1629,16 @@ class BenchCommandFacade:
                 ],
             )
         control = self._paper_runner_control
+        job_ref = self._create_orchestration_job(
+            proposal,
+            action_type="paper_session_start",
+            requested_stage="paper",
+            progress_label="starting paper runner",
+        )
         try:
             result = control.start(proposal.strategy_id)
         except Exception as exc:  # noqa: BLE001 - facade returns structured failures.
-            return CommandResult(
+            error_result = CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_START_PAPER_RUNNER,
                 status="error",
@@ -1583,6 +1651,7 @@ class BenchCommandFacade:
                 ],
                 submitted_at=self._now(),
             )
+            return self._finish_orchestration_job(job_ref, error_result)
 
         session_id = str(getattr(result, "session_id", "") or "") or self._latest_open_session_id(
             proposal.strategy_id
@@ -1596,7 +1665,7 @@ class BenchCommandFacade:
         if session_id:
             durable_refs["session_id"] = session_id
         command = tuple(getattr(result, "command", ()))
-        return CommandResult(
+        submit_result = CommandResult(
             proposal_id=proposal.proposal_id,
             action_family=ACTION_FAMILY_START_PAPER_RUNNER,
             status="submitted",
@@ -1610,6 +1679,7 @@ class BenchCommandFacade:
             submitted_at=getattr(result, "launched_at", self._now()),
             audit_event_id=session_id or None,
         )
+        return self._finish_orchestration_job(job_ref, submit_result)
 
     def submit_stop_paper_runner(self, proposal: CommandProposal) -> CommandResult:
         """Request controlled stop for an active paper runner."""
@@ -1675,10 +1745,16 @@ class BenchCommandFacade:
                 ],
             )
         control = self._paper_runner_control
+        job_ref = self._create_orchestration_job(
+            proposal,
+            action_type="paper_session_stop",
+            requested_stage="paper",
+            progress_label="stopping paper runner",
+        )
         try:
             result = control.request_controlled_stop(proposal.strategy_id, holder=holder)
         except Exception as exc:  # noqa: BLE001 - facade returns structured failures.
-            return CommandResult(
+            error_result = CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
                 status="error",
@@ -1691,6 +1767,7 @@ class BenchCommandFacade:
                 ],
                 submitted_at=self._now(),
             )
+            return self._finish_orchestration_job(job_ref, error_result)
 
         session_id = self._latest_open_session_id(proposal.strategy_id)
         durable_refs = {
@@ -1703,7 +1780,7 @@ class BenchCommandFacade:
         }
         if session_id:
             durable_refs["session_id"] = session_id
-        return CommandResult(
+        submit_result = CommandResult(
             proposal_id=proposal.proposal_id,
             action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
             status="submitted",
@@ -1718,10 +1795,131 @@ class BenchCommandFacade:
             submitted_at=getattr(result, "requested_at", self._now()),
             audit_event_id=session_id,
         )
+        return self._finish_orchestration_job(job_ref, submit_result)
 
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+
+    def _create_orchestration_job(
+        self,
+        proposal: CommandProposal,
+        *,
+        action_type: str,
+        requested_stage: str,
+        progress_label: str,
+    ) -> dict[str, str] | None:
+        if self._event_store_factory is None:
+            return None
+        try:
+            event_store = self._event_store_factory()
+            now = self._now()
+            batch_id = str(uuid.uuid4())
+            job_id = str(uuid.uuid4())
+            event_store.create_orchestration_batch(
+                OrchestrationBatchEvent(
+                    batch_id=batch_id,
+                    action_type=action_type,
+                    requested_by="bench_gui",
+                    requested_at=now,
+                    status="running",
+                    metadata={
+                        "source": "bench_command_facade",
+                        "proposal_id": proposal.proposal_id,
+                        "action_family": proposal.action_family,
+                    },
+                )
+            )
+            event_store.create_orchestration_job(
+                OrchestrationJobEvent(
+                    job_id=job_id,
+                    batch_id=batch_id,
+                    strategy_id=proposal.strategy_id,
+                    action_type=action_type,
+                    requested_stage=requested_stage,
+                    status="running",
+                    queued_at=now,
+                    started_at=now,
+                    ended_at=None,
+                    cancel_requested_at=None,
+                    execution_ref_type=None,
+                    execution_ref=None,
+                    progress_current=None,
+                    progress_total=None,
+                    progress_label=progress_label,
+                    error_code=None,
+                    error_message=None,
+                    metadata={
+                        "proposal_id": proposal.proposal_id,
+                        "action_family": proposal.action_family,
+                        "inputs": dict(proposal.inputs),
+                    },
+                )
+            )
+            return {"job_id": job_id, "batch_id": batch_id}
+        except Exception:  # noqa: BLE001 - submit should continue if job journaling fails.
+            logger.exception("Failed to create Bench orchestration job.")
+            return None
+
+    def _finish_orchestration_job(
+        self,
+        job_ref: dict[str, str] | None,
+        result: CommandResult,
+    ) -> CommandResult:
+        if not job_ref or self._event_store_factory is None:
+            return result
+
+        durable_refs = {
+            **result.durable_refs,
+            "orchestration_job_id": job_ref["job_id"],
+            "orchestration_batch_id": job_ref["batch_id"],
+        }
+        result = replace(result, durable_refs=durable_refs)
+
+        job_status = {
+            "submitted": "completed",
+            "blocked": "blocked",
+        }.get(result.status, "failed")
+        execution_ref_type, execution_ref = self._execution_ref(result)
+        first_blocker = result.blockers[0] if result.blockers else None
+        try:
+            event_store = self._event_store_factory()
+            event_store.update_orchestration_job_status(
+                job_ref["job_id"],
+                status=job_status,
+                ended_at=result.submitted_at or self._now(),
+                execution_ref_type=execution_ref_type,
+                execution_ref=execution_ref,
+                progress_label=result.status,
+                error_code=first_blocker.reason_code if first_blocker else None,
+                error_message=first_blocker.message if first_blocker else None,
+                metadata={
+                    "proposal_id": result.proposal_id,
+                    "action_family": result.action_family,
+                    "status": result.status,
+                    "durable_refs": durable_refs,
+                },
+            )
+            event_store.update_orchestration_batch_status(
+                job_ref["batch_id"],
+                status=job_status,
+                metadata={
+                    "proposal_id": result.proposal_id,
+                    "action_family": result.action_family,
+                    "status": result.status,
+                },
+            )
+        except Exception:  # noqa: BLE001 - result remains authoritative.
+            logger.exception("Failed to finish Bench orchestration job.")
+        return result
+
+    @staticmethod
+    def _execution_ref(result: CommandResult) -> tuple[str | None, str | None]:
+        if result.action_family == ACTION_FAMILY_BACKTEST and result.durable_refs.get("run_id"):
+            return "backtest_run", result.durable_refs["run_id"]
+        if result.durable_refs.get("session_id"):
+            return "strategy_run", result.durable_refs["session_id"]
+        return None, None
 
     def _resolve_config(self, strategy_id: str) -> tuple[StrategyConfig | None, Blocker | None]:
         """Locate the YAML for ``strategy_id`` under ``config_dir``.

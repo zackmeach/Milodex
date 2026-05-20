@@ -40,7 +40,7 @@ strategy:
     daily_loss_cap_pct: 0.02
     stop_loss_pct: 0.05
 
-  stage: "backtest"
+  stage: "idle"
 
   backtest:
     commission_per_trade: 0.00

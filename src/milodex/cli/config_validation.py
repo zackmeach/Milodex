@@ -47,7 +47,7 @@ _RISK_REQUIRED_KEYS: dict[str, set[str]] = {
     },
 }
 
-_VALID_STAGES = {"backtest", "paper", "micro_live", "live"}
+_VALID_STAGES = {"idle", "backtest", "paper", "micro_live", "live"}
 _VALID_BAR_SIZES = {"1D", "1H", "15Min", "5Min", "1Min"}
 
 

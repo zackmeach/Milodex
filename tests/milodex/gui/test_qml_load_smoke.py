@@ -1390,13 +1390,30 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     assert "Run backtest" in modal_src
     assert "_isBacktestSubmit" in modal_src
     assert "BenchCommandBridge.proposeBacktest(" in modal_src
-    assert "BenchCommandBridge.submitBacktest(" in modal_src
+    assert "BenchCommandBridge.submitBacktestAsync(" in modal_src
+    assert "BenchCommandBridge.submitBacktest(" not in modal_src
     assert '"start": "2020-01-01"' in modal_src
     assert '"end": "2024-12-31"' in modal_src
     assert '"walk_forward": true' in modal_src
     assert '"initial_equity": 1000' in modal_src
     assert '"risk_policy": "bypass"' in modal_src
     assert "Run canonical walk-forward backtest evidence" in modal_src
+
+
+def test_bench_modal_long_running_submits_use_async_bridge_slots() -> None:
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "BenchCommandBridge.submitBacktestAsync(" in modal_src
+    assert "BenchCommandBridge.submitStartPaperRunnerAsync(" in modal_src
+    assert "BenchCommandBridge.submitStopPaperRunnerAsync(" in modal_src
+    assert "BenchCommandBridge.submitBacktest(" not in modal_src
+    assert "BenchCommandBridge.submitStartPaperRunner(" not in modal_src
+    assert "BenchCommandBridge.submitStopPaperRunner(" not in modal_src
+    assert "_handleAsyncSubmitCompleted" in modal_src
+    assert "submitCompleted.connect" in modal_src
+    assert "_pendingProposalId" in modal_src
 
 
 def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
@@ -1422,6 +1439,18 @@ def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
     assert "Known risk required" in modal_src
 
 
+def test_bench_modal_promote_to_paper_prefills_operator_evidence() -> None:
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "function _defaultRecommendationText()" in modal_src
+    assert "function _defaultKnownRiskText()" in modal_src
+    assert "root._recommendationText = root._defaultRecommendationText()" in modal_src
+    assert "root._knownRiskText = root._defaultKnownRiskText()" in modal_src
+    assert "Promote to paper from passing Bench backtest evidence." in modal_src
+
+
 def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
     """ADR 0051: demote, freeze_manifest, backtest, and Promote to Paper are
     submit-capable. The modal must still render the inert "Not wired in v1"
@@ -1443,12 +1472,23 @@ def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
     assert '"freeze_manifest": true' in modal_src
     assert '"initiate_backtest": true' in modal_src
     assert '"refresh_backtest": true' in modal_src
+    assert "_isReturnToIdleSubmit" in modal_src
     assert "_isPromoteToPaperSubmit" in modal_src
 
     # The inert primary block must be visible-gated to the !_isSubmitCapable
     # branch so promote / return / start / stop / initiate / refresh actions
     # continue to see "Not wired in v1".
     assert "visible: !root._isSubmitCapable" in modal_src
+
+
+def test_bench_modal_return_to_idle_routes_through_demote_submit() -> None:
+    modal_src = (
+        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
+    ).read_text(encoding="utf-8")
+
+    assert "readonly property bool _isReturnToIdleSubmit" in modal_src
+    assert "root._isDemoteSubmit || root._isReturnToIdleSubmit" in modal_src
+    assert 'if (root._isReturnToIdleSubmit) return "Return to idle"' in modal_src
 
 
 def test_bench_pr_c2_surface_listens_for_submitted() -> None:

@@ -72,6 +72,9 @@ Item {
     })
     readonly property string _currentActionKind: _actionKind(actionData)
     readonly property bool _isDemoteSubmit: _currentActionKind === "demote"
+    readonly property bool _isReturnToIdleSubmit: _currentActionKind === "return"
+                                                  && ((actionData && actionData.targetStage) || "") === "idle"
+    readonly property bool _isStageWalkbackSubmit: root._isDemoteSubmit || root._isReturnToIdleSubmit
     readonly property bool _isFreezeManifestSubmit: _currentActionKind === "freeze_manifest"
     readonly property bool _isBacktestSubmit: _currentActionKind === "initiate_backtest"
                                             || _currentActionKind === "refresh_backtest"
@@ -86,6 +89,7 @@ Item {
                                                  || _isStartPaperRunnerSubmit)
                                              && (_currentActionKind !== "stop_trading"
                                                  || _isStopPaperRunnerSubmit))
+                                             || _isReturnToIdleSubmit
                                              || _isPromoteToPaperSubmit
 
     // Reason text the operator types into the inline input when the action
@@ -96,6 +100,7 @@ Item {
     property string _knownRiskText: ""
     property bool   _submitInFlight: false
     property string _submitErrorMessage: ""
+    property string _pendingProposalId: ""
 
     // PR M (ADR 0049): prefer the normalized evidencePacket carried on
     // rowData when present, otherwise fall back to the flat rowData fields.
@@ -177,13 +182,78 @@ Item {
             // Clear per-open state so each operator session of the modal
             // starts with an empty reason input and no stale error string.
             // The reason input is only visible when _isSubmitCapable.
-            root._reasonText = ""
-            root._recommendationText = ""
-            root._knownRiskText = ""
+            root._reasonText = root._defaultReasonText()
+            root._recommendationText = root._defaultRecommendationText()
+            root._knownRiskText = root._defaultKnownRiskText()
             root._submitErrorMessage = ""
             root._submitInFlight = false
+            root._pendingProposalId = ""
             forceActiveFocus()
         }
+    }
+
+    Component.onCompleted: BenchCommandBridge.submitCompleted.connect(root._handleAsyncSubmitCompleted)
+    Component.onDestruction: BenchCommandBridge.submitCompleted.disconnect(root._handleAsyncSubmitCompleted)
+
+    function _defaultReasonText() {
+        if (!root._isStageWalkbackSubmit) {
+            return ""
+        }
+        var label = (root.actionData && root.actionData.label) || "Stage walkback"
+        return label + " via Bench GUI"
+    }
+
+    function _defaultRecommendationText() {
+        if (!root._isPromoteToPaperSubmit) {
+            return ""
+        }
+        return "Promote to paper from passing Bench backtest evidence."
+    }
+
+    function _defaultKnownRiskText() {
+        if (!root._isPromoteToPaperSubmit) {
+            return ""
+        }
+        return "Paper mode only; monitor live-feed behavior and stop if evidence drifts."
+    }
+
+    function _handleAsyncSubmitCompleted(result) {
+        if (!root.open || !result || result.proposal_id !== root._pendingProposalId) {
+            return
+        }
+
+        root._pendingProposalId = ""
+        root._submitInFlight = false
+
+        if (result.status !== "submitted") {
+            var msg = ""
+            if (result.blockers && result.blockers.length > 0) {
+                msg = result.blockers[0].message || "Submit refused."
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result.blockers || [])
+            return
+        }
+
+        root.submitted(result)
+        root.closeRequested()
+    }
+
+    function _handleQueuedSubmit(result) {
+        if (result && result.bridge_status === "queued") {
+            root._submitErrorMessage = ""
+            return true
+        }
+
+        root._pendingProposalId = ""
+        root._submitInFlight = false
+        var msg = ""
+        if (result && result.blockers && result.blockers.length > 0) {
+            msg = result.blockers[0].message || "Submit refused."
+        }
+        root._submitErrorMessage = msg || "Submit could not be queued."
+        root.submitBlocked(result ? (result.blockers || []) : [])
+        return false
     }
 
     // ------------------------------------------------------------------
@@ -199,6 +269,7 @@ Item {
     // function does not touch broker, event store, runner, or YAML.
     // ------------------------------------------------------------------
     function _dispatchDemoteSubmit() {
+        if (!root._isStageWalkbackSubmit) return
         if (!root._isSubmitCapable) return
         if (root._submitInFlight) return
 
@@ -206,7 +277,7 @@ Item {
         var targetStage = (root.actionData && root.actionData.targetStage) || ""
         var reason = root._reasonText
         if (!strategyId || !targetStage || !reason || !reason.trim().length) {
-            root._submitErrorMessage = "Reason is required before submitting a demotion."
+            root._submitErrorMessage = "Reason is required before submitting this stage change."
             return
         }
 
@@ -352,21 +423,9 @@ Item {
             return
         }
 
-        var result = BenchCommandBridge.submitBacktest(proposal.proposal_id)
-        root._submitInFlight = false
-
-        if (!result || result.status !== "submitted") {
-            var msg = ""
-            if (result && result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
-            }
-            root._submitErrorMessage = msg
-            root.submitBlocked(result ? (result.blockers || []) : [])
-            return
-        }
-
-        root.submitted(result)
-        root.closeRequested()
+        root._pendingProposalId = proposal.proposal_id
+        var result = BenchCommandBridge.submitBacktestAsync(proposal.proposal_id)
+        root._handleQueuedSubmit(result)
     }
 
     // ------------------------------------------------------------------
@@ -469,21 +528,9 @@ Item {
             return
         }
 
-        var result = BenchCommandBridge.submitStartPaperRunner(proposal.proposal_id)
-        root._submitInFlight = false
-
-        if (!result || result.status !== "submitted") {
-            var msg = ""
-            if (result && result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
-            }
-            root._submitErrorMessage = msg
-            root.submitBlocked(result ? (result.blockers || []) : [])
-            return
-        }
-
-        root.submitted(result)
-        root.closeRequested()
+        root._pendingProposalId = proposal.proposal_id
+        var result = BenchCommandBridge.submitStartPaperRunnerAsync(proposal.proposal_id)
+        root._handleQueuedSubmit(result)
     }
 
     function _dispatchStopPaperRunnerSubmit() {
@@ -516,21 +563,9 @@ Item {
             return
         }
 
-        var result = BenchCommandBridge.submitStopPaperRunner(proposal.proposal_id)
-        root._submitInFlight = false
-
-        if (!result || result.status !== "submitted") {
-            var msg = ""
-            if (result && result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
-            }
-            root._submitErrorMessage = msg
-            root.submitBlocked(result ? (result.blockers || []) : [])
-            return
-        }
-
-        root.submitted(result)
-        root.closeRequested()
+        root._pendingProposalId = proposal.proposal_id
+        var result = BenchCommandBridge.submitStopPaperRunnerAsync(proposal.proposal_id)
+        root._handleQueuedSubmit(result)
     }
 
     // Top-level dispatcher: routes the submit button click to the right
@@ -538,7 +573,7 @@ Item {
     // family means adding one branch here and one entry in
     // `_submitCapableKinds` above.
     function _dispatchSubmit() {
-        if (root._isDemoteSubmit) {
+        if (root._isDemoteSubmit || root._isReturnToIdleSubmit) {
             _dispatchDemoteSubmit()
         } else if (root._isFreezeManifestSubmit) {
             _dispatchFreezeManifestSubmit()
@@ -1004,25 +1039,24 @@ Item {
             // ============================================================
             // 8. DEMOTION SUBMIT (ADR 0051 Phase C2 — submit-capable branch)
             //
-            // Visible ONLY when the action is a demote. Collects the
+            // Visible ONLY when the action is a stage walkback. Collects the
             // required reason and surfaces submit/refuse status. Every
             // other submit-capable family bypasses this section.
             // Freeze-manifest and backtest have no reason concept, so they
             // skip this block.
             // ============================================================
             SectionLabel {
-                visible: root._isDemoteSubmit
+                visible: root._isStageWalkbackSubmit
                 label: "OPERATOR INPUT"
                 ordinal: "08"
             }
 
             ProseBlock {
-                visible: root._isDemoteSubmit
-                text: "Demotion was the first Bench action family wired end-to-end. The reason below is recorded with the append-only promotion event so the audit log can be reconstructed without re-asking the operator."
+                text: "The reason below is recorded with the append-only promotion event so the audit log can be reconstructed without re-asking the operator."
             }
 
             Rectangle {
-                visible: root._isDemoteSubmit
+                visible: root._isStageWalkbackSubmit
                 width: parent.width
                 implicitHeight: reasonField.implicitHeight + Theme.space[3] * 2
                 color: Theme.color.surface.raised
@@ -1293,6 +1327,7 @@ Item {
                         if (root._isStopPaperRunnerSubmit) return "Request stop"
                         if (root._isBacktestSubmit) return "Run backtest"
                         if (root._isFreezeManifestSubmit) return "Confirm freeze"
+                        if (root._isReturnToIdleSubmit) return "Return to idle"
                         return "Confirm demotion"
                     }
                     color: submitMa.containsMouse && submitMa.enabled
@@ -1320,7 +1355,8 @@ Item {
                                  || (root._isPromoteToPaperSubmit
                                      && root._recommendationText.trim().length > 0
                                      && root._knownRiskText.trim().length > 0)
-                                 || root._reasonText.trim().length > 0)
+                                 || (root._isStageWalkbackSubmit
+                                     && root._reasonText.trim().length > 0))
                     onClicked: root._dispatchSubmit()
                 }
             }
