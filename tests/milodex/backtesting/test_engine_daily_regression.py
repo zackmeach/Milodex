@@ -155,15 +155,6 @@ def _flat_ohlc(price: float, n: int, start: date) -> BarSet:
     return _ohlc_barset(rows, start)
 
 
-def _ramp_ohlc(base: float, step: float, n: int, start: date) -> BarSet:
-    """n days of steadily-rising bars (no intraday range)."""
-    rows = []
-    for i in range(n):
-        p = base + i * step
-        rows.append((p, p, p, p))
-    return _ohlc_barset(rows, start)
-
-
 def _make_engine(
     loaded: MagicMock,
     bars_by_symbol: dict[str, BarSet],
@@ -416,9 +407,9 @@ def test_daily_regression_stranded_pending_orders() -> None:
 #   day 2 → held_days=2, no exit
 #   day 3 → held_days=3, SELL
 # After the sell, it buys again. Repeat N times.
-# 120 days, buy on day 0 fills day 1, sell on day 4 (decision held_days=3
+# 50 days, buy on day 0 fills day 1, sell on day 4 (decision held_days=3
 # on day 4 close, fills day 5). Then re-buy.
-# Exact trade count depends on how many complete cycles fit in 120 days.
+# Exact trade count depends on how many complete cycles fit in 50 days.
 # ---------------------------------------------------------------------------
 
 
