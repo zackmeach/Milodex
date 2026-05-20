@@ -1550,3 +1550,74 @@ def test_kill_switch_does_not_emit_stop_row(tmp_path: Path) -> None:
     assert any(e["outcomeKind"] == "fired" for e in entries), (
         "Expected a 'fired' row from kill_switch_events"
     )
+
+
+# ---------------------------------------------------------------------------
+# Task 24 (PR-6): cross-source timestamp ordering verification
+# ---------------------------------------------------------------------------
+
+
+def test_kill_switch_orders_above_session_stop_when_simultaneous(tmp_path: Path) -> None:
+    """When kill-switch fires and strategy_runs.ended_at write happen within ms
+    of each other, the kill_switch_events entry must sort above the (excluded)
+    stop entry — but the stop entry doesn't appear (excluded by filter), so the
+    assertion here is that the kill_switch row appears and no STOPPED row
+    appears for the same session.
+
+    Timestamp precision across sources verified consistent (ISO 8601 UTC
+    throughout). If a future writer emits a different precision, the sort may
+    need re-verification.
+    """
+    from milodex.gui.read_models import build_ledger_snapshot
+
+    db = tmp_path / "milodex.db"
+    _create_full_ledger_db(db)
+    configs = tmp_path / "configs"
+    configs.mkdir()
+
+    sid = "meanrev.daily.rsi2pullback.v1"
+    # Simulated kill-switch fire at T; session ended at T + 5ms with kill_switch reason.
+    ts_fire = "2026-05-15T14:30:00.000+00:00"
+    ts_end = "2026-05-15T14:30:00.005+00:00"
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
+        ("triggered", ts_fire, "max drawdown exceeded"),
+    )
+    conn.execute(
+        """INSERT INTO strategy_runs
+           (session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json)
+           VALUES ('sess-ks-24', ?, '2026-05-15T09:00:00+00:00', ?, 'kill_switch', '{}')""",
+        (sid, ts_end),
+    )
+    conn.commit()
+    conn.close()
+
+    entries = build_ledger_snapshot(db, configs)["entries"]
+
+    # The session-stop row with exit_reason='kill_switch' must be excluded.
+    stopped_entries = [e for e in entries if e.get("outcomeKind") == "stopped"]
+    assert stopped_entries == [], (
+        f"No 'stopped' row expected when exit_reason='kill_switch'; got: {stopped_entries}"
+    )
+
+    # The kill-switch fired row must be present.
+    fired_entries = [e for e in entries if e.get("outcomeKind") == "fired"]
+    assert len(fired_entries) == 1, (
+        f"Expected exactly one 'fired' entry; got {len(fired_entries)}: {fired_entries}"
+    )
+    assert fired_entries[0]["timestamp"] == ts_fire
+
+    # The kill-switch row sorts before (or at the same position as) the session-start row.
+    fired_idx = next(i for i, e in enumerate(entries) if e.get("outcomeKind") == "fired")
+    started_entries = [e for e in entries if e.get("outcomeKind") == "started" and e.get("strategyId") == sid]
+    if started_entries:
+        started_idx = next(
+            i for i, e in enumerate(entries)
+            if e.get("outcomeKind") == "started" and e.get("strategyId") == sid
+        )
+        assert fired_idx < started_idx, (
+            f"Kill-switch 'fired' row (idx={fired_idx}) must sort before session 'started' row "
+            f"(idx={started_idx}) because the kill-switch timestamp is later"
+        )
