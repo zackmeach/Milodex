@@ -12,6 +12,7 @@ Mirrors the StrategyBankState test harness:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -902,13 +903,15 @@ def _seed_all_paper_scenario(db_path: Path) -> None:
 def test_all_paper_return_is_realistic_post_migration(tmp_path: Path) -> None:
     """ALL-PAPER return must be realistic after migration 010.
 
-    Pre-010, the +9865% bug arose because earliest row was a backtest
-    starting equity (~$1015) and latest was broker equity (~$101k).
-    Post-010, portfolio_snapshots only contains broker rows. With three
-    broker rows ranging $100200→$100800, the realistic return is ~0.6%.
-
-    Guard: return must be between -50% and +100% (sanity bounds for a
-    paper account that's been running a few weeks/months).
+    Fixture broker rows are $100,200 → $100,500 → $100,800, giving a
+    natural return of ~+0.6% (exactly 600/100200 = 0.5988%). Pre-010, the
+    +9865% bug arose because earliest row was a backtest starting equity
+    (~$1015) and latest was broker equity (~$101k). Bounds are TIGHT
+    (0.1% lower, 2% upper) so any future regression that re-merges
+    backtest rows produces a return of multiple-percent or more and is
+    immediately rejected. The plan's prescribed bound was 0.5%-2%; we use
+    0.1% as a slightly looser lower bound because the fixture's natural
+    value (0.5988%) sits right on the plan's lower edge.
     """
     from milodex.gui.performance_state import _query_performance
 
@@ -922,19 +925,19 @@ def test_all_paper_return_is_realistic_post_migration(tmp_path: Path) -> None:
     ret = all_paper["return"]
 
     assert ret is not None, "ALL-PAPER return must not be None with broker snapshot rows present"
-    assert ret > -0.50, f"ALL-PAPER return {ret:.2%} is below realistic lower bound (-50%)"
-    assert ret < 1.00, f"ALL-PAPER return {ret:.2%} is above realistic upper bound (+100%)"
+    assert ret > 0.001, f"ALL-PAPER return {ret:.4%} is below realistic lower bound (+0.1%)"
+    assert ret < 0.02, f"ALL-PAPER return {ret:.4%} is above realistic upper bound (+2%)"
 
 
 def test_all_paper_drawdown_is_realistic_post_migration(tmp_path: Path) -> None:
     """ALL-PAPER drawdown must be realistic after migration 010.
 
-    Pre-010, the drawdown was -98.99% because the equity series spanned
-    from ~$1015 to ~$101k with a backtest low in between. Post-010, only
-    broker rows are in portfolio_snapshots, so drawdown reflects the
-    actual broker account trajectory.
-
-    Guard: drawdown must be between -50% and 0% (sanity bounds).
+    Fixture broker rows are monotonically increasing ($100,200 → $100,500
+    → $100,800), so drawdown is exactly 0. Pre-010, the drawdown was
+    -98.99% because the equity series spanned from ~$1015 to ~$101k with
+    a backtest low in between. Bounds tightened from the loose
+    -50%≤dd≤0% to the plan's -5%<dd≤0% — any regression that re-merges
+    backtest rows produces a drawdown beyond -5% and is rejected.
     """
     from milodex.gui.performance_state import _query_performance
 
@@ -948,5 +951,159 @@ def test_all_paper_drawdown_is_realistic_post_migration(tmp_path: Path) -> None:
     dd = all_paper["drawdown"]
 
     assert dd is not None, "ALL-PAPER drawdown must not be None with broker snapshot rows present"
-    assert dd >= -0.50, f"ALL-PAPER drawdown {dd:.2%} is below realistic lower bound (-50%)"
-    assert dd <= 0.0, f"ALL-PAPER drawdown {dd:.2%} must be non-positive"
+    assert dd > -0.05, f"ALL-PAPER drawdown {dd:.4%} is below realistic lower bound (-5%)"
+    assert dd <= 0.0, f"ALL-PAPER drawdown {dd:.4%} must be non-positive"
+
+
+def test_all_paper_return_post_migration_handles_pre_split_mixed_data(
+    tmp_path: Path,
+) -> None:
+    """Pre-010 mixed-table fixture → migration 010 → realistic ALL-PAPER.
+
+    This is the end-to-end regression test for the +9865% bug. The other
+    two tests above seed via the POST-migration writers (so they exercise
+    only the read-path math). This test seeds the EXACT pre-010 bug shape
+    (mixed :w + broker + stray-attributable backtest rows in a single
+    portfolio_snapshots table), then constructs EventStore which triggers
+    migration 010, then verifies the post-migration ALL-PAPER reads are
+    realistic.
+
+    Mirrors the seed pattern used by tests/milodex/core/test_migrations.py.
+    """
+    import sqlite3
+
+    from milodex.core.event_store import EventStore
+    from milodex.gui.performance_state import _query_performance
+
+    db = tmp_path / "milodex.db"
+
+    # Apply migrations 001-009 ONLY via raw sqlite3 (no EventStore yet,
+    # so migration 010 hasn't run). Mirrors the helper pattern in
+    # tests/milodex/core/test_migrations.py:_run_migrations_up_to.
+    migrations_dir = (
+        Path(__file__).resolve().parents[3]
+        / "src"
+        / "milodex"
+        / "core"
+        / "migrations"
+    )
+    conn = sqlite3.connect(str(db))
+    try:
+        conn.executescript(
+            "CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)"
+        )
+        for path in sorted(migrations_dir.glob("*.sql")):
+            version = int(path.stem.split("_", maxsplit=1)[0])
+            if version > 9:
+                continue
+            conn.executescript(path.read_text(encoding="utf-8"))
+            conn.execute("DELETE FROM _schema_version")
+            conn.execute(
+                "INSERT INTO _schema_version(version) VALUES (?)", (version,)
+            )
+            conn.commit()
+
+        # Seed the pre-010 mixed-table state — the bug-shape.
+        empty_positions = json.dumps([])
+        bt_run_uuid = "aaaaaaaa-0000-0000-0000-000000000001"
+
+        # backtest_runs row (needed for the whole-period backtest mapping)
+        conn.execute(
+            """INSERT INTO backtest_runs (run_id, strategy_id, start_date, end_date,
+                   started_at, ended_at, status, config_hash, metadata_json)
+               VALUES (?, 'test.strat.v1', '2024-12-01', '2025-12-31',
+                       '2026-01-01T00:00:00+00:00', '2026-01-31T00:00:00+00:00',
+                       'completed', 'abc', '{}')""",
+            (bt_run_uuid,),
+        )
+
+        # strategy_runs row (for broker snapshot sessions)
+        for i in range(3):
+            conn.execute(
+                """INSERT INTO strategy_runs (session_id, strategy_id, started_at, metadata_json)
+                   VALUES (?, 'test.strat.v1', ?, '{}')""",
+                (
+                    f"cccccccc-0000-0000-0000-00000000000{i}",
+                    f"2026-04-{27 + i:02d}T21:00:00+00:00",
+                ),
+            )
+
+        # 5 walk-forward backtest rows (the bulk of the bug — equity range
+        # $1000-$1200 vs broker ~$100k → produces the +9865% misread)
+        for i, equity in enumerate([1_000.0, 1_100.0, 900.0, 1_050.0, 1_200.0]):
+            conn.execute(
+                """INSERT INTO portfolio_snapshots
+                   (recorded_at, session_id, strategy_id, equity, cash,
+                    portfolio_value, daily_pnl, positions_json)
+                   VALUES (?, ?, 'test.strat.v1', ?, 500.0, ?, 0.0, ?)""",
+                (
+                    f"2025-12-{i + 10:02d}T00:00:00+00:00",
+                    f"{bt_run_uuid}:w{i}",
+                    equity,
+                    equity,
+                    empty_positions,
+                ),
+            )
+
+        # 1 stray whole-period backtest row (session_id == backtest_runs.run_id)
+        conn.execute(
+            """INSERT INTO portfolio_snapshots
+               (recorded_at, session_id, strategy_id, equity, cash,
+                portfolio_value, daily_pnl, positions_json)
+               VALUES (?, ?, 'test.strat.v1', 149315.0, 10000.0, 149315.0, 0.0, ?)""",
+            ("2024-12-31T00:00:00+00:00", bt_run_uuid, empty_positions),
+        )
+
+        # 3 broker rows (the only ones that should survive in portfolio_snapshots)
+        for i, equity in enumerate([100_200.0, 100_500.0, 100_800.0]):
+            conn.execute(
+                """INSERT INTO portfolio_snapshots
+                   (recorded_at, session_id, strategy_id, equity, cash,
+                    portfolio_value, daily_pnl, positions_json)
+                   VALUES (?, ?, 'test.strat.v1', ?, 50000.0, ?, ?, ?)""",
+                (
+                    f"2026-04-{27 + i:02d}T21:00:00+00:00",
+                    f"cccccccc-0000-0000-0000-00000000000{i}",
+                    equity,
+                    equity,
+                    float(i * 50),
+                    empty_positions,
+                ),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    # Construct EventStore — triggers migration 010 against the seeded DB.
+    # EventStore opens connections per-call via `with self._connect()`, so
+    # there's nothing to explicitly close here.
+    EventStore(db)
+
+    # Now read ALL-PAPER and verify the math is realistic post-migration.
+    now = datetime(2026, 5, 20, 18, 0, 0, tzinfo=UTC)
+    result = _query_performance(db, now)
+
+    all_paper = result["by_slice"]["All-Paper"]
+    ret = all_paper["return"]
+    dd = all_paper["drawdown"]
+
+    # Pre-migration this same fixture would have produced ~(100800/1000 - 1)
+    # = +9980% return and ~-99% drawdown. Post-migration the :w + stray rows
+    # are migrated out and only the 3 broker rows feed ALL-PAPER, giving a
+    # realistic return ~+0.6% and 0% drawdown.
+    assert ret is not None, "ALL-PAPER return must not be None post-migration"
+    assert ret > 0.001, (
+        f"ALL-PAPER return {ret:.4%} is below realistic lower bound (+0.1%) "
+        f"— migration 010 may not have stripped backtest rows"
+    )
+    assert ret < 0.02, (
+        f"ALL-PAPER return {ret:.4%} is above realistic upper bound (+2%) "
+        f"— migration 010 leaked backtest rows; +9865% regression"
+    )
+
+    assert dd is not None, "ALL-PAPER drawdown must not be None post-migration"
+    assert dd > -0.05, (
+        f"ALL-PAPER drawdown {dd:.4%} is below realistic lower bound (-5%) "
+        f"— migration 010 leaked backtest rows; -98.99% regression"
+    )
+    assert dd <= 0.0, f"ALL-PAPER drawdown {dd:.4%} must be non-positive"

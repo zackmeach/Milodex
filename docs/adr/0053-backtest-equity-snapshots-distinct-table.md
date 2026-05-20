@@ -69,3 +69,27 @@ trust check depends on this number being correct.
 - Complements ADR 0011 (event store as source of truth)
 - Reaffirms `analytics/snapshots.py:1-19` docstring contract
 - Operator principle: `feedback_inspect_before_deciding` (memory note)
+
+## Implementation note (2026-05-19)
+
+The live-DB survey at migration time established attribution for the
+candidate stray (`session_id = '1ee1399f-c393-4cbe-87b1-f38b96747a00'`):
+it was a whole-period equity sample produced by `backtest_runs.id=83`. Per
+the operator's `feedback_inspect_before_deciding` principle, the row was
+migrated to `backtest_equity_snapshots` with `backtest_run_id=83`
+populated, rather than quarantined — attribution by evidence trumped
+attribution by suspicion. Additional non-`:w` rows surfaced by the same
+survey were similarly attributable to `backtest_runs.id IN (79, 80, 81,
+82, 83)` and migrated with the same FK plumbing.
+
+The `portfolio_snapshots_quarantine` table was still created (see
+Decision §4) and remains as forensic infrastructure for any future
+anomaly whose attribution cannot be established by survey. It is empty
+on first deploy.
+
+Subsequent reviewers should treat Decision §4's "quarantine" language as
+the *fallback* contract: rows with no resolvable provenance go to
+quarantine; rows attributable to a known `backtest_runs.id` go to
+`backtest_equity_snapshots` with FK populated. Both paths preserve
+forensic evidence (a quarantined row is preserved by quarantine; a
+migrated row is preserved by the FK back to its run).
