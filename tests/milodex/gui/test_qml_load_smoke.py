@@ -188,6 +188,13 @@ _warnings: list[str] = []
 engine = QQmlApplicationEngine()
 engine.warnings.connect(lambda msgs: _warnings.extend(str(m) for m in msgs))
 engine.addImportPath({import_root!r})
+
+# PR-7c Task 37: register AppController as context property so Main.qml's
+# onQuitRequested handler can resolve AppController.quitRequested().
+from milodex.gui.app import _make_app_controller
+_app_ctrl = _make_app_controller([])  # smoke: no real read models to stop
+engine.rootContext().setContextProperty("AppController", _app_ctrl)
+
 engine.load(QUrl.fromLocalFile({qml_str!r}))
 
 errors = [w for w in _warnings if w]

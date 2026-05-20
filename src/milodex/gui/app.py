@@ -22,6 +22,55 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# AppController — clean-quit slot exposed to QML (Task 37 / PR-7c)
+# ---------------------------------------------------------------------------
+
+
+def _make_app_controller(read_models: list[object]) -> "object":
+    """Construct an ``AppController`` QObject with a ``quitRequested`` slot.
+
+    Deferred import of PySide6 keeps the module importable in CLI paths that
+    never start the GUI.
+
+    Parameters
+    ----------
+    read_models
+        All polling read models held by the app.  ``stop()`` is called on each
+        during clean shutdown; ``None`` entries are silently skipped.
+    """
+    from PySide6.QtCore import QObject, QThreadPool, Slot
+    from PySide6.QtGui import QGuiApplication
+
+    class AppController(QObject):
+        """Exposes ``quitRequested`` as a QML-callable Slot.
+
+        QML wires the Quit button in the Risk Office drawer to this slot.
+        Clean shutdown sequence:
+          1. stop() each polling read model
+          2. drain QThreadPool (3-second timeout)
+          3. call QGuiApplication.quit()
+        """
+
+        def __init__(self, rms: list[object]) -> None:
+            super().__init__()
+            self._read_models = rms
+
+        @Slot()
+        def quitRequested(self) -> None:  # noqa: N802
+            """Stop all polling read models, drain thread pool, then quit."""
+            for rm in self._read_models:
+                if rm is not None:
+                    try:
+                        rm.stop()
+                    except Exception:
+                        logger.exception("AppController.quitRequested: stop() failed on %r", rm)
+            QThreadPool.globalInstance().waitForDone(3000)
+            QGuiApplication.quit()
+
+    return AppController(read_models)
+
+
+# ---------------------------------------------------------------------------
 # Public constant
 # ---------------------------------------------------------------------------
 
@@ -335,6 +384,25 @@ def run_app() -> int:
 
     # --- 4. Engine ------------------------------------------------------------
     engine = QQmlApplicationEngine()
+
+    # --- 4b. AppController (Task 37 / PR-7c) ----------------------------------
+    # Exposes quitRequested() Slot to QML for the Risk Office drawer Quit button.
+    # Clean shutdown: stop all polling read models → drain QThreadPool → quit.
+    app_controller = _make_app_controller([
+        operational_state,
+        strategy_bank_state,
+        front_page_state,
+        bench_state,
+        kanban_state,
+        ledger_state,
+        performance_state,
+        risk_throughput_state,
+        active_ops_state,
+        attention_state,
+        market_tape_state,
+        activity_feed_state,
+    ])
+    engine.rootContext().setContextProperty("AppController", app_controller)
 
     # --- 5. QML import path ---------------------------------------------------
     engine.addImportPath(str(QML_IMPORT_PATH))

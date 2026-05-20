@@ -114,10 +114,14 @@ register_qml_types(
     risk_profile_bridge=risk_profile_bridge,
 )
 
+from milodex.gui.app import _make_app_controller
+_app_ctrl = _make_app_controller([])
+
 _warnings = []
 engine = QQmlApplicationEngine()
 engine.warnings.connect(lambda msgs: _warnings.extend(str(m) for m in msgs))
 engine.addImportPath({import_root!r})
+engine.rootContext().setContextProperty("AppController", _app_ctrl)
 engine.load(QUrl.fromLocalFile({main_qml!r}))
 
 if _warnings:

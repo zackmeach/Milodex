@@ -95,10 +95,14 @@ register_qml_types(
     attention_state=att, market_tape_state=mt, activity_feed_state=af,
     bench_command_bridge=bcb, risk_profile_bridge=rpb,
 )
+from milodex.gui.app import _make_app_controller
+_app_ctrl = _make_app_controller([])
+
 _warnings = []
 engine = QQmlApplicationEngine()
 engine.warnings.connect(lambda msgs: _warnings.extend(str(m) for m in msgs))
 engine.addImportPath({import_root!r})
+engine.rootContext().setContextProperty("AppController", _app_ctrl)
 engine.load(QUrl.fromLocalFile({drawer_qml!r}))
 if _warnings:
     print("WARNINGS:", _warnings, file=sys.stderr)

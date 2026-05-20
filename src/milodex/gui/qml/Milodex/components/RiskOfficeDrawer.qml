@@ -68,6 +68,12 @@ Item {
         border.width: 1
     }
 
+    // timeFormat: two-way synced with sessionBag.timeFormat via Main.qml.
+    // Seeded by Main.qml on drawer instantiation. Toggle in TIME FORMAT
+    // section writes here; Main.qml Connections observes onTimeFormatChanged
+    // and propagates to sessionBag.timeFormat.
+    property string timeFormat: "24h"
+
     // ------------------------------------------------------------------
     // Internal state — which profile card is expanded for confirmation
     // ------------------------------------------------------------------
@@ -345,7 +351,7 @@ Item {
             }
 
             // ==============================================================
-            // TIME FORMAT section (wired in Task 37)
+            // TIME FORMAT section
             // ==============================================================
 
             ColumnLayout {
@@ -362,13 +368,62 @@ Item {
                     font.capitalization: Font.AllUppercase
                 }
 
-                // Placeholder — wired in Task 37
-                Text {
-                    id: timeFmtPlaceholder
-                    text: "(toggle wired in Task 37)"
-                    color: Theme.color.text.disabled
-                    font.family:    Theme.typography.body.md.family
-                    font.pixelSize: Theme.typography.body.md.size
+                // Two radio-like buttons: 24-HOUR / 12-HOUR.
+                // Toggle writes to root.timeFormat; Main.qml observes
+                // onTimeFormatChanged and propagates to sessionBag.timeFormat.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space[2]
+
+                    Repeater {
+                        model: [
+                            { label: "24-HOUR", value: "24h" },
+                            { label: "12-HOUR", value: "12h" }
+                        ]
+
+                        delegate: Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: fmtBtnLabel.implicitHeight + Theme.space[2] * 2
+                            readonly property bool isSelected: root.timeFormat === modelData.value
+                            color: isSelected ? Theme.color.brand.accent
+                                              : (fmtBtnMouse.containsMouse ? Theme.color.surface.raised
+                                                                            : Theme.color.surface.canvas)
+                            border.color: isSelected ? Theme.color.brand.accent : Theme.color.border.regular
+                            border.width: 1
+                            radius: Theme.radius.sm
+
+                            Behavior on color {
+                                ColorAnimation { duration: Theme.motion.fast }
+                            }
+
+                            Text {
+                                id: fmtBtnLabel
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: isSelected ? Theme.color.text.onBrand : Theme.color.text.primary
+                                font.family:        Theme.typography.label.xs.family
+                                font.pixelSize:     Theme.typography.label.xs.size
+                                font.weight:        Font.DemiBold
+                                font.letterSpacing: 0.4
+                                font.capitalization: Font.AllUppercase
+                                Behavior on color {
+                                    ColorAnimation { duration: Theme.motion.fast }
+                                }
+                            }
+
+                            MouseArea {
+                                id: fmtBtnMouse
+                                anchors.fill: parent
+                                hoverEnabled: !isSelected
+                                cursorShape: isSelected ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                onClicked: {
+                                    if (!isSelected) {
+                                        root.timeFormat = modelData.value
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -380,7 +435,7 @@ Item {
             }
 
             // ==============================================================
-            // SYSTEM section (quit handler wired in Task 37)
+            // SYSTEM section
             // ==============================================================
 
             ColumnLayout {
@@ -397,12 +452,39 @@ Item {
                     font.capitalization: Font.AllUppercase
                 }
 
-                // Placeholder — wired in Task 37
-                Text {
-                    text: "(quit button wired in Task 37)"
-                    color: Theme.color.text.disabled
-                    font.family:    Theme.typography.body.md.family
-                    font.pixelSize: Theme.typography.body.md.size
+                // QUIT MILODEX button (oxblood)
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: quitLabel.implicitHeight + Theme.space[2] * 2
+                    color: quitMouse.containsMouse ? Theme.color.brand.accentHover
+                                                   : Theme.color.brand.accent
+                    border.color: Theme.color.brand.accentPressed
+                    border.width: 1
+                    radius: Theme.radius.sm
+
+                    Behavior on color {
+                        ColorAnimation { duration: Theme.motion.fast }
+                    }
+
+                    Text {
+                        id: quitLabel
+                        anchors.centerIn: parent
+                        text: "QUIT MILODEX"
+                        color: Theme.color.text.onBrand
+                        font.family:        Theme.typography.label.xs.family
+                        font.pixelSize:     Theme.typography.label.xs.size
+                        font.weight:        Font.DemiBold
+                        font.letterSpacing: 0.6
+                        font.capitalization: Font.AllUppercase
+                    }
+
+                    MouseArea {
+                        id: quitMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.quitRequested()
+                    }
                 }
 
                 // Bottom spacer

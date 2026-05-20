@@ -171,6 +171,21 @@ Window {
             if (surfaceLoader.item && surfaceLoader.item.timeFormat !== undefined) {
                 surfaceLoader.item.timeFormat = sessionBag.timeFormat
             }
+            // Also keep the drawer in sync if Main.qml changed sessionBag directly
+            if (riskDrawer.timeFormat !== sessionBag.timeFormat) {
+                riskDrawer.timeFormat = sessionBag.timeFormat
+            }
+        }
+    }
+
+    // Task 37: propagate drawer time-format toggle back to sessionBag
+    Connections {
+        target: riskDrawer
+        ignoreUnknownSignals: true
+        function onTimeFormatChanged() {
+            if (sessionBag.timeFormat !== riskDrawer.timeFormat) {
+                sessionBag.timeFormat = riskDrawer.timeFormat
+            }
         }
     }
     onDropdownDismissedSignal: {
@@ -412,7 +427,8 @@ Window {
         onSwitchRequested: function(target, token) {
             RiskProfileBridge.attemptSwitch(target, token)
         }
-        // quitRequested is wired in Task 37 (app.py slot)
+        // Task 37: route quit through AppController context property
+        onQuitRequested: AppController.quitRequested()
     }
 
     // Wire RiskProfileBridge signals
@@ -436,5 +452,7 @@ Window {
         )
         // PR-7c: seed active profile from bridge
         root._activeProfile = RiskProfileBridge.activeProfileName()
+        // Task 37: seed drawer timeFormat from sessionBag
+        riskDrawer.timeFormat = sessionBag.timeFormat
     }
 }
