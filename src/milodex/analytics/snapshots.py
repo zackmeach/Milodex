@@ -1,25 +1,25 @@
-"""Daily portfolio snapshot recorder.
+"""Portfolio and backtest equity snapshot recorders (ADR 0053).
 
-Writes one ``portfolio_snapshots`` row per call, capturing broker-side
-account state (equity, cash, positions). Callers invoke this at each
-trading-day close; analytics reads the resulting history to assemble
-trust reports and equity curves independent of the trade ledger.
+Two distinct tables, two distinct writers:
 
-Snapshot writes live behind this dedicated module (not inside
-``ExecutionService``) because a snapshot is a *read* of broker state,
-not a *write* of trade state — keeping the event-store writer surface
-narrow per ADR 0011.
+**Broker portfolio snapshots** (``portfolio_snapshots``)
+    Broker-side account state only. One row per session end from the real
+    Alpaca paper/live account. Written by
+    ``milodex.strategies.runner.StrategyRunner.shutdown`` via
+    :func:`record_daily_snapshot`. Do NOT write backtest data here.
 
-Production callers (R-XC-016 closed):
+**Backtest equity snapshots** (``backtest_equity_snapshots``)
+    Simulated equity points from the backtest engine. One row per
+    simulation end, scoped to a walk-forward window or whole-period run.
+    Written by ``milodex.backtesting.engine.BacktestEngine._simulate``
+    via :func:`record_backtest_equity_snapshot`.
 
-- ``milodex.strategies.runner.StrategyRunner.shutdown`` writes one
-  snapshot per session end (controlled stop or kill-switch).
-- ``milodex.backtesting.engine.BacktestEngine._simulate`` writes one
-  snapshot per simulation; walk-forward runs therefore write one per
-  OOS window (session_id = ``{run_id}:w{index}``).
+Both call sites wrap the recorder in a defensive try/except so a failure
+during snapshot write does not block the canonical session record.
 
-Both call sites wrap the recorder in a defensive try/except so a broker
-failure during snapshot does not block the canonical session record.
+Mixing these tables causes the ALL-PAPER trust metric to report nonsense
+(the +9865% incident, ADR 0053 context). The table split is the
+enforcement boundary.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from milodex.core.event_store import PortfolioSnapshotEvent
+from milodex.core.event_store import BacktestEquitySnapshotEvent, PortfolioSnapshotEvent
 
 if TYPE_CHECKING:
     from milodex.broker.client import BrokerClient
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PortfolioSnapshot:
-    """In-memory view of a recorded snapshot, returned by the recorder."""
+    """In-memory view of a broker snapshot row, returned by record_daily_snapshot."""
 
     recorded_at: datetime
     session_id: str
@@ -47,6 +47,21 @@ class PortfolioSnapshot:
     portfolio_value: float
     daily_pnl: float
     positions: list[dict]
+
+
+@dataclass(frozen=True)
+class BacktestEquitySnapshot:
+    """In-memory view of a backtest equity row, returned by record_backtest_equity_snapshot."""
+
+    recorded_at: datetime
+    session_id: str
+    strategy_id: str
+    equity: float
+    cash: float
+    portfolio_value: float
+    daily_pnl: float | None
+    positions: list[dict]
+    backtest_run_id: int | None
 
 
 def record_daily_snapshot(
@@ -98,4 +113,63 @@ def record_daily_snapshot(
         portfolio_value=account.portfolio_value,
         daily_pnl=account.daily_pnl,
         positions=positions_dicts,
+    )
+
+
+def record_backtest_equity_snapshot(
+    event_store: EventStore,
+    broker: BrokerClient,
+    *,
+    session_id: str,
+    strategy_id: str,
+    backtest_run_id: int | None = None,
+    recorded_at: datetime | None = None,
+) -> BacktestEquitySnapshot:
+    """Capture simulated broker state and persist as a backtest equity snapshot row.
+
+    Writes to ``backtest_equity_snapshots``, never ``portfolio_snapshots``
+    (ADR 0053). Called by ``BacktestEngine._simulate`` at the end of each
+    simulation window.
+
+    Returns the :class:`BacktestEquitySnapshot` that was written.
+    """
+    account = broker.get_account()
+    positions = broker.get_positions()
+    positions_dicts = [
+        {
+            "symbol": p.symbol,
+            "quantity": p.quantity,
+            "avg_entry_price": p.avg_entry_price,
+            "current_price": p.current_price,
+            "market_value": p.market_value,
+            "unrealized_pnl": p.unrealized_pnl,
+            "unrealized_pnl_pct": p.unrealized_pnl_pct,
+        }
+        for p in positions
+    ]
+    ts = recorded_at if recorded_at is not None else datetime.now(tz=UTC)
+
+    event = BacktestEquitySnapshotEvent(
+        recorded_at=ts,
+        session_id=session_id,
+        strategy_id=strategy_id,
+        equity=account.equity,
+        cash=account.cash,
+        portfolio_value=account.portfolio_value,
+        daily_pnl=None,  # backtests don't track daily PnL the same way
+        positions=positions_dicts,
+        backtest_run_id=backtest_run_id,
+    )
+    event_store.append_backtest_equity_snapshot(event)
+
+    return BacktestEquitySnapshot(
+        recorded_at=ts,
+        session_id=session_id,
+        strategy_id=strategy_id,
+        equity=account.equity,
+        cash=account.cash,
+        portfolio_value=account.portfolio_value,
+        daily_pnl=None,
+        positions=positions_dicts,
+        backtest_run_id=backtest_run_id,
     )

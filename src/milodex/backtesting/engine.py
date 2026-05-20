@@ -40,7 +40,7 @@ from typing import TYPE_CHECKING
 import pandas as pd
 import yaml
 
-from milodex.analytics.snapshots import record_daily_snapshot
+from milodex.analytics.snapshots import record_backtest_equity_snapshot
 from milodex.backtesting.run_manifest import (
     BacktestRunManifestInput,
     build_backtest_run_manifest,
@@ -869,11 +869,12 @@ class BacktestEngine:
                 positions=positions,
             )
             try:
-                record_daily_snapshot(
+                record_backtest_equity_snapshot(
                     event_store=self._event_store,
                     broker=sim_broker,
                     session_id=session_id,
                     strategy_id=self._loaded.config.strategy_id,
+                    backtest_run_id=db_run_id,
                     recorded_at=_day_to_dt(last_day),
                 )
             except Exception:  # noqa: BLE001 — snapshot is best-effort, see ENGINEERING_STANDARDS.md

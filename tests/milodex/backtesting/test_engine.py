@@ -930,13 +930,15 @@ def test_engine_equity_curve_length_matches_trading_days():
 
 
 def test_engine_records_portfolio_snapshot_at_run_end():
-    """Backtest run produces a portfolio_snapshots row keyed on the run_id.
+    """Backtest run produces a backtest_equity_snapshots row keyed on the run_id.
 
-    Closes the BacktestEngine half of the `analytics/snapshots.py`
-    scaffolded marker (R-XC-016). Walk-forward runs are covered separately
-    in test_walk_forward_runner.py since they call simulate_window().
+    ADR 0053: the engine now writes to backtest_equity_snapshots (not
+    portfolio_snapshots). Closes the BacktestEngine half of the
+    `analytics/snapshots.py` scaffolded marker (R-XC-016). Walk-forward
+    runs are covered separately in test_walk_forward_runner.py.
     """
     from milodex.broker.models import OrderSide, OrderType
+    from milodex.core.event_store import BacktestEquitySnapshotEvent
     from milodex.execution.models import TradeIntent
 
     start = date(2024, 1, 2)
@@ -977,18 +979,25 @@ def test_engine_records_portfolio_snapshot_at_run_end():
     )
     result = engine.run(start, end)
 
-    snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
-    assert len(snapshots) == 1, (
-        "Backtest run should record exactly one portfolio_snapshots row keyed "
-        "on the run_id (R-XC-016 closure for analytics/snapshots.py)."
+    # ADR 0053: snapshot must be in backtest_equity_snapshots, not portfolio_snapshots
+    bt_snapshots = store.list_backtest_equity_snapshots_for_strategy("test.strat.v1")
+    assert len(bt_snapshots) == 1, (
+        "Backtest run should record exactly one backtest_equity_snapshots row "
+        "(ADR 0053 — engine writer redirected from portfolio_snapshots)."
     )
-    snapshot = snapshots[0]
+    snapshot = bt_snapshots[0]
     assert snapshot.session_id == result.run_id
     assert snapshot.strategy_id == "test.strat.v1"
     assert snapshot.equity == pytest.approx(result.final_equity)
     # The buy filled at $100, then last close is $104 — the simulated
     # broker should report 10 shares of SPY in the snapshot.
     assert any(p["symbol"] == "SPY" and p["quantity"] == 10.0 for p in snapshot.positions)
+
+    # portfolio_snapshots must be empty — no broker data from a backtest
+    broker_snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
+    assert broker_snapshots == [], (
+        "portfolio_snapshots must not contain backtest data (ADR 0053)."
+    )
 
 
 def test_engine_run_window_without_coverage_fails_before_snapshots():
@@ -1015,6 +1024,55 @@ def test_engine_run_window_without_coverage_fails_before_snapshots():
     assert runs[0].status == "failed"
     snapshots = store.list_portfolio_snapshots_for_session(run_id)
     assert snapshots == []
+
+
+def test_simulate_writes_only_to_backtest_equity_snapshots():
+    """_simulate must not write to portfolio_snapshots (ADR 0053).
+
+    After a backtest run: portfolio_snapshots delta = 0,
+    backtest_equity_snapshots delta > 0.
+    """
+    import sqlite3
+
+    start = date(2024, 1, 2)
+    end = date(2024, 1, 4)
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+
+    barset = _make_barset([100.0, 102.0, 104.0], start=start)
+    provider = MagicMock()
+    provider.get_bars.return_value = {"SPY": barset}
+
+    store = _make_event_store()
+
+    # Baseline counts before the run
+    db_path = store._path
+    with sqlite3.connect(db_path) as con:
+        broker_before = con.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
+        bt_before = con.execute(
+            "SELECT COUNT(*) FROM backtest_equity_snapshots"
+        ).fetchone()[0]
+
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+    engine.run(start, end)
+
+    with sqlite3.connect(db_path) as con:
+        broker_after = con.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
+        bt_after = con.execute(
+            "SELECT COUNT(*) FROM backtest_equity_snapshots"
+        ).fetchone()[0]
+
+    assert broker_after == broker_before, (
+        "portfolio_snapshots must be unchanged after a backtest run (ADR 0053)"
+    )
+    assert bt_after > bt_before, (
+        "backtest_equity_snapshots must gain at least one row after a backtest run"
+    )
 
 
 # ---------------------------------------------------------------------------

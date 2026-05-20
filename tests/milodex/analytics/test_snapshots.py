@@ -1,11 +1,11 @@
-"""Tests for the portfolio snapshot recorder."""
+"""Tests for the portfolio and backtest equity snapshot recorders."""
 
 from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
 
-from milodex.analytics.snapshots import record_daily_snapshot
+from milodex.analytics.snapshots import record_backtest_equity_snapshot, record_daily_snapshot
 from milodex.broker.models import AccountInfo, Position
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import EventStore
@@ -145,3 +145,39 @@ def test_list_portfolio_snapshots_for_strategy(tmp_path: Path) -> None:
     assert {r.session_id for r in regime_rows} == {"sess-A", "sess-B"}
     assert len(other_rows) == 1
     assert other_rows[0].session_id == "sess-C"
+
+
+# ---------------------------------------------------------------------------
+# record_backtest_equity_snapshot (ADR 0053)
+# ---------------------------------------------------------------------------
+
+
+def test_record_backtest_equity_snapshot_writes_to_backtest_table(tmp_path: Path) -> None:
+    """record_backtest_equity_snapshot writes to backtest_equity_snapshots only."""
+    store = EventStore(tmp_path / "milodex.db")
+    broker = _make_broker(equity=5000.0, cash=1000.0)
+
+    snap = record_backtest_equity_snapshot(
+        store,
+        broker,
+        session_id="run-abc:w0",
+        strategy_id="test.strat.v1",
+        backtest_run_id=None,
+        recorded_at=datetime(2025, 12, 15, 16, 0),
+    )
+
+    assert snap.equity == 5000.0
+    assert snap.strategy_id == "test.strat.v1"
+    assert snap.daily_pnl is None
+    assert snap.backtest_run_id is None
+
+    # Must appear in backtest table
+    bt_rows = store.list_backtest_equity_snapshots_for_strategy("test.strat.v1")
+    assert len(bt_rows) == 1
+    assert bt_rows[0].equity == 5000.0
+    assert bt_rows[0].session_id == "run-abc:w0"
+    assert bt_rows[0].daily_pnl is None
+
+    # Must NOT touch portfolio_snapshots
+    broker_rows = store.list_portfolio_snapshots_for_strategy("test.strat.v1")
+    assert broker_rows == []
