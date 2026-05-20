@@ -256,7 +256,9 @@ def test_011_creates_risk_profile_changes_table(tmp_path):
         cur = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='risk_profile_changes'"
         )
-        assert cur.fetchone() is not None, "risk_profile_changes table must exist after migration 011"
+        assert cur.fetchone() is not None, (
+            "risk_profile_changes table must exist after migration 011"
+        )
 
         cur = conn.execute("PRAGMA table_info(risk_profile_changes)")
         cols = {row[1] for row in cur.fetchall()}
