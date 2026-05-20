@@ -490,13 +490,17 @@ class BacktestEngine:
         invocation land under the same parent ``BacktestRunEvent``.
         ``session_id`` distinguishes windows within a single parent run.
         """
+        from milodex.data.timeframes import timeframe_from_bar_size
+
         equity = initial_equity if initial_equity is not None else self._initial_equity
+        _timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
         return self._simulate(
             all_bars=all_bars,
             trading_days=trading_days,
             db_run_id=db_run_id,
             session_id=session_id,
             initial_equity=equity,
+            timeframe=_timeframe,
         )
 
     def _execute(
@@ -510,9 +514,8 @@ class BacktestEngine:
         from milodex.data.timeframes import timeframe_from_bar_size
 
         _bar_size = self._loaded.config.tempo["bar_size"]
-        all_bars = self.prefetch_bars(
-            start_date, end_date, timeframe=timeframe_from_bar_size(_bar_size)
-        )
+        _timeframe = timeframe_from_bar_size(_bar_size)
+        all_bars = self.prefetch_bars(start_date, end_date, timeframe=_timeframe)
         data_quality = self._scan_data_quality(all_bars, start_date, end_date)
         run_manifest = self._build_run_manifest(
             start_date=start_date,
@@ -551,6 +554,7 @@ class BacktestEngine:
             db_run_id=db_run_id,
             session_id=run_id,
             initial_equity=self._initial_equity,
+            timeframe=_timeframe,
         )
         total_return = (output.final_equity - self._initial_equity) / self._initial_equity
         return BacktestResult(
@@ -640,16 +644,21 @@ class BacktestEngine:
         db_run_id: int,
         session_id: str,
         initial_equity: float,
+        timeframe: Timeframe,
     ) -> _SimulationOutput:
-        """Dispatch to the daily or intraday simulation path based on tempo.bar_size."""
-        bar_size = self._loaded.config.tempo["bar_size"]
-        if bar_size == "1D":
+        """Dispatch to the daily or intraday simulation path based on timeframe.
+
+        Branches on the Timeframe enum so the dispatch is consistent with the
+        value already passed to prefetch_bars — no risk of string-literal drift.
+        """
+        if timeframe == Timeframe.DAY_1:
             return self._simulate_daily(
                 all_bars=all_bars,
                 trading_days=trading_days,
                 db_run_id=db_run_id,
                 session_id=session_id,
                 initial_equity=initial_equity,
+                timeframe=timeframe,
             )
         return self._simulate_intraday(
             all_bars=all_bars,
@@ -657,6 +666,7 @@ class BacktestEngine:
             db_run_id=db_run_id,
             session_id=session_id,
             initial_equity=initial_equity,
+            timeframe=timeframe,
         )
 
     def _simulate_daily(
@@ -667,6 +677,7 @@ class BacktestEngine:
         db_run_id: int,
         session_id: str,
         initial_equity: float,
+        timeframe: Timeframe,  # accepted for signature symmetry; unused in body
     ) -> _SimulationOutput:
         universe = list(self._loaded.context.universe)
         if not universe:
@@ -942,6 +953,7 @@ class BacktestEngine:
         db_run_id: int,
         session_id: str,
         initial_equity: float,
+        timeframe: Timeframe,  # accepted for signature symmetry; may be used in Phase E
     ) -> _SimulationOutput:
         """Intraday simulation path. Implemented in Phase E.
 
