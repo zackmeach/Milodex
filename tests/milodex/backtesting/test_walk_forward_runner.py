@@ -580,11 +580,7 @@ class _FakeDeriveEngine:
         self.walk_forward_windows = walk_forward_windows
         # Minimal ``_loaded`` stub so derive_walk_forward_spans can read
         # ``tempo["bar_size"]`` without hitting a real engine.
-        self._loaded = type("_L", (), {
-            "config": type("_C", (), {
-                "tempo": {"bar_size": "1D"}
-            })()
-        })()
+        self._loaded = type("_L", (), {"config": type("_C", (), {"tempo": {"bar_size": "1D"}})()})()
 
     def prefetch_bars(self, start: date, end: date, *, timeframe=None) -> dict:  # noqa: ARG002
         return self._bars

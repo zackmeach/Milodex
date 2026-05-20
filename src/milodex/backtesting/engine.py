@@ -1076,7 +1076,6 @@ class BacktestEngine:
             # open (one bar too late), breaking the T+1 fill guarantee.
             # ------------------------------------------------------------------
             for ts, meta in timeline:
-
                 # 3a. Advance cursors: mark newly-completed bars visible.
                 advanced = _advance_cursors(cursors, per_symbol_ts_utc, ts, bar_size_minutes)
 
