@@ -37,6 +37,7 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
 import pandas as pd
 import yaml
 
@@ -1912,8 +1913,6 @@ def _mark_to_market_at_day_end(
         Equity = cash + sum of (qty × latest close on day, or prior close
         if no bars on day).
     """
-    import numpy as np
-
     equity = cash
     for symbol, (qty, _avg_cost) in positions.items():
         if symbol not in per_symbol_df:
