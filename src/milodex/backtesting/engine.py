@@ -52,6 +52,10 @@ from milodex.core.event_store import BacktestRunEvent, EventStore, ExplanationEv
 from milodex.data.bar_quality import DataQualityError, scan_backtest_bars
 from milodex.data.models import BarSet, Timeframe
 from milodex.data.simulated import SimulatedDataProvider
+from milodex.data.timeframes import (
+    bar_size_minutes_from_timeframe,
+    timeframe_from_bar_size,
+)
 from milodex.execution.models import ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.execution.state import KillSwitchStateStore
@@ -506,8 +510,6 @@ class BacktestEngine:
         invocation land under the same parent ``BacktestRunEvent``.
         ``session_id`` distinguishes windows within a single parent run.
         """
-        from milodex.data.timeframes import timeframe_from_bar_size
-
         equity = initial_equity if initial_equity is not None else self._initial_equity
         _timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
         return self._simulate(
@@ -527,8 +529,6 @@ class BacktestEngine:
         run_id: str,
         db_run_id: int,
     ) -> BacktestResult:
-        from milodex.data.timeframes import timeframe_from_bar_size
-
         _bar_size = self._loaded.config.tempo["bar_size"]
         _timeframe = timeframe_from_bar_size(_bar_size)
         all_bars = self.prefetch_bars(start_date, end_date, timeframe=_timeframe)
@@ -980,8 +980,6 @@ class BacktestEngine:
 
         See docs/superpowers/specs/2026-05-20-intraday-backtest-engine-design.md.
         """
-        from milodex.data.timeframes import bar_size_minutes_from_timeframe
-
         universe = list(self._loaded.context.universe)
         if not universe:
             msg = "Strategy must resolve a non-empty universe before backtesting."
