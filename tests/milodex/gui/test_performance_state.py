@@ -819,3 +819,131 @@ def test_empty_db_has_no_snapshot_not_stale(qapp, tmp_path) -> None:
     assert state.staleAsOf == "", "no rows → staleAsOf must be empty"
 
     state.stop()
+
+
+# ---------------------------------------------------------------------------
+# ALL-PAPER invariant tests (ADR 0053 — migration 010 correctness guard)
+#
+# These tests use a real EventStore (migration 010 applied) with the pre-010
+# mixed scenario: :w backtest rows, whole-period backtest rows, and a stray
+# anomaly row alongside real broker rows. Post-migration, _SQL_ALL_PAPER only
+# sees the 3 broker-only rows, so the return and drawdown are realistic.
+# ---------------------------------------------------------------------------
+
+
+def _seed_all_paper_scenario(db_path: Path) -> None:
+    """Seed a migration-010 DB with the pre-010 mixed table scenario.
+
+    After migration 010 runs:
+    - :w rows → backtest_equity_snapshots (not visible to _SQL_ALL_PAPER)
+    - whole-period backtest rows → backtest_equity_snapshots
+    - broker rows → portfolio_snapshots (only these are visible)
+
+    We insert rows BEFORE calling EventStore so the migration applies the
+    split. Rows are inserted directly via sqlite3 into an already-migrated
+    DB (the EventStore constructor applies migration 010 first).
+    """
+    import json
+
+    from milodex.core.event_store import EventStore, PortfolioSnapshotEvent, BacktestEquitySnapshotEvent
+    from datetime import UTC
+
+    # Open EventStore — this applies migration 010 to the fresh DB
+    store = EventStore(db_path)
+
+    # 3 broker-only snapshot rows (realistic equity ~$100k)
+    for i, equity in enumerate([100_200.0, 100_500.0, 100_800.0]):
+        store.append_portfolio_snapshot(
+            PortfolioSnapshotEvent(
+                recorded_at=datetime(2026, 4, 27 + i, 21, 0, 0, tzinfo=UTC),
+                session_id=f"broker-sess-{i}",
+                strategy_id="test.strat.v1",
+                equity=equity,
+                cash=50_000.0,
+                portfolio_value=equity,
+                daily_pnl=float(i * 50),
+                positions=[],
+            )
+        )
+
+    # 5 :w walk-forward backtest rows (simulated equity, unrealistic ranges)
+    for i, equity in enumerate([1_000.0, 1_100.0, 900.0, 1_050.0, 1_200.0]):
+        store.append_backtest_equity_snapshot(
+            BacktestEquitySnapshotEvent(
+                recorded_at=datetime(2025, 12, i + 10, tzinfo=UTC),
+                session_id=f"run-abc:w{i}",
+                strategy_id="test.strat.v1",
+                equity=equity,
+                cash=500.0,
+                portfolio_value=equity,
+                daily_pnl=None,
+                positions=[],
+            )
+        )
+
+    # 1 stray anomaly (whole-period backtest, high equity)
+    store.append_backtest_equity_snapshot(
+        BacktestEquitySnapshotEvent(
+            recorded_at=datetime(2024, 12, 31, tzinfo=UTC),
+            session_id="stray-session-anomaly",
+            strategy_id="test.strat.v1",
+            equity=149_315.0,
+            cash=10_000.0,
+            portfolio_value=149_315.0,
+            daily_pnl=None,
+            positions=[],
+        )
+    )
+
+
+def test_all_paper_return_is_realistic_post_migration(tmp_path: Path) -> None:
+    """ALL-PAPER return must be realistic after migration 010.
+
+    Pre-010, the +9865% bug arose because earliest row was a backtest
+    starting equity (~$1015) and latest was broker equity (~$101k).
+    Post-010, portfolio_snapshots only contains broker rows. With three
+    broker rows ranging $100200→$100800, the realistic return is ~0.6%.
+
+    Guard: return must be between -50% and +100% (sanity bounds for a
+    paper account that's been running a few weeks/months).
+    """
+    from milodex.gui.performance_state import _query_performance
+
+    db = tmp_path / "milodex.db"
+    _seed_all_paper_scenario(db)
+
+    now = datetime(2026, 5, 20, 18, 0, 0, tzinfo=UTC)
+    result = _query_performance(db, now)
+
+    all_paper = result["by_slice"]["All-Paper"]
+    ret = all_paper["return"]
+
+    assert ret is not None, "ALL-PAPER return must not be None with broker snapshot rows present"
+    assert ret > -0.50, f"ALL-PAPER return {ret:.2%} is below realistic lower bound (-50%)"
+    assert ret < 1.00, f"ALL-PAPER return {ret:.2%} is above realistic upper bound (+100%)"
+
+
+def test_all_paper_drawdown_is_realistic_post_migration(tmp_path: Path) -> None:
+    """ALL-PAPER drawdown must be realistic after migration 010.
+
+    Pre-010, the drawdown was -98.99% because the equity series spanned
+    from ~$1015 to ~$101k with a backtest low in between. Post-010, only
+    broker rows are in portfolio_snapshots, so drawdown reflects the
+    actual broker account trajectory.
+
+    Guard: drawdown must be between -50% and 0% (sanity bounds).
+    """
+    from milodex.gui.performance_state import _query_performance
+
+    db = tmp_path / "milodex.db"
+    _seed_all_paper_scenario(db)
+
+    now = datetime(2026, 5, 20, 18, 0, 0, tzinfo=UTC)
+    result = _query_performance(db, now)
+
+    all_paper = result["by_slice"]["All-Paper"]
+    dd = all_paper["drawdown"]
+
+    assert dd is not None, "ALL-PAPER drawdown must not be None with broker snapshot rows present"
+    assert dd >= -0.50, f"ALL-PAPER drawdown {dd:.2%} is below realistic lower bound (-50%)"
+    assert dd <= 0.0, f"ALL-PAPER drawdown {dd:.2%} must be non-positive"

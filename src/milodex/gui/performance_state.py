@@ -5,6 +5,23 @@ Owns Week / Month / YTD / All-Paper slices computed from ``portfolio_snapshots``
 is a zeroed placeholder — the QML layer binds ``OperationalState.dailyPnl`` for
 the live intra-day figure.
 
+Table contract (ADR 0053)
+-------------------------
+``portfolio_snapshots`` holds **broker-side account state only** — one row per
+session end from the real Alpaca paper/live account.  Simulated equity points
+from the backtest engine live in ``backtest_equity_snapshots``.
+
+``_SQL_ALL_PAPER`` and ``_SQL_RANGED`` query ``portfolio_snapshots`` and do NOT
+need to be updated — the table is clean by construction after migration 010.
+The +9865% / -99% incident (ADR 0053 context) cannot recur here as long as the
+writer contract is respected and migration 010 has been applied.
+
+If you are reading this because the ALL-PAPER metric looks wrong:
+1. Confirm migration 010 has been applied (``SELECT version FROM _schema_version``
+   should be >= 10).
+2. Confirm ``portfolio_snapshots`` has no rows with ``session_id LIKE '%:w%'``
+   (that is the symptom of a writer bypass, not a reader bug).
+
 Threading model
 ---------------
 Identical to :mod:`milodex.gui.strategy_bank_state`:
