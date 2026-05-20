@@ -186,7 +186,7 @@ strategy:
   universe: ["SPY"]
   parameters: {}
   tempo:
-    bar_size: "5min"
+    bar_size: "5Min"
     min_hold_days: 0
     max_hold_days: 1
   risk:
@@ -211,7 +211,7 @@ strategy:
     config.path = config_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
-    config.tempo = {"bar_size": "5min"}
+    config.tempo = {"bar_size": "5Min"}
     config.universe = ("SPY",)
     config.risk = {"max_position_pct": 0.50, "max_positions": 4}
 
@@ -856,9 +856,8 @@ def test_no_lookahead_bar_visible_at_decision_time_not_after() -> None:
         latest_ts = pd.Timestamp(df["timestamp"].iloc[-1])
         if latest_ts.tz is None:
             latest_ts = latest_ts.tz_localize("UTC")
-        # Record only the call that happens exactly at T.
-        if len(latest_ts_at_target) == 0 or True:
-            latest_ts_at_target.append(latest_ts)
+        # Record every evaluate() call; the scan below filters for the target ts.
+        latest_ts_at_target.append(latest_ts)
         return StrategyDecision(
             intents=[],
             reasoning=DecisionReasoning(rule="no_signal", narrative="recording"),
