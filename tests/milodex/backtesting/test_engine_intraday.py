@@ -287,6 +287,89 @@ strategy:
     return engine, sim_broker, sim_data_provider, execution_service, event_store
 
 
+def test_mark_to_market_at_day_end_basic() -> None:
+    """End-of-day equity = cash + qty × latest close for each open position."""
+    from milodex.backtesting.engine import _mark_to_market_at_day_end
+
+    target_day = date(2024, 1, 15)
+    # SPY has 3 bars on the day: closes 500.0, 501.0, 502.0
+    # QQQ has 2 bars on the day: closes 400.0, 401.0
+    spy_ts = pd.DatetimeIndex([
+        pd.Timestamp("2024-01-15 14:30:00+00:00"),
+        pd.Timestamp("2024-01-15 14:35:00+00:00"),
+        pd.Timestamp("2024-01-15 14:40:00+00:00"),
+    ])
+    qqq_ts = pd.DatetimeIndex([
+        pd.Timestamp("2024-01-15 14:30:00+00:00"),
+        pd.Timestamp("2024-01-15 14:35:00+00:00"),
+    ])
+    spy_df = pd.DataFrame({
+        "timestamp": spy_ts.to_pydatetime(),
+        "open": [500.0, 500.5, 501.0],
+        "high": [501.0, 501.5, 502.5],
+        "low": [499.0, 500.0, 500.5],
+        "close": [500.0, 501.0, 502.0],
+        "volume": [1000, 1000, 1000],
+    })
+    qqq_df = pd.DataFrame({
+        "timestamp": qqq_ts.to_pydatetime(),
+        "open": [400.0, 400.5],
+        "high": [401.0, 401.5],
+        "low": [399.0, 400.0],
+        "close": [400.0, 401.0],
+        "volume": [1000, 1000],
+    })
+
+    positions = {"SPY": (10.0, 495.0), "QQQ": (5.0, 395.0)}  # 10 SPY @ 495, 5 QQQ @ 395
+    cash = 1000.0
+
+    equity = _mark_to_market_at_day_end(
+        positions=positions,
+        per_symbol_df={"SPY": spy_df, "QQQ": qqq_df},
+        per_symbol_ts_utc={"SPY": spy_ts, "QQQ": qqq_ts},
+        day=target_day,
+        cash=cash,
+    )
+
+    # Expected: 1000 + 10 × 502 + 5 × 401 = 1000 + 5020 + 2005 = 8025
+    assert abs(equity - 8025.0) < 1e-9
+
+
+def test_mark_to_market_at_day_end_falls_back_to_prior_close() -> None:
+    """If a symbol has NO bars on the target day, use latest close before that day."""
+    from milodex.backtesting.engine import _mark_to_market_at_day_end
+
+    target_day = date(2024, 1, 16)  # SPY has no bars on this day
+    # SPY only has bars on the prior day (2024-01-15)
+    spy_ts = pd.DatetimeIndex([
+        pd.Timestamp("2024-01-15 14:30:00+00:00"),
+        pd.Timestamp("2024-01-15 14:35:00+00:00"),
+    ])
+    spy_df = pd.DataFrame({
+        "timestamp": spy_ts.to_pydatetime(),
+        "open": [500.0, 500.5],
+        "high": [501.0, 501.5],
+        "low": [499.0, 500.0],
+        "close": [500.0, 501.0],
+        "volume": [1000, 1000],
+    })
+
+    positions = {"SPY": (10.0, 495.0)}
+    cash = 1000.0
+
+    equity = _mark_to_market_at_day_end(
+        positions=positions,
+        per_symbol_df={"SPY": spy_df},
+        per_symbol_ts_utc={"SPY": spy_ts},
+        day=target_day,
+        cash=cash,
+    )
+
+    # SPY has no bars on 2024-01-16; fall back to last close on 2024-01-15 = 501.0
+    # Expected: 1000 + 10 × 501 = 6010
+    assert abs(equity - 6010.0) < 1e-9
+
+
 def _build_synthetic_5min_session_ts_only(
     date_str: str,
     symbols: list[str],

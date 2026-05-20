@@ -1883,3 +1883,51 @@ def _opens_at_timestamp(
         if timestamp in open_by_ts:
             opens[symbol] = open_by_ts[timestamp]
     return opens
+
+
+def _mark_to_market_at_day_end(
+    positions: dict[str, tuple[float, float]],
+    per_symbol_df: dict[str, pd.DataFrame],
+    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
+    day: date,
+    cash: float,
+) -> float:
+    """Return end-of-day equity = cash + sum(qty * latest_close_for_symbol_on_day).
+
+    Uses each symbol's latest available close at or before the day's final
+    timestamp. Critical for multi-symbol universes where one symbol may
+    be missing the final bar of the day — falls back to prior day's last
+    close.
+
+    Args:
+        positions: {symbol: (qty, avg_cost)} for open positions.
+        per_symbol_df: precomputed OHLCV DataFrame per symbol. Must contain
+            a "close" column.
+        per_symbol_ts_utc: precomputed UTC-tz-aware DatetimeIndex per symbol,
+            aligned row-for-row with ``per_symbol_df``.
+        day: trading day to mark to.
+        cash: current cash balance.
+
+    Returns:
+        Equity = cash + sum of (qty × latest close on day, or prior close
+        if no bars on day).
+    """
+    import numpy as np
+
+    equity = cash
+    for symbol, (qty, _avg_cost) in positions.items():
+        if symbol not in per_symbol_df:
+            continue
+        df = per_symbol_df[symbol]
+        ts_utc = per_symbol_ts_utc[symbol]
+        date_array = ts_utc.date  # numpy array of date objects
+        day_indices = np.flatnonzero(date_array == day)
+        if len(day_indices) > 0:
+            latest_close = float(df["close"].iloc[day_indices[-1]])
+        else:
+            prior_indices = np.flatnonzero(date_array < day)
+            if len(prior_indices) == 0:
+                continue
+            latest_close = float(df["close"].iloc[prior_indices[-1]])
+        equity += qty * latest_close
+    return equity
