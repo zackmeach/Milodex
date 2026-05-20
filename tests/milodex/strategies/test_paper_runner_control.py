@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -204,3 +206,18 @@ def test_strategy_runner_check_sets_controlled_shutdown(tmp_path: Path) -> None:
 
     assert runner._requested_shutdown == "controlled"  # noqa: SLF001
     assert not path.exists()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows-only flag combination")
+def test_creationflags_uses_create_no_window_not_detached_process():
+    """The subprocess launch flags must include CREATE_NO_WINDOW (the actual
+    Windows console suppressor) and must NOT include DETACHED_PROCESS, which
+    is mutually exclusive with CREATE_NO_WINDOW per MSDN and paradoxically
+    creates a console for a console-subsystem child .exe."""
+    from milodex.strategies import paper_runner_control as prc
+
+    flags = prc._compute_creation_flags()  # helper to be introduced
+
+    assert flags & subprocess.CREATE_NO_WINDOW, "CREATE_NO_WINDOW must be set"
+    assert not (flags & subprocess.DETACHED_PROCESS), "DETACHED_PROCESS must NOT be set"
+    assert flags & subprocess.CREATE_NEW_PROCESS_GROUP, "CREATE_NEW_PROCESS_GROUP preserved"

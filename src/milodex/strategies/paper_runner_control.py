@@ -83,6 +83,26 @@ class ControlledStopRequestResult:
     holder: dict[str, Any]
 
 
+def _compute_creation_flags() -> int:
+    """Return the subprocess Popen creationflags for a detached paper runner.
+
+    CREATE_NO_WINDOW (0x08000000) is the correct console-suppression flag on
+    Windows. DETACHED_PROCESS is mutually exclusive with CREATE_NO_WINDOW per
+    MSDN (ERROR_INVALID_PARAMETER on combine) and paradoxically creates a
+    console for a console-subsystem child .exe. Use CREATE_NO_WINDOW for
+    suppression + CREATE_NEW_PROCESS_GROUP to keep the child outside the
+    parent's group (Ctrl-C isolation).
+    """
+    import subprocess as _subprocess
+
+    flags = 0
+    if hasattr(_subprocess, "CREATE_NO_WINDOW"):
+        flags |= _subprocess.CREATE_NO_WINDOW
+    if hasattr(_subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        flags |= _subprocess.CREATE_NEW_PROCESS_GROUP
+    return flags
+
+
 class PaperRunnerControl:
     """Start and stop paper runners without blocking the GUI thread."""
 
@@ -226,11 +246,7 @@ class PaperRunnerControl:
         }
         if self._cwd is not None:
             popen_kwargs["cwd"] = str(self._cwd)
-        creationflags = 0
-        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            creationflags |= subprocess.CREATE_NEW_PROCESS_GROUP
-        if hasattr(subprocess, "DETACHED_PROCESS"):
-            creationflags |= subprocess.DETACHED_PROCESS
+        creationflags = _compute_creation_flags()
         if creationflags:
             popen_kwargs["creationflags"] = creationflags
         else:
