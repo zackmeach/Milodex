@@ -126,29 +126,28 @@ Item {
         }
     }
 
-    Rectangle {
+    Item {
+        id: dropContainer
+        visible:           root._open
         anchors.top:       triggerRow.bottom
         anchors.topMargin: Theme.space[1]
         anchors.left:      parent.left
         width:             parent.width
         height:            dropColumn.height
-        visible:           root._open
-        color:             Theme.color.surface.canvas
-        border.color:      Theme.color.border.regular
-        border.width:      1
-        z:                 9
-    }
 
-    Column {
-        id: dropColumn
-        visible:           root._open
-        anchors.top:       triggerRow.bottom
-        anchors.topMargin: Theme.space[1]
-        anchors.left:      parent.left
-        width:             parent.width
-        z:                 10
+        Rectangle {
+            anchors.fill: parent
+            color:        Theme.color.surface.canvas
+            border.color: Theme.color.border.regular
+            border.width: 1
+            z:            -1
+        }
 
-        Repeater {
+        Column {
+            id: dropColumn
+            width: parent.width
+
+            Repeater {
             model: root.runners
 
             Item {
@@ -191,4 +190,5 @@ Item {
             }
         }
     }
+}
 }
