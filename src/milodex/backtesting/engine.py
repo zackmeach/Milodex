@@ -967,15 +967,309 @@ class BacktestEngine:
         db_run_id: int,
         session_id: str,
         initial_equity: float,
-        timeframe: Timeframe,  # accepted for signature symmetry; may be used in Phase E
+        timeframe: Timeframe,
     ) -> _SimulationOutput:
-        """Intraday simulation path. Implemented in Phase E.
+        """Intraday simulation path (Phase E).
+
+        Decision/fill model: a strategy decision made at bar T's close is
+        queued as a pending order and fills at bar T+1's open.  Within a day
+        the event timeline merges fill events (bar starts) and decision events
+        (bar completions) in strict chronological order.  Across days, a SELL
+        queued at the final bar of day N fills at day N+1's first fill event
+        (the opening bar of day N+1).
 
         See docs/superpowers/specs/2026-05-20-intraday-backtest-engine-design.md.
         """
-        raise NotImplementedError(
-            "Intraday backtest engine is not yet implemented for this branch. "
-            "See docs/superpowers/plans/2026-05-20-intraday-backtest-engine.md."
+        from milodex.data.timeframes import bar_size_minutes_from_timeframe
+
+        universe = list(self._loaded.context.universe)
+        if not universe:
+            msg = "Strategy must resolve a non-empty universe before backtesting."
+            raise ValueError(msg)
+        if not trading_days:
+            return _SimulationOutput(
+                equity_curve=[],
+                trade_count=0,
+                buy_count=0,
+                sell_count=0,
+                final_equity=initial_equity,
+                round_trip_count=0,
+                skipped_count=0,
+            )
+
+        bar_size_minutes = bar_size_minutes_from_timeframe(timeframe)
+
+        sim_broker = SimulatedBroker(
+            slippage_pct=self._slippage_pct,
+            commission_per_trade=self._commission,
+        )
+        sim_data_provider = SimulatedDataProvider(all_bars)
+        execution_service = ExecutionService(
+            broker_client=sim_broker,
+            data_provider=sim_data_provider,
+            kill_switch_store=KillSwitchStateStore(event_store=self._event_store),
+            risk_defaults_path=self._risk_defaults_path,
+            risk_evaluator=self._build_risk_evaluator(),
+            event_store=self._event_store,
+            is_backtest=True,
+        )
+
+        # ------------------------------------------------------------------
+        # Correction 6: precompute per-symbol lookup maps once.
+        # Never call to_dataframe() or pd.to_datetime() inside the day/event loops.
+        # ------------------------------------------------------------------
+        per_symbol_df: dict[str, pd.DataFrame] = {}
+        per_symbol_ts_utc: dict[str, pd.DatetimeIndex] = {}
+        per_symbol_open_by_ts: dict[str, dict[pd.Timestamp, float]] = {}
+
+        for symbol, barset in all_bars.items():
+            df = barset.to_dataframe()
+            per_symbol_df[symbol] = df
+            ts_utc = pd.to_datetime(df["timestamp"], utc=True)
+            dti = pd.DatetimeIndex(ts_utc)
+            per_symbol_ts_utc[symbol] = dti
+            per_symbol_open_by_ts[symbol] = dict(
+                zip(dti, df["open"].astype(float).values, strict=True)
+            )
+
+        # Initialise cursors: exclusive-end index into each symbol's bar array.
+        # cursor[sym] == 0 → no bars visible yet (iloc[:0] is empty).
+        cursors: dict[str, int] = {sym: 0 for sym in all_bars}
+
+        cash = initial_equity
+        positions: dict[str, tuple[float, float]] = {}
+        entry_state: dict[str, dict] = {}
+
+        equity_curve: list[tuple[date, float]] = []
+        buy_count = 0
+        sell_count = 0
+        trade_count = 0
+        skipped_count = 0
+        _sym_fills: dict[str, dict[str, int]] = {}
+        pending: list[_IntradayPendingOrder] = []
+
+        for day in trading_days:
+            # ------------------------------------------------------------------
+            # 1. Held-days accounting (mirror daily path).
+            # ------------------------------------------------------------------
+            for sym in entry_state:
+                entry_state[sym]["held_days"] = int(entry_state[sym]["held_days"]) + 1
+
+            # ------------------------------------------------------------------
+            # 2. Build the event timeline for this day.
+            # ------------------------------------------------------------------
+            timeline = _build_intraday_event_timeline(
+                per_symbol_ts_utc=per_symbol_ts_utc,
+                day=day,
+                bar_size_minutes=bar_size_minutes,
+            )
+
+            # ------------------------------------------------------------------
+            # 3. Event loop.
+            #
+            # Ordering: advance → evaluate → drain.
+            #
+            # When a timestamp T is simultaneously a decision event (bar N-1
+            # completes) AND a fill event (bar N opens), advancing cursors and
+            # evaluating FIRST ensures that intents emitted at T are eligible
+            # to fill at T's opening price — i.e., at bar N's open, which is
+            # exactly bar (N-1)'s "T+1 open" as required by the fill model.
+            # Draining before evaluation would defer those fills to bar N+1's
+            # open (one bar too late), breaking the T+1 fill guarantee.
+            # ------------------------------------------------------------------
+            for ts, meta in timeline:
+
+                # 3a. Advance cursors: mark newly-completed bars visible.
+                advanced = _advance_cursors(cursors, per_symbol_ts_utc, ts, bar_size_minutes)
+
+                # 3b. Evaluate strategy only when at least one cursor advanced.
+                if advanced:
+                    bars_by_symbol_visible = _build_visible_bars(
+                        per_symbol_df=per_symbol_df,
+                        cursors=cursors,
+                        universe=universe,
+                    )
+                    if bars_by_symbol_visible:
+                        # Primary barset — must not be substituted (see _simulate_daily).
+                        primary_bs = bars_by_symbol_visible.get(universe[0])
+                        primary_symbol_present = primary_bs is not None and len(primary_bs) > 0
+                        if primary_symbol_present:
+                            primary_bars = primary_bs
+                        else:
+                            primary_bars = _empty_barset()
+
+                        # Equity at evaluation time: latest visible close per symbol.
+                        latest_closes_at_ts = _latest_close_at_ts(
+                            per_symbol_df=per_symbol_df,
+                            per_symbol_ts_utc=per_symbol_ts_utc,
+                            ts=ts,
+                        )
+                        equity_at_eval = _compute_equity(cash, positions, latest_closes_at_ts)
+
+                        self._sync_broker_state(
+                            sim_broker=sim_broker,
+                            sim_data_provider=sim_data_provider,
+                            day=day,
+                            closes=latest_closes_at_ts,
+                            cash=cash,
+                            equity=equity_at_eval,
+                            positions=positions,
+                        )
+
+                        decision = self._evaluate_strategy(
+                            primary_bars=primary_bars,
+                            bars_by_symbol=bars_by_symbol_visible,
+                            equity=equity_at_eval,
+                            positions=positions,
+                            entry_state=entry_state,
+                        )
+
+                        if not decision.intents:
+                            # Audit no-action only when primary symbol has visible bars
+                            # (same guard as _simulate_daily: no honest primary bar → no record).
+                            if primary_symbol_present:
+                                latest_bar = primary_bars.latest()
+                                execution_service.record_no_action(
+                                    strategy_name=self._loaded.config.strategy_id,
+                                    strategy_stage=self._loaded.config.stage,
+                                    strategy_config_path=self._loaded.config.path,
+                                    config_hash=self._loaded.context.config_hash,
+                                    symbol=universe[0],
+                                    latest_bar_timestamp=latest_bar.timestamp,
+                                    latest_bar_close=latest_bar.close,
+                                    session_id=session_id,
+                                    reasoning=decision.reasoning,
+                                    submitted_by="backtest_engine",
+                                    backtest_run_id=db_run_id,
+                                )
+                        else:
+                            for intent in decision.intents:
+                                pending.append(
+                                    _IntradayPendingOrder(
+                                        intent=intent,
+                                        decision_timestamp=ts,
+                                        reasoning=decision.reasoning,
+                                    )
+                                )
+
+                # 3c. Drain pending orders that have a fill price available at T.
+                # Runs after evaluate so that newly-queued intents can fill at T's
+                # open (the bar that just started = bar T+1 relative to the decision bar).
+                if meta["fill_symbols"] and pending:
+                    opens = _opens_at_timestamp(per_symbol_open_by_ts, ts)
+                    cash, drained_buys, drained_sells, drained_skipped, pending = (
+                        self._drain_pending_at_timestamp(
+                            pending=pending,
+                            opens=opens,
+                            cash=cash,
+                            positions=positions,
+                            entry_state=entry_state,
+                            sim_broker=sim_broker,
+                            sim_data_provider=sim_data_provider,
+                            execution_service=execution_service,
+                            timestamp=ts,
+                            session_id=session_id,
+                            db_run_id=db_run_id,
+                            sym_fills=_sym_fills,
+                        )
+                    )
+                    buy_count += drained_buys
+                    sell_count += drained_sells
+                    trade_count += drained_buys + drained_sells
+                    skipped_count += drained_skipped  # Category 2 only
+
+            # ------------------------------------------------------------------
+            # 4. Day-end: mark-to-market (equity_curve records EOD value).
+            # ------------------------------------------------------------------
+            eod_equity = _mark_to_market_at_day_end(
+                positions=positions,
+                per_symbol_df=per_symbol_df,
+                per_symbol_ts_utc=per_symbol_ts_utc,
+                day=day,
+                cash=cash,
+            )
+            equity_curve.append((day, eod_equity))
+
+        # ------------------------------------------------------------------
+        # Post-loop: handle stranded pending orders (mirrors daily path).
+        # Per Correction 5: every stranded order is a skipped-audit row.
+        # ------------------------------------------------------------------
+        final_equity = equity_curve[-1][1] if equity_curve else initial_equity
+
+        if pending and trading_days:
+            last_day = trading_days[-1]
+            latest_closes_end = _latest_close_at_ts(
+                per_symbol_df=per_symbol_df,
+                per_symbol_ts_utc=per_symbol_ts_utc,
+                ts=None,  # None sentinel → latest close across all time
+            )
+            final_equity_for_skips = _compute_equity(cash, positions, latest_closes_end)
+            for p in pending:
+                sym = p.intent.normalized_symbol()
+                latest_price = latest_closes_end.get(sym)
+                self._record_skipped_order(
+                    intent=p.intent,
+                    reason_code="backtest_no_next_bar",
+                    message=(
+                        f"Skipped backtest {p.intent.side.value} for {sym}: "
+                        "no next bar available before run end."
+                    ),
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    day=last_day,
+                    cash=cash,
+                    equity=final_equity_for_skips,
+                    latest_price=latest_price,
+                    unit_price=latest_price,
+                    context={
+                        "decision_timestamp": p.decision_timestamp.isoformat(),
+                        "reason_code": "backtest_no_next_bar",
+                    },
+                )
+                skipped_count += 1
+            pending = []
+
+        # ------------------------------------------------------------------
+        # Per Correction 5: final broker sync + equity snapshot (mirrors daily).
+        # record_backtest_equity_snapshot is best-effort; swallow any exception.
+        # ------------------------------------------------------------------
+        if trading_days:
+            last_day = trading_days[-1]
+            latest_closes_end = _latest_close_at_ts(
+                per_symbol_df=per_symbol_df,
+                per_symbol_ts_utc=per_symbol_ts_utc,
+                ts=None,
+            )
+            self._sync_broker_state(
+                sim_broker=sim_broker,
+                sim_data_provider=sim_data_provider,
+                day=last_day,
+                closes=latest_closes_end,
+                cash=cash,
+                equity=final_equity,
+                positions=positions,
+            )
+            try:
+                record_backtest_equity_snapshot(
+                    event_store=self._event_store,
+                    broker=sim_broker,
+                    session_id=session_id,
+                    strategy_id=self._loaded.config.strategy_id,
+                    backtest_run_id=db_run_id,
+                    recorded_at=_day_to_dt(last_day),
+                )
+            except Exception:  # noqa: BLE001 — snapshot is best-effort
+                pass
+
+        round_trip_count = sum(min(s["buys"], s["sells"]) for s in _sym_fills.values())
+        return _SimulationOutput(
+            equity_curve=equity_curve,
+            trade_count=trade_count,
+            buy_count=buy_count,
+            sell_count=sell_count,
+            final_equity=final_equity,
+            round_trip_count=round_trip_count,
+            skipped_count=skipped_count,
         )
 
     def _drain_pending(
@@ -1930,6 +2224,64 @@ def _mark_to_market_at_day_end(
             latest_close = float(df["close"].iloc[prior_indices[-1]])
         equity += qty * latest_close
     return equity
+
+
+def _build_visible_bars(
+    per_symbol_df: dict[str, pd.DataFrame],
+    cursors: dict[str, int],
+    universe: list[str],
+) -> dict[str, BarSet]:
+    """Return a {symbol: BarSet} view for every universe symbol, truncated to cursor.
+
+    ``cursors[symbol]`` is the EXCLUSIVE end index (see D5 invariant): visible
+    bars are ``df.iloc[:cursor]``.  Symbols with cursor == 0 (no history yet)
+    are omitted from the result so downstream code that checks ``len(barset) > 0``
+    behaves naturally.
+
+    Only universe symbols are included — symbols outside the declared universe
+    never appear in strategy.evaluate() regardless of bar availability.
+    """
+    result: dict[str, BarSet] = {}
+    for sym in universe:
+        df = per_symbol_df.get(sym)
+        if df is None:
+            continue
+        cur = cursors.get(sym, 0)
+        if cur == 0:
+            continue
+        sliced = df.iloc[:cur]
+        if not sliced.empty:
+            result[sym] = BarSet(sliced.reset_index(drop=True))
+    return result
+
+
+def _latest_close_at_ts(
+    per_symbol_df: dict[str, pd.DataFrame],
+    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
+    ts: pd.Timestamp | None,
+) -> dict[str, float]:
+    """Return the latest close per symbol at or before ``ts``.
+
+    When ``ts`` is ``None``, returns the very last close in each symbol's
+    full bar history (used for end-of-backtest bookkeeping).
+
+    Symbols with no bars at or before ``ts`` are omitted.
+    """
+    closes: dict[str, float] = {}
+    for symbol, df in per_symbol_df.items():
+        if df.empty:
+            continue
+        dti = per_symbol_ts_utc.get(symbol)
+        if dti is None or len(dti) == 0:
+            continue
+        if ts is None:
+            closes[symbol] = float(df["close"].iloc[-1])
+        else:
+            # Find the latest bar whose timestamp <= ts.
+            idx = dti.searchsorted(ts, side="right") - 1
+            if idx >= 0:
+                closes[symbol] = float(df["close"].iloc[idx])
+    return closes
 
 
 def _advance_cursors(

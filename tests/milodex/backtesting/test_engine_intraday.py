@@ -11,7 +11,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
-import pytest
 
 from milodex.backtesting.engine import BacktestEngine
 from milodex.broker.models import OrderSide, OrderType
@@ -616,10 +615,7 @@ strategy:
 def test_intraday_smoke_benchmark_exact_counts() -> None:
     """4-day benchmark backtest: BUY at post-OR bar (~10:00 ET), SELL at time-stop (~15:55 ET).
 
-    Per Correction 7: this test is written BEFORE _simulate_intraday's
-    implementation. Currently it expects NotImplementedError; after E1
-    lands, the test body must be updated to assert the exact counts:
-
+    Expected-counts contract (DO NOT delete):
         buy_count == 4, sell_count == 3, trade_count == 7,
         round_trip_count == 3, skipped_count == 1
 
@@ -631,35 +627,57 @@ def test_intraday_smoke_benchmark_exact_counts() -> None:
       - Last SELL on session 4 has no next bar → stranded → skipped_count == 1
       - trade_count == buy_count + sell_count == 4 + 3 == 7
       - round_trip_count == min(buy_count, sell_count) per symbol == 3
-
-    DO NOT delete this expected-counts comment when updating the test
-    body after E1. It is the contract for the assertions the implementer adds.
-
-    Stub note: The strategy is a MagicMock that will emit BUY/SELL intents
-    matching the benchmark's behavior when evaluate() is called by the real
-    _simulate_intraday loop. Until E1 lands and evaluate() is called, the
-    NotImplementedError fires before any strategy.evaluate() invocation.
-    For E1, replace the MagicMock strategy with BenchUnconditionalIntradayLongStrategy
-    and wire the context.parameters with opening_range_minutes=30,
-    exit_minutes_before_close=5, per_position_notional_pct=0.95 — or keep the
-    stub with a side_effect that mirrors the benchmark rule exactly.
     """
+    from milodex.strategies.bench_unconditional_intraday_long import (
+        BenchUnconditionalIntradayLongStrategy,
+    )
+
     # 4 full trading sessions (Mon–Thu, all regular sessions, no half-days)
     session_dates = ["2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11"]
     start_date = date(2024, 1, 8)
     end_date = date(2024, 1, 11)
 
     spy_bars = _build_synthetic_5min_barset(session_dates, symbol="SPY")
+
+    # Wire the real strategy class with benchmark parameters.
     loaded = _make_intraday_loaded_strategy(
         "benchmark.unconditional_intraday_long.spy.e0_test.v1", ("SPY",)
     )
-    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    parameters = {
+        "opening_range_minutes": 30,
+        "exit_minutes_before_close": 5,
+        "per_position_notional_pct": 0.95,
+    }
+    real_strategy = BenchUnconditionalIntradayLongStrategy()
+    loaded.strategy = real_strategy
+    # Patch context.parameters so _validated_parameters() finds them.
+    from milodex.strategies.base import StrategyContext
 
-    # Per Correction 7: currently raises NotImplementedError because
-    # _simulate_intraday is a placeholder. After E1 lands, replace this
-    # raises block with positive assertions (see expected-counts above).
-    with pytest.raises(NotImplementedError):
-        engine.run(start_date, end_date)
+    loaded.context = StrategyContext(
+        strategy_id="benchmark.unconditional_intraday_long.spy.e0_test.v1",
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="e0_test",
+        version=1,
+        config_hash="e0_test_hash",
+        parameters=parameters,
+        universe=("SPY",),
+        universe_ref=None,
+        disable_conditions=(),
+        config_path=str(loaded.config.path),
+        manifest={},
+    )
+
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    result = engine.run(start_date, end_date)
+
+    assert result.buy_count == 4, f"Expected buy_count=4, got {result.buy_count}"
+    assert result.sell_count == 3, f"Expected sell_count=3, got {result.sell_count}"
+    assert result.trade_count == 7, f"Expected trade_count=7, got {result.trade_count}"
+    assert result.round_trip_count == 3, (
+        f"Expected round_trip_count=3, got {result.round_trip_count}"
+    )
+    assert result.skipped_count == 1, f"Expected skipped_count=1, got {result.skipped_count}"
 
 
 def test_intraday_no_same_bar_fill() -> None:
@@ -727,10 +745,22 @@ def test_intraday_no_same_bar_fill() -> None:
     loaded.strategy.evaluate.side_effect = _stub_evaluate
 
     engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    result = engine.run(start_date, end_date)
 
-    # Per Correction 7: currently raises NotImplementedError because
-    # _simulate_intraday is a placeholder. After E1 lands, replace this
-    # raises block with assertions that the fill price == 500.05 (bar_5.open)
-    # and != 500.04 (bar_4.open) and != 500.06 (bar_4.close).
-    with pytest.raises(NotImplementedError):
-        engine.run(start_date, end_date)
+    # The BUY was emitted at bar_4's decision time; it must fill at bar_5's open.
+    # bar_5.open = 500.05 (session 0, bar_idx=5: 500 + 0 + 5*0.01), slippage=0.
+    # Verify via the trade ledger: find the BUY record and check its unit price.
+    # The engine's event_store is private; result.db_id identifies the right run.
+    trades = engine._event_store.list_trades_for_backtest_run(result.db_id)  # noqa: SLF001
+    buy_trades = [t for t in trades if t.side == "buy" and t.status == "submitted"]
+    assert len(buy_trades) == 1, f"Expected exactly 1 BUY trade, got {len(buy_trades)}"
+
+    fill_price = buy_trades[0].estimated_unit_price
+    # bar_5.open = 500.05 (exact); slippage=0 so fill == open
+    assert abs(fill_price - 500.05) < 1e-9, (
+        f"Fill price {fill_price!r} != bar_5.open 500.05 (same-bar-fill bug?). "
+        f"bar_4.open=500.04, bar_4.close=500.06"
+    )
+    # Belt-and-suspenders: confirm it's not bar_4's own open or close
+    assert abs(fill_price - 500.04) > 1e-9, "Fill price == bar_4.open — same-bar-fill bug!"
+    assert abs(fill_price - 500.06) > 1e-9, "Fill price == bar_4.close — same-bar-fill bug!"
