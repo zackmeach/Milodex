@@ -1634,3 +1634,27 @@ def _build_intraday_event_timeline(
         )
         for t in all_event_times
     ]
+
+
+def _opens_at_timestamp(
+    per_symbol_open_by_ts: dict[str, dict[pd.Timestamp, float]],
+    timestamp: pd.Timestamp,
+) -> dict[str, float]:
+    """Return ``{symbol: open_price}`` for symbols with a bar at ``timestamp``.
+
+    Symbols without a bar at ``timestamp`` are not in the result. This means
+    the caller can safely iterate the returned dict and trust each key has
+    a fill price.
+
+    Args:
+        per_symbol_open_by_ts: precomputed nested dict mapping symbol →
+            {bar_timestamp: open_price}. The Phase E ``_simulate_intraday``
+            builds this once at simulation start to avoid DataFrame scans
+            inside the event loop (Correction 6).
+        timestamp: UTC-tz-aware Timestamp to look up.
+    """
+    opens: dict[str, float] = {}
+    for symbol, open_by_ts in per_symbol_open_by_ts.items():
+        if timestamp in open_by_ts:
+            opens[symbol] = open_by_ts[timestamp]
+    return opens

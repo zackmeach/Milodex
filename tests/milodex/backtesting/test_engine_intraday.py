@@ -54,6 +54,32 @@ def test_event_timeline_for_single_symbol_5min_session() -> None:
     assert last_meta["decision_symbols"] == ["SPY"]
 
 
+def test_opens_at_timestamp_returns_only_symbols_with_bar_at_t() -> None:
+    """At event timestamp T, _opens_at_timestamp returns the symbol → open-price
+    map ONLY for symbols whose bar starts at T. Symbols absent at T are not
+    in the result.
+    """
+    from milodex.backtesting.engine import _opens_at_timestamp
+
+    # Build per-symbol-open-by-timestamp maps for SPY and QQQ. SPY has the
+    # 10:05 ET (15:05 UTC) bar; QQQ does not.
+    target_ts = pd.Timestamp("2024-01-15 15:05:00+00:00")
+    other_ts = pd.Timestamp("2024-01-15 14:30:00+00:00")  # 9:30 ET — both present
+
+    per_symbol_open_by_ts: dict[str, dict[pd.Timestamp, float]] = {
+        "SPY": {other_ts: 500.00, target_ts: 500.07},  # SPY has both bars
+        "QQQ": {other_ts: 400.00},  # QQQ missing target_ts
+    }
+
+    opens = _opens_at_timestamp(per_symbol_open_by_ts, target_ts)
+
+    # SPY has the 10:05 bar; QQQ doesn't
+    assert "SPY" in opens
+    assert "QQQ" not in opens
+    assert abs(opens["SPY"] - 500.07) < 1e-9
+    assert len(opens) == 1
+
+
 def _build_synthetic_5min_session_ts_only(
     date_str: str,
     symbols: list[str],
