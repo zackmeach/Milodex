@@ -7,11 +7,10 @@ from pathlib import Path
 
 from milodex.analytics.metrics import compute_metrics
 from milodex.analytics.reports import assemble_trust_report
-from milodex.analytics.snapshots import record_backtest_equity_snapshot, record_daily_snapshot
-from milodex.core.event_store import BacktestEquitySnapshotEvent
+from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker.models import AccountInfo
 from milodex.broker.simulated import SimulatedBroker
-from milodex.core.event_store import EventStore
+from milodex.core.event_store import BacktestEquitySnapshotEvent, EventStore
 
 
 def _flat_metrics(strategy_id: str, initial_equity: float = 100_000.0, trade_count: int = 0):

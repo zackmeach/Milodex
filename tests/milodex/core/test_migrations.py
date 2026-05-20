@@ -11,10 +11,7 @@ import json
 import sqlite3
 from pathlib import Path
 
-import pytest
-
 from milodex.core.event_store import EventStore
-
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -57,7 +54,6 @@ def _seed_pre_migration_rows(conn: sqlite3.Connection) -> None:
     empty_positions = json.dumps([])
     bt_run_uuid = "aaaaaaaa-0000-0000-0000-000000000001"
     bt_run_uuid2 = "aaaaaaaa-0000-0000-0000-000000000002"
-    stray_session = "bbbbbbbb-0000-0000-0000-000000000099"
 
     # backtest_runs rows (needed for the whole-period backtest rows)
     conn.execute(
@@ -183,7 +179,9 @@ def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
         w_in_backtest = conn.execute(
             "SELECT COUNT(*) FROM backtest_equity_snapshots WHERE session_id LIKE '%:w%'"
         ).fetchone()[0]
-        assert w_in_backtest == 3, f"Expected 3 :w rows in backtest_equity_snapshots, got {w_in_backtest}"
+        assert w_in_backtest == 3, (
+            f"Expected 3 :w rows in backtest_equity_snapshots, got {w_in_backtest}"
+        )
 
         # Invariant 3: whole-period backtest rows moved with backtest_run_id populated
         whole_period = conn.execute(
@@ -191,7 +189,9 @@ def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
                WHERE session_id NOT LIKE '%:w%'
                  AND backtest_run_id IS NOT NULL"""
         ).fetchone()[0]
-        assert whole_period == 2, f"Expected 2 whole-period rows in backtest_equity_snapshots, got {whole_period}"
+        assert whole_period == 2, (
+            f"Expected 2 whole-period rows in backtest_equity_snapshots, got {whole_period}"
+        )
 
         # Invariant 4: broker rows still in portfolio_snapshots (2 broker rows)
         broker_rows = conn.execute(

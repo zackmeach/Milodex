@@ -938,7 +938,6 @@ def test_engine_records_portfolio_snapshot_at_run_end():
     runs are covered separately in test_walk_forward_runner.py.
     """
     from milodex.broker.models import OrderSide, OrderType
-    from milodex.core.event_store import BacktestEquitySnapshotEvent
     from milodex.execution.models import TradeIntent
 
     start = date(2024, 1, 2)

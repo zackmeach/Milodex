@@ -556,7 +556,8 @@ def test_walk_forward_records_one_snapshot_per_window():
             # portfolio_snapshots must NOT contain this session_id
             broker_rows = store.list_portfolio_snapshots_for_session(session_id)
             assert broker_rows == [], (
-                f"portfolio_snapshots must not contain walk-forward session {session_id!r} (ADR 0053)"
+                f"portfolio_snapshots must not contain walk-forward session"
+                f" {session_id!r} (ADR 0053)"
             )
 
 

@@ -843,10 +843,13 @@ def _seed_all_paper_scenario(db_path: Path) -> None:
     split. Rows are inserted directly via sqlite3 into an already-migrated
     DB (the EventStore constructor applies migration 010 first).
     """
-    import json
-
-    from milodex.core.event_store import EventStore, PortfolioSnapshotEvent, BacktestEquitySnapshotEvent
     from datetime import UTC
+
+    from milodex.core.event_store import (
+        BacktestEquitySnapshotEvent,
+        EventStore,
+        PortfolioSnapshotEvent,
+    )
 
     # Open EventStore — this applies migration 010 to the fresh DB
     store = EventStore(db_path)
