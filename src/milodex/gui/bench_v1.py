@@ -326,17 +326,21 @@ def re_run_verb(evidence: EvidenceRecord, *, is_run_in_flight: bool) -> str | No
     - :data:`LABEL_REFRESH_BACKTEST` when evidence is
       ``(Aging|Stale) + Pass`` — renew prior usable passing evidence.
     - :data:`LABEL_INITIATE_BACKTEST` when evidence is ``Invalidated``
-      (at any age), ``(Aging|Stale) + Fail``, or
+      (at any age), any ``Fail`` (Fresh, Aging, or Stale), or
       ``Missing`` (with no in-flight run) — produce new evidence from
-      a non-usable baseline.
+      a non-usable baseline. ``Fresh+Fail`` surfaces Initiate so the
+      operator can recover from a failed run without first having to
+      manufacture an Invalidation (the failure itself is signal that
+      the configuration needs revision; the menu lets the operator
+      iterate without ceremony).
     - ``None`` when no re-run verb should surface. Cases:
 
       - ``is_run_in_flight=True``: a run is already in flight; the
         Open Evidence floor item carries the monitoring affordance.
-      - ``Fresh+Pass`` and ``Fresh+Fail``: workflow discipline — an
-        invalidating change must transition the evidence to
-        ``Invalidated`` before a re-run is offered. Prevents blind
-        re-runs of the same configuration.
+      - ``Fresh+Pass``: workflow discipline — an invalidating change
+        must transition the evidence to ``Invalidated`` before a re-run
+        is offered. Prevents blind re-runs of a configuration that
+        already produced usable passing evidence.
       - ``Aging+Pending`` and ``Stale+Pending``: a run is in flight
         on top of prior evidence (typically a refresh-in-flight). The
         ``is_run_in_flight`` guard is the canonical way to express

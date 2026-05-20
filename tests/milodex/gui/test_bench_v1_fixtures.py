@@ -287,7 +287,15 @@ class TestAnchorScenarios:
 
     def test_backtest_fresh_fail(self) -> None:
         row = _row_by_id("meanrev.intraday.opening_range_fade.qqq.v1")
-        assert _labels_for(row) == [LABEL_RETURN_TO_IDLE, LABEL_OPEN_EVIDENCE]
+        # Fresh+Fail surfaces Initiate so the operator can recover from a
+        # failed run without manufacturing an Invalidation first — the
+        # failure itself is signal that the config needs revision. See
+        # re_run_verb docstring in bench_v1.py.
+        assert _labels_for(row) == [
+            LABEL_RETURN_TO_IDLE,
+            LABEL_INITIATE_BACKTEST,
+            LABEL_OPEN_EVIDENCE,
+        ]
 
     def test_backtest_aging_pass(self) -> None:
         row = _row_by_id("regime.weekly.dual_momentum.global_etf_set.v1")
