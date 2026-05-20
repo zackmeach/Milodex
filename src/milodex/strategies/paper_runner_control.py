@@ -93,13 +93,11 @@ def _compute_creation_flags() -> int:
     suppression + CREATE_NEW_PROCESS_GROUP to keep the child outside the
     parent's group (Ctrl-C isolation).
     """
-    import subprocess as _subprocess
-
     flags = 0
-    if hasattr(_subprocess, "CREATE_NO_WINDOW"):
-        flags |= _subprocess.CREATE_NO_WINDOW
-    if hasattr(_subprocess, "CREATE_NEW_PROCESS_GROUP"):
-        flags |= _subprocess.CREATE_NEW_PROCESS_GROUP
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        flags |= subprocess.CREATE_NO_WINDOW
+    if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
+        flags |= subprocess.CREATE_NEW_PROCESS_GROUP
     return flags
 
 

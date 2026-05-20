@@ -216,7 +216,7 @@ def test_creationflags_uses_create_no_window_not_detached_process():
     creates a console for a console-subsystem child .exe."""
     from milodex.strategies import paper_runner_control as prc
 
-    flags = prc._compute_creation_flags()  # helper to be introduced
+    flags = prc._compute_creation_flags()
 
     assert flags & subprocess.CREATE_NO_WINDOW, "CREATE_NO_WINDOW must be set"
     assert not (flags & subprocess.DETACHED_PROCESS), "DETACHED_PROCESS must NOT be set"
