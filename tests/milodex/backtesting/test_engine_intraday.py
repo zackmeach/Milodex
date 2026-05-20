@@ -48,7 +48,7 @@ def test_event_timeline_for_single_symbol_5min_session() -> None:
     assert second_meta["fill_symbols"] == ["SPY"]
     assert second_meta["decision_symbols"] == ["SPY"]
 
-    # Last event (16:00 UTC = 21:00 UTC): pure decision event
+    # Last event (16:00 ET = 21:00 UTC): pure decision event
     last_ts, last_meta = timeline[-1]
     assert last_meta["fill_symbols"] == []
     assert last_meta["decision_symbols"] == ["SPY"]
