@@ -319,6 +319,28 @@ def _process_exists(pid: int) -> bool:
     return True
 
 
+def _process_start_time(pid: int) -> datetime | None:
+    """Return the wall-clock time the process owning ``pid`` was started.
+
+    Returns ``None`` if the process does not exist, if introspection failed,
+    or if the platform's start-time surface is unavailable. Callers should
+    fall back to a less strict liveness check in that case.
+
+    Used to detect PID reuse: a live process whose start time is *later*
+    than an advisory lock's recorded ``started_at`` cannot be the lock's
+    original holder — the OS reassigned the PID between the holder's death
+    and the probe. The lock-acquire path's ``_STALE_LOCK_MAX_AGE_SECONDS``
+    fallback handles the long-idle PID-reuse case (where lock-file age is
+    the cleaner signal); start-time identity handles the host-reset case
+    (where lock age is uninformative because everything is fresh).
+    """
+    if pid <= 0:
+        return None
+    if platform.system() == "Windows":
+        return _windows_process_start_time(pid)
+    return _posix_process_start_time(pid)
+
+
 def _windows_process_exists(pid: int) -> bool:
     # Note: the unknowable cases below deliberately return True ("assume
     # held") so a genuinely-fresh lock is never stolen on a probe failure.
@@ -350,3 +372,75 @@ def _windows_process_exists(pid: int) -> bool:
         return exit_code.value == still_active
     finally:
         kernel32.CloseHandle(handle)
+
+
+# FILETIME counts 100-nanosecond intervals since 1601-01-01 UTC.
+# Unix epoch (1970-01-01) is 11644473600 seconds after that, or 1.16e17 ticks.
+_FILETIME_EPOCH_OFFSET_MICROSECONDS = 11_644_473_600 * 1_000_000
+
+
+def _windows_process_start_time(pid: int) -> datetime | None:
+    # Mirrors _windows_process_exists's defensive shape: on any probe
+    # failure return None so callers fall back to the bare PID-existence
+    # check rather than mis-classifying a live runner as recycled.
+    try:
+        import ctypes
+        import ctypes.wintypes
+    except Exception:
+        return None
+
+    process_query_limited_information = 0x1000
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return None
+    try:
+        creation = ctypes.wintypes.FILETIME()
+        exit_t = ctypes.wintypes.FILETIME()
+        kernel_t = ctypes.wintypes.FILETIME()
+        user_t = ctypes.wintypes.FILETIME()
+        success = kernel32.GetProcessTimes(
+            handle,
+            ctypes.byref(creation),
+            ctypes.byref(exit_t),
+            ctypes.byref(kernel_t),
+            ctypes.byref(user_t),
+        )
+        if not success:
+            return None
+        ticks = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        microseconds_since_1970 = ticks // 10 - _FILETIME_EPOCH_OFFSET_MICROSECONDS
+        if microseconds_since_1970 <= 0:
+            return None
+        return datetime.fromtimestamp(microseconds_since_1970 / 1_000_000, tz=UTC)
+    except OSError:
+        return None
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _posix_process_start_time(pid: int) -> datetime | None:
+    # /proc/<pid>/stat field 22 = start time in clock ticks since boot.
+    # /proc/stat 'btime' = boot time in seconds since the Unix epoch.
+    # Together they give the process start in wall-clock time.
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as f:
+            content = f.read()
+        # Field 2 (comm) is parenthesized and may contain spaces; the
+        # rightmost ')' is the safe delimiter before fields 3+.
+        rparen = content.rfind(")")
+        if rparen < 0:
+            return None
+        fields = content[rparen + 1 :].split()
+        # After ')' we are at field 3 (state). Field 22 (start time) is
+        # index 19 in this remaining slice.
+        start_ticks = int(fields[19])
+        with open("/proc/stat", encoding="utf-8") as f:
+            btime = next(
+                int(line.split()[1]) for line in f if line.startswith("btime ")
+            )
+        clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
+        start_epoch = btime + start_ticks / clk_tck
+        return datetime.fromtimestamp(start_epoch, tz=UTC)
+    except (OSError, ValueError, StopIteration, IndexError, KeyError):
+        return None
