@@ -31,6 +31,7 @@ from milodex.risk import (
     EvaluationContext,
     NullRiskEvaluator,
     RiskEvaluator,
+    load_active_risk_profile,
     load_risk_defaults,
 )
 from milodex.strategies.loader import compute_config_hash
@@ -373,7 +374,7 @@ class ExecutionService:
                 trading_mode=trading_mode,
                 preview_only=preview_only,
                 kill_switch_state=self._kill_switch_store.get_state(),
-                risk_defaults=load_risk_defaults(self._risk_defaults_path),
+                risk_defaults=load_active_risk_profile(),  # ADR 0054: routes through active profile
                 strategy_config=strategy_config,
                 runtime_config_hash=runtime_config_hash,
                 frozen_manifest_hash=frozen_manifest_hash,
