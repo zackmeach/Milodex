@@ -79,6 +79,28 @@ Window {
         objectName: "sessionBag"
         property string perfSlice: "Week"
         property string throughputSlice: "Week"
+        property string timeFormat: "24h"  // "24h" | "12h"
+    }
+
+    // ------------------------------------------------------------------
+    // Time-format helper — converts raw ISO 8601 strings to HH:MM (24h)
+    // or H:MM AM/PM (12h) based on sessionBag.timeFormat.
+    // Returns "" for empty input; returns raw input on unparseable input.
+    // Used by every surface that renders a stored timestamp.
+    // ------------------------------------------------------------------
+    function formatTimestamp(isoString, format) {
+        if (!isoString) return "";
+        var d = new Date(isoString);
+        if (isNaN(d)) return isoString;  // unparseable; return raw
+        var hh = d.getHours();
+        var mm = d.getMinutes();
+        if (format === "12h") {
+            var ampm = hh >= 12 ? "PM" : "AM";
+            var h12 = hh % 12; if (h12 === 0) h12 = 12;
+            return h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm;
+        }
+        // default 24h
+        return (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm);
     }
 
     MouseArea {
@@ -133,6 +155,17 @@ Window {
         function onThroughputSliceChanged() {
             if (surfaceLoader.item && surfaceLoader.item.throughputSlice !== undefined) {
                 sessionBag.throughputSlice = surfaceLoader.item.throughputSlice
+            }
+        }
+    }
+
+    // Task 33: propagate sessionBag.timeFormat changes to the loaded surface
+    // so timestamps reformat immediately when the toggle fires.
+    Connections {
+        target: sessionBag
+        function onTimeFormatChanged() {
+            if (surfaceLoader.item && surfaceLoader.item.timeFormat !== undefined) {
+                surfaceLoader.item.timeFormat = sessionBag.timeFormat
             }
         }
     }
@@ -288,10 +321,14 @@ Window {
         // loads. The undefined-guard means non-Desk surfaces (which lack these
         // properties) are silently skipped — same safety pattern as the
         // Connections write-back handlers above.
+        // Task 33: also seed timeFormat to any surface that declares it.
         onLoaded: {
             if (surfaceLoader.item && surfaceLoader.item.perfSlice !== undefined) {
                 surfaceLoader.item.perfSlice = sessionBag.perfSlice
                 surfaceLoader.item.throughputSlice = sessionBag.throughputSlice
+            }
+            if (surfaceLoader.item && surfaceLoader.item.timeFormat !== undefined) {
+                surfaceLoader.item.timeFormat = sessionBag.timeFormat
             }
         }
 

@@ -118,14 +118,24 @@ Item {
         return "muted"
     }
 
+    // timeFormat: seeded from Main.qml sessionBag on load and synced on
+    // toggle (Task 33). Drives shortTime() below. Same pattern as perfSlice.
+    property string timeFormat: "24h"
+
+    // shortTime: formats an ISO 8601 string per root.timeFormat.
+    // Returns "—" for empty/null. Handles 24h and 12h.
     function shortTime(iso) {
-        if (!iso)
-            return "—"
-        var s = String(iso)
-        // ISO "YYYY-MM-DDTHH:MM:SS..." → "HH:MM"
-        if (s.length >= 16 && s.indexOf("T") === 10)
-            return s.substring(11, 16)
-        return s
+        if (!iso) return "—"
+        var d = new Date(iso)
+        if (isNaN(d)) return iso
+        var hh = d.getHours()
+        var mm = d.getMinutes()
+        if (root.timeFormat === "12h") {
+            var ampm = hh >= 12 ? "PM" : "AM"
+            var h12 = hh % 12; if (h12 === 0) h12 = 12
+            return h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm
+        }
+        return (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm)
     }
 
     // ------------------------------------------------------------------

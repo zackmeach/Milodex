@@ -1736,19 +1736,16 @@ def _today_label() -> str:
 
 
 def _compact_timestamp(timestamp: str) -> str:
-    if not timestamp:
-        return ""
-    normalized = timestamp.replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        if "T" in timestamp and len(timestamp) >= 16:
-            return timestamp[:16].replace("T", " ")
-        return timestamp
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=UTC)
-    local = parsed.astimezone()
-    return local.strftime("%Y-%m-%d %H:%M")
+    """Return the raw ISO timestamp unchanged.
+
+    Time formatting was moved to QML (Task 33 / PR-7c) — ``shortTime()`` /
+    ``formatTs()`` in each surface now converts the raw ISO string to the
+    operator's chosen 24h or 12h format.  This function is kept as a
+    pass-through so call sites remain explicit; callers keep using
+    ``displayTimestamp`` as the dict key for backward compatibility with
+    any QML fallback paths still reading it.
+    """
+    return timestamp
 
 
 def _supports_dash_day() -> bool:

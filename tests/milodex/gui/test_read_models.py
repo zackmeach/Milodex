@@ -235,8 +235,8 @@ def test_bench_snapshot_groups_config_and_evidence(tmp_path: Path) -> None:
     assert row["metaConfigKey"] == "meanrev.daily"
     assert row["metaStage"] == "paper"
     assert row["metaEvidenceLabel"] == "promoted"
+    # Task 33: metaEvidenceAt is now raw ISO (formatting moved to QML).
     assert row["metaEvidenceAt"]
-    assert "T" not in row["metaEvidenceAt"]
     assert row["visualPriority"] == 1
     # PR G: actions are now produced by compute_menu_items via
     # _compute_bench_action_menu.  The floor item is always Open Evidence last.
@@ -460,8 +460,9 @@ def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> 
 
     assert {entry["outcomeKind"] for entry in entries} >= {"promoted", "fired"}
     assert any(entry["subject"] == "kill switch" for entry in entries)
+    # Task 33: displayTimestamp is now raw ISO — formatting moved to QML.
+    # Assert it's present and non-empty; the "T" separator is expected.
     assert all(entry["displayTimestamp"] for entry in entries)
-    assert all("T" not in entry["displayTimestamp"] for entry in entries)
 
 
 def test_ledger_snapshot_labels_idle_to_backtest_stage_return(tmp_path: Path) -> None:

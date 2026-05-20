@@ -45,6 +45,26 @@ Item {
     // ------------------------------------------------------------------
 
     readonly property var entries: LedgerState.entries
+
+    // timeFormat: seeded from Main.qml sessionBag on load and synced on
+    // toggle (Task 33). Same pattern as DeskSurface.timeFormat.
+    property string timeFormat: "24h"
+
+    // formatTs: formats a raw ISO 8601 string per root.timeFormat.
+    // Returns "" for empty/null. Handles 24h and 12h.
+    function formatTs(iso) {
+        if (!iso) return ""
+        var d = new Date(iso)
+        if (isNaN(d)) return iso
+        var hh = d.getHours()
+        var mm = d.getMinutes()
+        if (root.timeFormat === "12h") {
+            var ampm = hh >= 12 ? "PM" : "AM"
+            var h12 = hh % 12; if (h12 === 0) h12 = 12
+            return h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm
+        }
+        return (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm)
+    }
     /* Legacy PR1 mock entries retained for reference only.
     [
         { ts: "2026-05-08 09:14 ET", subject: "RSI-2 Pullback",      transition: "micro-live → live", outcome: "LOCKED", outcomeKind: "refused",
@@ -313,9 +333,9 @@ Item {
                                 width: parent.width
                                 spacing: Theme.space[3]
 
-                                // Timestamp
+                                // Timestamp — formatted via root.formatTs (Task 33)
                                 Text {
-                                    text: modelData.displayTimestamp || modelData.timestamp
+                                    text: root.formatTs(modelData.timestamp) || modelData.displayTimestamp || ""
                                     color: Theme.color.text.secondary
                                     font.family:    Theme.typography.data.sm.family
                                     font.pixelSize: Theme.typography.data.sm.size
