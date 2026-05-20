@@ -7,7 +7,8 @@ from pathlib import Path
 
 from milodex.analytics.metrics import compute_metrics
 from milodex.analytics.reports import assemble_trust_report
-from milodex.analytics.snapshots import record_daily_snapshot
+from milodex.analytics.snapshots import record_backtest_equity_snapshot, record_daily_snapshot
+from milodex.core.event_store import BacktestEquitySnapshotEvent
 from milodex.broker.models import AccountInfo
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import EventStore
@@ -240,3 +241,54 @@ def test_assemble_trust_report_surfaces_recent_decisions(tmp_path: Path) -> None
     rules = [d.rule for d in report.recent_decisions]
     assert rules == ["regime.hold", "regime.ma_filter_cross"]
     assert report.recent_decisions[-1].narrative.startswith("latest close above")
+
+
+def test_assemble_trust_report_surfaces_backtest_equity_snapshots(tmp_path: Path) -> None:
+    """assemble_trust_report must surface backtest_equity_snapshots rows (ADR 0053).
+
+    After the schema split, a strategy that was only run as a backtest (not
+    via the paper runner) has zero rows in portfolio_snapshots but N rows in
+    backtest_equity_snapshots. The trust report snapshot_summary must reflect
+    those rows — not report 0 snapshots and raise a "no snapshot" open question.
+    """
+    from datetime import UTC
+
+    store = EventStore(tmp_path / "milodex.db")
+    metrics = _flat_metrics("test.backtest.strat.v1")
+
+    # Write two rows to backtest_equity_snapshots (not portfolio_snapshots)
+    store.append_backtest_equity_snapshot(
+        BacktestEquitySnapshotEvent(
+            recorded_at=datetime(2025, 12, 10, 16, 0, tzinfo=UTC),
+            session_id="run-xyz:w0",
+            strategy_id="test.backtest.strat.v1",
+            equity=1_000.0,
+            cash=1_000.0,
+            portfolio_value=1_000.0,
+            daily_pnl=None,
+            positions=[],
+        )
+    )
+    store.append_backtest_equity_snapshot(
+        BacktestEquitySnapshotEvent(
+            recorded_at=datetime(2025, 12, 31, 16, 0, tzinfo=UTC),
+            session_id="run-xyz:w0",
+            strategy_id="test.backtest.strat.v1",
+            equity=1_250.0,
+            cash=500.0,
+            portfolio_value=1_250.0,
+            daily_pnl=None,
+            positions=[],
+        )
+    )
+
+    report = assemble_trust_report(
+        metrics=metrics, event_store=store, include_benchmark=False
+    )
+
+    assert report.snapshot_summary.snapshot_count == 2
+    assert report.snapshot_summary.first_equity == 1_000.0
+    assert report.snapshot_summary.last_equity == 1_250.0
+    assert not any("No portfolio snapshots" in q for q in report.open_questions), (
+        "Trust report must not report 'no snapshots' when backtest equity snapshots exist"
+    )

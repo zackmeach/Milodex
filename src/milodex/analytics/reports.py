@@ -16,7 +16,11 @@ from milodex.analytics.benchmark import compute_benchmark
 from milodex.analytics.metrics import PerformanceMetrics
 
 if TYPE_CHECKING:
-    from milodex.core.event_store import EventStore, PortfolioSnapshotEvent
+    from milodex.core.event_store import (
+        BacktestEquitySnapshotEvent,
+        EventStore,
+        PortfolioSnapshotEvent,
+    )
     from milodex.data.provider import DataProvider
 
 
@@ -100,7 +104,21 @@ def assemble_trust_report(
         total_return_delta = metrics.total_return_pct - benchmark.total_return_pct
         max_dd_delta = metrics.max_drawdown_pct - benchmark.max_drawdown_pct
 
-    snapshots = event_store.list_portfolio_snapshots_for_strategy(metrics.strategy_id)
+    # ADR 0053: snapshots may live in portfolio_snapshots (broker-side) OR
+    # backtest_equity_snapshots (backtest engine). Read both and merge by id
+    # order (both tables use AUTOINCREMENT so id order == insertion order).
+    # A strategy backed only by backtests has no broker rows; a live/paper
+    # strategy has no backtest equity rows. Both cases must produce a valid
+    # snapshot summary. Do NOT use portfolio_snapshots alone — that causes
+    # the "no snapshots" open question to fire falsely for backtest strategies.
+    broker_snapshots = event_store.list_portfolio_snapshots_for_strategy(metrics.strategy_id)
+    backtest_snapshots = event_store.list_backtest_equity_snapshots_for_strategy(
+        metrics.strategy_id
+    )
+    snapshots: list[PortfolioSnapshotEvent | BacktestEquitySnapshotEvent] = sorted(
+        [*broker_snapshots, *backtest_snapshots],
+        key=lambda s: s.recorded_at,
+    )
     snapshot_summary = _summarize_snapshots(snapshots)
 
     open_questions = _derive_open_questions(metrics, benchmark, snapshot_summary)
@@ -122,7 +140,9 @@ def assemble_trust_report(
     )
 
 
-def _summarize_snapshots(snapshots: list[PortfolioSnapshotEvent]) -> SnapshotSummary:
+def _summarize_snapshots(
+    snapshots: list[PortfolioSnapshotEvent | BacktestEquitySnapshotEvent],
+) -> SnapshotSummary:
     if not snapshots:
         return SnapshotSummary(
             snapshot_count=0,
