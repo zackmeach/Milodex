@@ -1657,18 +1657,47 @@ class BenchCommandFacade:
             )
             return self._finish_orchestration_job(job_ref, error_result)
 
-        session_id = str(getattr(result, "session_id", "") or "") or self._latest_open_session_id(
-            proposal.strategy_id
-        )
         durable_refs = {
             "strategy_id": proposal.strategy_id,
             "runner_pid": str(getattr(result, "pid", "")),
             "stop_request_path": str(getattr(result, "stop_request_path", "")),
             "action": "start_paper_runner",
         }
-        if session_id:
-            durable_refs["session_id"] = session_id
         command = tuple(getattr(result, "command", ()))
+        session_id = self._latest_open_session_id(proposal.strategy_id)
+        if not session_id:
+            error_result = CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+                status="error",
+                durable_refs=durable_refs,
+                blockers=[
+                    Blocker(
+                        reason_code="runner_audit_link_missing",
+                        message=(
+                            "Paper runner start launched, but Bench could not link it "
+                            "to an open strategy_runs session. Submitted runner-control "
+                            "results require durable audit evidence (ADR 0051)."
+                        ),
+                        context={
+                            "strategy_id": proposal.strategy_id,
+                            "runner_pid": durable_refs["runner_pid"],
+                            "stop_request_path": durable_refs["stop_request_path"],
+                        },
+                    )
+                ],
+                data={
+                    "strategy_id": proposal.strategy_id,
+                    "runner_pid": getattr(result, "pid", None),
+                    "session_id": None,
+                    "command": list(command),
+                },
+                submitted_at=getattr(result, "launched_at", self._now()),
+                audit_event_id=None,
+            )
+            return self._finish_orchestration_job(job_ref, error_result)
+
+        durable_refs["session_id"] = session_id
         submit_result = CommandResult(
             proposal_id=proposal.proposal_id,
             action_family=ACTION_FAMILY_START_PAPER_RUNNER,
@@ -1749,6 +1778,27 @@ class BenchCommandFacade:
                 ],
             )
         control = self._paper_runner_control
+        session_id = self._latest_open_session_id(proposal.strategy_id)
+        if not session_id:
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                status="blocked",
+                blockers=[
+                    Blocker(
+                        reason_code="runner_audit_link_missing",
+                        message=(
+                            "Controlled stop requires an open strategy_runs session "
+                            "so the submit can link durable audit evidence (ADR 0051)."
+                        ),
+                        context={
+                            "strategy_id": proposal.strategy_id,
+                            "lock_holder": holder,
+                        },
+                    )
+                ],
+            )
+
         job_ref = self._create_orchestration_job(
             proposal,
             action_type="paper_session_stop",
@@ -1773,7 +1823,6 @@ class BenchCommandFacade:
             )
             return self._finish_orchestration_job(job_ref, error_result)
 
-        session_id = self._latest_open_session_id(proposal.strategy_id)
         durable_refs = {
             "strategy_id": proposal.strategy_id,
             "stop_request_path": str(getattr(result, "request_path", "")),
@@ -1782,8 +1831,7 @@ class BenchCommandFacade:
             "kill_switch": "false",
             "action": "stop_paper_runner",
         }
-        if session_id:
-            durable_refs["session_id"] = session_id
+        durable_refs["session_id"] = session_id
         submit_result = CommandResult(
             proposal_id=proposal.proposal_id,
             action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
