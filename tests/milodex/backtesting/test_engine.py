@@ -110,6 +110,7 @@ def _make_loaded_strategy(
     config.path = effective_path
     config.parameters = {"ma_filter_length": 3, "allocation_pct": 0.9}
     config.backtest = {"slippage_pct": 0.001, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
 
     context = StrategyContext(
@@ -994,9 +995,7 @@ def test_engine_records_portfolio_snapshot_at_run_end():
 
     # portfolio_snapshots must be empty — no broker data from a backtest
     broker_snapshots = store.list_portfolio_snapshots_for_session(result.run_id)
-    assert broker_snapshots == [], (
-        "portfolio_snapshots must not contain backtest data (ADR 0053)."
-    )
+    assert broker_snapshots == [], "portfolio_snapshots must not contain backtest data (ADR 0053)."
 
 
 def test_engine_run_window_without_coverage_fails_before_snapshots():
@@ -1047,9 +1046,7 @@ def test_simulate_writes_only_to_backtest_equity_snapshots():
     db_path = store._path
     with sqlite3.connect(db_path) as con:
         broker_before = con.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
-        bt_before = con.execute(
-            "SELECT COUNT(*) FROM backtest_equity_snapshots"
-        ).fetchone()[0]
+        bt_before = con.execute("SELECT COUNT(*) FROM backtest_equity_snapshots").fetchone()[0]
 
     engine = BacktestEngine(
         loaded=loaded,
@@ -1062,9 +1059,7 @@ def test_simulate_writes_only_to_backtest_equity_snapshots():
 
     with sqlite3.connect(db_path) as con:
         broker_after = con.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
-        bt_after = con.execute(
-            "SELECT COUNT(*) FROM backtest_equity_snapshots"
-        ).fetchone()[0]
+        bt_after = con.execute("SELECT COUNT(*) FROM backtest_equity_snapshots").fetchone()[0]
 
     assert broker_after == broker_before, (
         "portfolio_snapshots must be unchanged after a backtest run (ADR 0053)"

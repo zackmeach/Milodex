@@ -1,0 +1,70 @@
+# Unconditional Intraday Long Benchmark — SPY v1
+#
+# Not a real strategy. This is the benchmark any intraday signal on SPY
+# must beat: "buy at 10:00 ET, sell at 15:55 ET, every full session."
+# A long-only strategy on an asset with secular drift (SPY) will show
+# positive P&L from random entries — the floor is the unconditional
+# intraday long return. If a candidate strategy doesn't beat this
+# benchmark after realistic slippage, it has zero edge and is just
+# capturing drift with extra steps.
+#
+# Tempo / universe / risk / slippage MUST match the paired ORB config
+# (breakout.orb.intraday.spy.v1) so they compete on identical footing.
+#
+# Rules in code: src/milodex/strategies/bench_unconditional_intraday_long.py
+#
+# Use:
+#   1. Run this backtest over the same window as the candidate strategy:
+#      python -m milodex.cli.main backtest \
+#        benchmark.unconditional_intraday_long.spy.v1 \
+#        --start 2022-01-01 --end 2025-12-31 --walk-forward
+#   2. Compare reports manually. Candidate eligible for paper-stage
+#      promotion if its Sharpe > benchmark's Sharpe AND Sharpe >= 0.3.
+#
+# Promotion gate override at the per-strategy level is not yet wired
+# through policy.py — the comparison check is operator-enforced at
+# promote-time. See plan: docs/superpowers/plans/2026-05-20-intraday-backtest-engine.md.
+
+strategy:
+  id: "benchmark.unconditional_intraday_long.spy.v1"
+  family: "benchmark"
+  template: "unconditional_intraday_long"
+  variant: "spy"
+  version: 1
+  description: >
+    Benchmark: long SPY from the first bar after the opening range until
+    the time-stop bar 5min before close. Every full session. Half-days
+    skipped (matches ORB skip behavior). Provides the floor that any
+    intraday SPY signal must beat — the unconditional intraday long
+    return after realistic slippage.
+  enabled: true
+
+  universe_ref: "universe.spy_only.v1"
+
+  parameters:
+    # Matches the paired ORB: opening range 30 min, exit 5 min before close.
+    opening_range_minutes: 30
+    exit_minutes_before_close: 5
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    # MUST match ORB's slippage_pct so the comparison is fair.
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []

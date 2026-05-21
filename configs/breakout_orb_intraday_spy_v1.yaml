@@ -1,0 +1,86 @@
+# Opening Range Breakout (ORB) Intraday SPY — v1
+#
+# First intraday strategy in the bank. 5-minute bars on SPY, long-only,
+# true intraday round-trip (entry + exit same session).
+#
+# Honest framing: ORB on SPY is the most heavily competed-away intraday
+# pattern in equities (Crabel 1990 → 30+ years of public discussion),
+# and post-2022 the 0DTE options boom has materially changed SPY
+# intraday microstructure via dealer gamma hedging around the open.
+# This template exists to establish the validation infrastructure for
+# intraday signals, paired with the unconditional-intraday-long
+# benchmark (benchmark.unconditional_intraday_long.spy.v1). Promotion
+# requires Sharpe(ORB) > Sharpe(benchmark) AND Sharpe(ORB) >= 0.3 —
+# enforced manually at promote-time since per-strategy gate overrides
+# don't yet exist in policy.py.
+#
+# Rules in code: src/milodex/strategies/breakout_orb_intraday.py
+# Session helpers: src/milodex/strategies/_session_intraday.py
+#
+# See plan: docs/superpowers/plans/2026-05-20-intraday-backtest-engine.md
+# Background: FINRA Regulatory Notice 26-10 (effective 2026-06-04)
+# decommissions the PDT rule, making intraday round-trip strategies
+# viable on sub-$25k margin accounts. Paper trading is unconstrained.
+
+strategy:
+  id: "breakout.orb.intraday.spy.v1"
+  family: "breakout"
+  template: "orb.intraday"
+  variant: "spy"
+  version: 1
+  description: >
+    Opening range breakout on SPY, 5-minute bars, 30-minute opening range,
+    60-minute entry window, long-only, intraday round-trip with hard stop
+    on range re-entry and time-stop 5min before close. Half-day sessions
+    skipped. Expects null result; harness exercise + intraday validation
+    infrastructure.
+  enabled: true
+
+  universe_ref: "universe.spy_only.v1"
+
+  parameters:
+    # Opening range = first ``opening_range_minutes`` after 9:30 ET (the
+    # 30-min default = 6 5min bars covering 9:30-9:55).
+    opening_range_minutes: 30
+    # Entry window = [opening_range_minutes, opening_range_minutes +
+    # entry_window_minutes). With (30, 60) the window is [10:00, 11:00) ET.
+    entry_window_minutes: 60
+    # Forced exit ``exit_minutes_before_close`` before session close.
+    # 5min before close = 15:55 ET on full sessions, 12:55 ET on half-days.
+    exit_minutes_before_close: 5
+    # Per-trade sizing. 10% of equity goes into the single SPY position.
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "5Min"
+    # min/max_hold_days fields are part of the schema but semantically
+    # less meaningful for intraday round-trip — the time-stop bar is the
+    # primary holding-period control.
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    # 10% per position cap matches the strategy's parameters.per_position_notional_pct.
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    # Strategy-level stop_loss_pct fallback — the primary stop is structural
+    # (range_low re-entry), but the risk layer's stop_loss_pct still applies.
+    stop_loss_pct: 0.01
+
+  stage: "backtest"
+
+  backtest:
+    # Alpaca charges $0/trade on retail equities; the engine's
+    # commission_per_trade is a flat USD-per-fill quantity, not a basis-point
+    # rate. Friction lives in slippage_pct below.
+    commission_per_trade: 0.00
+    # Intraday momentum-chasing entries on SPY warrant higher slippage than
+    # the universe default (3 bps for daily). 5 bps captures spread cross +
+    # adverse selection on breakout fills. Both ORB and the benchmark MUST
+    # use the same value so they compete on identical footing.
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []

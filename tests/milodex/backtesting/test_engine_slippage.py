@@ -64,6 +64,7 @@ def _make_loaded(
     config.path = config_path
     config.parameters = {}
     config.backtest = backtest_section
+    config.tempo = {"bar_size": "1D"}
     config.risk = {}
     config.universe = universe
 

@@ -11,15 +11,19 @@ Six strategies have graduated to paper testing and are authorized to run:
 - `momentum.daily.tsmom.curated_largecap.v1`
 - `breakout.daily.donchian_20_10.sector_etfs.v1`
 
-Six strategies remain at backtest stage and are blocked from promotion. See the blocked table below for the reason each one failed and what would need to change.
+Seven strategies remain at backtest stage and are blocked from promotion. See the blocked table below for the reason each one failed and what would need to change. The newest addition is the first intraday candidate (`breakout.orb.intraday.spy.v1`), which produced the expected null result on 2022–2025 walk-forward — see callout below.
 
 ---
 
 ## As of date and source of truth
 
-This document reflects master at commit `7d5fd0c` (2026-05-16).
+This document reflects `feat/intraday-orb-spy-v1` (2026-05-20).
 
-Stages and metrics are unchanged from the 2026-05-07 baseline (commit `8fe357c`): six strategies at paper, six blocked at backtest. The only event-store change since is a fresh `lifecycle_exempt` paper record for `regime.daily.sma200_rotation.spy_shy.v1` (`recorded_at = 2026-05-15T19:06:35Z`, from the phase-one paper-lifecycle work in PR #146). It re-affirms the existing regime paper status under policy R-PRM-004 — it does not change the strategy's stage, evidence run, or walk-forward metrics, which remain as listed in the paper-stage table below.
+Changes since the 2026-05-16 (commit `7d5fd0c`) update:
+- First intraday strategy run end-to-end through the new intraday backtest engine ([Milodex#164](https://github.com/zackmeach/Milodex/pull/164)): `breakout.orb.intraday.spy.v1` over 2022–2025 walk-forward. Result is a clean negative-Sharpe null. Added to the blocked table below.
+- Paired benchmark `benchmark.unconditional_intraday_long.spy.v1` was run over the same window. It is not a promotion candidate — it exists so that any intraday signal can be measured against unconditional intraday long on the same universe and friction.
+
+Paper-stage roster is unchanged: six strategies at paper, now seven blocked at backtest.
 
 The authoritative data source is `data/milodex.db`. The tables that drive this document are `promotions` and `backtest_runs`. The promotion records are the binding source for stage; backtest run metadata is the source for all Sharpe, drawdown, and trade-count figures.
 
@@ -134,6 +138,7 @@ Walk-forward methodology and canonical window 2020-01-01 to 2024-12-31 per ADR 0
 | `momentum.daily.xsec_rotation.sector_etfs.v1` | `afe46162-d3ad-4737-9420-ce3b69674c11` | 0.22 | 18.54 | 390 | BLOCK `[S][D]` | Sharpe 0.22 and MaxDD 18.54% both fail. 2 of 4 windows were negative (single-window-dependency flag set). Both gates fail independently. |
 | `seasonality.daily.turn_of_month.spy.v1` | `89cbb47e-2eb7-4199-9ce4-681bbd224eb3` | -0.27 | 11.59 | 40 | BLOCK `[S]` | OOS Sharpe is negative (-0.27). Whole-period in-sample showed +0.33, making this a textbook overfitting case — the effect disappears OOS. Per-window Sharpe std is 1.40 (extreme regime sensitivity: 2 positive windows, 2 negative). No path to graduation without a structurally different signal. |
 | `momentum.daily.dual_absolute.gem_weekly.v1` | `41777d12-bc1d-46aa-a256-ce9abc1a31dd` | 0.83 | 17.88 | 20 | BLOCK `[D][N]` | See callout below. |
+| `breakout.orb.intraday.spy.v1` | `1dc31aa7-5a15-4c7d-90d6-2f02281ac701` | -1.53 | 2.61 | 790 | BLOCK `[S]` | See intraday callout below. Window 2022–2025, not 2020–2024 (intraday data depth limit). Lost head-to-head against `benchmark.unconditional_intraday_long.spy.v1` (-1.53 vs -1.27). |
 
 ### Callout: `momentum.daily.dual_absolute.gem_weekly.v1` — structural gate tension
 
@@ -150,11 +155,37 @@ The MaxDD failure may be addressable with a tighter position-sizing or stop rule
 
 Do not promote. Do not retire. Keep the run record in place.
 
+### Callout: `breakout.orb.intraday.spy.v1` — first intraday candidate, expected null result
+
+This is the first strategy to use the intraday backtest engine ([Milodex#164](https://github.com/zackmeach/Milodex/pull/164)). The walk-forward result is a clean negative-Sharpe null exactly as the plan predicted. The harness is now proven to honestly evaluate intraday signals.
+
+| metric | ORB | benchmark (unconditional intraday long SPY) |
+|---|---|---|
+| Trades | 790 | 1581 |
+| Total return | -2.56% | -4.86% |
+| Sharpe | -1.53 | -1.27 |
+| Max drawdown | 2.61% | 5.14% |
+| Positive windows | 0 / 4 | 0 / 4 |
+
+ORB has *better* total return than the benchmark because lower trade frequency means less cumulative friction (5 bps slippage × ~790 fills vs ~1581 fills). But ORB's risk-adjusted Sharpe is *worse* than the benchmark. The strategy is filtering OK in nominal terms (avoiding some bad trades) but the volatility cost of the breakout filter exceeds the return benefit. Both fail the capital-readiness Sharpe floor.
+
+Promotion verdict: stays at `stage: backtest`. ORB does not beat its benchmark and neither candidate meets the capital-readiness gate.
+
+This is also the first place in the bank where the canonical walk-forward window diverges from the bank standard (2020–2024). The 2022–2025 window was chosen because Alpaca's free-tier intraday data depth past 2022 is unverified — the 2020–2021 portion would either fail to fetch or fail with partial-history data quality issues. The 4-year window still samples three regimes (2022 rate-shock bear, 2023 AI rally, 2024–2025 bull tape) and produces 800 OOS sessions worth of trades, well above the statistical minimum.
+
+The benchmark sibling (`benchmark.unconditional_intraday_long.spy.v1`) is the comparison floor. It is intentionally trivial: buy at the post-opening-range bar, sell at the time-stop bar, every full session. It is not a promotion candidate; it exists so that any intraday signal can be measured against unconditional intraday long on the same universe and friction. ORB's losing this comparison settles the question for v1 of this signal.
+
+**Honest framing matches expectations.** ORB on SPY is one of the most heavily competed-away intraday patterns (Crabel 1990 → 30+ years of public discussion), and post-2022 the 0DTE options boom has materially changed SPY intraday microstructure (dealer gamma hedging frequently fades opening-range breakouts). Finding a positive edge here was always implausible. The value of this PR is the harness — it lets the next intraday hypothesis ride on infrastructure that has been validated against a known-null signal.
+
+Do not promote. Do not retire. The negative result is also valuable evidence: future intraday candidates need to beat both the benchmark AND clear the 0.3 Sharpe floor before any paper-stage discussion.
+
 ---
 
 ## Methodology notes
 
 Walk-forward validation splits the canonical evaluation window (2020-01-01 to 2024-12-31) into 4 approximately equal out-of-sample test segments, each preceded by a training segment of similar length. The "OOS aggregate" Sharpe and drawdown figures reported in this document are computed across all test segments concatenated — not from any single window. This is the correct figure for gate evaluation per ADR 0021.
+
+Intraday strategies use a shifted window (2022-01-01 to 2025-12-31) because Alpaca's free-tier intraday data depth past 2022 is unverified. The methodology is otherwise identical: 4 OOS test segments, aggregate Sharpe across concatenated segments, same capital-readiness gates. The window shift is documented per-strategy in the blocked-table notes.
 
 The walk-forward approach is required per ADR 0030, which establishes that backtest runs are exploratory and that whole-period (in-sample) results are inadmissible for promotion gating. The seasonality strategy in this bank is a concrete illustration of why: its whole-period Sharpe was +0.33 while its OOS aggregate was -0.27.
 

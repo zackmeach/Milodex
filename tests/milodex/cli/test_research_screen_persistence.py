@@ -70,6 +70,7 @@ def _make_loaded(strategy_id: str, family: str, universe: tuple[str, ...]):
     config.path = yaml_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
+    config.tempo = {"bar_size": "1D"}
     config.universe = universe
 
     context = StrategyContext(

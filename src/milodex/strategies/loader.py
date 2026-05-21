@@ -321,9 +321,13 @@ def compute_config_hash(path: Path) -> str:
 
 def build_default_registry() -> StrategyRegistry:
     """Return a registry preloaded with built-in strategy classes."""
+    from milodex.strategies.bench_unconditional_intraday_long import (
+        BenchUnconditionalIntradayLongStrategy,
+    )
     from milodex.strategies.breakout_atr_channel import BreakoutAtrChannelStrategy
     from milodex.strategies.breakout_donchian import BreakoutDonchianStrategy
     from milodex.strategies.breakout_nr7_inside import BreakoutNr7InsideStrategy
+    from milodex.strategies.breakout_orb_intraday import BreakoutOrbIntradayStrategy
     from milodex.strategies.meanrev_bbands_lowerband import MeanrevBbandsLowerbandStrategy
     from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
     from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
@@ -345,8 +349,10 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(BreakoutAtrChannelStrategy)
     registry.register(BreakoutDonchianStrategy)
     registry.register(BreakoutNr7InsideStrategy)
+    registry.register(BreakoutOrbIntradayStrategy)
     registry.register(MomentumDualAbsoluteGemStrategy)
     registry.register(MomentumXsecRotationStrategy)
+    registry.register(BenchUnconditionalIntradayLongStrategy)
     return registry
 
 

@@ -115,9 +115,7 @@ class TestWarmupVixCache:
         with patch(
             "milodex.data.tape_cache_warmup.fetch_vix_history", return_value=vix_df
         ) as mock_fetch:
-            with patch(
-                "milodex.data.tape_cache_warmup.datetime"
-            ) as mock_dt:
+            with patch("milodex.data.tape_cache_warmup.datetime") as mock_dt:
                 mock_dt.now.return_value = datetime(2025, 1, 20, tzinfo=UTC)
                 mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
                 warmup_vix_cache(cache_dir=tmp_path, cache_version="v3", lookback_days=30)

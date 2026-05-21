@@ -141,7 +141,13 @@ class TestFetchVixHistory:
             result = fetch_vix_history(date(2025, 1, 15), date(2025, 1, 16))
         assert not result.empty
         assert list(result.columns) == [
-            "timestamp", "open", "high", "low", "close", "volume", "vwap"
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "vwap",
         ]
 
     def test_returns_empty_on_network_error(self):
@@ -193,7 +199,13 @@ class TestFetchVixHistory:
             result = fetch_vix_history(date(2025, 1, 15), date(2025, 1, 16))
         assert result.empty
         assert list(result.columns) == [
-            "timestamp", "open", "high", "low", "close", "volume", "vwap"
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "vwap",
         ]
 
 
