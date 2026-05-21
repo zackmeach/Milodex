@@ -55,7 +55,7 @@ Parallelism guidance:
 |---|---|---|---|---|---|
 | RM-001 | AUDIT-001 | Bench paper-promotion gate parity | P0 | done | none |
 | RM-002 | AUDIT-001 | Promotion governance/evidence interface exploration | P1 | proposed | RM-001 |
-| RM-003a | AUDIT-002 | Runner audit linkage | P0 | ready | RM-001 |
+| RM-003a | AUDIT-002 | Runner audit linkage | P0 | done | RM-001 |
 | RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | proposed | RM-003a |
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | ready | none |
 | RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | proposed | RM-001, RM-003a, RM-003b |
@@ -193,7 +193,7 @@ Done criteria:
 ## RM-003a - Runner Audit Linkage
 
 Source: AUDIT-002
-Status: ready
+Status: done
 Priority: P0
 Last verified: 2026-05-21
 Dependencies: RM-001

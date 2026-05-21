@@ -38,10 +38,14 @@ from milodex.commands.bench import (
     ACTION_FAMILY_STOP_PAPER_RUNNER,
     BenchCommandFacade,
 )
-from milodex.core.event_store import BacktestRunEvent, EventStore
+from milodex.core.event_store import BacktestRunEvent, EventStore, StrategyRunEvent
 from milodex.gui import bench_command_bridge as bridge_module
 from milodex.gui.bench_command_bridge import BenchCommandBridge
 from milodex.risk.policy import RiskPolicy
+from milodex.strategies.paper_runner_control import (
+    ControlledStopRequestResult,
+    PaperRunnerStartResult,
+)
 
 # Reuse the canonical strategy_id pattern from the facade tests.
 STRATEGY_ID = "sample.daily.example.curated.v1"
@@ -106,6 +110,19 @@ def _append_walk_forward_backtest_run(event_store: EventStore, *, run_id: str) -
                 },
             },
             ended_at=now,
+        )
+    )
+
+
+def _append_open_strategy_run(event_store: EventStore, *, session_id: str) -> None:
+    event_store.append_strategy_run(
+        StrategyRunEvent(
+            session_id=session_id,
+            strategy_id=STRATEGY_ID,
+            started_at=datetime(2026, 5, 15, 11, 0, 0),
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
         )
     )
 
@@ -203,31 +220,22 @@ class _FakePaperRunnerControl:
 
     def start(self, strategy_id: str):
         self.starts.append(strategy_id)
-        return type(
-            "StartResult",
-            (),
-            {
-                "strategy_id": strategy_id,
-                "pid": 5150,
-                "command": ("python", "-m", "milodex.cli.main", "strategy", "run", strategy_id),
-                "stop_request_path": self.locks_dir / "stop.json",
-                "launched_at": datetime(2026, 5, 15, 12, 0, 0),
-                "session_id": "bridge-start-session",
-            },
-        )()
+        return PaperRunnerStartResult(
+            strategy_id=strategy_id,
+            pid=5150,
+            command=("python", "-m", "milodex.cli.main", "strategy", "run", strategy_id),
+            stop_request_path=self.locks_dir / "stop.json",
+            launched_at=datetime(2026, 5, 15, 12, 0, 0),
+        )
 
     def request_controlled_stop(self, strategy_id: str, *, holder: dict):
         self.stops.append(strategy_id)
-        return type(
-            "StopResult",
-            (),
-            {
-                "strategy_id": strategy_id,
-                "request_path": self.locks_dir / "stop.json",
-                "requested_at": datetime(2026, 5, 15, 12, 1, 0),
-                "holder": holder,
-            },
-        )()
+        return ControlledStopRequestResult(
+            strategy_id=strategy_id,
+            request_path=self.locks_dir / "stop.json",
+            requested_at=datetime(2026, 5, 15, 12, 1, 0),
+            holder=holder,
+        )
 
 
 def _seed_runner_lock(locks_dir: Path) -> None:
@@ -593,6 +601,7 @@ def test_submit_start_paper_runner_with_known_id_submits_and_refreshes(
     config_dir: Path, locks_dir: Path, event_store: EventStore
 ) -> None:
     _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-start-session")
     control = _FakePaperRunnerControl(locks_dir)
     facade = BenchCommandFacade(
         config_dir=config_dir,
@@ -610,7 +619,33 @@ def test_submit_start_paper_runner_with_known_id_submits_and_refreshes(
     assert result["status"] == "submitted", result["blockers"]
     assert result["durable_refs"]["runner_pid"] == "5150"
     assert result["durable_refs"]["session_id"] == "bridge-start-session"
+    assert result["audit_event_id"] == "bridge-start-session"
     assert fake_state.refresh_kicks == 1
+    assert control.starts == [STRATEGY_ID]
+
+
+def test_submit_start_paper_runner_missing_audit_link_surfaces_error_without_refresh(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        paper_runner_control=control,
+    )
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+
+    proposal = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    result = bridge.submitStartPaperRunner(proposal["proposal_id"])
+
+    assert result["status"] == "error"
+    assert result["audit_event_id"] is None
+    assert result["blockers"][0]["reason_code"] == "runner_audit_link_missing"
+    assert fake_state.refresh_kicks == 0
     assert control.starts == [STRATEGY_ID]
 
 
@@ -618,6 +653,7 @@ def test_submit_stop_paper_runner_with_known_id_submits_and_refreshes(
     config_dir: Path, locks_dir: Path, event_store: EventStore
 ) -> None:
     _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-stop-session")
     _seed_runner_lock(locks_dir)
     control = _FakePaperRunnerControl(locks_dir)
     facade = BenchCommandFacade(
@@ -635,6 +671,8 @@ def test_submit_stop_paper_runner_with_known_id_submits_and_refreshes(
 
     assert result["status"] == "submitted", result["blockers"]
     assert result["durable_refs"]["exit_reason"] == "controlled_stop"
+    assert result["durable_refs"]["session_id"] == "bridge-stop-session"
+    assert result["audit_event_id"] == "bridge-stop-session"
     assert result["data"]["kill_switch"] is False
     assert fake_state.refresh_kicks == 1
     assert control.stops == [STRATEGY_ID]
@@ -644,6 +682,7 @@ def test_submit_paper_runner_unknown_or_consumed_ids_return_structured_errors(
     config_dir: Path, locks_dir: Path, event_store: EventStore
 ) -> None:
     _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-consumed-start-session")
     facade = BenchCommandFacade(
         config_dir=config_dir,
         locks_dir=locks_dir,
@@ -671,6 +710,7 @@ def test_submit_paper_runner_async_methods_return_queued_and_emit_final_results(
     config_dir: Path, locks_dir: Path, event_store: EventStore
 ) -> None:
     _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-async-session")
     control = _FakePaperRunnerControl(locks_dir)
     facade = BenchCommandFacade(
         config_dir=config_dir,

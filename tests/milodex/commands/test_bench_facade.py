@@ -24,7 +24,6 @@ import textwrap
 from dataclasses import FrozenInstanceError, is_dataclass
 from datetime import date, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -52,6 +51,10 @@ from milodex.commands.bench import (
 from milodex.core.event_store import BacktestRunEvent, EventStore, StrategyRunEvent
 from milodex.data.models import BarSet
 from milodex.risk.policy import RiskPolicy
+from milodex.strategies.paper_runner_control import (
+    ControlledStopRequestResult,
+    PaperRunnerStartResult,
+)
 
 # Canonical id used by every test config. The loader cross-validates
 # strategy.id against family/template/variant/version, so we pin one shape
@@ -129,18 +132,17 @@ class _FakePaperRunnerControl:
 
     def start(self, strategy_id: str):
         self.starts.append(strategy_id)
-        return SimpleNamespace(
+        return PaperRunnerStartResult(
             strategy_id=strategy_id,
             pid=4242,
             command=("python", "-m", "milodex.cli.main", "strategy", "run", strategy_id),
             stop_request_path=self.locks_dir / f"{strategy_id}.controlled_stop.json",
             launched_at=datetime(2026, 5, 15, 12, 0, 0),
-            session_id="session-from-fake-control",
         )
 
     def request_controlled_stop(self, strategy_id: str, *, holder: dict):
         self.stops.append((strategy_id, holder))
-        return SimpleNamespace(
+        return ControlledStopRequestResult(
             strategy_id=strategy_id,
             request_path=self.locks_dir / f"{strategy_id}.controlled_stop.json",
             requested_at=datetime(2026, 5, 15, 12, 1, 0),
@@ -165,6 +167,19 @@ def locks_dir(tmp_path: Path) -> Path:
 @pytest.fixture
 def event_store(tmp_path: Path) -> EventStore:
     return EventStore(tmp_path / "events" / "milodex.db")
+
+
+def _append_open_strategy_run(event_store: EventStore, *, session_id: str) -> None:
+    event_store.append_strategy_run(
+        StrategyRunEvent(
+            session_id=session_id,
+            strategy_id=STRATEGY_ID,
+            started_at=datetime(2026, 5, 15, 11, 0, 0),
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
 
 
 @pytest.fixture
@@ -631,9 +646,10 @@ def test_propose_demote_refuses_micro_live_and_live_targets(make_facade, config_
 
 
 def test_submit_start_paper_runner_launches_control_and_returns_refs(
-    make_facade, config_dir: Path, locks_dir: Path
+    make_facade, config_dir: Path, locks_dir: Path, event_store: EventStore
 ) -> None:
     _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="active-session")
     control = _FakePaperRunnerControl(locks_dir)
     facade = make_facade(paper_runner_control=control)
     proposal = facade.propose_start_paper_runner(STRATEGY_ID)
@@ -644,8 +660,26 @@ def test_submit_start_paper_runner_launches_control_and_returns_refs(
     assert control.starts == [STRATEGY_ID]
     assert result.durable_refs["strategy_id"] == STRATEGY_ID
     assert result.durable_refs["runner_pid"] == "4242"
-    assert result.durable_refs["session_id"] == "session-from-fake-control"
+    assert result.durable_refs["session_id"] == "active-session"
+    assert result.audit_event_id == "active-session"
     assert result.data["command"][-1] == STRATEGY_ID
+
+
+def test_submit_start_paper_runner_errors_without_audit_linkage(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_start_paper_runner(proposal)
+
+    assert result.status == "error"
+    assert control.starts == [STRATEGY_ID]
+    assert result.audit_event_id is None
+    assert result.durable_refs["runner_pid"] == "4242"
+    assert result.blockers[0].reason_code == "runner_audit_link_missing"
 
 
 def test_submit_start_paper_runner_blocks_when_revalidation_fails(
@@ -683,16 +717,7 @@ def test_submit_stop_paper_runner_writes_controlled_stop_request(
 ) -> None:
     _write_strategy(config_dir, stage="paper")
     _seed_runner_lock(locks_dir)
-    event_store.append_strategy_run(
-        StrategyRunEvent(
-            session_id="active-session",
-            strategy_id=STRATEGY_ID,
-            started_at=datetime(2026, 5, 15, 11, 0, 0),
-            ended_at=None,
-            exit_reason=None,
-            metadata={},
-        )
-    )
+    _append_open_strategy_run(event_store, session_id="active-session")
     control = _FakePaperRunnerControl(locks_dir)
     facade = make_facade(paper_runner_control=control)
     proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
@@ -704,7 +729,25 @@ def test_submit_stop_paper_runner_writes_controlled_stop_request(
     assert result.durable_refs["exit_reason"] == "controlled_stop"
     assert result.durable_refs["kill_switch"] == "false"
     assert result.durable_refs["session_id"] == "active-session"
+    assert result.audit_event_id == "active-session"
     assert result.data["kill_switch"] is False
+
+
+def test_submit_stop_paper_runner_blocks_without_audit_linkage(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    _seed_runner_lock(locks_dir)
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
+    proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_stop_paper_runner(proposal)
+
+    assert result.status == "blocked"
+    assert control.stops == []
+    assert result.audit_event_id is None
+    assert result.blockers[0].reason_code == "runner_audit_link_missing"
 
 
 def test_submit_stop_paper_runner_blocks_without_active_runner(
