@@ -17,7 +17,7 @@
 # Rules in code: src/milodex/strategies/breakout_orb_intraday.py
 # Session helpers: src/milodex/strategies/_session_intraday.py
 #
-# See plan: ~/.claude/plans/fancy-drifting-crystal.md
+# See plan: docs/superpowers/plans/2026-05-20-intraday-backtest-engine.md
 # Background: FINRA Regulatory Notice 26-10 (effective 2026-06-04)
 # decommissions the PDT rule, making intraday round-trip strategies
 # viable on sub-$25k margin accounts. Paper trading is unconstrained.

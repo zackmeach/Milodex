@@ -272,7 +272,7 @@ Under `advance → evaluate → drain`: cursors advance first (bar N-1 becomes v
 ## References
 
 - Branch: `feat/intraday-orb-spy-v1` (commit `f587d65`)
-- Strategy plan: `~/.claude/plans/fancy-drifting-crystal.md`
+- Strategy plan (ORB + benchmark, prior PR): originally captured in a plan-mode session; commits `f587d65`, `58a6e11`
 - Discovery transcript: brainstorm session 2026-05-20
 - Engine code: `src/milodex/backtesting/engine.py`
 - Runner timeframe map: `src/milodex/strategies/runner.py:34-36`, `runner.py:562-570`

@@ -23,7 +23,7 @@
 #
 # Promotion gate override at the per-strategy level is not yet wired
 # through policy.py — the comparison check is operator-enforced at
-# promote-time. See plan: ~/.claude/plans/fancy-drifting-crystal.md.
+# promote-time. See plan: docs/superpowers/plans/2026-05-20-intraday-backtest-engine.md.
 
 strategy:
   id: "benchmark.unconditional_intraday_long.spy.v1"
