@@ -57,7 +57,7 @@ Parallelism guidance:
 | RM-002 | AUDIT-001 | Promotion governance/evidence interface exploration | P1 | proposed | RM-001 |
 | RM-003a | AUDIT-002 | Runner audit linkage | P0 | done | RM-001 |
 | RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | proposed | RM-003a |
-| RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | ready | none |
+| RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
 | RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | proposed | RM-001, RM-003a, RM-003b |
 | RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | proposed | RM-001, RM-003a, RM-003b, RM-004 |
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | proposed | RM-003a, RM-003b, RM-004 |
@@ -311,7 +311,7 @@ Done criteria:
 ## RM-004 - Risk Profile Activation/Audit Module
 
 Source: AUDIT-003
-Status: ready
+Status: done
 Priority: P0
 Last verified: 2026-05-21
 Dependencies: none

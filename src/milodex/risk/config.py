@@ -59,6 +59,10 @@ class CeilingViolationError(RuntimeError):
     """
 
 
+class RiskProfileOverlayError(RuntimeError):
+    """Raised when a shipped risk-profile overlay is malformed."""
+
+
 @dataclass(frozen=True)
 class RiskDefaults:
     """Global execution and risk guardrails."""
@@ -169,8 +173,8 @@ def get_active_profile_name() -> str:
 def _load_overlay(profile_name: str, configs_dir: Path | None = None) -> dict[str, Any]:
     """Load ``configs/risk_profiles/{profile_name}.yaml`` as a dict.
 
-    Returns an empty dict when the file does not exist or fails to parse —
-    the caller handles the unknown-profile case before calling here.
+    Returns an empty dict when the file does not exist. Malformed overlays
+    raise so the caller can select the profile-appropriate fail-safe path.
     """
     base_dir = configs_dir or Path("configs")
     path = base_dir / "risk_profiles" / f"{profile_name}.yaml"
@@ -180,22 +184,15 @@ def _load_overlay(profile_name: str, configs_dir: Path | None = None) -> dict[st
         with path.open(encoding="utf-8") as fh:
             data = yaml.safe_load(fh)
         if not isinstance(data, dict):
-            logger.warning(
-                "Risk profile overlay at %s is not a YAML mapping; got %s. "
-                "Falling back to base risk_defaults.",
-                path,
-                type(data).__name__,
+            msg = (
+                f"Risk profile overlay at {path} is not a YAML mapping; "
+                f"got {type(data).__name__}."
             )
-            return {}
+            raise RiskProfileOverlayError(msg)
         return data
     except yaml.YAMLError as exc:
-        logger.warning(
-            "Risk profile overlay at %s failed to parse: %s. "
-            "Falling back to base risk_defaults.",
-            path,
-            exc,
-        )
-        return {}
+        msg = f"Risk profile overlay at {path} failed to parse: {exc}"
+        raise RiskProfileOverlayError(msg) from exc
 
 
 def _merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
@@ -282,9 +279,11 @@ def load_active_risk_profile(
     the rest of the system's use of ``get_data_dir()`` (env-var overrideable for
     test isolation via ``MILODEX_DATA_DIR``).
 
-    Three-case fallback semantics (ADR 0054):
+    Fallback semantics (ADR 0054):
     - Missing ``risk_profile.txt`` → Conservative, silently.
-    - Unknown profile name or malformed YAML → Conservative + WARNING log.
+    - Unknown profile name → Conservative + WARNING log.
+    - Malformed Standard/Aggressive overlay → Conservative + WARNING log.
+    - Malformed Conservative overlay → raise ``RuntimeError`` (refuse startup).
     - Resolved values exceed a ceiling → raise ``CeilingViolationError`` (refuse startup).
     """
     _base_path = base_path or Path("configs/risk_defaults.yaml")
@@ -307,7 +306,23 @@ def load_active_risk_profile(
         )
         active = "conservative"
 
-    overlay = _load_overlay(active, configs_dir=configs_dir)
+    try:
+        overlay = _load_overlay(active, configs_dir=configs_dir)
+    except RiskProfileOverlayError as exc:
+        if active == "conservative":
+            msg = "Conservative risk profile overlay is malformed; refusing startup."
+            raise RuntimeError(msg) from exc
+        logger.warning(
+            "Risk profile overlay for %r is malformed: %s. "
+            "Falling back to conservative.",
+            active,
+            exc,
+        )
+        try:
+            overlay = _load_overlay("conservative", configs_dir=configs_dir)
+        except RiskProfileOverlayError as conservative_exc:
+            msg = "Conservative risk profile overlay is malformed; refusing startup."
+            raise RuntimeError(msg) from conservative_exc
     merged = _merge(base, overlay)
     _validate_against_ceilings(merged)
     return _risk_defaults_from_dict(merged)

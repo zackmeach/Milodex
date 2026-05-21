@@ -8,6 +8,7 @@ profile names fall back to Conservative with a WARNING log.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,46 @@ def test_malformed_profile_falls_back_to_conservative_with_warning(
         "malformed" in rec.message.lower() or "unknown" in rec.message.lower()
         for rec in caplog.records
     )
+
+
+def test_malformed_non_conservative_overlay_falls_back_to_conservative(
+    tmp_path, monkeypatch, caplog
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MILODEX_DATA_DIR", str(tmp_path / "data"))
+    shutil.copytree(_REPO_ROOT / "configs", tmp_path / "configs")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "risk_profile.txt").write_text("standard\n", encoding="utf-8")
+    (tmp_path / "configs" / "risk_profiles" / "standard.yaml").write_text(
+        "kill_switch:\n  max_drawdown_pct: [\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING, logger="milodex.risk.config"):
+        from milodex.risk.config import load_active_risk_profile
+
+        profile = load_active_risk_profile(tmp_path / "configs" / "risk_defaults.yaml")
+
+    assert profile.kill_switch_max_drawdown_pct == 0.05
+    assert profile.max_total_exposure_pct == 0.30
+    assert any("falling back to conservative" in rec.message.lower() for rec in caplog.records)
+
+
+def test_malformed_conservative_overlay_fails_closed(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("MILODEX_DATA_DIR", str(tmp_path / "data"))
+    shutil.copytree(_REPO_ROOT / "configs", tmp_path / "configs")
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "risk_profile.txt").write_text("conservative\n", encoding="utf-8")
+    (tmp_path / "configs" / "risk_profiles" / "conservative.yaml").write_text(
+        "kill_switch:\n  max_drawdown_pct: [\n",
+        encoding="utf-8",
+    )
+
+    from milodex.risk.config import load_active_risk_profile
+
+    with pytest.raises(RuntimeError, match="Conservative.*overlay.*malformed"):
+        load_active_risk_profile(tmp_path / "configs" / "risk_defaults.yaml")
 
 
 def test_ceiling_violation_refuses_startup(tmp_path, monkeypatch):

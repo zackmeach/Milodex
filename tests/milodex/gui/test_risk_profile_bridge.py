@@ -70,6 +70,29 @@ def test_refuse_when_target_profile_unknown(bridge: RiskProfileBridge, db_path: 
 # ── refusal: active runners ───────────────────────────────────────────────────
 
 
+def test_refuse_when_current_profile_unknown_still_audits(
+    bridge: RiskProfileBridge, db_path: Path
+) -> None:
+    """Invalid selector content must refuse cleanly and write an audit row."""
+    profile_file = get_data_dir() / "risk_profile.txt"
+    profile_file.parent.mkdir(parents=True, exist_ok=True)
+    profile_file.write_text("mystery\n", encoding="utf-8")
+    refused: list[tuple[str, str]] = []
+    bridge.switchRefused.connect(lambda r, m: refused.append((r, m)))
+
+    result = bridge.attemptSwitch("standard", "standard")
+
+    assert result is False
+    assert len(refused) == 1
+    assert refused[0][0] == "invalid_current_profile"
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["success"] == 0
+    assert rows[0]["failure_reason"] == "invalid_current_profile"
+    assert rows[0]["from_profile"] == "mystery"
+    assert rows[0]["to_profile"] == "standard"
+
+
 def test_refuse_when_runners_active(
     bridge: RiskProfileBridge, db_path: Path
 ) -> None:
@@ -282,6 +305,17 @@ def test_startup_implicit_default_writes_audit_row(db_path: Path) -> None:
     assert row["to_profile"] == "conservative"
     assert row["success"] == 1
     assert row["failure_reason"] is None
+
+
+def test_startup_default_does_not_audit_when_selector_exists(db_path: Path) -> None:
+    """Startup audit is absence-only and does not claim Conservative over an existing selector."""
+    profile_file = get_data_dir() / "risk_profile.txt"
+    profile_file.parent.mkdir(parents=True, exist_ok=True)
+    profile_file.write_text("standard\n", encoding="utf-8")
+
+    record_startup_default(db_path)
+
+    assert _audit_rows(db_path) == []
 
 
 def test_record_startup_default_is_idempotent(db_path: Path) -> None:
