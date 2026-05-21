@@ -1,7 +1,6 @@
-"""Phase B tests for ``milodex.commands.bench``.
+"""Tests for the Bench command facade in ``milodex.commands.bench``.
 
-These tests pin the proposal/validation contract from ADR 0051 §3–§9 before
-any submit wiring lands. They cover:
+These tests pin the ADR 0051 proposal/validation/submit contract. They cover:
 
 - shape of ``Blocker``, ``Precondition``, ``CommandProposal``, ``CommandResult``
 - admissibility on the happy path for each action family
@@ -10,7 +9,7 @@ any submit wiring lands. They cover:
   routes, no accepted ``to_stage``)
 - the module does not import PySide6, broker, runner, or execution-write paths
 - the GUI's existing forbidden-token contract (ADR 0049 / BENCH_BOUNDARY) is
-  not weakened by Phase B
+  not weakened by Bench command wiring
 """
 
 from __future__ import annotations
@@ -69,7 +68,7 @@ _STRATEGY_YAML_TEMPLATE = textwrap.dedent(
       template: "daily.example"
       variant: "curated"
       version: 1
-      description: "Phase B facade test strategy."
+      description: "Bench facade test strategy."
       enabled: true
       universe: ["AAPL", "MSFT"]
       parameters:
@@ -1853,9 +1852,7 @@ def test_submit_promote_to_paper_threads_approved_by_from_inputs(
 def test_submit_promote_to_paper_is_exposed_by_bench_bridge(
     tmp_path: Path,
 ) -> None:
-    """Phase D2 is backend-only. The Bench bridge must NOT yet expose
-    ``proposePromoteToPaper`` / ``submitPromoteToPaper`` slots — GUI wiring
-    lands in Phase D3. The introspection slot must still return the currently
+    """The Bench bridge exposes promote-to-paper slots and reports the full
     wired GUI submit set."""
     from milodex.gui.bench_command_bridge import BenchCommandBridge
 
@@ -1934,7 +1931,7 @@ def test_facade_module_does_not_import_broker_runner_or_execution_writes() -> No
             if not stripped or stripped.startswith("#"):
                 continue
             assert not stripped.startswith(forbidden), (
-                f"milodex.commands.bench must not import {forbidden!r} in Phase B "
+                f"milodex.commands.bench must not import {forbidden!r} "
                 f"(ADR 0051 §4 / §5). Offending line: {line!r}"
             )
 
@@ -1963,10 +1960,10 @@ def test_facade_module_does_not_import_cli_internals() -> None:
 
 
 def test_gui_qml_files_still_forbid_submit_broker_eventstore() -> None:
-    """ADR 0049 perimeter survives Phase B.
+    """ADR 0049 perimeter survives Bench command wiring.
 
-    Phase B introduces no QML changes, so the existing forbidden-token
-    contract on Bench QML must still hold.
+    QML may use the command bridge, but the existing forbidden-token contract
+    on direct Bench QML mutation paths must still hold.
     """
     qml_dir = Path(__file__).resolve().parents[3] / "src" / "milodex" / "gui" / "qml" / "Milodex"
     forbidden_tokens = (
@@ -1989,5 +1986,5 @@ def test_gui_qml_files_still_forbid_submit_broker_eventstore() -> None:
         for token in forbidden_tokens:
             assert token not in src, (
                 f"{qml_path.name} contains forbidden token {token!r} "
-                "(ADR 0049 perimeter; Phase B may not weaken this)."
+                "(ADR 0049 perimeter; command wiring may not weaken this)."
             )

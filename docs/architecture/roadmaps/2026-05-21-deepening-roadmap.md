@@ -62,7 +62,7 @@ Parallelism guidance:
 | RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | proposed | RM-001, RM-003a, RM-003b, RM-004 |
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | proposed | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
-| RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | ready | none |
+| RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
 
 ## RM-001 - Bench Paper-Promotion Gate Parity
 
@@ -539,7 +539,7 @@ Done criteria:
 ## RM-009 - Stale Architecture Prose Cleanup
 
 Source: AUDIT-008
-Status: ready
+Status: done
 Priority: P3
 Last verified: 2026-05-21
 Dependencies: none

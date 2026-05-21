@@ -1,20 +1,21 @@
-"""Bench command facade — Phase B skeleton (propose-only).
+"""Bench command facade for proposed and submitted paper-lifecycle actions.
 
 This module is the single backend entry point for Bench-initiated lifecycle
-commands per ADR 0051. Phase B establishes the proposal / validation contract.
-It does not submit, does not mutate state, and does not import PySide6.
+commands per ADR 0051. It owns the proposal / validation / submit contract
+while remaining independent of PySide6 and QML.
 
-Submission is intentionally inert in this phase. Every ``submit_*`` method
-returns a structured ``CommandResult`` whose only ``Blocker`` is
-``reason_code="not_submit_capable_phase_b"``. Action-family wiring lands one
-PR at a time in Phases C–F (demote → freeze/promote → backtest → runner).
+Submit-capable action families route through existing backend seams for
+promotion governance, backtest execution, event-store audit linkage, and
+runner control. The retained ``not_submit_capable_phase_b`` blocker is a
+legacy compatibility fallback for inert submit paths, not the current state
+of the wired paper-lifecycle actions.
 
 Allowed dependencies:
 - ``milodex.promotion`` (state machine, manifest, evidence, run_evidence, stage_compat)
 - ``milodex.backtesting.walk_forward_runner`` (derive_walk_forward_spans, run_walk_forward)
 - ``milodex.strategies.loader`` (config inspection)
 - ``milodex.core.advisory_lock`` (peek-only)
-- ``milodex.core.event_store`` (read-only types; no writes from this module)
+- ``milodex.core.event_store`` (event types and orchestration/audit linkage)
 
 Forbidden dependencies:
 - ``milodex.cli.*`` (facade must not reach into CLI internals)
@@ -22,7 +23,7 @@ Forbidden dependencies:
 - ``milodex.broker.*`` direct calls
 - ``milodex.strategies.runner`` construction
 - ``milodex.execution.*`` write paths
-- YAML mutation
+- YAML mutation outside existing governance callees
 """
 
 from __future__ import annotations
@@ -91,12 +92,11 @@ ACTION_FAMILIES: tuple[str, ...] = (
 # Demotion targets the existing ``promotion.state_machine.demote`` accepts.
 DEMOTION_TARGETS: frozenset[str] = frozenset({"idle", "backtest", "disabled"})
 
-# The Phase B sentinel blocker. Every submit_* returns this until the
-# corresponding action-family wiring PR lands.
+# Legacy sentinel blocker for submit paths that deliberately remain inert.
 _NOT_SUBMIT_CAPABLE_PHASE_B = "not_submit_capable_phase_b"
 _PHASE_B_MESSAGE = (
-    "Bench command facade is in Phase B (propose-only). Submission for this "
-    "action family is not yet wired; see ADR 0051 §10 (Phases C–F)."
+    "Bench command facade still treats this action family as an inert legacy "
+    "submit path; see ADR 0051 §10 for the action-family wiring sequence."
 )
 
 
@@ -180,9 +180,9 @@ class CommandProposal:
 class CommandResult:
     """Outcome of a submit attempt.
 
-    Phase B always returns ``status="blocked"`` with the
-    ``not_submit_capable_phase_b`` blocker. The shape is fixed now so the
-    Phase C–F wiring PRs only fill in real values, never rename fields.
+    Wired submit paths return durable refs, blockers, warnings, and audit
+    linkage through this stable shape. Inert legacy paths may still return
+    ``not_submit_capable_phase_b`` without renaming fields.
     """
 
     proposal_id: str
@@ -892,8 +892,8 @@ class BenchCommandFacade:
         )
 
     # ------------------------------------------------------------------ #
-    # Submit methods — Phase B: all return the not_submit_capable_phase_b
-    # blocker. Phase C–F replace each one with the real wiring.
+    # Submit methods — wired action families route through existing backend
+    # callees and return durable refs or structured blockers.
     # ------------------------------------------------------------------ #
 
     def submit_backtest(self, proposal: CommandProposal) -> CommandResult:
@@ -1216,10 +1216,9 @@ class BenchCommandFacade:
         CLI uses, surfaces refusals as structured ``Blocker`` records, and
         returns durable identifiers on success.
 
-        Phase D2 is backend-only: this method is not yet reachable from QML.
-        The bridge still exposes only ``proposeDemote`` / ``submitDemote`` /
-        ``proposeFreezeManifest`` / ``submitFreezeManifest``. GUI wiring
-        lands in Phase D3.
+        Promote-to-paper is now reachable through the Bench bridge. The bridge
+        supplies operator identity and evidence text while this facade keeps
+        the promotion gate and governance dispatch on the backend side.
         """
         if proposal.action_family != ACTION_FAMILY_PROMOTE_TO_PAPER:
             return CommandResult(

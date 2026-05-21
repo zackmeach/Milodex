@@ -434,7 +434,7 @@ auditability work, not a first-order launch safety issue.
 ### AUDIT-008 - Stale Phase/Doc Prose Cleanup as Architecture Candidate
 
 Stale comments and docs should be fixed, especially where `bench.py` still
-describes Phase B propose-only behavior while all six action families are wired.
+describes an older inert Bench phase while all six action families are wired.
 But deleting stale prose removes complexity rather than moving it behind a seam.
 It is not a deepening opportunity.
 
@@ -448,21 +448,17 @@ Additional rejected options:
 
 ## Recommended Next Candidates
 
-1. **AUDIT-001 - Promotion governance/evidence seam**, because it has a proven
-   policy drift and directly affects the promotion pipeline. First perform the
-   narrow Bench parity bug fix, then explore the deeper interface.
-2. **AUDIT-003 - Risk profile activation/audit seam**, because it affects the
-   risk layer's trust story and audit trail.
+Execution order now lives in the roadmap, which records completed safety slices
+and dependencies. At the time of this cleanup pass, the current ready item is
+**RM-009 - Stale architecture prose cleanup**; higher-priority Bench workflow
+readiness work remains queued behind its roadmap status.
 
-AUDIT-002 should be queued close behind because ADR 0051 workflow readiness and
-durable runner audit linkage are launch-relevant safety issues.
+Historical audit priorities remain useful context, but agents should not use
+this section as the pickup surface. Use
+`docs/architecture/roadmaps/2026-05-21-deepening-roadmap.md` for the next item.
 
 ## Open Questions
 
-- How small can the Bench promotion parity fix be while still proving CLI/Bench
-  equivalence for paper-tier promotion?
-- Should risk-profile audit writes become `EventStore` methods, or a risk-owned
-  module that uses SQLite directly?
 - Is launch scope blocked by missing ADR 0051 workflow-readiness checks?
 - Should `BENCH_BOUNDARY.md` be updated before or after code changes?
 - Should the next pass explicitly decide whether AUDIT-001 and AUDIT-002 are one
@@ -471,5 +467,5 @@ durable runner audit linkage are launch-relevant safety issues.
 ## Suggested Next Prompt
 
 ```text
-Use improve-codebase-architecture and INTERFACE-DESIGN.md to explore interfaces for AUDIT-001, the promotion governance/evidence seam. Do not implement. Compare 2-3 rough seam shapes that let CLI and Bench share paper-promotion evidence/gate choreography without duplicating stage policy. Preserve ADR 0051, ADR 0052, ADR 0015, and ADR 0021. Include test migration plan and identify the smallest safe first implementation slice.
+Read docs/architecture/roadmaps/2026-05-21-deepening-roadmap.md, select the highest-priority item whose status is ready and whose dependencies are done, and implement exactly that roadmap slice. Preserve each item’s implementation scope and validation commands; do not infer current execution order from this historical audit summary.
 ```
