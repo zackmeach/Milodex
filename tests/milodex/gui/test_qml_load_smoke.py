@@ -1248,15 +1248,13 @@ def test_bench_pr_p_boundary_doc_exists_and_anchors_to_code() -> None:
 # wiring PR that needs it.
 _ADR_0051_COMMAND_INFRA_ALLOWLIST: frozenset[str] = frozenset(
     {
-        # The Python facade itself — Phase B.
+        # The Python facade itself.
         "src/milodex/commands/bench.py",
         # The package __init__ re-exports the facade dataclasses.
         "src/milodex/commands/__init__.py",
-        # Phase C2: the Qt bridge over the facade. Exposes ``proposeDemote``
-        # and ``submitDemote`` only — no other action family is wired.
-        # Subsequent action-family wiring PRs must NOT widen this list
-        # without their own ADR; widening it silently is the failure mode
-        # the perimeter exists to prevent.
+        # The Qt bridge over the facade. This is the single GUI adapter for
+        # all submit-capable Bench action families; widening the perimeter
+        # beyond this file remains the failure mode the tests prevent.
         "src/milodex/gui/bench_command_bridge.py",
     }
 )
@@ -1271,13 +1269,13 @@ def test_bench_pr_p_python_has_no_command_infrastructure() -> None:
     forces the contributor to open a new ADR per the BENCH_BOUNDARY.md
     escalation rail.
 
-    ADR 0051 (Phase B) amends this perimeter narrowly: ``CommandProposal``,
+    ADR 0051 amends this perimeter narrowly: ``CommandProposal``,
     ``CommandResult``, ``Blocker``, ``BenchCommandFacade`` are permitted in
     the files named in ``_ADR_0051_COMMAND_INFRA_ALLOWLIST``. Submit-shaped
     dispatch functions (``submit_command``, ``dispatch_command``,
     ``execute_command``) remain forbidden everywhere — the facade names its
     submit methods per action family (``submit_backtest``, …) which is the
-    contract Phase C–F wires up.
+    contract wired action families use.
     """
     repo_root = Path(__file__).resolve().parents[3]
     src_root = repo_root / "src" / "milodex"
