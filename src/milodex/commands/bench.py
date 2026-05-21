@@ -45,9 +45,9 @@ from milodex.core.event_store import (
     PromotionEvent,
 )
 from milodex.promotion import (
-    MAX_DRAWDOWN_PCT,
-    MIN_SHARPE,
     MIN_TRADES,
+    PAPER_MAX_DRAWDOWN_PCT,
+    PAPER_MIN_SHARPE,
     STAGE_ORDER,
     assemble_evidence_package,
     check_gate,
@@ -507,6 +507,8 @@ class BenchCommandFacade:
                 )
             )
 
+        min_trades_required = int(config.backtest.get("min_trades_required", MIN_TRADES))
+
         # Gate evidence: a run_id is needed to derive the statistical metrics
         # unless lifecycle_exempt. We surface this as a precondition; the gate
         # itself is evaluated at submit (Phase D) using the same check_gate
@@ -517,14 +519,14 @@ class BenchCommandFacade:
                     reason_code="missing_run_id",
                     message=(
                         "Statistical promotion to paper requires --run-id pointing at "
-                        f"a backtest with Sharpe > {MIN_SHARPE}, max drawdown < "
-                        f"{MAX_DRAWDOWN_PCT}%, trades >= {MIN_TRADES}, or pass "
+                        f"a backtest with Sharpe > {PAPER_MIN_SHARPE}, max drawdown < "
+                        f"{PAPER_MAX_DRAWDOWN_PCT}%, trades >= {min_trades_required}, or pass "
                         "lifecycle_exempt=True for regime-family strategies (R-PRM-004)."
                     ),
                     context={
-                        "min_sharpe": MIN_SHARPE,
-                        "max_drawdown_pct": MAX_DRAWDOWN_PCT,
-                        "min_trades": MIN_TRADES,
+                        "min_sharpe": PAPER_MIN_SHARPE,
+                        "max_drawdown_pct": PAPER_MAX_DRAWDOWN_PCT,
+                        "min_trades": min_trades_required,
                     },
                 )
             )
@@ -1330,9 +1332,11 @@ class BenchCommandFacade:
 
         gate_result = check_gate(
             lifecycle_exempt=lifecycle_exempt,
+            to_stage=to_stage,
             sharpe_ratio=sharpe_ratio,
             max_drawdown_pct=max_drawdown_pct,
             trade_count=trade_count,
+            min_trade_count=int(config.backtest.get("min_trades_required", MIN_TRADES)),
         )
         if not gate_result.allowed:
             return CommandResult(

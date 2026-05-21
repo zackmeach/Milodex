@@ -89,9 +89,13 @@ _STRATEGY_YAML_TEMPLATE = textwrap.dedent(
 )
 
 
-def _write_strategy(config_dir: Path, *, stage: str) -> Path:
+def _write_strategy(config_dir: Path, *, stage: str, min_trades_required: int = 30) -> Path:
     path = config_dir / "strategy.yaml"
-    path.write_text(_STRATEGY_YAML_TEMPLATE.format(stage=stage), encoding="utf-8")
+    content = _STRATEGY_YAML_TEMPLATE.format(stage=stage).replace(
+        "min_trades_required: 30",
+        f"min_trades_required: {min_trades_required}",
+    )
+    path.write_text(content, encoding="utf-8")
     return path
 
 
@@ -349,7 +353,7 @@ def test_propose_freeze_manifest_blocks_backtest_stage(make_facade, config_dir: 
 
 
 def test_propose_promote_to_paper_requires_evidence_inputs(make_facade, config_dir: Path) -> None:
-    _write_strategy(config_dir, stage="backtest")
+    _write_strategy(config_dir, stage="backtest", min_trades_required=20)
     facade = make_facade()
     proposal = facade.propose_promote_to_paper(STRATEGY_ID)
     assert not proposal.admissible
@@ -357,6 +361,17 @@ def test_propose_promote_to_paper_requires_evidence_inputs(make_facade, config_d
     assert "missing_recommendation" in codes
     assert "missing_known_risks" in codes
     assert "missing_run_id" in codes
+    run_id_blocker = next(b for b in proposal.blockers if b.reason_code == "missing_run_id")
+    assert "Sharpe > 0.0" in run_id_blocker.message
+    assert "max drawdown < 25.0%" in run_id_blocker.message
+    assert "trades >= 20" in run_id_blocker.message
+    assert "Sharpe > 0.5" not in run_id_blocker.message
+    assert "max drawdown < 15.0%" not in run_id_blocker.message
+    assert run_id_blocker.context == {
+        "min_sharpe": 0.0,
+        "max_drawdown_pct": 25.0,
+        "min_trades": 20,
+    }
 
 
 def test_propose_promote_to_paper_admissible_with_evidence_and_run_id(
@@ -1536,6 +1551,52 @@ def test_submit_promote_to_paper_statistical_success(
     assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
 
 
+def test_submit_promote_to_paper_accepts_paper_tier_below_capital_thresholds(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_strategy(config_dir, stage="backtest")
+    _append_walk_forward_backtest_run(
+        event_store,
+        run_id="bt-paper-tier-pass",
+        sharpe=0.327,
+        max_drawdown_pct=18.0,
+        trade_count=42,
+    )
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(run_id="bt-paper-tier-pass")
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["promotion_type"] == "statistical"
+    assert result.durable_refs.get("backtest_run_id") == "bt-paper-tier-pass"
+    assert float(result.durable_refs["sharpe_ratio"]) == 0.327
+    assert float(result.durable_refs["max_drawdown_pct"]) == 18.0
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_submit_promote_to_paper_honors_configured_trade_floor(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_strategy(config_dir, stage="backtest", min_trades_required=20)
+    _append_walk_forward_backtest_run(
+        event_store,
+        run_id="bt-configured-floor-pass",
+        sharpe=0.66,
+        max_drawdown_pct=18.0,
+        trade_count=20,
+    )
+    facade = make_facade()
+    proposal = _make_promote_to_paper_proposal(run_id="bt-configured-floor-pass")
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert result.durable_refs["promotion_type"] == "statistical"
+    assert result.durable_refs.get("trade_count") == "20"
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
 def test_submit_promote_to_paper_missing_recommendation_refused(
     make_facade, config_dir: Path, event_store: EventStore
 ) -> None:
@@ -1637,8 +1698,8 @@ def test_submit_promote_to_paper_gate_failure_blocks_and_does_not_mutate(
     _append_walk_forward_backtest_run(
         event_store,
         run_id="bt-d2-fail",
-        sharpe=0.2,
-        max_drawdown_pct=22.0,
+        sharpe=-0.2,
+        max_drawdown_pct=30.0,
         trade_count=10,
     )
     facade = make_facade()
