@@ -1049,12 +1049,14 @@ class _FakeSingleBacktestEngine:
 class _FakeWalkForwardEngine:
     def __init__(self) -> None:
         self.prefetched: tuple[date, date] | None = None
-        # ``walk_forward_windows`` is exposed as a public property on
-        # ``BacktestEngine``; tests set it directly here rather than reaching
-        # into ``_loaded``.
+        # ``walk_forward_windows`` and ``bar_size`` are both exposed as public
+        # attributes on ``BacktestEngine`` (the latter became a public property
+        # in the RM-005a backtest-run-lifecycle surface refactor); tests mirror
+        # them directly rather than reaching into ``_loaded``.
         self.walk_forward_windows: int = 2
-        # Minimal ``_loaded`` stub so derive_walk_forward_spans can read
-        # ``tempo["bar_size"]`` without hitting a real engine.
+        self.bar_size: str = "1D"
+        # Kept ``_loaded`` stub for any legacy access path that still reads
+        # ``tempo["bar_size"]`` via the loaded config; harmless if unused.
         self._loaded = type("_L", (), {
             "config": type("_C", (), {
                 "tempo": {"bar_size": "1D"}
