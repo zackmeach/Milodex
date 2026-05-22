@@ -64,7 +64,7 @@ Parallelism guidance:
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
 | RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | done | RM-002 |
-| RM-011 | RM-002 | Non-CLI analytics metrics boundary | P2 | proposed | RM-002 |
+| RM-011 | RM-002 | Non-CLI analytics metrics boundary | P2 | done | RM-002 |
 
 ## RM-001 - Bench Paper-Promotion Gate Parity
 
@@ -621,9 +621,9 @@ Done criteria:
 ## RM-011 - Non-CLI Analytics Metrics Boundary
 
 Source: RM-002
-Status: proposed
+Status: done
 Priority: P2
-Last verified: 2026-05-21
+Last verified: 2026-05-22
 Dependencies: RM-002
 
 Problem:

@@ -2,9 +2,9 @@
 
 Covers ``metrics_from_run`` and ``compute_post_update_hash`` at their new public
 home in the promotion layer (refactor/bench-facade-layering). These helpers were
-previously private to ``milodex.cli.commands.promotion``; moving them here
+previously private to interface-adapter command code; moving them here
 eliminates the layering inversion where the bench command facade was reaching
-into CLI internals.
+outside domain/governance boundaries.
 """
 
 from __future__ import annotations
@@ -12,11 +12,13 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import date
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 
+import milodex.promotion.run_evidence as run_evidence_module
 from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.strategies.loader import canonicalize_config_data
 
@@ -113,10 +115,7 @@ def test_metrics_from_run_single_period_delegates_to_metrics_for_run(monkeypatch
         calls.append((run_arg, store_arg))
         return fake_metrics
 
-    monkeypatch.setattr(
-        "milodex.cli.commands.analytics.metrics_for_run",
-        fake_metrics_for_run,
-    )
+    monkeypatch.setattr(run_evidence_module, "metrics_for_run", fake_metrics_for_run)
 
     sharpe, max_dd, trades = metrics_from_run("sp-run-1", store)
 
@@ -124,6 +123,12 @@ def test_metrics_from_run_single_period_delegates_to_metrics_for_run(monkeypatch
     assert sharpe == pytest.approx(0.75)
     assert max_dd == pytest.approx(12.3)
     assert trades == 38
+
+
+def test_run_evidence_does_not_import_cli_internals():
+    """Promotion evidence must depend on analytics, not CLI command modules."""
+    source = Path(run_evidence_module.__file__).read_text(encoding="utf-8")
+    assert "milodex" + ".cli" not in source
 
 
 # ---------------------------------------------------------------------------
