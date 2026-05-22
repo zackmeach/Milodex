@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 import pandas as pd
 import pytest
 
+import milodex.backtesting.walk_forward_runner as walk_forward_module
 from milodex.backtesting.engine import BacktestEngine
 from milodex.backtesting.walk_forward_runner import (
     WalkForwardWindow,
@@ -129,6 +130,24 @@ def _make_engine(universe=("SPY",), bars_start=date(2024, 1, 2), bar_count=30):
 # ---------------------------------------------------------------------------
 # run_walk_forward — orchestration behaviour
 # ---------------------------------------------------------------------------
+
+
+def test_walk_forward_runner_uses_public_engine_lifecycle_surface():
+    """Production walk-forward orchestration must not own parent-run persistence."""
+    source = Path(walk_forward_module.__file__).read_text(encoding="utf-8")
+    forbidden_tokens = (
+        "BacktestRunEvent",
+        "engine._event_store",
+        "engine._loaded",
+        "engine._initial_equity",
+        "engine._slippage_pct",
+        "engine._commission",
+        "engine._scan_data_quality",
+        "engine._metadata_with_run_manifest",
+        "engine._build_run_manifest",
+    )
+    for token in forbidden_tokens:
+        assert token not in source
 
 
 def test_walk_forward_raises_when_range_too_short():
@@ -570,17 +589,14 @@ def test_walk_forward_records_one_snapshot_per_window():
 class _FakeDeriveEngine:
     """Minimal engine stub for derive_walk_forward_spans tests.
 
-    Uses the public ``walk_forward_windows`` attribute instead of
-    ``_loaded.config.backtest``, which is what the real ``BacktestEngine``
-    property surfaces.
+    Uses public ``walk_forward_windows`` and ``bar_size`` attributes instead of
+    private engine state, which is what the real ``BacktestEngine`` surfaces.
     """
 
     def __init__(self, *, bars: dict, walk_forward_windows: int = 4) -> None:
         self._bars = bars
         self.walk_forward_windows = walk_forward_windows
-        # Minimal ``_loaded`` stub so derive_walk_forward_spans can read
-        # ``tempo["bar_size"]`` without hitting a real engine.
-        self._loaded = type("_L", (), {"config": type("_C", (), {"tempo": {"bar_size": "1D"}})()})()
+        self.bar_size = "1D"
 
     def prefetch_bars(self, start: date, end: date, *, timeframe=None) -> dict:  # noqa: ARG002
         return self._bars

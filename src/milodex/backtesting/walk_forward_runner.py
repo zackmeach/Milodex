@@ -18,16 +18,15 @@ Why a separate module rather than a method on ``BacktestEngine``:
 - Bar prefetch, splitter, and simulation loop are three distinct concerns.
   Keeping aggregation out of the engine means the engine stays a one-shot
   simulator — easier to reason about and easier to test in isolation.
-- The orchestrator owns the parent ``BacktestRunEvent`` lifecycle and all
-  per-window bookkeeping, so the engine doesn't need to know about windows.
+- The orchestrator owns per-window bookkeeping, while parent-run lifecycle
+  flows through the engine's public backtesting lifecycle surface.
 """
 
 from __future__ import annotations
 
 import statistics
-import uuid
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import date
 from typing import TYPE_CHECKING
 
 from milodex.analytics.metrics import (
@@ -36,7 +35,6 @@ from milodex.analytics.metrics import (
     sharpe_from_daily_returns,
 )
 from milodex.backtesting.walk_forward import WalkForwardSplitter
-from milodex.core.event_store import BacktestRunEvent
 from milodex.data.bar_quality import DataQualityError
 from milodex.risk import RiskPolicy
 
@@ -166,8 +164,7 @@ def derive_walk_forward_spans(
     from milodex.backtesting.engine import _trading_days_in_range
     from milodex.data.timeframes import timeframe_from_bar_size
 
-    _bar_size = engine._loaded.config.tempo["bar_size"]  # noqa: SLF001
-    all_bars = engine.prefetch_bars(start, end, timeframe=timeframe_from_bar_size(_bar_size))
+    all_bars = engine.prefetch_bars(start, end, timeframe=timeframe_from_bar_size(engine.bar_size))
     total_days = len(_trading_days_in_range(all_bars, start, end))
     window_count = engine.walk_forward_windows
     train_days, test_days, step_days = compute_window_spans(total_days, window_count)
@@ -206,14 +203,13 @@ def run_walk_forward(
         msg = "end_date must be on or after start_date"
         raise ValueError(msg)
 
-    eq_start = initial_equity if initial_equity is not None else engine._initial_equity  # noqa: SLF001
+    eq_start = initial_equity if initial_equity is not None else engine.initial_equity
 
     if all_bars is None:
         from milodex.data.timeframes import timeframe_from_bar_size
 
-        _bar_size = engine._loaded.config.tempo["bar_size"]  # noqa: SLF001
         all_bars = engine.prefetch_bars(
-            start_date, end_date, timeframe=timeframe_from_bar_size(_bar_size)
+            start_date, end_date, timeframe=timeframe_from_bar_size(engine.bar_size)
         )
     from milodex.backtesting.engine import _trading_days_in_range
 
@@ -238,43 +234,18 @@ def run_walk_forward(
         msg = "Walk-forward produced zero windows."
         raise ValueError(msg)
 
-    effective_run_id = run_id or str(uuid.uuid4())
-    started_at = datetime.now(tz=UTC)
-    # Reconcile any prior walk-forward backtest_runs row for this strategy
-    # left in status='running' with ended_at=NULL by a process that died
-    # mid-run. The three stuck rows from 2026-05-06 had this exact shape —
-    # metadata showed only {walk_forward: true, windows_planned: 4}, meaning
-    # the parquet 0-byte bug killed the process before fold-1 produced any
-    # results. Must precede the append below — otherwise the WHERE clause
-    # would sweep up our own freshly-inserted row.
-    engine._event_store.reconcile_orphan_backtest_runs(  # noqa: SLF001
-        strategy_id=engine._loaded.config.strategy_id,  # noqa: SLF001
-        ended_at=started_at,
-        status="orphan_recovered",
+    run_handle = engine.start_walk_forward_parent_run(
+        run_id=run_id,
+        start_date=start_date,
+        end_date=end_date,
+        windows_planned=len(window_dates),
     )
-    db_run_id = engine._event_store.append_backtest_run(  # noqa: SLF001
-        BacktestRunEvent(
-            run_id=effective_run_id,
-            strategy_id=engine._loaded.config.strategy_id,  # noqa: SLF001
-            config_path=str(engine._loaded.config.path),  # noqa: SLF001
-            config_hash=engine._loaded.context.config_hash,  # noqa: SLF001
-            start_date=_date_to_dt(start_date),
-            end_date=_date_to_dt(end_date),
-            started_at=started_at,
-            status="running",
-            slippage_pct=engine._slippage_pct,  # noqa: SLF001
-            commission_per_trade=engine._commission,  # noqa: SLF001
-            metadata={
-                "walk_forward": True,
-                "windows_planned": len(window_dates),
-                "risk_policy": engine.risk_policy.value,
-            },
-        )
-    )
+    effective_run_id = run_handle.run_id
+    db_run_id = run_handle.db_id
 
     windows: list[WalkForwardWindow] = []
     try:
-        data_quality = engine._scan_data_quality(all_bars, start_date, end_date)  # noqa: SLF001
+        data_quality = engine.scan_backtest_data_quality(all_bars, start_date, end_date)
         for index, (tr_start, tr_end, te_start, te_end) in enumerate(window_dates):
             window_trading_days = [d for d in trading_days if te_start <= d <= te_end]
             if not window_trading_days:
@@ -313,9 +284,9 @@ def run_walk_forward(
             )
     except DataQualityError as exc:
         data_quality = exc.report.to_dict()
-        engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
+        engine.update_backtest_run_metadata(
             effective_run_id,
-            metadata=engine._metadata_with_run_manifest(  # noqa: SLF001
+            metadata=engine.backtest_run_metadata_with_manifest(
                 effective_run_id,
                 start_date=start_date,
                 end_date=end_date,
@@ -323,29 +294,22 @@ def run_walk_forward(
                 data_quality=data_quality,
             ),
         )
-        engine._event_store.update_backtest_run_status(  # noqa: SLF001
-            effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)
-        )
+        engine.mark_backtest_run_failed(effective_run_id)
         raise
     except Exception:
-        engine._event_store.update_backtest_run_status(  # noqa: SLF001
-            effective_run_id, status="failed", ended_at=datetime.now(tz=UTC)
-        )
+        engine.mark_backtest_run_failed(effective_run_id)
         raise
 
     aggregate = _aggregate_oos(windows, eq_start)
     stability = _compute_stability(windows)
-    run_manifest = engine._build_run_manifest(  # noqa: SLF001
+    run_manifest = engine.build_backtest_run_manifest(
         start_date=start_date,
         end_date=end_date,
         initial_equity=eq_start,
         data_quality=data_quality,
     )
 
-    engine._event_store.update_backtest_run_status(  # noqa: SLF001
-        effective_run_id, status="completed", ended_at=datetime.now(tz=UTC)
-    )
-    engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
+    engine.complete_walk_forward_run(
         effective_run_id,
         metadata={
             "walk_forward": True,
@@ -380,7 +344,7 @@ def run_walk_forward(
 
     return WalkForwardResult(
         run_id=effective_run_id,
-        strategy_id=engine._loaded.config.strategy_id,  # noqa: SLF001
+        strategy_id=engine.strategy_id,
         start_date=start_date,
         end_date=end_date,
         initial_equity=eq_start,
@@ -543,11 +507,6 @@ def _window_to_dict(window: WalkForwardWindow) -> dict:
         "sharpe": window.sharpe,
         "max_drawdown_pct": window.max_drawdown_pct,
     }
-
-
-def _date_to_dt(d: date) -> datetime:
-    return datetime.combine(d, datetime.min.time(), tzinfo=UTC)
-
 
 __all__ = [
     "WalkForwardWindow",

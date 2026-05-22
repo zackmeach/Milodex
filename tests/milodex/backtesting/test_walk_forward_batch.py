@@ -179,6 +179,36 @@ def test_batch_runs_two_strategies_and_returns_row_per():
     }
 
 
+def test_batch_uses_public_engine_lifecycle_surface():
+    """Production batch path must not stamp lifecycle metadata through private engine state."""
+    source = Path(batch_module.__file__).read_text(encoding="utf-8")
+    forbidden_tokens = (
+        "engine._event_store",
+        "engine._loaded",
+        "engine._warmup_calendar_days",
+    )
+    for token in forbidden_tokens:
+        assert token not in source
+
+
+def test_batch_marks_research_screen_source_metadata():
+    engine, _ = _make_engine("meanrev.daily.research_source.v1", "meanrev")
+    ctx = _make_ctx({engine._loaded.config.strategy_id: engine})
+
+    result = run_batch(
+        strategy_ids=[engine._loaded.config.strategy_id],
+        start_date=date(2024, 1, 2),
+        end_date=date(2024, 1, 31),
+        ctx=ctx,
+    )
+
+    row = result.rows[0]
+    assert row.run_id is not None
+    persisted = engine._event_store.get_backtest_run(row.run_id)  # noqa: SLF001
+    assert persisted is not None
+    assert persisted.metadata["source"] == "research_screen"
+
+
 def test_batch_fail_fast_reraises_first_error():
     e1, _ = _make_engine("a", "meanrev")
     ctx = _make_ctx({"a": e1})
