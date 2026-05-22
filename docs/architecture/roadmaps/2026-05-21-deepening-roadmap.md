@@ -54,7 +54,7 @@ Parallelism guidance:
 | ID | Source | Title | Priority | Status | Dependencies |
 |---|---|---|---|---|---|
 | RM-001 | AUDIT-001 | Bench paper-promotion gate parity | P0 | done | none |
-| RM-002 | AUDIT-001 | Promotion governance/evidence interface exploration | P1 | proposed | RM-001 |
+| RM-002 | AUDIT-001 | Promotion governance/evidence interface exploration | P1 | done | RM-001 |
 | RM-003a | AUDIT-002 | Runner audit linkage | P0 | done | RM-001 |
 | RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | done | RM-003a |
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
@@ -63,6 +63,8 @@ Parallelism guidance:
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | proposed | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
+| RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | proposed | RM-002 |
+| RM-011 | RM-002 | Non-CLI analytics metrics boundary | P2 | proposed | RM-002 |
 
 ## RM-001 - Bench Paper-Promotion Gate Parity
 
@@ -246,7 +248,7 @@ Done criteria:
 ## RM-003b - Bench Workflow-Readiness Seam
 
 Source: AUDIT-002
-Status: proposed
+Status: done
 Priority: P0
 Last verified: 2026-05-21
 Dependencies: RM-003a
@@ -572,6 +574,90 @@ Done criteria:
 
 - No comment claims Bench is propose-only.
 - The audit's suggested next prompt points at RM-001 first.
+
+## RM-010 - Shared Paper-Promotion Choreography Entrypoint
+
+Source: RM-002
+Status: proposed
+Priority: P1
+Last verified: 2026-05-21
+Dependencies: RM-002
+
+Problem:
+
+The RM-002 interface exploration chose a shared promotion orchestrator service
+owned by `milodex.promotion`. CLI and Bench still independently choreograph the
+paper-promotion sequence, even though both must preserve the same governance
+path, evidence package, paper gate, manifest hash, and durable transition.
+
+Next action:
+
+Implement the first orchestrator slice for `backtest -> paper`, with CLI and
+Bench calling the same domain-owned promotion choreography entrypoint while
+keeping their public payloads and operator-facing behavior stable.
+
+Implementation scope:
+
+- Limit the first implementation to paper promotion.
+- Preserve current CLI flags, Bench proposal/result shapes, QML slots, and
+  blocker codes.
+- Do not move workflow-readiness checks into the promotion package.
+- Do not broaden Phase 1 promotion to `micro_live` or `live`.
+
+Validation:
+
+- `python -m pytest tests/milodex/promotion tests/milodex/cli/test_promotion_promote.py`
+- `python -m pytest tests/milodex/commands/test_bench_facade.py`
+- `python -m ruff check src/ tests/`
+
+Done criteria:
+
+- CLI and Bench paper promotion use the same promotion-owned choreography
+  entrypoint.
+- RM-001 paper-gate parity tests remain green.
+- Gate failure, missing evidence, missing run, and successful transition still
+  write or refuse exactly as before.
+
+## RM-011 - Non-CLI Analytics Metrics Boundary
+
+Source: RM-002
+Status: proposed
+Priority: P2
+Last verified: 2026-05-21
+Dependencies: RM-002
+
+Problem:
+
+`promotion.run_evidence.metrics_from_run()` still lazily imports
+`milodex.cli.commands.analytics.metrics_for_run` for single-period backtest
+metrics. This keeps a residual `promotion -> cli` layering inversion even
+though Bench itself no longer imports CLI internals.
+
+Next action:
+
+Move reusable run-metric calculation behind a non-CLI analytics boundary and
+update promotion evidence and CLI analytics command code to call that shared
+module.
+
+Implementation scope:
+
+- Preserve ADR 0021 walk-forward OOS aggregate behavior.
+- Preserve CLI analytics output and JSON payloads.
+- Do not combine with the promotion-orchestrator implementation slice.
+
+Validation:
+
+- `python -m pytest tests/milodex/promotion/test_run_evidence.py`
+- `python -m pytest tests/milodex/cli/test_analytics_command.py`
+- `python -m pytest tests/milodex/cli/test_promotion_promote.py`
+- `python -m ruff check src/ tests/`
+
+Done criteria:
+
+- `milodex.promotion` no longer imports from `milodex.cli`, including lazy
+  imports.
+- Single-period and walk-forward promotion metrics keep current behavior.
+- Tests monkeypatch the non-CLI analytics boundary, not a CLI command module.
 
 ## Roadmap-Level Acceptance
 
