@@ -218,12 +218,9 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         # have always been rendered as an error CommandResult; preserve
         # that too.
         if result.reason_code == REASON_GATE_FAILED:
-            # Load config only for the from_stage label in the user-facing
-            # message — the gate decision itself does not need it.
-            from_stage = load_strategy_config(config_path).stage
             return _promote_blocked_result(
                 args.strategy_id,
-                from_stage,
+                result.from_stage or "backtest",
                 to_stage,
                 result.gate_failures,
                 result.promotion_type or "statistical",
@@ -404,8 +401,6 @@ def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
 def _manifest_show(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     config_path = resolve_strategy_config_path(args.strategy_id, ctx.config_dir)
-    from milodex.strategies.loader import load_strategy_config
-
     config = load_strategy_config(config_path)
     event_store = ctx.get_event_store()
     event = event_store.get_active_manifest_for_strategy(args.strategy_id, config.stage)

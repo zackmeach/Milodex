@@ -246,6 +246,10 @@ def test_gate_failure_returns_blocked_and_writes_nothing(tmp_path):
         "trade_count": 40,
     }
     assert result.promotion_type == "statistical"
+    # PromoteBlocked carries the stages so callers don't need to re-load the
+    # config just to render an operator-facing "X -> Y" label.
+    assert result.from_stage == "backtest"
+    assert result.to_stage == "paper"
     # No durable side effects.
     assert cfg_path.read_text(encoding="utf-8") == original_yaml
     assert store.list_promotions_for_strategy(_STRATEGY_ID) == []
