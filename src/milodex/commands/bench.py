@@ -49,17 +49,20 @@ from milodex.promotion import (
     MIN_TRADES,
     PAPER_MAX_DRAWDOWN_PCT,
     PAPER_MIN_SHARPE,
+    REASON_GATE_FAILED,
+    REASON_INVALID_STAGE_TRANSITION,
+    REASON_MISSING_BACKTEST_RUN,
     STAGE_ORDER,
-    assemble_evidence_package,
-    check_gate,
-    validate_stage_transition,
+    PromoteBlocked,
+    PromoteError,
+    PromoteRequest,
+    PromoteSuccess,
+    prepare_and_record_promotion,
 )
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
-from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE
 from milodex.promotion.state_machine import _update_stage_in_yaml as _governance_update_stage
 from milodex.promotion.state_machine import demote as _governance_demote
-from milodex.promotion.state_machine import transition as _governance_transition
 from milodex.risk.policy import RiskPolicy
 from milodex.strategies.loader import load_strategy_config
 from milodex.strategies.paper_runner_control import runner_lock_name
@@ -1419,24 +1422,20 @@ class BenchCommandFacade:
     def submit_promote_to_paper(self, proposal: CommandProposal) -> CommandResult:
         """Third submit-capable action (ADR 0051 Phase D2).
 
-        Routes through ``milodex.promotion.state_machine.transition`` — the
-        same atomic governance callee the CLI's ``milodex promotion promote
-        --to paper`` uses. ``transition()`` owns the full sequence:
-
-        * builds the post-update ``StrategyManifestEvent``,
-        * appends manifest + ``PromotionEvent`` (with embedded evidence) in a
-          single event-store transaction,
-        * rewrites the YAML ``stage:`` line in-place.
+        Routes through ``milodex.promotion.prepare_and_record_promotion`` (the
+        RM-010 shared paper-promotion orchestrator) — the same entrypoint the
+        CLI's ``milodex promotion promote --to paper`` uses. The orchestrator
+        owns the full choreography: stage-transition validation, OOS metrics
+        resolution, gate evaluation, manifest hash derivation, evidence
+        assembly, and the atomic ``transition()`` that appends manifest +
+        promotion events in one event-store transaction and rewrites the
+        YAML ``stage:`` line in-place.
 
         The facade does not duplicate any of those rules; it threads the
         operator-supplied evidence inputs (recommendation, known_risks,
-        run_id, lifecycle_exempt) into the same gate + evidence pipeline the
-        CLI uses, surfaces refusals as structured ``Blocker`` records, and
-        returns durable identifiers on success.
-
-        Promote-to-paper is now reachable through the Bench bridge. The bridge
-        supplies operator identity and evidence text while this facade keeps
-        the promotion gate and governance dispatch on the backend side.
+        run_id, lifecycle_exempt) into the shared orchestrator, translates
+        ``PromoteBlocked``/``PromoteError`` results into Bench-shaped
+        ``Blocker`` records, and returns durable identifiers on success.
         """
         if proposal.action_family != ACTION_FAMILY_PROMOTE_TO_PAPER:
             return CommandResult(
@@ -1505,121 +1504,36 @@ class BenchCommandFacade:
         from_stage = config.stage
         to_stage = "paper"
 
-        # validate_stage_transition is also called by the governance path; we
-        # surface its `ValueError` shape as a structured blocker so the
-        # exception does not cross the facade boundary. The proposal-time
-        # `stage_is_backtest` precondition already covered the canonical case;
-        # this is the belt-and-braces re-check.
-        try:
-            validate_stage_transition(from_stage, to_stage)
-        except ValueError as exc:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=[
-                    Blocker(
-                        reason_code="invalid_stage_transition",
-                        message=str(exc),
-                        context={"from_stage": from_stage, "to_stage": to_stage},
-                    )
-                ],
-            )
-
-        # Resolve OOS metrics from the backtest run. `metrics_from_run`
-        # raises ValueError when the run id is unknown — convert to a blocker.
-        # For lifecycle_exempt promotions, `run_id` may be None and
-        # `metrics_from_run` returns (None, None, None), which
-        # `check_gate(lifecycle_exempt=True, …)` accepts.
-        try:
-            sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(run_id, event_store)
-        except ValueError as exc:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=[
-                    Blocker(
-                        reason_code="backtest_run_not_found",
-                        message=str(exc),
-                        context={"run_id": run_id},
-                    )
-                ],
-            )
-
-        gate_result = check_gate(
-            lifecycle_exempt=lifecycle_exempt,
-            to_stage=to_stage,
-            sharpe_ratio=sharpe_ratio,
-            max_drawdown_pct=max_drawdown_pct,
-            trade_count=trade_count,
-            min_trade_count=int(config.backtest.get("min_trades_required", MIN_TRADES)),
-        )
-        if not gate_result.allowed:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=[
-                    Blocker(
-                        reason_code="gate_check_failed",
-                        message=failure,
-                        context={
-                            "promotion_type": gate_result.promotion_type,
-                            "sharpe_ratio": gate_result.sharpe_ratio,
-                            "max_drawdown_pct": gate_result.max_drawdown_pct,
-                            "trade_count": gate_result.trade_count,
-                        },
-                    )
-                    for failure in gate_result.failures
-                ],
-            )
-
-        # Manifest hash MUST match the canonical YAML AFTER the stage line is
-        # rewritten — `transition()` re-derives this and raises ValueError on
-        # mismatch. We use the same CLI helper to keep the two derivations in
-        # lockstep.
-        manifest_hash = compute_post_update_hash(config.raw_data, to_stage)
-
-        evidence = assemble_evidence_package(
+        # Delegate the choreography (validate_stage_transition → metrics_from_run
+        # → check_gate → compute_post_update_hash → assemble_evidence_package →
+        # transition) to the shared promotion orchestrator (RM-010). The Bench
+        # facade keeps proposal/submit lifecycle, workflow-readiness blockers,
+        # stale-proposal revalidation, and Blocker translation; the orchestrator
+        # owns governance choreography. CLI and Bench cannot drift on gate
+        # behavior or evidence shape because both go through this entrypoint.
+        request = PromoteRequest(
             strategy_id=config.strategy_id,
-            from_stage=from_stage,
+            config_path=config.path,
             to_stage=to_stage,
-            manifest_hash=manifest_hash,
-            backtest_run_id=run_id,
             recommendation=str(recommendation) if recommendation else "",
             known_risks=known_risks,
-            promotion_type=gate_result.promotion_type,
-            gate_check_outcome={
-                "allowed": gate_result.allowed,
-                "promotion_type": gate_result.promotion_type,
-                "failures": list(gate_result.failures),
-            },
-            metrics_snapshot={
-                "sharpe_ratio": sharpe_ratio,
-                "max_drawdown_pct": max_drawdown_pct,
-                "trade_count": trade_count,
-            },
-            event_store=event_store,
+            approved_by=approved_by,
+            run_id=run_id,
+            lifecycle_exempt=lifecycle_exempt,
             now=self._now(),
         )
+        result = prepare_and_record_promotion(request, event_store)
 
-        try:
-            event = _governance_transition(
-                config_path=config.path,
-                to_stage=to_stage,
-                gate_result=gate_result,
-                evidence=evidence,
-                approved_by=approved_by,
-                event_store=event_store,
-                backtest_run_id=run_id,
-                now=self._now(),
+        if isinstance(result, PromoteBlocked):
+            return CommandResult(
+                proposal_id=proposal.proposal_id,
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                status="blocked",
+                blockers=_blockers_from_promote_blocked(
+                    result, from_stage=from_stage, to_stage=to_stage, run_id=run_id
+                ),
             )
-        except ValueError as exc:
-            # Governance layer raised — surface as structured blocker so the
-            # exception does not cross the facade boundary. transition()
-            # raises here for failed gate (already filtered above), manifest
-            # hash mismatch, or load_strategy_config failure.
+        if isinstance(result, PromoteError):
             return CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
@@ -1627,35 +1541,34 @@ class BenchCommandFacade:
                 blockers=[
                     Blocker(
                         reason_code="governance_refused",
-                        message=str(exc),
-                        context={
-                            "callee": "milodex.promotion.state_machine.transition",
-                        },
+                        message=result.message,
+                        context=dict(result.context),
                     )
                 ],
             )
 
+        assert isinstance(result, PromoteSuccess)
         durable_refs: dict[str, str] = {
-            "strategy_id": event.strategy_id,
-            "from_stage": event.from_stage,
-            "to_stage": event.to_stage,
-            "promotion_type": event.promotion_type,
-            "approved_by": event.approved_by,
-            "recorded_at": event.recorded_at.isoformat(),
-            "manifest_hash": manifest_hash,
+            "strategy_id": result.strategy_id,
+            "from_stage": result.from_stage,
+            "to_stage": result.to_stage,
+            "promotion_type": result.promotion_type,
+            "approved_by": approved_by,
+            "recorded_at": result.recorded_at.isoformat(),
+            "manifest_hash": result.manifest_hash,
         }
-        if event.id is not None:
-            durable_refs["promotion_id"] = str(event.id)
-        if event.manifest_id is not None:
-            durable_refs["manifest_id"] = str(event.manifest_id)
-        if event.backtest_run_id is not None:
-            durable_refs["backtest_run_id"] = event.backtest_run_id
-        if event.sharpe_ratio is not None:
-            durable_refs["sharpe_ratio"] = f"{event.sharpe_ratio:.6f}"
-        if event.max_drawdown_pct is not None:
-            durable_refs["max_drawdown_pct"] = f"{event.max_drawdown_pct:.6f}"
-        if event.trade_count is not None:
-            durable_refs["trade_count"] = str(event.trade_count)
+        if result.promotion_id is not None:
+            durable_refs["promotion_id"] = str(result.promotion_id)
+        if result.manifest_id is not None:
+            durable_refs["manifest_id"] = str(result.manifest_id)
+        if result.backtest_run_id is not None:
+            durable_refs["backtest_run_id"] = result.backtest_run_id
+        if result.sharpe_ratio is not None:
+            durable_refs["sharpe_ratio"] = f"{result.sharpe_ratio:.6f}"
+        if result.max_drawdown_pct is not None:
+            durable_refs["max_drawdown_pct"] = f"{result.max_drawdown_pct:.6f}"
+        if result.trade_count is not None:
+            durable_refs["trade_count"] = str(result.trade_count)
 
         return CommandResult(
             proposal_id=proposal.proposal_id,
@@ -1664,8 +1577,10 @@ class BenchCommandFacade:
             durable_refs=durable_refs,
             blockers=[],
             warnings=[],
-            submitted_at=event.recorded_at,
-            audit_event_id=str(event.id) if event.id is not None else None,
+            submitted_at=result.recorded_at,
+            audit_event_id=str(result.promotion_id)
+            if result.promotion_id is not None
+            else None,
         )
 
     def submit_demote(
@@ -2444,3 +2359,61 @@ assert set(_FROZEN_STAGES).issubset(set(STAGE_ORDER)), (
 
 def _new_proposal_id() -> str:
     return str(uuid.uuid4())
+
+
+def _blockers_from_promote_blocked(
+    result: PromoteBlocked,
+    *,
+    from_stage: str,
+    to_stage: str,
+    run_id: str | None,
+) -> list[Blocker]:
+    """Translate a ``PromoteBlocked`` from the orchestrator into Bench-shaped
+    ``Blocker`` records.
+
+    The orchestrator uses domain-neutral reason codes; Bench has historically
+    surfaced these as ``gate_check_failed`` / ``backtest_run_not_found`` /
+    ``invalid_stage_transition``. QML and ``test_bench_facade.py`` pin those
+    codes, so the translation lives at the facade boundary rather than in the
+    orchestrator.
+    """
+    if result.reason_code == REASON_GATE_FAILED:
+        snapshot = result.metrics_snapshot or {}
+        return [
+            Blocker(
+                reason_code="gate_check_failed",
+                message=failure,
+                context={
+                    "promotion_type": result.promotion_type,
+                    "sharpe_ratio": snapshot.get("sharpe_ratio"),
+                    "max_drawdown_pct": snapshot.get("max_drawdown_pct"),
+                    "trade_count": snapshot.get("trade_count"),
+                },
+            )
+            for failure in (result.gate_failures or [result.message])
+        ]
+    if result.reason_code == REASON_MISSING_BACKTEST_RUN:
+        return [
+            Blocker(
+                reason_code="backtest_run_not_found",
+                message=result.message,
+                context={"run_id": run_id},
+            )
+        ]
+    if result.reason_code == REASON_INVALID_STAGE_TRANSITION:
+        return [
+            Blocker(
+                reason_code="invalid_stage_transition",
+                message=result.message,
+                context={"from_stage": from_stage, "to_stage": to_stage},
+            )
+        ]
+    # Defensive: any future orchestrator reason code surfaces as a structured
+    # generic blocker rather than vanishing silently.
+    return [
+        Blocker(
+            reason_code=result.reason_code,
+            message=result.message,
+            context={"from_stage": from_stage, "to_stage": to_stage},
+        )
+    ]
