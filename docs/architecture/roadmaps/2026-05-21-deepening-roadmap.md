@@ -56,7 +56,7 @@ Parallelism guidance:
 | RM-001 | AUDIT-001 | Bench paper-promotion gate parity | P0 | done | none |
 | RM-002 | AUDIT-001 | Promotion governance/evidence interface exploration | P1 | proposed | RM-001 |
 | RM-003a | AUDIT-002 | Runner audit linkage | P0 | done | RM-001 |
-| RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | proposed | RM-003a |
+| RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | done | RM-003a |
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
 | RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | proposed | RM-001, RM-003a, RM-003b |
 | RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | proposed | RM-001, RM-003a, RM-003b, RM-004 |
@@ -140,7 +140,7 @@ Done criteria:
 ## RM-002 - Promotion Governance/Evidence Interface Exploration
 
 Source: AUDIT-001
-Status: proposed
+Status: done
 Priority: P1
 Last verified: 2026-05-21
 Dependencies: RM-001

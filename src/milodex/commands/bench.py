@@ -80,6 +80,20 @@ ACTION_FAMILY_DEMOTE = "demote"
 ACTION_FAMILY_START_PAPER_RUNNER = "start_paper_runner"
 ACTION_FAMILY_STOP_PAPER_RUNNER = "stop_paper_runner"
 
+READINESS_RECONCILIATION = "reconciliation"
+READINESS_KILL_SWITCH = "kill_switch"
+READINESS_DATA_FRESHNESS = "data_freshness"
+READINESS_BROKER_REACHABILITY = "broker_reachability"
+
+_WORKFLOW_REQUIRED_FULL: frozenset[str] = frozenset(
+    {
+        READINESS_RECONCILIATION,
+        READINESS_KILL_SWITCH,
+        READINESS_DATA_FRESHNESS,
+        READINESS_BROKER_REACHABILITY,
+    }
+)
+
 ACTION_FAMILIES: tuple[str, ...] = (
     ACTION_FAMILY_BACKTEST,
     ACTION_FAMILY_FREEZE_MANIFEST,
@@ -132,6 +146,41 @@ class Precondition:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+@dataclass(frozen=True)
+class WorkflowReadinessIssue:
+    """Structured workflow-readiness finding for a Bench action."""
+
+    dimension: str
+    reason_code: str
+    message: str
+    context: dict[str, Any] = field(default_factory=dict)
+    blocking: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_blocker(self) -> Blocker:
+        return Blocker(
+            reason_code=self.reason_code,
+            message=self.message,
+            context={
+                "dimension": self.dimension,
+                "workflow_readiness": True,
+                **dict(self.context),
+            },
+        )
+
+
+@dataclass(frozen=True)
+class WorkflowReadinessReport:
+    """Workflow-readiness verdict supplied to the Bench facade."""
+
+    issues: tuple[WorkflowReadinessIssue, ...] = field(default_factory=tuple)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"issues": [issue.to_dict() for issue in self.issues]}
 
 
 @dataclass(frozen=True)
@@ -209,6 +258,98 @@ class CommandResult:
         }
 
 
+class _DefaultWorkflowReadiness:
+    """Fail-closed production fallback for workflow-readiness verdicts."""
+
+    def __init__(self, event_store_factory: Callable[[], EventStore] | None) -> None:
+        self._event_store_factory = event_store_factory
+
+    def evaluate(
+        self,
+        *,
+        action_family: str,
+        strategy_id: str,
+        required_checks: frozenset[str],
+        inspected_checks: frozenset[str],
+    ) -> WorkflowReadinessReport:
+        issues: list[WorkflowReadinessIssue] = []
+        for dimension in sorted(required_checks | inspected_checks):
+            blocking = dimension in required_checks
+            if dimension == READINESS_KILL_SWITCH:
+                issue = self._kill_switch_issue(blocking=blocking)
+                if issue is not None:
+                    issues.append(issue)
+                continue
+            if dimension == READINESS_RECONCILIATION:
+                issues.append(
+                    WorkflowReadinessIssue(
+                        dimension=dimension,
+                        reason_code="reconciliation_scaffolded",
+                        message=(
+                            "Workflow readiness cannot prove reconciliation clean yet; "
+                            "the reconciliation submit gate is scaffolded."
+                        ),
+                        context={"action_family": action_family, "strategy_id": strategy_id},
+                        blocking=blocking,
+                    )
+                )
+                continue
+            if dimension == READINESS_DATA_FRESHNESS:
+                issues.append(
+                    WorkflowReadinessIssue(
+                        dimension=dimension,
+                        reason_code="data_stale",
+                        message=(
+                            "Workflow readiness cannot prove data freshness; "
+                            "submit-capable workflow actions fail closed."
+                        ),
+                        context={"action_family": action_family, "strategy_id": strategy_id},
+                        blocking=blocking,
+                    )
+                )
+                continue
+            if dimension == READINESS_BROKER_REACHABILITY:
+                issues.append(
+                    WorkflowReadinessIssue(
+                        dimension=dimension,
+                        reason_code="broker_unreachable",
+                        message=(
+                            "Workflow readiness cannot prove broker reachability; "
+                            "submit-capable workflow actions fail closed."
+                        ),
+                        context={"action_family": action_family, "strategy_id": strategy_id},
+                        blocking=blocking,
+                    )
+                )
+        return WorkflowReadinessReport(issues=tuple(issues))
+
+    def _kill_switch_issue(self, *, blocking: bool) -> WorkflowReadinessIssue | None:
+        if self._event_store_factory is None:
+            return WorkflowReadinessIssue(
+                dimension=READINESS_KILL_SWITCH,
+                reason_code="kill_switch_open",
+                message=(
+                    "Workflow readiness cannot verify that the kill switch is inactive; "
+                    "submit-capable workflow actions fail closed."
+                ),
+                context={},
+                blocking=blocking,
+            )
+        event = self._event_store_factory().get_latest_kill_switch_event()
+        if event is None or event.event_type == "reset":
+            return None
+        return WorkflowReadinessIssue(
+            dimension=READINESS_KILL_SWITCH,
+            reason_code="kill_switch_open",
+            message="Kill switch is active; resolve and manually reset it before submitting.",
+            context={
+                "reason": event.reason,
+                "last_triggered_at": event.recorded_at.isoformat(),
+            },
+            blocking=blocking,
+        )
+
+
 class BenchCommandFacade:
     """Single Python entry point for Bench-initiated commands.
 
@@ -226,6 +367,7 @@ class BenchCommandFacade:
         event_store_factory: Callable[[], EventStore] | None = None,
         backtest_engine_factory: Callable[..., Any] | None = None,
         paper_runner_control: Any | None = None,
+        workflow_readiness: Any | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> None:
         self._config_dir = Path(config_dir)
@@ -234,6 +376,9 @@ class BenchCommandFacade:
         self._event_store_factory = event_store_factory
         self._backtest_engine_factory = backtest_engine_factory
         self._paper_runner_control = paper_runner_control
+        self._workflow_readiness = workflow_readiness or _DefaultWorkflowReadiness(
+            event_store_factory
+        )
         self._now = now or (lambda: datetime.now(tz=UTC))
 
     # ------------------------------------------------------------------ #
@@ -534,6 +679,16 @@ class BenchCommandFacade:
         else:
             preconditions.append(Precondition("evidence_run_id_present", passed=True))
 
+        readiness_report, readiness_blockers, readiness_preconditions = (
+            self._evaluate_workflow_readiness(
+                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                strategy_id=strategy_id,
+                required_checks=_WORKFLOW_REQUIRED_FULL,
+            )
+        )
+        blockers.extend(readiness_blockers)
+        preconditions.extend(readiness_preconditions)
+
         projected_outcome = {
             "summary": (
                 f"Promote {strategy_id} from 'backtest' to 'paper'. Freezes the "
@@ -551,6 +706,10 @@ class BenchCommandFacade:
             "to_stage": "paper",
             "promotion_type": "lifecycle_exempt" if lifecycle_exempt else "statistical",
         }
+        projected_outcome = self._attach_workflow_readiness(
+            projected_outcome,
+            readiness_report,
+        )
         return CommandProposal(
             action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
             strategy_id=strategy_id,
@@ -682,6 +841,24 @@ class BenchCommandFacade:
         else:
             preconditions.append(Precondition("demotion_is_movement", passed=True))
 
+        active_runner_holder = self._peek_runner_lock(strategy_id)
+        readiness_report = WorkflowReadinessReport()
+        if active_runner_holder is not None:
+            readiness_report, readiness_blockers, readiness_preconditions = (
+                self._evaluate_workflow_readiness(
+                    action_family=ACTION_FAMILY_DEMOTE,
+                    strategy_id=strategy_id,
+                    required_checks=frozenset(
+                        {READINESS_RECONCILIATION, READINESS_KILL_SWITCH}
+                    ),
+                    inspected_checks=frozenset(
+                        {READINESS_DATA_FRESHNESS, READINESS_BROKER_REACHABILITY}
+                    ),
+                )
+            )
+            blockers.extend(readiness_blockers)
+            preconditions.extend(readiness_preconditions)
+
         projected_outcome = {
             "summary": (
                 f"Demote {strategy_id} from '{config.stage}' to '{to_stage}'. "
@@ -693,6 +870,10 @@ class BenchCommandFacade:
             "to_stage": to_stage,
             "yaml_updated": to_stage in {"idle", "backtest"},
         }
+        projected_outcome = self._attach_workflow_readiness(
+            projected_outcome,
+            readiness_report,
+        )
         return CommandProposal(
             action_family=ACTION_FAMILY_DEMOTE,
             strategy_id=strategy_id,
@@ -794,6 +975,16 @@ class BenchCommandFacade:
         else:
             preconditions.append(Precondition("advisory_lock_free", passed=True))
 
+        readiness_report, readiness_blockers, readiness_preconditions = (
+            self._evaluate_workflow_readiness(
+                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+                strategy_id=strategy_id,
+                required_checks=_WORKFLOW_REQUIRED_FULL,
+            )
+        )
+        blockers.extend(readiness_blockers)
+        preconditions.extend(readiness_preconditions)
+
         projected_outcome = {
             "summary": (
                 f"Start a foreground paper-trading session for {strategy_id}. "
@@ -807,6 +998,10 @@ class BenchCommandFacade:
             "writes_durable_state": True,
             "trading_mode": "paper",
         }
+        projected_outcome = self._attach_workflow_readiness(
+            projected_outcome,
+            readiness_report,
+        )
         return CommandProposal(
             action_family=ACTION_FAMILY_START_PAPER_RUNNER,
             strategy_id=strategy_id,
@@ -866,6 +1061,25 @@ class BenchCommandFacade:
         else:
             preconditions.append(Precondition("runner_active", passed=True))
 
+        readiness_report = WorkflowReadinessReport()
+        if lock_holder is not None:
+            readiness_report, readiness_blockers, readiness_preconditions = (
+                self._evaluate_workflow_readiness(
+                    action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+                    strategy_id=strategy_id,
+                    required_checks=frozenset({READINESS_KILL_SWITCH}),
+                    inspected_checks=frozenset(
+                        {
+                            READINESS_RECONCILIATION,
+                            READINESS_DATA_FRESHNESS,
+                            READINESS_BROKER_REACHABILITY,
+                        }
+                    ),
+                )
+            )
+            blockers.extend(readiness_blockers)
+            preconditions.extend(readiness_preconditions)
+
         projected_outcome = {
             "summary": (
                 f"Issue a controlled-stop request to the active runner for "
@@ -879,6 +1093,10 @@ class BenchCommandFacade:
             "exit_reason": "controlled_stop",
             "kill_switch": False,
         }
+        projected_outcome = self._attach_workflow_readiness(
+            projected_outcome,
+            readiness_report,
+        )
         return CommandProposal(
             action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
             strategy_id=strategy_id,
@@ -1564,7 +1782,7 @@ class BenchCommandFacade:
         durable_refs["to_stage"] = event.to_stage
         durable_refs["promotion_type"] = event.promotion_type
 
-        warnings: list[str] = []
+        warnings: list[str] = self._readiness_warnings_from(revalidation)
         if to_stage == "disabled":
             warnings.append(
                 "Demotion to 'disabled' is ledger-only: the YAML stage line is "
@@ -1842,7 +2060,12 @@ class BenchCommandFacade:
                 "holder": dict(holder),
                 "controlled_stop": True,
                 "kill_switch": False,
+                "workflow_readiness": revalidation.projected_outcome.get(
+                    "workflow_readiness",
+                    {},
+                ),
             },
+            warnings=self._readiness_warnings_from(revalidation),
             submitted_at=getattr(result, "requested_at", self._now()),
             audit_event_id=session_id,
         )
@@ -1851,6 +2074,52 @@ class BenchCommandFacade:
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
+
+    def _evaluate_workflow_readiness(
+        self,
+        *,
+        action_family: str,
+        strategy_id: str,
+        required_checks: frozenset[str],
+        inspected_checks: frozenset[str] = frozenset(),
+    ) -> tuple[WorkflowReadinessReport, list[Blocker], list[Precondition]]:
+        report = self._workflow_readiness.evaluate(
+            action_family=action_family,
+            strategy_id=strategy_id,
+            required_checks=required_checks,
+            inspected_checks=inspected_checks,
+        )
+        blockers = [issue.to_blocker() for issue in report.issues if issue.blocking]
+        preconditions = [
+            Precondition(
+                f"workflow_readiness_{dimension}",
+                passed=not any(
+                    issue.blocking and issue.dimension == dimension for issue in report.issues
+                ),
+            )
+            for dimension in sorted(required_checks)
+        ]
+        return report, blockers, preconditions
+
+    @staticmethod
+    def _attach_workflow_readiness(
+        projected_outcome: dict[str, Any],
+        report: WorkflowReadinessReport,
+    ) -> dict[str, Any]:
+        if not report.issues:
+            return projected_outcome
+        return {**projected_outcome, "workflow_readiness": report.to_dict()}
+
+    @staticmethod
+    def _readiness_warnings_from(proposal: CommandProposal) -> list[str]:
+        report = proposal.projected_outcome.get("workflow_readiness")
+        if not isinstance(report, dict):
+            return []
+        warnings: list[str] = []
+        for issue in report.get("issues", []):
+            if isinstance(issue, dict) and not bool(issue.get("blocking", True)):
+                warnings.append(str(issue.get("message", "")))
+        return [warning for warning in warnings if warning]
 
     def _create_orchestration_job(
         self,
