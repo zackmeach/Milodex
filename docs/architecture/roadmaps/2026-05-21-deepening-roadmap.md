@@ -65,6 +65,8 @@ Parallelism guidance:
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
 | RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | done | RM-002 |
 | RM-011 | RM-002 | Non-CLI analytics metrics boundary | P2 | done | RM-002 |
+| RM-012 | RM-005 | Backtest run lifecycle public surface | P2 | done | RM-001, RM-003a, RM-003b |
+| RM-013 | RM-005 | Daily/intraday simulation kernel helper | P2 | proposed | RM-012 |
 
 ## RM-001 - Bench Paper-Promotion Gate Parity
 
@@ -402,6 +404,13 @@ Explore a backtest-run lifecycle module and a simulation-kernel helper module.
 Prefer a staged refactor that first removes private engine reach-through from
 walk-forward before changing daily/intraday simulation internals.
 
+Execution split:
+
+- `RM-012` owns the first lifecycle-locality slice: expose a public
+  backtesting surface for walk-forward parent-run lifecycle and migrate
+  walk-forward callers to it.
+- `RM-013` owns the later daily/intraday simulation-kernel helper extraction.
+
 Implementation scope:
 
 - Preserve ADR 0021 OOS aggregate behavior.
@@ -658,6 +667,84 @@ Done criteria:
   imports.
 - Single-period and walk-forward promotion metrics keep current behavior.
 - Tests monkeypatch the non-CLI analytics boundary, not a CLI command module.
+
+## RM-012 - Backtest Run Lifecycle Public Surface
+
+Source: RM-005
+Status: done
+Priority: P2
+Last verified: 2026-05-22
+Dependencies: RM-001, RM-003a, RM-003b
+
+Problem:
+
+`run_walk_forward()` owns walk-forward parent-run lifecycle but reaches into
+`BacktestEngine` private event-store, loaded-strategy, data-quality, manifest,
+slippage, and commission state. The research-screen batch path also stamps
+metadata through the engine's private event store.
+
+Next action:
+
+Expose a public backtesting lifecycle surface for walk-forward parent runs, then
+migrate walk-forward orchestration and research-screen metadata stamping to that
+surface.
+
+Implementation scope:
+
+- Do not change walk-forward window math, OOS aggregation, event-store schema,
+  CLI/Bench payloads, ADR 0030 sandbox semantics, or ADR 0053 snapshot storage.
+- Preserve `simulate_window()` as the simulation entrypoint for this slice.
+- Do not extract daily/intraday simulation-kernel helpers here.
+
+Validation:
+
+- `python -m pytest tests/milodex/backtesting/test_walk_forward_runner.py`
+- `python -m pytest tests/milodex/backtesting/test_walk_forward_batch.py`
+- `python -m pytest tests/milodex/backtesting`
+- `python -m ruff check src/ tests/`
+
+Done criteria:
+
+- Production walk-forward orchestration no longer writes parent-run lifecycle
+  rows through private engine attributes.
+- Research-screen metadata stamping uses a public engine method.
+- Existing walk-forward parent-run, explanation ancestry, failed-run metadata,
+  and snapshot behavior remains green.
+
+## RM-013 - Daily/Intraday Simulation Kernel Helper
+
+Source: RM-005
+Status: proposed
+Priority: P2
+Last verified: 2026-05-22
+Dependencies: RM-012
+
+Problem:
+
+Daily and intraday simulation paths still duplicate pending-order lifecycle,
+skipped-order audit, broker sync, fill accounting, entry-state, and snapshot
+policy.
+
+Next action:
+
+Extract shared simulation-kernel helpers after `RM-012` stabilizes walk-forward
+run lifecycle locality.
+
+Implementation scope:
+
+- Preserve daily and intraday golden behavior.
+- Do not bypass `ExecutionService`.
+- Keep ADR 0053 backtest snapshots in `backtest_equity_snapshots`.
+
+Validation:
+
+- `python -m pytest tests/milodex/backtesting`
+- `python -m ruff check src/ tests/`
+
+Done criteria:
+
+- Daily/intraday shared behavior has its own testable interface.
+- Golden daily and intraday behavior remains unchanged.
 
 ## Roadmap-Level Acceptance
 

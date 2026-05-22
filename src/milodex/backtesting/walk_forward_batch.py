@@ -405,14 +405,12 @@ def _screen_one(
     bar_cache: dict[tuple, dict[str, BarSet]],
 ) -> BatchRow:
     engine = ctx.get_backtest_engine(strategy_id, initial_equity=initial_equity)
-    loaded = engine._loaded  # noqa: SLF001
-    family = loaded.context.family
-    universe = tuple(sorted(loaded.context.universe))
-    universe_ref = loaded.context.universe_ref
-    warmup_days = engine._warmup_calendar_days()  # noqa: SLF001
+    family = engine.strategy_family
+    universe = tuple(sorted(engine.universe))
+    universe_ref = engine.universe_ref
+    warmup_days = engine.warmup_calendar_days()
     warmup_start = start_date - timedelta(days=warmup_days)
-    bar_size = loaded.config.tempo["bar_size"]
-    timeframe = timeframe_from_bar_size(bar_size)
+    timeframe = timeframe_from_bar_size(engine.bar_size)
     cache_key = (universe, warmup_start, end_date, timeframe)
 
     if cache_key in bar_cache:
@@ -422,8 +420,10 @@ def _screen_one(
         bar_cache[cache_key] = all_bars
 
     total_days = len(_trading_days_in_range(all_bars, start_date, end_date))
-    wf_windows = int(loaded.config.backtest.get("walk_forward_windows", 4))
-    train_days, test_days, step_days = compute_window_spans(total_days, wf_windows)
+    train_days, test_days, step_days = compute_window_spans(
+        total_days,
+        engine.walk_forward_windows,
+    )
 
     result = run_walk_forward(
         engine,
@@ -438,12 +438,10 @@ def _screen_one(
 
     # Stamp the run record so research-screen runs are distinguishable from
     # single-strategy ``milodex backtest`` runs in the event store.
-    persisted = engine._event_store.get_backtest_run(result.run_id)  # noqa: SLF001
-    if persisted is not None:
-        merged_metadata = {**persisted.metadata, "source": "research_screen"}
-        engine._event_store.update_backtest_run_metadata(  # noqa: SLF001
-            result.run_id, metadata=merged_metadata
-        )
+    engine.merge_backtest_run_metadata(
+        result.run_id,
+        updates={"source": "research_screen"},
+    )
 
     gate = check_gate(
         lifecycle_exempt=(family == "regime"),
@@ -451,7 +449,7 @@ def _screen_one(
         sharpe_ratio=result.oos_sharpe,
         max_drawdown_pct=result.oos_max_drawdown_pct,
         trade_count=result.oos_trade_count,
-        min_trade_count=int(loaded.config.backtest.get("min_trades_required", 30)),
+        min_trade_count=engine.min_trades_required(),
     )
 
     # Look up the universe's declared survivorship-correction status. A
@@ -461,7 +459,7 @@ def _screen_one(
     survivorship_corrected = False
     if universe_ref is not None:
         survivorship_corrected = resolve_universe_survivorship_corrected(
-            universe_ref, loaded.config.path
+            universe_ref, engine.config_path
         )
 
     return BatchRow(

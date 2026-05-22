@@ -107,6 +107,15 @@ class BacktestResult:
     run_manifest: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BacktestRunHandle:
+    """Durable parent-run identifiers returned by engine lifecycle helpers."""
+
+    run_id: str
+    db_id: int
+    started_at: datetime
+
+
 @dataclass
 class _SimulationOutput:
     """Raw outputs from a single simulation sweep over a list of trading days.
@@ -226,6 +235,170 @@ class BacktestEngine:
         rather than reading this property and calling the splitter directly.
         """
         return int(self._loaded.config.backtest.get("walk_forward_windows", 4))
+
+    @property
+    def strategy_id(self) -> str:
+        """Strategy identifier for public orchestration helpers."""
+        return self._loaded.config.strategy_id
+
+    @property
+    def strategy_family(self) -> str:
+        """Strategy family for screening and lifecycle-exemption logic."""
+        return self._loaded.context.family
+
+    @property
+    def universe(self) -> tuple[str, ...]:
+        """Declared strategy universe."""
+        return tuple(self._loaded.context.universe)
+
+    @property
+    def universe_ref(self) -> str | None:
+        """Optional universe manifest reference from the strategy config."""
+        return self._loaded.context.universe_ref
+
+    @property
+    def config_path(self) -> Path:
+        """Path to the loaded strategy config."""
+        return self._loaded.config.path
+
+    @property
+    def bar_size(self) -> str:
+        """Configured strategy bar size, e.g. ``"1D"`` or ``"5Min"``."""
+        return str(self._loaded.config.tempo["bar_size"])
+
+    @property
+    def initial_equity(self) -> float:
+        """Initial equity configured for this backtest engine."""
+        return self._initial_equity
+
+    def warmup_calendar_days(self) -> int:
+        """Calendar days of warmup data needed before the requested start."""
+        return self._warmup_calendar_days()
+
+    def min_trades_required(self) -> int:
+        """Configured paper-promotion trade floor for this strategy."""
+        return int(self._loaded.config.backtest.get("min_trades_required", 30))
+
+    def start_walk_forward_parent_run(
+        self,
+        *,
+        run_id: str | None,
+        start_date: date,
+        end_date: date,
+        windows_planned: int,
+    ) -> BacktestRunHandle:
+        """Append the durable parent row for a walk-forward invocation."""
+        effective_run_id = run_id or str(uuid.uuid4())
+        started_at = datetime.now(tz=UTC)
+
+        self._event_store.reconcile_orphan_backtest_runs(
+            strategy_id=self.strategy_id,
+            ended_at=started_at,
+            status="orphan_recovered",
+        )
+
+        db_run_id = self._event_store.append_backtest_run(
+            BacktestRunEvent(
+                run_id=effective_run_id,
+                strategy_id=self.strategy_id,
+                config_path=str(self._loaded.config.path),
+                config_hash=self._loaded.context.config_hash,
+                start_date=datetime.combine(start_date, datetime.min.time(), tzinfo=UTC),
+                end_date=datetime.combine(end_date, datetime.min.time(), tzinfo=UTC),
+                started_at=started_at,
+                status="running",
+                slippage_pct=self._slippage_pct,
+                commission_per_trade=self._commission,
+                metadata={
+                    "walk_forward": True,
+                    "windows_planned": windows_planned,
+                    "risk_policy": self._risk_policy.value,
+                },
+            )
+        )
+        return BacktestRunHandle(
+            run_id=effective_run_id,
+            db_id=db_run_id,
+            started_at=started_at,
+        )
+
+    def scan_backtest_data_quality(
+        self,
+        all_bars: dict[str, BarSet],
+        start_date: date,
+        end_date: date,
+    ) -> dict:
+        """Return the backtest data-quality report for a prefetched bar set."""
+        return self._scan_data_quality(all_bars, start_date, end_date)
+
+    def build_backtest_run_manifest(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        initial_equity: float,
+        data_quality: dict,
+    ) -> dict:
+        """Build the reproducibility manifest for a backtest invocation."""
+        return self._build_run_manifest(
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=initial_equity,
+            data_quality=data_quality,
+        )
+
+    def backtest_run_metadata_with_manifest(
+        self,
+        run_id: str,
+        *,
+        start_date: date,
+        end_date: date,
+        initial_equity: float,
+        data_quality: dict,
+    ) -> dict:
+        """Merge current run metadata with data-quality and manifest fields."""
+        return self._metadata_with_run_manifest(
+            run_id,
+            start_date=start_date,
+            end_date=end_date,
+            initial_equity=initial_equity,
+            data_quality=data_quality,
+        )
+
+    def update_backtest_run_metadata(self, run_id: str, *, metadata: dict[str, Any]) -> None:
+        """Replace the metadata blob for an existing backtest run."""
+        self._event_store.update_backtest_run_metadata(run_id, metadata=metadata)
+
+    def merge_backtest_run_metadata(self, run_id: str, *, updates: dict[str, Any]) -> None:
+        """Merge small metadata updates into a backtest run if the row exists."""
+        persisted = self._event_store.get_backtest_run(run_id)
+        if persisted is None:
+            return
+        merged_metadata = {**persisted.metadata, **updates}
+        self._event_store.update_backtest_run_metadata(run_id, metadata=merged_metadata)
+
+    def mark_backtest_run_failed(self, run_id: str, *, ended_at: datetime | None = None) -> None:
+        """Mark a durable backtest run as failed."""
+        self._event_store.update_backtest_run_status(
+            run_id,
+            status="failed",
+            ended_at=ended_at or datetime.now(tz=UTC),
+        )
+
+    def complete_walk_forward_run(
+        self,
+        run_id: str,
+        *,
+        metadata: dict[str, Any],
+        ended_at: datetime | None = None,
+    ) -> None:
+        """Mark a walk-forward parent run complete and persist final metadata."""
+        self._event_store.update_backtest_run_status(
+            run_id,
+            status="completed",
+            ended_at=ended_at or datetime.now(tz=UTC),
+        )
+        self._event_store.update_backtest_run_metadata(run_id, metadata=metadata)
 
     def run(
         self,
