@@ -1425,17 +1425,21 @@ class BenchCommandFacade:
         Routes through ``milodex.promotion.prepare_and_record_promotion`` (the
         RM-010 shared paper-promotion orchestrator) — the same entrypoint the
         CLI's ``milodex promotion promote --to paper`` uses. The orchestrator
-        owns the full choreography: stage-transition validation, OOS metrics
-        resolution, gate evaluation, manifest hash derivation, evidence
-        assembly, and the atomic ``transition()`` that appends manifest +
-        promotion events in one event-store transaction and rewrites the
-        YAML ``stage:`` line in-place.
+        owns the full governance choreography: stage-transition validation,
+        OOS metrics resolution, gate evaluation, manifest hash derivation,
+        evidence assembly, and the atomic ``transition()`` that appends
+        manifest + promotion events in one event-store transaction and
+        rewrites the YAML ``stage:`` line in-place.
 
-        The facade does not duplicate any of those rules; it threads the
-        operator-supplied evidence inputs (recommendation, known_risks,
-        run_id, lifecycle_exempt) into the shared orchestrator, translates
-        ``PromoteBlocked``/``PromoteError`` results into Bench-shaped
-        ``Blocker`` records, and returns durable identifiers on success.
+        The facade keeps three responsibilities the orchestrator deliberately
+        does not own: (1) stale-proposal revalidation by re-running
+        ``propose_promote_to_paper`` to detect drift since propose-time,
+        (2) translation of ``PromoteBlocked``/``PromoteError`` into
+        Bench-shaped ``Blocker`` records (CLI and Bench have distinct
+        operator-visible reason-code namespaces), and (3) packaging the
+        ``durable_refs`` payload the GUI bench bridge consumes. Operator
+        identity and evidence text are supplied by the bridge and threaded
+        through unchanged.
         """
         if proposal.action_family != ACTION_FAMILY_PROMOTE_TO_PAPER:
             return CommandResult(

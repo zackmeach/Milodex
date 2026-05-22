@@ -157,6 +157,16 @@ def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -
 class BacktestEngine:
     """Replay a loaded strategy over historical bar data.
 
+    The engine owns the strategy/data/equity lifecycle and the daily vs
+    intraday simulation dispatch. Shared simulation mechanics — pending-order
+    drain, broker sync, fill bookkeeping, skipped-order audit, and equity
+    snapshot policy — are delegated to
+    :class:`~milodex.backtesting.simulation_kernel.BacktestSimulationKernel`
+    (RM-013) so daily and intraday paths cannot drift on those rules. The
+    public ``simulate_window()`` entrypoint is the contract walk-forward
+    orchestration calls (RM-005a); private engine attributes are no longer
+    reached into from walk-forward modules.
+
     Args:
         loaded: Strategy + config produced by :class:`~milodex.strategies.loader.StrategyLoader`.
         data_provider: Market data source (used only to prefetch bars for the run window).

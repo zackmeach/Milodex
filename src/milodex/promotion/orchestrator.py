@@ -88,10 +88,19 @@ class PromoteSuccess:
 
 @dataclass(frozen=True)
 class PromoteBlocked:
-    """A known structured refusal. No durable writes occurred."""
+    """A known structured refusal. No durable writes occurred.
+
+    ``from_stage`` and ``to_stage`` are populated on every refusal so callers
+    can render operator-facing labels (e.g. "Stage: backtest -> paper") without
+    re-loading the strategy config. They are ``None`` only for the defensive
+    "future reason code" branch where the orchestrator hasn't established
+    them.
+    """
 
     reason_code: str
     message: str
+    from_stage: str | None = None
+    to_stage: str | None = None
     metrics_snapshot: dict[str, float | int | None] | None = None
     gate_failures: list[str] = field(default_factory=list)
     promotion_type: str | None = None
@@ -148,6 +157,8 @@ def prepare_and_record_promotion(
         return PromoteBlocked(
             reason_code=REASON_INVALID_STAGE_TRANSITION,
             message=str(exc),
+            from_stage=from_stage,
+            to_stage=to_stage,
         )
 
     try:
@@ -158,6 +169,8 @@ def prepare_and_record_promotion(
         return PromoteBlocked(
             reason_code=REASON_MISSING_BACKTEST_RUN,
             message=str(exc),
+            from_stage=from_stage,
+            to_stage=to_stage,
         )
 
     gate_result = check_gate(
@@ -177,6 +190,8 @@ def prepare_and_record_promotion(
         return PromoteBlocked(
             reason_code=REASON_GATE_FAILED,
             message="; ".join(gate_result.failures) or "gate check failed",
+            from_stage=from_stage,
+            to_stage=to_stage,
             metrics_snapshot=metrics_snapshot,
             gate_failures=list(gate_result.failures),
             promotion_type=gate_result.promotion_type,
