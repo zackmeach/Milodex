@@ -11,14 +11,18 @@ from milodex.cli.rich_views import (
     build_promotion_manifest_view,
 )
 from milodex.promotion import (
-    assemble_evidence_package,
-    check_gate,
+    REASON_GATE_FAILED,
+    REASON_INVALID_STAGE_TRANSITION,
+    REASON_MISSING_BACKTEST_RUN,
+    PromoteBlocked,
+    PromoteError,
+    PromoteRequest,
+    PromoteSuccess,
     freeze_manifest,
+    prepare_and_record_promotion,
     resolve_strategy_config_path,
-    validate_stage_transition,
 )
-from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
-from milodex.promotion.state_machine import demote, transition
+from milodex.promotion.state_machine import demote
 from milodex.strategies.loader import load_strategy_config
 
 
@@ -183,11 +187,7 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     _require_evidence_inputs(args)
 
     config_path = resolve_strategy_config_path(args.strategy_id, ctx.config_dir)
-    config = load_strategy_config(config_path)
-    from_stage = config.stage
     to_stage = args.to_stage
-
-    validate_stage_transition(from_stage, to_stage)
 
     if to_stage == "live" and not args.confirm:
         raise ValueError(
@@ -197,68 +197,65 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     event_store = ctx.get_event_store()
 
-    sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(args.run_id, event_store)
-
-    gate_result = check_gate(
-        lifecycle_exempt=args.lifecycle_exempt,
-        to_stage=to_stage,
-        sharpe_ratio=sharpe_ratio,
-        max_drawdown_pct=max_drawdown_pct,
-        trade_count=trade_count,
-        min_trade_count=int(config.backtest.get("min_trades_required", 30)),
-    )
-    if not gate_result.allowed:
-        return _promote_blocked_result(args.strategy_id, from_stage, to_stage, gate_result)
-
-    manifest_hash = compute_post_update_hash(config.raw_data, to_stage)
-    evidence = assemble_evidence_package(
+    request = PromoteRequest(
         strategy_id=args.strategy_id,
-        from_stage=from_stage,
-        to_stage=to_stage,
-        manifest_hash=manifest_hash,
-        backtest_run_id=args.run_id,
-        recommendation=args.recommendation,
-        known_risks=args.known_risks,
-        promotion_type=gate_result.promotion_type,
-        gate_check_outcome={
-            "failures": list(gate_result.failures),
-            "promotion_type": gate_result.promotion_type,
-        },
-        metrics_snapshot={
-            "sharpe_ratio": gate_result.sharpe_ratio,
-            "max_drawdown_pct": gate_result.max_drawdown_pct,
-            "trade_count": gate_result.trade_count,
-        },
-        event_store=event_store,
-    )
-
-    promotion = transition(
         config_path=config_path,
         to_stage=to_stage,
-        gate_result=gate_result,
-        evidence=evidence,
+        recommendation=args.recommendation,
+        known_risks=list(args.known_risks),
         approved_by=args.approved_by,
-        event_store=event_store,
-        backtest_run_id=args.run_id,
+        run_id=args.run_id,
+        lifecycle_exempt=args.lifecycle_exempt,
         notes=args.notes,
     )
+    result = prepare_and_record_promotion(request, event_store)
 
+    if isinstance(result, PromoteBlocked):
+        # Refusal codes other than gate_failed match the pre-RM-010 CLI
+        # behavior: ``validate_stage_transition`` and ``metrics_from_run``
+        # raised ``ValueError`` and the top-level CLI handler surfaced them
+        # to stderr. Re-raise to preserve that exit path. Gate failures
+        # have always been rendered as an error CommandResult; preserve
+        # that too.
+        if result.reason_code == REASON_GATE_FAILED:
+            # Load config only for the from_stage label in the user-facing
+            # message — the gate decision itself does not need it.
+            from_stage = load_strategy_config(config_path).stage
+            return _promote_blocked_result(
+                args.strategy_id,
+                from_stage,
+                to_stage,
+                result.gate_failures,
+                result.promotion_type or "statistical",
+            )
+        if result.reason_code in (
+            REASON_INVALID_STAGE_TRANSITION,
+            REASON_MISSING_BACKTEST_RUN,
+        ):
+            raise ValueError(result.message)
+        # Defensive: any future blocked code surfaces as a ValueError so
+        # the CLI never silently swallows a refusal.
+        raise ValueError(result.message)
+    if isinstance(result, PromoteError):
+        raise ValueError(result.message)
+
+    assert isinstance(result, PromoteSuccess)
     data = {
         "strategy_id": args.strategy_id,
-        "from_stage": from_stage,
-        "to_stage": to_stage,
+        "from_stage": result.from_stage,
+        "to_stage": result.to_stage,
         "promoted": True,
-        "promotion_type": gate_result.promotion_type,
-        "promotion_id": promotion.id,
-        "manifest_id": promotion.manifest_id,
-        "evidence": evidence.as_dict(),
+        "promotion_type": result.promotion_type,
+        "promotion_id": result.promotion_id,
+        "manifest_id": result.manifest_id,
+        "evidence": result.evidence.as_dict(),
     }
     lines = [
         "Strategy Promotion",
         f"Strategy:        {args.strategy_id}",
-        f"Stage:           {from_stage} -> {to_stage}",
-        f"Type:            {gate_result.promotion_type}",
-        f"Manifest hash:   {manifest_hash[:12]}...",
+        f"Stage:           {result.from_stage} -> {result.to_stage}",
+        f"Type:            {result.promotion_type}",
+        f"Manifest hash:   {result.manifest_hash[:12]}...",
         f"Evidence items:  recommendation + {len(args.known_risks)} risk(s)",
         "Result:          promotion recorded, manifest frozen, YAML updated.",
     ]
@@ -318,15 +315,19 @@ def _require_evidence_inputs(args: argparse.Namespace) -> None:
 
 
 def _promote_blocked_result(
-    strategy_id: str, from_stage: str, to_stage: str, gate_result
+    strategy_id: str,
+    from_stage: str,
+    to_stage: str,
+    gate_failures: list[str],
+    promotion_type: str,
 ) -> CommandResult:
     data = {
         "strategy_id": strategy_id,
         "from_stage": from_stage,
         "to_stage": to_stage,
         "promoted": False,
-        "promotion_type": gate_result.promotion_type,
-        "gate_failures": list(gate_result.failures),
+        "promotion_type": promotion_type,
+        "gate_failures": list(gate_failures),
     }
     lines = [
         "Strategy Promotion — BLOCKED",
@@ -334,14 +335,14 @@ def _promote_blocked_result(
         f"Stage:      {from_stage} -> {to_stage}",
         "Gate check failures:",
     ]
-    for failure in gate_result.failures:
+    for failure in gate_failures:
         lines.append(f"  - {failure}")
     return CommandResult(
         command="promotion.promote",
         status="error",
         data=data,
         human_lines=lines,
-        errors=[{"code": "gate_check_failed", "message": f} for f in gate_result.failures],
+        errors=[{"code": "gate_check_failed", "message": f} for f in gate_failures],
     )
 
 

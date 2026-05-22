@@ -21,6 +21,17 @@ from milodex.promotion.manifest import (
     get_active_manifest_hash,
     resolve_strategy_config_path,
 )
+from milodex.promotion.orchestrator import (
+    REASON_GATE_FAILED,
+    REASON_INVALID_STAGE_TRANSITION,
+    REASON_MISSING_BACKTEST_RUN,
+    PromoteBlocked,
+    PromoteError,
+    PromoteRequest,
+    PromoteResult,
+    PromoteSuccess,
+    prepare_and_record_promotion,
+)
 from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE, RECOGNIZED_MODES
 from milodex.promotion.state_machine import (
@@ -42,9 +53,17 @@ __all__ = [
     "MIN_TRADES",
     "PAPER_MAX_DRAWDOWN_PCT",
     "PAPER_MIN_SHARPE",
+    "REASON_GATE_FAILED",
+    "REASON_INVALID_STAGE_TRANSITION",
+    "REASON_MISSING_BACKTEST_RUN",
     "RECOGNIZED_MODES",
     "STAGE_ORDER",
     "EvidencePackage",
+    "PromoteBlocked",
+    "PromoteError",
+    "PromoteRequest",
+    "PromoteResult",
+    "PromoteSuccess",
     "PromotionCheckResult",
     "assemble_evidence_package",
     "check_gate",
@@ -52,6 +71,7 @@ __all__ = [
     "freeze_manifest",
     "get_active_manifest_hash",
     "metrics_from_run",
+    "prepare_and_record_promotion",
     "resolve_strategy_config_path",
     "validate_stage_transition",
 ]

@@ -63,7 +63,7 @@ Parallelism guidance:
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | proposed | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
-| RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | proposed | RM-002 |
+| RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | done | RM-002 |
 | RM-011 | RM-002 | Non-CLI analytics metrics boundary | P2 | proposed | RM-002 |
 
 ## RM-001 - Bench Paper-Promotion Gate Parity
@@ -578,7 +578,7 @@ Done criteria:
 ## RM-010 - Shared Paper-Promotion Choreography Entrypoint
 
 Source: RM-002
-Status: proposed
+Status: done
 Priority: P1
 Last verified: 2026-05-21
 Dependencies: RM-002
