@@ -1,0 +1,615 @@
+"""Shared mechanics for daily and intraday backtest simulations."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
+from enum import Enum
+from pathlib import Path
+
+import pandas as pd
+
+from milodex.analytics.snapshots import record_backtest_equity_snapshot
+from milodex.broker.models import AccountInfo, OrderSide, Position
+from milodex.broker.simulated import SimulatedBroker
+from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+from milodex.data.models import BarSet
+from milodex.data.simulated import SimulatedDataProvider
+from milodex.execution.models import ExecutionStatus, TradeIntent
+from milodex.execution.service import ExecutionService
+from milodex.execution.state import KillSwitchStateStore
+from milodex.risk import RiskEvaluator
+
+
+class MissingOpenPolicy(Enum):
+    """How a pending order behaves when the next open is unavailable."""
+
+    SKIP = "skip"
+    RETAIN = "retain"
+
+
+@dataclass(frozen=True)
+class PendingOrder:
+    """An intent emitted by a daily bar decision, awaiting the next open."""
+
+    intent: TradeIntent
+    reasoning: object
+    decision_day: date | None = None
+
+
+@dataclass(frozen=True)
+class IntradayPendingOrder:
+    """An intent emitted by an intraday decision, awaiting a later open."""
+
+    intent: TradeIntent
+    reasoning: object
+    decision_timestamp: pd.Timestamp
+
+
+@dataclass(frozen=True)
+class PendingDrainResult:
+    """Counts and carry-over orders returned by a pending-order drain."""
+
+    buy_count: int
+    sell_count: int
+    skipped_count: int
+    remaining: list[PendingOrder | IntradayPendingOrder]
+
+
+class BacktestSimulationKernel:
+    """Mutable simulation state and shared order/audit mechanics."""
+
+    def __init__(
+        self,
+        *,
+        event_store: EventStore,
+        all_bars: dict[str, BarSet],
+        strategy_id: str,
+        strategy_stage: str,
+        strategy_config_path: Path | None,
+        config_hash: str,
+        risk_defaults_path: Path,
+        risk_evaluator: RiskEvaluator,
+        slippage_pct: float,
+        commission_per_trade: float,
+        initial_cash: float,
+        max_positions: int | None,
+        max_position_pct: float | None,
+        daily_loss_cap_pct: float | None,
+    ) -> None:
+        self.event_store = event_store
+        self.strategy_id = strategy_id
+        self.strategy_stage = strategy_stage
+        self.strategy_config_path = strategy_config_path
+        self.config_hash = config_hash
+        self.slippage_pct = slippage_pct
+        self.commission_per_trade = commission_per_trade
+        self.max_positions = max_positions
+        self.max_position_pct = max_position_pct
+        self.daily_loss_cap_pct = daily_loss_cap_pct
+
+        self.sim_broker = SimulatedBroker(
+            slippage_pct=slippage_pct,
+            commission_per_trade=commission_per_trade,
+        )
+        self.sim_data_provider = SimulatedDataProvider(all_bars)
+        self.execution_service = ExecutionService(
+            broker_client=self.sim_broker,
+            data_provider=self.sim_data_provider,
+            kill_switch_store=KillSwitchStateStore(event_store=event_store),
+            risk_defaults_path=risk_defaults_path,
+            risk_evaluator=risk_evaluator,
+            event_store=event_store,
+            is_backtest=True,
+        )
+
+        self.cash = initial_cash
+        self.positions: dict[str, tuple[float, float]] = {}
+        self.entry_state: dict[str, dict] = {}
+        self.sym_fills: dict[str, dict[str, int]] = {}
+
+    def round_trip_count(self) -> int:
+        """Return completed round trips by symbol."""
+        return sum(min(counts["buys"], counts["sells"]) for counts in self.sym_fills.values())
+
+    def sync_broker_state(
+        self,
+        *,
+        day: date,
+        closes: dict[str, float],
+        equity: float | None = None,
+    ) -> None:
+        """Inject simulated account/position state into broker and data provider."""
+        effective_equity = equity if equity is not None else compute_equity(
+            self.cash, self.positions, closes
+        )
+        day_dt = day_to_dt(day)
+        self.sim_broker.set_simulation_day(day=day_dt, closes=closes)
+        self.sim_data_provider.set_simulation_day(day)
+        self.sim_broker.update_account(
+            AccountInfo(
+                equity=effective_equity,
+                cash=self.cash,
+                buying_power=self.cash,
+                portfolio_value=effective_equity,
+                daily_pnl=0.0,
+            )
+        )
+        reported_positions = []
+        for sym, (qty, entry_price) in self.positions.items():
+            current_price = closes.get(sym, entry_price)
+            reported_positions.append(
+                Position(
+                    symbol=sym,
+                    quantity=qty,
+                    avg_entry_price=entry_price,
+                    current_price=current_price,
+                    market_value=current_price * qty,
+                    unrealized_pnl=(current_price - entry_price) * qty,
+                    unrealized_pnl_pct=(
+                        0.0 if entry_price == 0 else (current_price - entry_price) / entry_price
+                    ),
+                )
+            )
+        self.sim_broker.set_positions(reported_positions)
+
+    def record_no_action(
+        self,
+        *,
+        symbol: str,
+        latest_bar_timestamp: datetime,
+        latest_bar_close: float,
+        session_id: str,
+        reasoning: object,
+        db_run_id: int,
+    ) -> None:
+        """Record a backtest no-action explanation through ExecutionService."""
+        self.execution_service.record_no_action(
+            strategy_name=self.strategy_id,
+            strategy_stage=self.strategy_stage,
+            strategy_config_path=self.strategy_config_path,
+            config_hash=self.config_hash,
+            symbol=symbol,
+            latest_bar_timestamp=latest_bar_timestamp,
+            latest_bar_close=latest_bar_close,
+            session_id=session_id,
+            reasoning=reasoning,
+            submitted_by="backtest_engine",
+            backtest_run_id=db_run_id,
+        )
+
+    def drain_pending_orders(
+        self,
+        *,
+        pending: list[PendingOrder | IntradayPendingOrder],
+        opens: dict[str, float],
+        day: date,
+        session_id: str,
+        db_run_id: int,
+        missing_open_policy: MissingOpenPolicy,
+    ) -> PendingDrainResult:
+        """Fill pending orders at available opens, preserving daily/intraday differences."""
+        remaining: list[PendingOrder | IntradayPendingOrder] = []
+        to_process: list[PendingOrder | IntradayPendingOrder] = []
+        if missing_open_policy is MissingOpenPolicy.RETAIN:
+            for order in pending:
+                if order.intent.normalized_symbol() not in opens:
+                    remaining.append(order)
+                else:
+                    to_process.append(order)
+        else:
+            to_process = list(pending)
+
+        if not to_process:
+            return PendingDrainResult(
+                buy_count=0,
+                sell_count=0,
+                skipped_count=0,
+                remaining=remaining,
+            )
+
+        sells = [order for order in to_process if order.intent.side is OrderSide.SELL]
+        buys = [order for order in to_process if order.intent.side is OrderSide.BUY]
+
+        equity_pre_drain = compute_equity(self.cash, self.positions, opens)
+        self.sync_broker_state(day=day, closes=opens, equity=equity_pre_drain)
+
+        sell_count = 0
+        skipped_count = 0
+        for order in sells:
+            if self._skip_missing_or_invalid_sell(
+                order=order,
+                opens=opens,
+                day=day,
+                session_id=session_id,
+                db_run_id=db_run_id,
+                equity=equity_pre_drain,
+            ):
+                skipped_count += 1
+                continue
+
+            sym = order.intent.normalized_symbol()
+            latest_open = opens[sym]
+            qty, _ = self.positions[sym]
+            decorated = self._decorate_intent(order.intent, quantity_override=qty)
+            result = self.execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=order.reasoning,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            proceeds = fill_price * qty - self.commission_per_trade
+            self.cash += proceeds
+            del self.positions[sym]
+            self.entry_state.pop(sym, None)
+            sell_count += 1
+            self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
+
+        intermediate_equity = compute_equity(self.cash, self.positions, opens)
+        self.sync_broker_state(day=day, closes=opens, equity=intermediate_equity)
+
+        buy_count = 0
+        for order in buys:
+            skip_result = self._buy_skip_reason(
+                order=order,
+                opens=opens,
+                projected_fill=None,
+            )
+            if skip_result == "non_positive_quantity":
+                continue
+            if skip_result is not None:
+                sym = order.intent.normalized_symbol()
+                latest_open = opens.get(sym)
+                projected_fill = (
+                    latest_open * (1.0 + self.slippage_pct)
+                    if latest_open is not None and math.isfinite(latest_open)
+                    else latest_open
+                )
+                self._record_buy_skip(
+                    order=order,
+                    reason_code=skip_result,
+                    latest_open=latest_open,
+                    projected_fill=projected_fill,
+                    day=day,
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    equity=intermediate_equity,
+                )
+                skipped_count += 1
+                continue
+
+            sym = order.intent.normalized_symbol()
+            latest_open = opens[sym]
+            decorated = self._decorate_intent(order.intent)
+            result = self.execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=order.reasoning,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+
+            qty = float(order.intent.quantity)
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            realized_cost = fill_price * qty + self.commission_per_trade
+            self.cash -= realized_cost
+            self.positions[sym] = (qty, fill_price)
+            self.entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
+            buy_count += 1
+            self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["buys"] += 1
+
+        return PendingDrainResult(
+            buy_count=buy_count,
+            sell_count=sell_count,
+            skipped_count=skipped_count,
+            remaining=remaining,
+        )
+
+    def record_stranded_orders(
+        self,
+        *,
+        pending: list[PendingOrder | IntradayPendingOrder],
+        day: date,
+        latest_closes: dict[str, float],
+        session_id: str,
+        db_run_id: int,
+    ) -> int:
+        """Audit pending orders that cannot fill before the backtest window ends."""
+        equity = compute_equity(self.cash, self.positions, latest_closes)
+        skipped_count = 0
+        for order in pending:
+            sym = order.intent.normalized_symbol()
+            latest_price = latest_closes.get(sym)
+            context: dict[str, object] = {"reason_code": "backtest_no_next_bar"}
+            if isinstance(order, IntradayPendingOrder):
+                context["decision_timestamp"] = order.decision_timestamp.isoformat()
+            elif order.decision_day is not None:
+                context["decision_day"] = order.decision_day.isoformat()
+            self._record_skipped_order(
+                intent=order.intent,
+                reason_code="backtest_no_next_bar",
+                message=(
+                    f"Skipped backtest {order.intent.side.value} for {sym}: "
+                    "no next bar available before run end."
+                ),
+                session_id=session_id,
+                db_run_id=db_run_id,
+                day=day,
+                cash=self.cash,
+                equity=equity,
+                latest_price=latest_price,
+                unit_price=latest_price,
+                context=context,
+            )
+            skipped_count += 1
+        return skipped_count
+
+    def record_final_snapshot(
+        self,
+        *,
+        session_id: str,
+        db_run_id: int,
+        recorded_at: datetime,
+    ) -> None:
+        """Best-effort ADR 0053 snapshot write for a simulation sweep."""
+        try:
+            record_backtest_equity_snapshot(
+                event_store=self.event_store,
+                broker=self.sim_broker,
+                session_id=session_id,
+                strategy_id=self.strategy_id,
+                backtest_run_id=db_run_id,
+                recorded_at=recorded_at,
+            )
+        except Exception:  # noqa: BLE001 - snapshot is best-effort
+            pass
+
+    def _skip_missing_or_invalid_sell(
+        self,
+        *,
+        order: PendingOrder | IntradayPendingOrder,
+        opens: dict[str, float],
+        day: date,
+        session_id: str,
+        db_run_id: int,
+        equity: float,
+    ) -> bool:
+        sym = order.intent.normalized_symbol()
+        if sym not in self.positions:
+            self._record_skipped_order(
+                intent=order.intent,
+                reason_code="backtest_sell_without_position",
+                message=f"Skipped backtest sell for {sym}: no open position.",
+                session_id=session_id,
+                db_run_id=db_run_id,
+                day=day,
+                cash=self.cash,
+                equity=equity,
+                latest_price=opens.get(sym),
+                unit_price=opens.get(sym),
+                context={"reason_code": "backtest_sell_without_position"},
+            )
+            return True
+        latest_open = opens.get(sym)
+        if latest_open is None:
+            self._record_skipped_order(
+                intent=order.intent,
+                reason_code="backtest_missing_next_open",
+                message=f"Skipped backtest sell for {sym}: missing next open price.",
+                session_id=session_id,
+                db_run_id=db_run_id,
+                day=day,
+                cash=self.cash,
+                equity=equity,
+                latest_price=None,
+                unit_price=None,
+                context={"reason_code": "backtest_missing_next_open"},
+            )
+            return True
+        if not math.isfinite(latest_open) or latest_open <= 0:
+            self._record_skipped_order(
+                intent=order.intent,
+                reason_code="backtest_invalid_next_open",
+                message=f"Skipped backtest sell for {sym}: invalid next open price.",
+                session_id=session_id,
+                db_run_id=db_run_id,
+                day=day,
+                cash=self.cash,
+                equity=equity,
+                latest_price=latest_open,
+                unit_price=latest_open,
+                context={"reason_code": "backtest_invalid_next_open"},
+            )
+            return True
+        return False
+
+    def _buy_skip_reason(
+        self,
+        *,
+        order: PendingOrder | IntradayPendingOrder,
+        opens: dict[str, float],
+        projected_fill: float | None,
+    ) -> str | None:
+        sym = order.intent.normalized_symbol()
+        if sym in self.positions:
+            return "backtest_duplicate_position"
+        qty = float(order.intent.quantity)
+        if qty <= 0:
+            return "non_positive_quantity"
+        latest_open = opens.get(sym)
+        if latest_open is None:
+            return "backtest_missing_next_open"
+        if not math.isfinite(latest_open) or latest_open <= 0:
+            return "backtest_invalid_next_open"
+        effective_projected_fill = projected_fill or latest_open * (1.0 + self.slippage_pct)
+        cost = effective_projected_fill * qty + self.commission_per_trade
+        if self.cash < cost:
+            return "backtest_insufficient_cash"
+        return None
+
+    def _record_buy_skip(
+        self,
+        *,
+        order: PendingOrder | IntradayPendingOrder,
+        reason_code: str,
+        latest_open: float | None,
+        projected_fill: float | None,
+        day: date,
+        session_id: str,
+        db_run_id: int,
+        equity: float,
+    ) -> None:
+        sym = order.intent.normalized_symbol()
+        message_by_reason = {
+            "backtest_duplicate_position": (
+                f"Skipped backtest buy for {sym}: position already open."
+            ),
+            "backtest_missing_next_open": (
+                f"Skipped backtest buy for {sym}: missing next open price."
+            ),
+            "backtest_invalid_next_open": (
+                f"Skipped backtest buy for {sym}: invalid next open price."
+            ),
+            "backtest_insufficient_cash": f"Skipped backtest buy for {sym}: insufficient cash.",
+        }
+        context: dict[str, object] = {"reason_code": reason_code}
+        if reason_code == "backtest_insufficient_cash":
+            qty = float(order.intent.quantity)
+            projected_cost = (
+                None
+                if projected_fill is None
+                else projected_fill * qty + self.commission_per_trade
+            )
+            context.update({"cash": self.cash, "projected_cost": projected_cost})
+        self._record_skipped_order(
+            intent=order.intent,
+            reason_code=reason_code,
+            message=message_by_reason[reason_code],
+            session_id=session_id,
+            db_run_id=db_run_id,
+            day=day,
+            cash=self.cash,
+            equity=equity,
+            latest_price=latest_open,
+            unit_price=projected_fill,
+            context=context,
+        )
+
+    def _record_skipped_order(
+        self,
+        *,
+        intent: TradeIntent,
+        reason_code: str,
+        message: str,
+        session_id: str,
+        db_run_id: int,
+        day: date,
+        cash: float,
+        equity: float,
+        latest_price: float | None,
+        unit_price: float | None,
+        context: dict[str, object],
+    ) -> None:
+        decorated = self._decorate_intent(intent)
+        recorded_at = day_to_dt(day)
+        estimated_unit_price = 0.0 if unit_price is None else float(unit_price)
+        estimated_order_value = estimated_unit_price * decorated.quantity
+        explanation_id = self.event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=recorded_at,
+                decision_type="backtest_skip",
+                status="skipped",
+                strategy_name=self.strategy_id,
+                strategy_stage=self.strategy_stage,
+                strategy_config_path=str(self.strategy_config_path),
+                config_hash=self.config_hash,
+                symbol=decorated.normalized_symbol(),
+                side=decorated.side.value,
+                quantity=decorated.quantity,
+                order_type=decorated.order_type.value,
+                time_in_force=decorated.time_in_force.value,
+                submitted_by="backtest_engine",
+                market_open=True,
+                latest_bar_timestamp=recorded_at,
+                latest_bar_close=latest_price,
+                account_equity=equity,
+                account_cash=cash,
+                account_portfolio_value=equity,
+                account_daily_pnl=0.0,
+                risk_allowed=True,
+                risk_summary="Backtest order skipped before execution.",
+                reason_codes=[reason_code],
+                risk_checks=[],
+                context={"message": message, **context},
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+            )
+        )
+        self.event_store.append_trade(
+            TradeEvent(
+                explanation_id=explanation_id,
+                recorded_at=recorded_at,
+                status="skipped",
+                source="backtest",
+                symbol=decorated.normalized_symbol(),
+                side=decorated.side.value,
+                quantity=decorated.quantity,
+                order_type=decorated.order_type.value,
+                time_in_force=decorated.time_in_force.value,
+                estimated_unit_price=estimated_unit_price,
+                estimated_order_value=estimated_order_value,
+                strategy_name=self.strategy_id,
+                strategy_stage=self.strategy_stage,
+                strategy_config_path=str(self.strategy_config_path),
+                submitted_by="backtest_engine",
+                broker_order_id=None,
+                broker_status=None,
+                message=message,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+            )
+        )
+
+    def _decorate_intent(
+        self,
+        intent: TradeIntent,
+        *,
+        quantity_override: float | None = None,
+    ) -> TradeIntent:
+        return TradeIntent(
+            symbol=intent.symbol,
+            side=intent.side,
+            quantity=float(quantity_override if quantity_override is not None else intent.quantity),
+            order_type=intent.order_type,
+            time_in_force=intent.time_in_force,
+            limit_price=intent.limit_price,
+            stop_price=intent.stop_price,
+            strategy_config_path=self.strategy_config_path,
+            submitted_by="backtest_engine",
+            expected_stage=self.strategy_stage,
+            expected_max_positions=self.max_positions,
+            expected_max_position_pct=self.max_position_pct,
+            expected_daily_loss_cap_pct=self.daily_loss_cap_pct,
+        )
+
+
+def compute_equity(
+    cash: float,
+    positions: dict[str, tuple[float, float]],
+    latest_closes: dict[str, float],
+) -> float:
+    market_value = sum(
+        qty * latest_closes.get(sym, entry_price)
+        for sym, (qty, entry_price) in positions.items()
+    )
+    return cash + market_value
+
+
+def day_to_dt(day: date) -> datetime:
+    return datetime.combine(day, datetime.min.time(), tzinfo=UTC)
