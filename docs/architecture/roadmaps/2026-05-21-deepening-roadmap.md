@@ -58,7 +58,7 @@ Parallelism guidance:
 | RM-003a | AUDIT-002 | Runner audit linkage | P0 | done | RM-001 |
 | RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | done | RM-003a |
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
-| RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | proposed | RM-001, RM-003a, RM-003b |
+| RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | done | RM-001, RM-003a, RM-003b |
 | RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | proposed | RM-001, RM-003a, RM-003b, RM-004 |
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | proposed | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
@@ -66,7 +66,7 @@ Parallelism guidance:
 | RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | done | RM-002 |
 | RM-011 | RM-002 | Non-CLI analytics metrics boundary | P2 | done | RM-002 |
 | RM-012 | RM-005 | Backtest run lifecycle public surface | P2 | done | RM-001, RM-003a, RM-003b |
-| RM-013 | RM-005 | Daily/intraday simulation kernel helper | P2 | proposed | RM-012 |
+| RM-013 | RM-005 | Daily/intraday simulation kernel helper | P2 | done | RM-012 |
 
 ## RM-001 - Bench Paper-Promotion Gate Parity
 
@@ -385,9 +385,9 @@ Done criteria:
 ## RM-005 - Backtest Run Lifecycle and Simulation Kernel
 
 Source: AUDIT-005
-Status: proposed
+Status: done
 Priority: P2
-Last verified: 2026-05-21
+Last verified: 2026-05-22
 Dependencies: RM-001, RM-003a, RM-003b
 
 Problem:
@@ -714,7 +714,7 @@ Done criteria:
 ## RM-013 - Daily/Intraday Simulation Kernel Helper
 
 Source: RM-005
-Status: proposed
+Status: done
 Priority: P2
 Last verified: 2026-05-22
 Dependencies: RM-012

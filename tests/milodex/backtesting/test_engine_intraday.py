@@ -13,13 +13,15 @@ from unittest.mock import MagicMock
 import pandas as pd
 
 from milodex.backtesting.engine import BacktestEngine
+from milodex.backtesting.simulation_kernel import (
+    BacktestSimulationKernel,
+    IntradayPendingOrder,
+    MissingOpenPolicy,
+)
 from milodex.broker.models import OrderSide, OrderType
-from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.models import BarSet
-from milodex.data.simulated import SimulatedDataProvider
 from milodex.execution.models import TradeIntent
-from milodex.execution.service import ExecutionService
 from milodex.risk import NullRiskEvaluator
 from milodex.strategies.base import DecisionReasoning, StrategyContext, StrategyDecision
 
@@ -102,9 +104,7 @@ def test_drain_pending_at_timestamp_fills_matched_keeps_unmatched() -> None:
     """
     from datetime import UTC, datetime
 
-    from milodex.backtesting.engine import _IntradayPendingOrder
-
-    engine, sim_broker, sim_data_provider, execution_service, event_store = _build_test_engine()
+    kernel, event_store = _build_test_kernel()
 
     # Register a real backtest_runs row so FK constraints pass on audit writes.
     now = datetime.now(tz=UTC)
@@ -131,45 +131,37 @@ def test_drain_pending_at_timestamp_fills_matched_keeps_unmatched() -> None:
     intent_qqq = TradeIntent(
         symbol="QQQ", side=OrderSide.BUY, quantity=5.0, order_type=OrderType.MARKET
     )
-    pending: list[_IntradayPendingOrder] = [
-        _IntradayPendingOrder(intent=intent_spy, decision_timestamp=decision_ts, reasoning=None),
-        _IntradayPendingOrder(intent=intent_qqq, decision_timestamp=decision_ts, reasoning=None),
+    pending: list[IntradayPendingOrder] = [
+        IntradayPendingOrder(intent=intent_spy, decision_timestamp=decision_ts, reasoning=None),
+        IntradayPendingOrder(intent=intent_qqq, decision_timestamp=decision_ts, reasoning=None),
     ]
 
     # At T=15:00 UTC, only SPY has an open
     target_ts = pd.Timestamp("2024-01-15 15:00:00+00:00")
     opens = {"SPY": 500.50}
 
-    new_cash, buys, sells, skipped, remaining = engine._drain_pending_at_timestamp(
+    drain = kernel.drain_pending_orders(
         pending=pending,
         opens=opens,
-        cash=100_000.0,
-        positions={},
-        entry_state={},
-        sim_broker=sim_broker,
-        sim_data_provider=sim_data_provider,
-        execution_service=execution_service,
-        timestamp=target_ts,
+        day=target_ts.date(),
         session_id="sess-1",
         db_run_id=db_run_id,
-        sym_fills={},
+        missing_open_policy=MissingOpenPolicy.RETAIN,
     )
 
     # SPY filled (Category 2 success — buy with sufficient cash)
-    assert buys == 1
-    assert sells == 0
-    assert skipped == 0  # no Category-2 rejections
-    assert new_cash < 100_000.0  # cash reduced by SPY fill
+    assert drain.buy_count == 1
+    assert drain.sell_count == 0
+    assert drain.skipped_count == 0  # no Category-2 rejections
+    assert kernel.cash < 100_000.0  # cash reduced by SPY fill
 
     # QQQ still pending (Category 1 — no open at this timestamp)
-    assert len(remaining) == 1
-    assert remaining[0].intent.symbol == "QQQ"
+    assert len(drain.remaining) == 1
+    assert drain.remaining[0].intent.symbol == "QQQ"
 
 
-def _build_test_engine() -> tuple[
-    BacktestEngine, SimulatedBroker, SimulatedDataProvider, ExecutionService, EventStore
-]:
-    """Return a BacktestEngine wired with minimal stubs for _drain_pending_at_timestamp tests.
+def _build_test_kernel() -> tuple[BacktestSimulationKernel, EventStore]:
+    """Return a simulation kernel wired for pending-order drain tests.
 
     Uses slippage=0, commission=0 for exact arithmetic. Provides a minimal
     BarSet for SPY so SimulatedDataProvider initialises without error.
@@ -203,45 +195,6 @@ strategy:
     config_path = tmp_dir / "intraday_test.yaml"
     config_path.write_text(yaml_text, encoding="utf-8")
 
-    config = MagicMock()
-    config.strategy_id = "intraday.test.v1"
-    config.family = "momentum"
-    config.template = "intraday.orb"
-    config.stage = "backtest"
-    config.path = config_path
-    config.parameters = {}
-    config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
-    config.tempo = {"bar_size": "5Min"}
-    config.universe = ("SPY",)
-    config.risk = {"max_position_pct": 0.50, "max_positions": 4}
-
-    context = StrategyContext(
-        strategy_id="intraday.test.v1",
-        family="momentum",
-        template="intraday.orb",
-        variant="test",
-        version=1,
-        config_hash="test_hash",
-        parameters={},
-        universe=("SPY",),
-        universe_ref=None,
-        disable_conditions=(),
-        config_path=str(config_path),
-        manifest={},
-    )
-
-    strategy = MagicMock()
-    strategy.evaluate.return_value = StrategyDecision(
-        intents=[],
-        reasoning=DecisionReasoning(rule="no_signal", narrative="test"),
-    )
-    strategy.max_lookback_periods.return_value = 0
-
-    loaded = MagicMock()
-    loaded.config = config
-    loaded.context = context
-    loaded.strategy = strategy
-
     # Minimal SPY BarSet so SimulatedDataProvider initialises cleanly
     spy_bars = BarSet(
         pd.DataFrame(
@@ -256,35 +209,42 @@ strategy:
             }
         )
     )
-    all_bars: dict[str, BarSet] = {"SPY": spy_bars}
+    qqq_bars = BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2024-01-15 15:10:00+00:00")],
+                "open": [400.0],
+                "high": [400.1],
+                "low": [399.9],
+                "close": [400.05],
+                "volume": [500_000],
+                "vwap": [400.02],
+            }
+        )
+    )
+    all_bars: dict[str, BarSet] = {"SPY": spy_bars, "QQQ": qqq_bars}
 
     tmp_db = Path(tempfile.mktemp(suffix=".db"))
     event_store = EventStore(tmp_db)
 
-    sim_broker = SimulatedBroker(slippage_pct=0.0, commission_per_trade=0.0)
-    sim_data_provider = SimulatedDataProvider(all_bars)
-    execution_service = ExecutionService(
-        broker_client=sim_broker,
-        data_provider=sim_data_provider,
-        kill_switch_store=None,
+    kernel = BacktestSimulationKernel(
+        event_store=event_store,
+        all_bars=all_bars,
+        strategy_id="intraday.test.v1",
+        strategy_stage="backtest",
+        strategy_config_path=config_path,
+        config_hash="test_hash",
+        risk_defaults_path=Path("configs/risk_defaults.yaml"),
         risk_evaluator=NullRiskEvaluator(),
-        event_store=event_store,
-        is_backtest=True,
-    )
-
-    provider = MagicMock()
-    provider.get_bars.return_value = all_bars
-
-    engine = BacktestEngine(
-        loaded=loaded,
-        data_provider=provider,
-        event_store=event_store,
-        initial_equity=100_000.0,
         slippage_pct=0.0,
         commission_per_trade=0.0,
+        initial_cash=100_000.0,
+        max_positions=4,
+        max_position_pct=0.50,
+        daily_loss_cap_pct=0.05,
     )
 
-    return engine, sim_broker, sim_data_provider, execution_service, event_store
+    return kernel, event_store
 
 
 def test_mark_to_market_at_day_end_basic() -> None:
@@ -556,7 +516,6 @@ def _make_intraday_loaded_strategy(
     universe: tuple[str, ...],
 ) -> MagicMock:
     """Return a mock LoadedStrategy configured for 5min intraday backtest."""
-    from milodex.strategies.base import DecisionReasoning, StrategyContext, StrategyDecision
 
     tmp_dir = Path(tempfile.mkdtemp())
     yaml_text = """\
@@ -665,7 +624,6 @@ def test_intraday_smoke_benchmark_exact_counts() -> None:
     real_strategy = BenchUnconditionalIntradayLongStrategy()
     loaded.strategy = real_strategy
     # Patch context.parameters so _validated_parameters() finds them.
-    from milodex.strategies.base import StrategyContext
 
     loaded.context = StrategyContext(
         strategy_id="benchmark.unconditional_intraday_long.spy.e0_test.v1",
@@ -729,7 +687,6 @@ def test_intraday_no_same_bar_fill() -> None:
     bar_4_ts_utc = pd.Timestamp("2024-01-08 14:50:00+00:00")  # 9:50 ET
 
     def _stub_evaluate(bars: BarSet, context):  # noqa: ANN001
-        from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
         df = bars.to_dataframe()
         if df.empty:
@@ -844,7 +801,6 @@ def test_no_lookahead_bar_visible_at_decision_time_not_after() -> None:
     latest_ts_at_target: list[pd.Timestamp | None] = []
 
     def _recording_evaluate(bars, context):  # noqa: ANN001
-        from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
         df = bars.to_dataframe()
         if df.empty:
@@ -989,13 +945,11 @@ def test_multi_symbol_missing_current_bar_still_visible() -> None:
 def test_pending_order_survives_missing_bar_fills_when_bar_appears() -> None:
     """Test 6: Pending BUY for symbol B survives missing current bar; fills when bar appears.
 
-    Scenario (using _drain_pending_at_timestamp directly):
+    Scenario (using the shared simulation kernel directly):
     - At T=10:05 UTC (15:05 UTC), QQQ has no open → order stays pending, skipped_count=0.
     - At T=10:10 UTC (15:10 UTC), QQQ has an open → order fills.
     """
-    from milodex.backtesting.engine import _IntradayPendingOrder
-
-    engine, sim_broker, sim_data_provider, execution_service, event_store = _build_test_engine()
+    kernel, event_store = _build_test_kernel()
 
     from datetime import UTC, datetime
 
@@ -1025,94 +979,51 @@ def test_pending_order_survives_missing_bar_fills_when_bar_appears() -> None:
         symbol="QQQ", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET
     )
     pending = [
-        _IntradayPendingOrder(intent=intent_qqq, decision_timestamp=decision_ts, reasoning=None)
+        IntradayPendingOrder(intent=intent_qqq, decision_timestamp=decision_ts, reasoning=None)
     ]
 
     # T1 = 10:05 ET = 15:05 UTC: QQQ has no open → order stays pending
     t1 = pd.Timestamp("2024-01-15 15:05:00+00:00")
     opens_t1: dict[str, float] = {}  # QQQ missing
 
-    _, buys1, sells1, skipped1, remaining1 = engine._drain_pending_at_timestamp(
+    drain1 = kernel.drain_pending_orders(
         pending=pending,
         opens=opens_t1,
-        cash=cash,
-        positions={},
-        entry_state={},
-        sim_broker=sim_broker,
-        sim_data_provider=sim_data_provider,
-        execution_service=execution_service,
-        timestamp=t1,
+        day=t1.date(),
         session_id="sess-f1-t6",
         db_run_id=db_run_id,
-        sym_fills={},
+        missing_open_policy=MissingOpenPolicy.RETAIN,
     )
 
-    assert buys1 == 0, f"No fill expected at T1 (missing bar), got buys1={buys1}"
-    assert skipped1 == 0, f"Missing bar is Category 1 (no skip counted), got skipped1={skipped1}"
-    assert len(remaining1) == 1, f"Order should remain pending, got {len(remaining1)}"
-    assert remaining1[0].intent.symbol == "QQQ"
+    assert drain1.buy_count == 0, f"No fill expected at T1 (missing bar), got {drain1.buy_count}"
+    assert drain1.skipped_count == 0, (
+        f"Missing bar is Category 1 (no skip counted), got {drain1.skipped_count}"
+    )
+    assert len(drain1.remaining) == 1, f"Order should remain pending, got {len(drain1.remaining)}"
+    assert drain1.remaining[0].intent.symbol == "QQQ"
 
     # T2 = 10:10 ET = 15:10 UTC: QQQ appears → order fills
     t2 = pd.Timestamp("2024-01-15 15:10:00+00:00")
     qqq_open = 400.0
     opens_t2 = {"QQQ": qqq_open}
 
-    # Provide SPY bars to the sim_data_provider so the broker can fill QQQ.
-    # The engine's sim_data_provider was built with SPY bars only; we need
-    # to register QQQ. Easiest: rebuild with a minimal QQQ barset.
-    from milodex.data.models import BarSet
-
-    qqq_bar = BarSet(
-        pd.DataFrame(
-            {
-                "timestamp": [pd.Timestamp("2024-01-15 15:10:00+00:00")],
-                "open": [qqq_open],
-                "high": [qqq_open + 0.1],
-                "low": [qqq_open - 0.1],
-                "close": [qqq_open + 0.05],
-                "volume": [500_000],
-                "vwap": [qqq_open + 0.02],
-            }
-        )
-    )
-    spy_bar = BarSet(
-        pd.DataFrame(
-            {
-                "timestamp": [pd.Timestamp("2024-01-15 14:30:00+00:00")],
-                "open": [500.0],
-                "high": [501.0],
-                "low": [499.0],
-                "close": [500.5],
-                "volume": [1_000_000],
-                "vwap": [500.2],
-            }
-        )
-    )
-    from milodex.data.simulated import SimulatedDataProvider
-
-    sim_dp2 = SimulatedDataProvider({"SPY": spy_bar, "QQQ": qqq_bar})
-    # Patch sim_data_provider in the execution_service
-    execution_service._data_provider = sim_dp2  # noqa: SLF001
-
-    new_cash, buys2, sells2, skipped2, remaining2 = engine._drain_pending_at_timestamp(
-        pending=remaining1,
+    drain2 = kernel.drain_pending_orders(
+        pending=drain1.remaining,
         opens=opens_t2,
-        cash=cash,
-        positions={},
-        entry_state={},
-        sim_broker=sim_broker,
-        sim_data_provider=sim_dp2,
-        execution_service=execution_service,
-        timestamp=t2,
+        day=t2.date(),
         session_id="sess-f1-t6",
         db_run_id=db_run_id,
-        sym_fills={},
+        missing_open_policy=MissingOpenPolicy.RETAIN,
     )
 
-    assert buys2 == 1, f"QQQ order should fill at T2 when bar appears, got buys2={buys2}"
-    assert skipped2 == 0
-    assert len(remaining2) == 0, f"No orders should remain after fill, got {len(remaining2)}"
-    assert new_cash < cash, "Cash should decrease after QQQ BUY fill"
+    assert drain2.buy_count == 1, (
+        f"QQQ order should fill at T2 when bar appears, got {drain2.buy_count}"
+    )
+    assert drain2.skipped_count == 0
+    assert len(drain2.remaining) == 0, (
+        f"No orders should remain after fill, got {len(drain2.remaining)}"
+    )
+    assert kernel.cash < cash, "Cash should decrease after QQQ BUY fill"
 
 
 def test_independent_cursor_advancement() -> None:
@@ -1231,7 +1142,6 @@ def test_session_boundary_pending_sell_fills_at_next_session_open() -> None:
     real_strategy = BenchUnconditionalIntradayLongStrategy()
     loaded = _make_intraday_loaded_strategy("stub.session_boundary.v1", ("SPY",))
     loaded.strategy = real_strategy
-    from milodex.strategies.base import StrategyContext
 
     loaded.context = StrategyContext(
         strategy_id="stub.session_boundary.v1",
@@ -1294,7 +1204,6 @@ def test_stranded_pending_counted_as_skipped() -> None:
     last_bar_ts_utc = pd.Timestamp("2024-01-08 20:55:00+00:00")
 
     def _stub_buy_at_last_bar(bars, context):  # noqa: ANN001
-        from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
         df = bars.to_dataframe()
         if df.empty:
