@@ -4,13 +4,9 @@ These functions are used by both the CLI promotion command and the Bench command
 facade when assembling the inputs for :func:`milodex.promotion.check_gate` and
 :func:`milodex.promotion.state_machine.transition`.
 
-Placing them here eliminated the bench facade's direct CLI imports (its primary
-goal, lock-tested in the bench facade). However, the ``promotion`` layer is not
-fully self-contained: :func:`metrics_from_run` still lazily imports
-``milodex.cli.commands.analytics.metrics_for_run``, a residual
-``promotion → cli`` inversion. There is no import cycle and behaviour is
-unchanged, but the boundary crossing remains. The clean fix is to graduate
-``metrics_for_run`` into ``milodex.analytics`` — tracked as a follow-up.
+Metrics are resolved through ``milodex.analytics`` rather than CLI command
+modules, so promotion evidence can remain a domain/governance boundary instead
+of depending on an interface adapter.
 """
 
 from __future__ import annotations
@@ -19,6 +15,7 @@ import hashlib
 import json
 from typing import TYPE_CHECKING, Any
 
+from milodex.analytics.metrics import metrics_for_run
 from milodex.strategies.loader import canonicalize_config_data
 
 if TYPE_CHECKING:
@@ -31,12 +28,12 @@ def metrics_from_run(
     """Return (sharpe_ratio, max_drawdown_pct, trade_count) for a backtest run.
 
     For walk-forward runs, returns the OOS-aggregate metrics stored in run
-    metadata by the orchestrator — *not* the whole-period numbers. This is the
+    metadata by the orchestrator, not the whole-period numbers. This is the
     promotion-gate hookup for ADR 0021: the gate evaluates evidence from
     out-of-sample data, not from data the strategy implicitly had access to.
     For single whole-period runs, falls through to
-    :func:`milodex.cli.commands.analytics.metrics_for_run` which derives
-    metrics from recorded trades.
+    :func:`milodex.analytics.metrics.metrics_for_run` which derives metrics
+    from recorded trades.
 
     Args:
         run_id: The backtest run ID to look up, or ``None`` for lifecycle-exempt
@@ -51,8 +48,6 @@ def metrics_from_run(
     """
     if run_id is None:
         return None, None, None
-    # TODO(layering): graduate metrics_for_run into analytics/ to remove this promotion->cli edge
-    from milodex.cli.commands.analytics import metrics_for_run
 
     run_ = event_store.get_backtest_run(run_id)
     if run_ is None:
