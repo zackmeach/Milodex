@@ -37,6 +37,8 @@ from milodex.commands.bench import (
     ACTION_FAMILY_START_PAPER_RUNNER,
     ACTION_FAMILY_STOP_PAPER_RUNNER,
     BenchCommandFacade,
+    WorkflowReadinessIssue,
+    WorkflowReadinessReport,
 )
 from milodex.core.event_store import BacktestRunEvent, EventStore, StrategyRunEvent
 from milodex.gui import bench_command_bridge as bridge_module
@@ -127,6 +129,39 @@ def _append_open_strategy_run(event_store: EventStore, *, session_id: str) -> No
     )
 
 
+class _FakeWorkflowReadiness:
+    def __init__(self, *reports: WorkflowReadinessReport) -> None:
+        self._reports = list(reports) or [WorkflowReadinessReport()]
+        self.calls: list[str] = []
+
+    def evaluate(
+        self,
+        *,
+        action_family: str,
+        strategy_id: str,
+        required_checks: frozenset[str],
+        inspected_checks: frozenset[str],
+    ) -> WorkflowReadinessReport:
+        self.calls.append(action_family)
+        if len(self._reports) > 1:
+            return self._reports.pop(0)
+        return self._reports[0]
+
+
+def _healthy_readiness() -> _FakeWorkflowReadiness:
+    return _FakeWorkflowReadiness(WorkflowReadinessReport())
+
+
+def _readiness_issue(reason_code: str, *, blocking: bool = True) -> WorkflowReadinessIssue:
+    return WorkflowReadinessIssue(
+        dimension="broker_reachability",
+        reason_code=reason_code,
+        message=f"{reason_code} test issue",
+        context={"source": "bridge-test"},
+        blocking=blocking,
+    )
+
+
 @pytest.fixture
 def config_dir(tmp_path: Path) -> Path:
     d = tmp_path / "configs"
@@ -153,6 +188,7 @@ def facade(config_dir: Path, locks_dir: Path, event_store: EventStore) -> BenchC
         locks_dir=locks_dir,
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
+        workflow_readiness=_healthy_readiness(),
     )
 
 
@@ -489,6 +525,7 @@ def test_submit_backtest_with_known_id_submits_and_refreshes(
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         backtest_engine_factory=lambda _strategy_id, **_kwargs: _FakeSingleBacktestEngine(),
+        workflow_readiness=_healthy_readiness(),
     )
     fake_state = _FakeBenchState()
     bridge = BenchCommandBridge(facade, bench_state=fake_state)
@@ -547,6 +584,7 @@ def test_submit_backtest_async_returns_queued_and_emits_final_result(
         backtest_engine_factory=lambda _strategy_id, **_kwargs: _FakeSingleBacktestEngine(
             release_event=release
         ),
+        workflow_readiness=_healthy_readiness(),
     )
     fake_state = _FakeBenchState()
     bridge = BenchCommandBridge(facade, bench_state=fake_state)
@@ -587,6 +625,7 @@ def test_propose_start_paper_runner_returns_dict_and_caches_proposal(
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         paper_runner_control=_FakePaperRunnerControl(locks_dir),
+        workflow_readiness=_healthy_readiness(),
     )
     bridge = BenchCommandBridge(facade)
 
@@ -609,6 +648,7 @@ def test_submit_start_paper_runner_with_known_id_submits_and_refreshes(
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
     )
     fake_state = _FakeBenchState()
     bridge = BenchCommandBridge(facade, bench_state=fake_state)
@@ -635,6 +675,7 @@ def test_submit_start_paper_runner_missing_audit_link_surfaces_error_without_ref
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
     )
     fake_state = _FakeBenchState()
     bridge = BenchCommandBridge(facade, bench_state=fake_state)
@@ -647,6 +688,61 @@ def test_submit_start_paper_runner_missing_audit_link_surfaces_error_without_ref
     assert result["blockers"][0]["reason_code"] == "runner_audit_link_missing"
     assert fake_state.refresh_kicks == 0
     assert control.starts == [STRATEGY_ID]
+
+
+def test_start_paper_runner_readiness_blocker_serializes_without_qml_logic(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(issues=(_readiness_issue("broker_unreachable"),))
+    )
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        paper_runner_control=_FakePaperRunnerControl(locks_dir),
+        workflow_readiness=readiness,
+    )
+    bridge = BenchCommandBridge(facade)
+
+    payload = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+
+    assert payload["blockers"][0]["reason_code"] == "broker_unreachable"
+    assert payload["projected_outcome"]["workflow_readiness"]["issues"][0]["context"] == {
+        "source": "bridge-test"
+    }
+    assert readiness.calls == [ACTION_FAMILY_START_PAPER_RUNNER]
+
+
+def test_submit_start_paper_runner_readiness_drift_blocks_without_refresh(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(),
+        WorkflowReadinessReport(issues=(_readiness_issue("data_stale"),)),
+    )
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        paper_runner_control=control,
+        workflow_readiness=readiness,
+    )
+    fake_state = _FakeBenchState()
+    bridge = BenchCommandBridge(facade, bench_state=fake_state)
+
+    proposal = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    result = bridge.submitStartPaperRunner(proposal["proposal_id"])
+
+    assert result["status"] == "blocked"
+    assert result["blockers"][0]["reason_code"] == "data_stale"
+    assert fake_state.refresh_kicks == 0
+    assert control.starts == []
 
 
 def test_submit_stop_paper_runner_with_known_id_submits_and_refreshes(
@@ -662,6 +758,7 @@ def test_submit_stop_paper_runner_with_known_id_submits_and_refreshes(
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
     )
     fake_state = _FakeBenchState()
     bridge = BenchCommandBridge(facade, bench_state=fake_state)
@@ -689,6 +786,7 @@ def test_submit_paper_runner_unknown_or_consumed_ids_return_structured_errors(
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         paper_runner_control=_FakePaperRunnerControl(locks_dir),
+        workflow_readiness=_healthy_readiness(),
     )
     bridge = BenchCommandBridge(facade)
 
@@ -718,6 +816,7 @@ def test_submit_paper_runner_async_methods_return_queued_and_emit_final_results(
         get_trading_mode=lambda: "paper",
         event_store_factory=lambda: event_store,
         paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
     )
     bridge = BenchCommandBridge(facade, bench_state=_FakeBenchState())
     payloads: list[dict] = []

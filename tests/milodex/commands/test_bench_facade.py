@@ -46,6 +46,8 @@ from milodex.commands.bench import (
     CommandProposal,
     CommandResult,
     Precondition,
+    WorkflowReadinessIssue,
+    WorkflowReadinessReport,
 )
 from milodex.core.event_store import BacktestRunEvent, EventStore, StrategyRunEvent
 from milodex.data.models import BarSet
@@ -181,6 +183,53 @@ def _append_open_strategy_run(event_store: EventStore, *, session_id: str) -> No
     )
 
 
+class _FakeWorkflowReadiness:
+    def __init__(self, *reports: WorkflowReadinessReport) -> None:
+        self._reports = list(reports) or [WorkflowReadinessReport()]
+        self.calls: list[dict[str, object]] = []
+
+    def evaluate(
+        self,
+        *,
+        action_family: str,
+        strategy_id: str,
+        required_checks: frozenset[str],
+        inspected_checks: frozenset[str],
+    ) -> WorkflowReadinessReport:
+        self.calls.append(
+            {
+                "action_family": action_family,
+                "strategy_id": strategy_id,
+                "required_checks": required_checks,
+                "inspected_checks": inspected_checks,
+            }
+        )
+        if len(self._reports) > 1:
+            return self._reports.pop(0)
+        return self._reports[0]
+
+
+def _healthy_readiness() -> _FakeWorkflowReadiness:
+    return _FakeWorkflowReadiness(WorkflowReadinessReport())
+
+
+def _readiness_issue(reason_code: str, *, blocking: bool = True) -> WorkflowReadinessIssue:
+    dimension_by_code = {
+        "reconciliation_drift": "reconciliation",
+        "reconciliation_scaffolded": "reconciliation",
+        "kill_switch_open": "kill_switch",
+        "data_stale": "data_freshness",
+        "broker_unreachable": "broker_reachability",
+    }
+    return WorkflowReadinessIssue(
+        dimension=dimension_by_code[reason_code],
+        reason_code=reason_code,
+        message=f"{reason_code} test issue",
+        context={"source": "test"},
+        blocking=blocking,
+    )
+
+
 @pytest.fixture
 def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
     def _make(
@@ -189,6 +238,7 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
         with_event_store: bool = True,
         backtest_engine_factory=None,
         paper_runner_control=None,
+        workflow_readiness=None,
     ) -> BenchCommandFacade:
         return BenchCommandFacade(
             config_dir=config_dir,
@@ -197,6 +247,7 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
             event_store_factory=(lambda: event_store) if with_event_store else None,
             backtest_engine_factory=backtest_engine_factory,
             paper_runner_control=paper_runner_control,
+            workflow_readiness=workflow_readiness or _healthy_readiness(),
         )
 
     return _make
@@ -432,6 +483,40 @@ def test_propose_promote_to_paper_blocks_wrong_source_stage(make_facade, config_
     assert any(b.reason_code == "wrong_source_stage" for b in proposal.blockers)
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "reconciliation_drift",
+        "reconciliation_scaffolded",
+        "kill_switch_open",
+        "data_stale",
+        "broker_unreachable",
+    ],
+)
+def test_propose_promote_to_paper_blocks_required_workflow_readiness(
+    make_facade, config_dir: Path, reason_code: str
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(issues=(_readiness_issue(reason_code),))
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_promote_to_paper(
+        STRATEGY_ID,
+        recommendation="Paper slot is justified.",
+        known_risks=["Paper-only operational risk."],
+        lifecycle_exempt=True,
+    )
+
+    assert reason_code in {b.reason_code for b in proposal.blockers}
+    first_issue = proposal.projected_outcome["workflow_readiness"]["issues"][0]
+    assert first_issue["reason_code"] == reason_code
+    assert readiness.calls[0]["required_checks"] == frozenset(
+        {"reconciliation", "kill_switch", "data_freshness", "broker_reachability"}
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Demote proposals
 # --------------------------------------------------------------------------- #
@@ -488,6 +573,52 @@ def test_propose_demote_rejects_noop_same_stage(make_facade, config_dir: Path) -
     proposal = facade.propose_demote(STRATEGY_ID, to_stage="backtest", reason="test")
     assert not proposal.admissible
     assert any(b.reason_code == "demotion_is_noop" for b in proposal.blockers)
+
+
+def test_propose_demote_with_active_runner_blocks_required_readiness(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    _seed_runner_lock(locks_dir)
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(issues=(_readiness_issue("reconciliation_drift"),))
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_demote(
+        STRATEGY_ID,
+        to_stage="backtest",
+        reason="Walk back active runner safely.",
+        gui_submit=True,
+    )
+
+    assert "reconciliation_drift" in {b.reason_code for b in proposal.blockers}
+    assert readiness.calls[0]["required_checks"] == frozenset(
+        {"reconciliation", "kill_switch"}
+    )
+    assert readiness.calls[0]["inspected_checks"] == frozenset(
+        {"data_freshness", "broker_reachability"}
+    )
+
+
+def test_propose_demote_without_active_runner_does_not_require_workflow_readiness(
+    make_facade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(issues=(_readiness_issue("reconciliation_drift"),))
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_demote(
+        STRATEGY_ID,
+        to_stage="backtest",
+        reason="Walk back inactive strategy.",
+        gui_submit=True,
+    )
+
+    assert proposal.blockers == []
+    assert readiness.calls == []
 
 
 def test_propose_demote_to_disabled_refused_when_gui_submit_true(
@@ -591,6 +722,32 @@ def test_propose_start_paper_runner_blocks_when_advisory_lock_held(
     assert holder_blocker.context["holder"]["pid"] == 1
 
 
+@pytest.mark.parametrize(
+    "reason_code",
+    [
+        "reconciliation_drift",
+        "reconciliation_scaffolded",
+        "kill_switch_open",
+        "data_stale",
+        "broker_unreachable",
+    ],
+)
+def test_propose_start_paper_runner_blocks_required_workflow_readiness(
+    make_facade, config_dir: Path, reason_code: str
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(issues=(_readiness_issue(reason_code),))
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+
+    assert reason_code in {b.reason_code for b in proposal.blockers}
+    first_issue = proposal.projected_outcome["workflow_readiness"]["issues"][0]
+    assert first_issue["reason_code"] == reason_code
+
+
 def test_propose_stop_paper_runner_blocks_when_no_runner(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()
@@ -609,6 +766,39 @@ def test_propose_stop_paper_runner_admissible_with_active_runner(
     assert proposal.admissible, proposal.blockers
     assert proposal.projected_outcome["exit_reason"] == "controlled_stop"
     assert proposal.projected_outcome["kill_switch"] is False
+
+
+def test_propose_stop_paper_runner_blocks_only_required_kill_switch_readiness(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="paper")
+    _seed_runner_lock(locks_dir)
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(
+            issues=(
+                _readiness_issue("kill_switch_open"),
+                _readiness_issue("reconciliation_drift", blocking=False),
+                _readiness_issue("data_stale", blocking=False),
+                _readiness_issue("broker_unreachable", blocking=False),
+            )
+        )
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
+
+    assert {b.reason_code for b in proposal.blockers} == {"kill_switch_open"}
+    readiness_issues = {
+        issue["reason_code"]
+        for issue in proposal.projected_outcome["workflow_readiness"]["issues"]
+    }
+    assert readiness_issues == {
+        "kill_switch_open",
+        "reconciliation_drift",
+        "data_stale",
+        "broker_unreachable",
+    }
+    assert readiness.calls[0]["required_checks"] == frozenset({"kill_switch"})
 
 
 # --------------------------------------------------------------------------- #
@@ -637,6 +827,49 @@ def test_propose_demote_refuses_micro_live_and_live_targets(make_facade, config_
         proposal = facade.propose_demote(STRATEGY_ID, to_stage=bad, reason="trying")
         assert not proposal.admissible
         assert any(b.reason_code == "invalid_demotion_target" for b in proposal.blockers)
+
+
+def test_backtest_proposal_does_not_consult_workflow_readiness(
+    make_facade, config_dir: Path
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(issues=(_readiness_issue("broker_unreachable"),))
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_backtest(
+        STRATEGY_ID,
+        start=date(2025, 1, 1),
+        end=date(2025, 1, 31),
+    )
+
+    assert proposal.admissible, proposal.blockers
+    assert readiness.calls == []
+
+
+def test_submit_promote_to_paper_revalidates_workflow_readiness_drift(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    _write_strategy(config_dir, stage="backtest")
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(),
+        WorkflowReadinessReport(issues=(_readiness_issue("data_stale"),)),
+    )
+    facade = make_facade(workflow_readiness=readiness)
+    proposal = facade.propose_promote_to_paper(
+        STRATEGY_ID,
+        recommendation="Ready for paper.",
+        known_risks=["Paper risk."],
+        lifecycle_exempt=True,
+    )
+    assert proposal.admissible, proposal.blockers
+
+    result = facade.submit_promote_to_paper(proposal)
+
+    assert result.status == "blocked"
+    assert [b.reason_code for b in result.blockers] == ["data_stale"]
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
 
 
 # --------------------------------------------------------------------------- #
