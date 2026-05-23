@@ -27,13 +27,16 @@ import pandas as pd
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
-from milodex.execution.sizing import shares_for_notional_pct
 from milodex.strategies.base import (
-    DecisionReasoning,
     Strategy,
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+)
+from milodex.strategies.daily_cross_sectional import (
+    assemble_entry_decision,
+    evaluate_pre_entry_gates,
+    normalize_universe_and_positions,
 )
 
 _VALID_SIZING_RULES = {"equal_notional", "fixed_notional"}
@@ -65,176 +68,54 @@ class MomentumDailyTsmomStrategy(Strategy):
         _ = bars
 
         parameters = _validated_parameters(context)
-        # Scope "open positions" to this strategy's declared universe — mirrors
-        # the meanrev guard against treating another strategy's positions as
-        # ours. The broker account is shared in paper mode, and ADR 0024
-        # makes account-scoped position counting authoritative; per-strategy
-        # exit decisions still need this universe scope.
-        universe_symbols = {symbol.upper() for symbol in context.universe}
-        open_positions = {
-            symbol.upper(): float(quantity)
-            for symbol, quantity in context.positions.items()
-            if float(quantity) > 0 and symbol.upper() in universe_symbols
-        }
-        bars_by_symbol = {
-            symbol.upper(): barset for symbol, barset in context.bars_by_symbol.items()
-        }
-
+        norm = normalize_universe_and_positions(context)
         rejected_alternatives: list[dict[str, Any]] = []
 
-        intents: list[TradeIntent] = []
-        exit_details = _exit_intents(open_positions, bars_by_symbol, context, parameters)
-        intents.extend(intent for intent, _ in exit_details)
-
-        remaining_after_exits = set(open_positions) - {
-            intent.symbol for intent in intents if intent.side == OrderSide.SELL
-        }
-        capacity = max(0, parameters["max_concurrent_positions"] - len(remaining_after_exits))
-
-        if exit_details:
-            first_intent, first_rule = exit_details[0]
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule=first_rule,
-                    narrative=_exit_narrative(first_rule, first_intent.symbol, parameters),
-                    triggering_values={"symbol": first_intent.symbol},
-                    threshold=_exit_threshold(first_rule, parameters),
-                ),
-            )
-
-        if capacity <= 0:
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="no_signal",
-                    narrative=(
-                        f"at capacity: {len(remaining_after_exits)} open positions "
-                        f">= max {parameters['max_concurrent_positions']}"
-                    ),
-                    triggering_values={"open_positions": len(remaining_after_exits)},
-                    threshold={"max_concurrent_positions": parameters["max_concurrent_positions"]},
-                ),
-            )
-
-        if not _market_regime_is_bullish(bars_by_symbol, parameters):
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="no_signal",
-                    narrative=(
-                        f"market regime {parameters['market_regime_symbol']} bearish — "
-                        f"below {parameters['market_regime_ma_length']}-DMA; entries suppressed"
-                    ),
-                    triggering_values={
-                        "market_regime_symbol": parameters["market_regime_symbol"],
-                    },
-                    threshold={
-                        "market_regime_ma_length": parameters["market_regime_ma_length"],
-                    },
-                ),
-            )
+        exit_details = _exit_intents(norm.open_positions, norm.bars_by_symbol, context, parameters)
+        gated = evaluate_pre_entry_gates(
+            norm=norm,
+            parameters=parameters,
+            exit_details=exit_details,
+            exit_narrative=_exit_narrative,
+            exit_threshold=_exit_threshold,
+        )
+        if isinstance(gated, StrategyDecision):
+            return gated
+        intents, remaining_after_exits, capacity = gated
 
         candidates = _entry_candidates(
             universe=context.universe,
-            bars_by_symbol=bars_by_symbol,
+            bars_by_symbol=norm.bars_by_symbol,
             already_open=remaining_after_exits,
             parameters=parameters,
             rejected_alternatives=rejected_alternatives,
         )
-
         if parameters["ranking_enabled"]:
             candidates = _rank_candidates(candidates, parameters["ranking_metric"])
 
-        ranking_payload: list[dict[str, Any]] | None = None
-        if parameters["ranking_enabled"]:
-            ranking_payload = [
-                {"symbol": sym, "momentum": mom, "latest_close": close}
-                for sym, close, mom in candidates
-            ]
-
-        selected = candidates[:capacity]
-        for sym, _close, mom in candidates[capacity:]:
-            rejected_alternatives.append(
-                {
-                    "symbol": sym,
-                    "reason": (
-                        f"capacity {capacity} full; ranked below selection (momentum={mom:.4f})"
-                    ),
-                }
-            )
-
-        for symbol, latest_close, _mom in selected:
-            shares = shares_for_notional_pct(
-                equity=context.equity,
-                notional_pct=parameters["per_position_notional_pct"],
-                unit_price=latest_close,
-            )
-            if shares <= 0:
-                rejected_alternatives.append(
-                    {
-                        "symbol": symbol,
-                        "reason": (
-                            f"equity {context.equity:.2f} cannot afford one share "
-                            f"at {latest_close:.2f} for "
-                            f"{parameters['per_position_notional_pct']:.2%} allocation"
-                        ),
-                    }
-                )
-                continue
-            intents.append(
-                TradeIntent(
-                    symbol=symbol,
-                    side=OrderSide.BUY,
-                    quantity=float(shares),
-                    order_type=OrderType.MARKET,
-                )
-            )
-
-        entry_intents = [intent for intent in intents if intent.side == OrderSide.BUY]
-        if entry_intents:
-            primary = selected[0]
-            narrative = (
+        def entry_narrative(
+            primary: tuple[str, float, float], entry_intents: list[TradeIntent]
+        ) -> str:
+            return (
                 f"momentum {primary[2]:.2%} at or above entry threshold "
                 f"{parameters['momentum_entry_threshold']:.2%} and close above MA; "
                 f"buy {len(entry_intents)} candidate(s): "
                 f"{', '.join(intent.symbol for intent in entry_intents)}"
             )
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="momentum.tsmom_entry",
-                    narrative=narrative,
-                    triggering_values={
-                        "selected_symbol": primary[0],
-                        "selected_momentum": primary[2],
-                        "selected_close": primary[1],
-                    },
-                    threshold={
-                        "momentum_entry_threshold": parameters["momentum_entry_threshold"],
-                        "ma_filter_length": parameters["ma_filter_length"],
-                    },
-                    ranking=ranking_payload,
-                    rejected_alternatives=rejected_alternatives,
-                ),
-            )
 
-        return StrategyDecision(
+        return assemble_entry_decision(
             intents=intents,
-            reasoning=DecisionReasoning(
-                rule="no_signal",
-                narrative=(
-                    "no entry candidates qualified — "
-                    f"{len(rejected_alternatives)} universe member(s) rejected"
-                ),
-                triggering_values={"universe_size": len(context.universe)},
-                threshold={
-                    "momentum_entry_threshold": parameters["momentum_entry_threshold"],
-                    "ma_filter_length": parameters["ma_filter_length"],
-                },
-                ranking=ranking_payload,
-                rejected_alternatives=rejected_alternatives,
-            ),
+            candidates=candidates,
+            capacity=capacity,
+            context=context,
+            parameters=parameters,
+            rejected_alternatives=rejected_alternatives,
+            signal_label="momentum",
+            signal_format=".4f",
+            ranking_enabled=parameters["ranking_enabled"],
+            entry_rule="momentum.tsmom_entry",
+            entry_threshold_keys=("momentum_entry_threshold", "ma_filter_length"),
+            entry_narrative_fn=entry_narrative,
         )
 
 
@@ -318,30 +199,6 @@ def _validated_parameters(context: StrategyContext) -> dict[str, Any]:
         "market_regime_symbol": market_regime_symbol,
         "market_regime_ma_length": market_regime_ma_length,
     }
-
-
-def _market_regime_is_bullish(
-    bars_by_symbol: dict[str, BarSet],
-    parameters: dict[str, Any],
-) -> bool:
-    """Return True when the market-regime symbol is above its MA, or when no
-    regime filter is configured.
-
-    Failing to find data for the regime symbol causes the filter to *pass*
-    (fail-open). Mirrors the meanrev convention.
-    """
-    regime_symbol = parameters.get("market_regime_symbol", "")
-    if not regime_symbol:
-        return True
-    ma_length = int(parameters.get("market_regime_ma_length", 200))
-    barset = bars_by_symbol.get(regime_symbol)
-    if barset is None:
-        return True
-    dataframe = barset.to_dataframe()
-    if len(dataframe) < ma_length:
-        return True
-    closes = dataframe["close"].astype(float)
-    return float(closes.iloc[-1]) > float(closes.tail(ma_length).mean())
 
 
 def _entry_candidates(
