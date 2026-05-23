@@ -73,6 +73,42 @@ def test_nr7_exits_on_prior_low_trail_once_profitable() -> None:
     assert decision.intents[0].side == OrderSide.SELL
 
 
+def test_nr7_entry_payload_is_rich() -> None:
+    """Entry triggering_values include selected_close and selected_range_value."""
+    strategy = BreakoutNr7InsideStrategy()
+    bars = _nr7_entry_bars()
+    context = _context(bars_by_symbol={"AAPL": _barset(bars)}, equity=10_000.0)
+
+    decision = strategy.evaluate(_barset(bars), context)
+
+    assert decision.reasoning.rule == "breakout.nr7_entry"
+    tv = decision.reasoning.triggering_values
+    assert "selected_symbol" in tv
+    assert "selected_close" in tv
+    assert "selected_range_value" in tv
+    assert tv["selected_symbol"] == "AAPL"
+    assert isinstance(tv["selected_close"], float)
+    assert isinstance(tv["selected_range_value"], float)
+    assert "range_lookback" in decision.reasoning.threshold
+    assert "ma_filter_length" in decision.reasoning.threshold
+
+
+def test_nr7_ranking_payload_populated() -> None:
+    """When ranking_enabled, ranking list contains range_value and latest_close."""
+    strategy = BreakoutNr7InsideStrategy()
+    bars = _nr7_entry_bars()
+    context = _context(bars_by_symbol={"AAPL": _barset(bars)}, equity=10_000.0)
+
+    decision = strategy.evaluate(_barset(bars), context)
+
+    assert decision.reasoning.ranking is not None
+    assert len(decision.reasoning.ranking) >= 1
+    first = decision.reasoning.ranking[0]
+    assert "symbol" in first
+    assert "range_value" in first
+    assert "latest_close" in first
+
+
 def test_loader_resolves_nr7_strategy_config() -> None:
     loaded = StrategyLoader().load(
         Path("configs/breakout_daily_nr7_inside_liquid_largecap_v1.yaml")
