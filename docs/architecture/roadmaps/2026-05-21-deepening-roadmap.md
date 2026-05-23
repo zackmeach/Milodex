@@ -59,7 +59,7 @@ Parallelism guidance:
 | RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | done | RM-003a |
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
 | RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | done | RM-001, RM-003a, RM-003b |
-| RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | proposed | RM-001, RM-003a, RM-003b, RM-004 |
+| RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | in_progress | RM-001, RM-003a, RM-003b, RM-004 |
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | blocked | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
@@ -436,9 +436,9 @@ Done criteria:
 ## RM-006 - Daily Cross-Sectional Strategy Evaluation Flow
 
 Source: AUDIT-004
-Status: proposed
+Status: in_progress
 Priority: P2
-Last verified: 2026-05-21
+Last verified: 2026-05-23
 Dependencies: RM-001, RM-003a, RM-003b, RM-004
 
 Problem:
@@ -448,32 +448,57 @@ locality, `bars_by_symbol` normalization, exit-first precedence, capacity,
 regime filtering, ranking overflow, sizing/affordability, rejected alternatives,
 and `DecisionReasoning` shape.
 
-Next action:
+Progress (2026-05-23):
 
-Design a shared daily cross-sectional evaluation module. Keep signal-specific
-logic inside each strategy and move only the repeated flow behind a deeper
-interface.
+First slice shipped: `src/milodex/strategies/daily_cross_sectional.py` now owns
+the shared evaluation flow. `meanrev_rsi2_pullback` and `momentum_daily_tsmom`
+migrated to it. The verbatim `_market_regime_is_bullish` copies in
+`breakout_donchian.py` and `momentum_xsec_rotation.py` are now alias imports
+from the shared module — the helper exists exactly once.
+
+Design spec:
+`docs/superpowers/specs/2026-05-23-rm-006-daily-cross-sectional-first-slice-design.md`.
+
+Expansion plan (queued, approved 2026-05-23):
+
+1. Tiny: migrate `meanrev_ibs_lowclose` (pure mechanical, no API change).
+2. Small: extend `assemble_entry_decision` with an optional
+   `extra_triggering_values: dict[str, Any] | None` parameter, then migrate
+   `breakout_donchian` and `momentum_52w_high_proximity` (both need extra
+   `triggering_values` keys: `selected_channel_high` and
+   `selected_latest_return` respectively).
+3. Small: migrate `breakout_atr_channel`, `breakout_nr7_inside`, and
+   `meanrev_bbands_lowerband` (payload-upgrade trio — currently emit thin
+   `triggering_values`; migration adds `selected_close` + `selected_{signal}`).
+4. `momentum_xsec_rotation` flow migration is deferred indefinitely: its
+   rebalance gate + two-phase exit lifecycle does not fit
+   `assemble_entry_decision` and a one-consumer rebalance helper would be
+   premature abstraction. The strategy keeps its bespoke `evaluate` body. The
+   regime-helper consolidation already shipped in the first-slice PR.
 
 Implementation scope:
 
 - Do not change strategy parameters or YAML schema.
 - Do not move risk-layer caps into strategies.
 - Do not alter signal-specific thresholds.
-- Start with two representative strategies before migrating all daily
-  cross-sectional modules.
+- Existing strategy tests are the behavioral-preservation proof; do not modify
+  them unless the migration is a deliberate payload upgrade (bbands /
+  atr_channel / nr7_inside).
 
-Validation:
+Validation per expansion PR:
 
-- `python -m pytest tests/milodex/strategies`
-- `python -m pytest tests/milodex/backtesting/test_engine.py`
-- Add interface-level tests for common capacity, missing-bar, ranking overflow,
-  affordability, and exit-first behavior.
+- `python -m pytest tests/milodex/strategies` — all green.
+- `python -m pytest tests/milodex/backtesting/test_engine.py` — all green.
+- `python -m ruff check src/ tests/`.
 
 Done criteria:
 
-- At least two strategies share the module without behavioral drift.
-- Common-flow tests move to the shared interface.
-- Signal-specific tests remain in strategy-specific files.
+- At least two strategies share the module without behavioral drift (met by
+  first slice).
+- The remaining mechanical / payload-upgrade strategies (6 of 9) are migrated
+  via the queued expansion PRs.
+- Test consolidation (moving common-flow tests to interface-level tests) is
+  deferred to a follow-up roadmap item once expansion lands.
 
 ## RM-007 - GUI Polling Adapter and Projection Locality
 
