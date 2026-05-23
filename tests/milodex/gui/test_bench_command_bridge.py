@@ -308,8 +308,10 @@ def test_propose_demote_returns_dict_and_caches_proposal(
     assert payload["proposal_id"]
     assert payload["blockers"] == []
 
-    # The proposal is now cached for the matching submit call.
-    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+    # The proposal is cached for the matching submit call — verify behaviorally
+    # by submitting and confirming we get past the unknown-proposal-id guard.
+    submit_result = bridge.submitDemote(payload["proposal_id"])
+    assert submit_result["status"] == "submitted"
 
 
 def test_propose_demote_with_blank_reason_returns_blocker_payload(
@@ -512,7 +514,13 @@ def test_propose_backtest_returns_dict_and_caches_proposal(
     assert payload["inputs"]["walk_forward"] is True
     assert payload["inputs"]["initial_equity"] == 1000.0
     assert payload["inputs"]["risk_policy"] == "bypass"
-    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+    # The proposal is cached for the matching submit call — verify behaviorally
+    # by submitting and confirming we get past the unknown-proposal-id guard.
+    submit_result = bridge.submitBacktest(payload["proposal_id"])
+    assert all(
+        blocker.get("reason_code") != "unknown_proposal_id"
+        for blocker in submit_result.get("blockers", [])
+    )
 
 
 def test_submit_backtest_with_known_id_submits_and_refreshes(
@@ -632,8 +640,14 @@ def test_propose_start_paper_runner_returns_dict_and_caches_proposal(
     payload = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
 
     assert payload["action_family"] == ACTION_FAMILY_START_PAPER_RUNNER
-    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
     assert payload["blockers"] == []
+    # The proposal is cached for the matching submit call — verify behaviorally
+    # by submitting and confirming we get past the unknown-proposal-id guard.
+    submit_result = bridge.submitStartPaperRunner(payload["proposal_id"])
+    assert all(
+        blocker.get("reason_code") != "unknown_proposal_id"
+        for blocker in submit_result.get("blockers", [])
+    )
 
 
 def test_submit_start_paper_runner_with_known_id_submits_and_refreshes(
@@ -868,7 +882,13 @@ def test_propose_promote_to_paper_returns_dict_and_caches_proposal(
     assert payload["inputs"]["known_risks"] == ["Regime shifts may degrade the signal."]
     assert payload["inputs"]["run_id"] == "bt-gui-promote"
     assert payload["inputs"]["approved_by"] == bridge_module._resolve_operator_identity()
-    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+    # The proposal is cached for the matching submit call — verify behaviorally
+    # by submitting and confirming we get past the unknown-proposal-id guard.
+    submit_result = bridge.submitPromoteToPaper(payload["proposal_id"])
+    assert all(
+        blocker.get("reason_code") != "unknown_proposal_id"
+        for blocker in submit_result.get("blockers", [])
+    )
 
 
 def test_submit_promote_to_paper_with_known_id_writes_event_and_refreshes(
@@ -1197,8 +1217,13 @@ def test_propose_freeze_manifest_returns_dict_and_caches_proposal(
     assert payload["strategy_id"] == STRATEGY_ID
     assert payload["proposal_id"]
     assert payload["blockers"] == []
-    # Proposal cached for the matching submit call.
-    assert payload["proposal_id"] in bridge._proposals  # noqa: SLF001
+    # The proposal is cached for the matching submit call — verify behaviorally
+    # by submitting and confirming we get past the unknown-proposal-id guard.
+    submit_result = bridge.submitFreezeManifest(payload["proposal_id"])
+    assert all(
+        blocker.get("reason_code") != "unknown_proposal_id"
+        for blocker in submit_result.get("blockers", [])
+    )
 
 
 def test_propose_freeze_manifest_for_backtest_stage_returns_blocker_payload(

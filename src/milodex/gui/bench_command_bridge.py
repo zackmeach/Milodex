@@ -193,6 +193,34 @@ class BenchCommandBridge(QObject):
             "warnings": [],
         }
 
+    def _submit_sync(
+        self,
+        proposal_id: str,
+        *,
+        action_family: str,
+        submit_method: str,
+        propose_method: str,
+        submitter: Callable[[CommandProposal], CommandResult],
+        refresh_label: str,
+    ) -> dict[str, Any]:
+        proposal = self._proposals.pop(proposal_id, None)
+        if proposal is None:
+            return self._unknown_proposal_payload(
+                proposal_id,
+                action_family=action_family,
+                submit_method=submit_method,
+                propose_method=propose_method,
+            )
+
+        result = submitter(proposal)
+        payload = result.to_dict()
+
+        if result.status == "submitted":
+            self._refresh_after_submit(refresh_label)
+
+        self.submitCompleted.emit(payload)
+        return payload
+
     def _submit_async(
         self,
         proposal_id: str,
@@ -266,39 +294,14 @@ class BenchCommandBridge(QObject):
         is unknown or already consumed. On success, refreshes the Bench
         read model so the next state the operator sees is post-submit.
         """
-        proposal = self._proposals.pop(proposal_id, None)
-        if proposal is None:
-            error_payload: dict[str, Any] = {
-                "proposal_id": proposal_id,
-                "action_family": ACTION_FAMILY_DEMOTE,
-                "status": "error",
-                "durable_refs": {},
-                "data": {},
-                "blockers": [
-                    {
-                        "reason_code": "unknown_proposal_id",
-                        "message": (
-                            "submitDemote was called with an unknown proposal id. "
-                            "Re-run proposeDemote and retry."
-                        ),
-                        "context": {"proposal_id": proposal_id},
-                    }
-                ],
-                "warnings": [],
-                "submitted_at": None,
-                "audit_event_id": None,
-            }
-            self.submitCompleted.emit(error_payload)
-            return error_payload
-
-        result = self._facade.submit_demote(proposal, gui_submit=True)
-        payload = result.to_dict()
-
-        if result.status == "submitted":
-            self._refresh_after_submit("submit_demote")
-
-        self.submitCompleted.emit(payload)
-        return payload
+        return self._submit_sync(
+            proposal_id,
+            action_family=ACTION_FAMILY_DEMOTE,
+            submit_method="submitDemote",
+            propose_method="proposeDemote",
+            submitter=lambda p: self._facade.submit_demote(p, gui_submit=True),
+            refresh_label="submit_demote",
+        )
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (freeze-manifest — ADR 0051 Phase D1)
@@ -329,39 +332,14 @@ class BenchCommandBridge(QObject):
         proposal id, refreshes the Bench read model on success, emits
         ``submitCompleted`` with the result payload in every branch.
         """
-        proposal = self._proposals.pop(proposal_id, None)
-        if proposal is None:
-            error_payload: dict[str, Any] = {
-                "proposal_id": proposal_id,
-                "action_family": ACTION_FAMILY_FREEZE_MANIFEST,
-                "status": "error",
-                "durable_refs": {},
-                "data": {},
-                "blockers": [
-                    {
-                        "reason_code": "unknown_proposal_id",
-                        "message": (
-                            "submitFreezeManifest was called with an unknown "
-                            "proposal id. Re-run proposeFreezeManifest and retry."
-                        ),
-                        "context": {"proposal_id": proposal_id},
-                    }
-                ],
-                "warnings": [],
-                "submitted_at": None,
-                "audit_event_id": None,
-            }
-            self.submitCompleted.emit(error_payload)
-            return error_payload
-
-        result = self._facade.submit_freeze_manifest(proposal)
-        payload = result.to_dict()
-
-        if result.status == "submitted":
-            self._refresh_after_submit("submit_freeze_manifest")
-
-        self.submitCompleted.emit(payload)
-        return payload
+        return self._submit_sync(
+            proposal_id,
+            action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+            submit_method="submitFreezeManifest",
+            propose_method="proposeFreezeManifest",
+            submitter=self._facade.submit_freeze_manifest,
+            refresh_label="submit_freeze_manifest",
+        )
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (canonical backtest evidence)
@@ -396,23 +374,14 @@ class BenchCommandBridge(QObject):
     @Slot(str, result="QVariantMap")
     def submitBacktest(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
         """Submit a previously-proposed canonical backtest evidence run."""
-        proposal = self._proposals.pop(proposal_id, None)
-        if proposal is None:
-            return self._unknown_proposal_payload(
-                proposal_id,
-                action_family=ACTION_FAMILY_BACKTEST,
-                submit_method="submitBacktest",
-                propose_method="proposeBacktest",
-            )
-
-        result = self._facade.submit_backtest(proposal)
-        payload = result.to_dict()
-
-        if result.status == "submitted":
-            self._refresh_after_submit("submit_backtest")
-
-        self.submitCompleted.emit(payload)
-        return payload
+        return self._submit_sync(
+            proposal_id,
+            action_family=ACTION_FAMILY_BACKTEST,
+            submit_method="submitBacktest",
+            propose_method="proposeBacktest",
+            submitter=self._facade.submit_backtest,
+            refresh_label="submit_backtest",
+        )
 
     @Slot(str, result="QVariantMap")
     def submitBacktestAsync(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
@@ -451,23 +420,14 @@ class BenchCommandBridge(QObject):
     @Slot(str, result="QVariantMap")
     def submitPromoteToPaper(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
         """Submit a previously-proposed promote-to-paper request."""
-        proposal = self._proposals.pop(proposal_id, None)
-        if proposal is None:
-            return self._unknown_proposal_payload(
-                proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                submit_method="submitPromoteToPaper",
-                propose_method="proposePromoteToPaper",
-            )
-
-        result = self._facade.submit_promote_to_paper(proposal)
-        payload = result.to_dict()
-
-        if result.status == "submitted":
-            self._refresh_after_submit("submit_promote_to_paper")
-
-        self.submitCompleted.emit(payload)
-        return payload
+        return self._submit_sync(
+            proposal_id,
+            action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+            submit_method="submitPromoteToPaper",
+            propose_method="proposePromoteToPaper",
+            submitter=self._facade.submit_promote_to_paper,
+            refresh_label="submit_promote_to_paper",
+        )
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (paper runner controls)
@@ -484,23 +444,14 @@ class BenchCommandBridge(QObject):
     @Slot(str, result="QVariantMap")
     def submitStartPaperRunner(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
         """Submit a previously-proposed start-paper-runner request."""
-        proposal = self._proposals.pop(proposal_id, None)
-        if proposal is None:
-            return self._unknown_proposal_payload(
-                proposal_id,
-                action_family=ACTION_FAMILY_START_PAPER_RUNNER,
-                submit_method="submitStartPaperRunner",
-                propose_method="proposeStartPaperRunner",
-            )
-
-        result = self._facade.submit_start_paper_runner(proposal)
-        payload = result.to_dict()
-
-        if result.status == "submitted":
-            self._refresh_after_submit("submit_start_paper_runner")
-
-        self.submitCompleted.emit(payload)
-        return payload
+        return self._submit_sync(
+            proposal_id,
+            action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+            submit_method="submitStartPaperRunner",
+            propose_method="proposeStartPaperRunner",
+            submitter=self._facade.submit_start_paper_runner,
+            refresh_label="submit_start_paper_runner",
+        )
 
     @Slot(str, result="QVariantMap")
     def submitStartPaperRunnerAsync(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
@@ -524,23 +475,14 @@ class BenchCommandBridge(QObject):
     @Slot(str, result="QVariantMap")
     def submitStopPaperRunner(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
         """Submit a previously-proposed controlled-stop request."""
-        proposal = self._proposals.pop(proposal_id, None)
-        if proposal is None:
-            return self._unknown_proposal_payload(
-                proposal_id,
-                action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
-                submit_method="submitStopPaperRunner",
-                propose_method="proposeStopPaperRunner",
-            )
-
-        result = self._facade.submit_stop_paper_runner(proposal)
-        payload = result.to_dict()
-
-        if result.status == "submitted":
-            self._refresh_after_submit("submit_stop_paper_runner")
-
-        self.submitCompleted.emit(payload)
-        return payload
+        return self._submit_sync(
+            proposal_id,
+            action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
+            submit_method="submitStopPaperRunner",
+            propose_method="proposeStopPaperRunner",
+            submitter=self._facade.submit_stop_paper_runner,
+            refresh_label="submit_stop_paper_runner",
+        )
 
     @Slot(str, result="QVariantMap")
     def submitStopPaperRunnerAsync(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
