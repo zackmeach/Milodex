@@ -7,13 +7,16 @@ from typing import Any
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
-from milodex.execution.sizing import shares_for_notional_pct
 from milodex.strategies.base import (
-    DecisionReasoning,
     Strategy,
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+)
+from milodex.strategies.daily_cross_sectional import (
+    assemble_entry_decision,
+    evaluate_pre_entry_gates,
+    normalize_universe_and_positions,
 )
 
 _VALID_RANKING_METRICS = {"nr7_range_ascending"}
@@ -39,90 +42,54 @@ class BreakoutNr7InsideStrategy(Strategy):
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         _ = bars
         parameters = _validated_parameters(context)
-        universe = {symbol.upper() for symbol in context.universe}
-        positions = {
-            symbol.upper(): float(quantity)
-            for symbol, quantity in context.positions.items()
-            if float(quantity) > 0 and symbol.upper() in universe
-        }
-        bars_by_symbol = {
-            symbol.upper(): barset for symbol, barset in context.bars_by_symbol.items()
-        }
+        norm = normalize_universe_and_positions(context)
+        rejected_alternatives: list[dict[str, Any]] = []
 
-        exits = _exit_intents(positions, bars_by_symbol, context, parameters)
-        if exits:
-            intent, rule = exits[0]
-            return StrategyDecision(
-                intents=[intent for intent, _rule in exits],
-                reasoning=DecisionReasoning(
-                    rule=rule,
-                    narrative=f"{rule}: sell {intent.symbol}",
-                    triggering_values={"symbol": intent.symbol},
-                    threshold=_exit_threshold(rule, parameters),
-                ),
-            )
-
-        capacity = max(0, parameters["max_concurrent_positions"] - len(positions))
-        if capacity <= 0:
-            return StrategyDecision(
-                intents=[],
-                reasoning=DecisionReasoning(
-                    rule="no_signal",
-                    narrative="at capacity",
-                    triggering_values={"open_positions": len(positions)},
-                    threshold={"max_concurrent_positions": parameters["max_concurrent_positions"]},
-                ),
-            )
-
-        rejected: list[dict[str, Any]] = []
-        candidates = _entry_candidates(
-            context.universe, bars_by_symbol, positions, parameters, rejected
+        exit_details = _exit_intents(norm.open_positions, norm.bars_by_symbol, context, parameters)
+        # NR7 has no regime params — regime_filter_enabled=False
+        gated = evaluate_pre_entry_gates(
+            norm=norm,
+            parameters=parameters,
+            exit_details=exit_details,
+            exit_narrative=_exit_narrative,
+            exit_threshold=_exit_threshold,
+            regime_filter_enabled=False,
         )
+        if isinstance(gated, StrategyDecision):
+            return gated
+        intents, remaining_after_exits, capacity = gated
+
+        candidates = _entry_candidates(
+            context.universe, norm.bars_by_symbol, remaining_after_exits, parameters,
+            rejected_alternatives
+        )
+        # NR7 ranks ascending by range (tightest contraction first); pre-rank before helper
         if parameters["ranking_enabled"]:
             candidates = sorted(candidates, key=lambda item: (item[2], item[0]))
 
-        intents: list[TradeIntent] = []
-        for symbol, close, _range_value in candidates[:capacity]:
-            shares = shares_for_notional_pct(
-                equity=context.equity,
-                notional_pct=parameters["per_position_notional_pct"],
-                unit_price=close,
-            )
-            if shares > 0:
-                intents.append(
-                    TradeIntent(
-                        symbol=symbol,
-                        side=OrderSide.BUY,
-                        quantity=float(shares),
-                        order_type=OrderType.MARKET,
-                    )
-                )
-
-        if intents:
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="breakout.nr7_entry",
-                    narrative=f"NR7 contraction entry: buy {', '.join(i.symbol for i in intents)}",
-                    triggering_values={"selected_symbol": intents[0].symbol},
-                    threshold={"range_lookback": parameters["range_lookback"]},
-                    ranking=[
-                        {"symbol": symbol, "range": range_value, "latest_close": close}
-                        for symbol, close, range_value in candidates
-                    ],
-                    rejected_alternatives=rejected,
-                ),
+        def entry_narrative(
+            primary: tuple[str, float, float], entry_intents: list[TradeIntent]
+        ) -> str:
+            return (
+                f"NR7 contraction: {primary[0]} range {primary[2]:.4f} is the tightest "
+                f"in {parameters['range_lookback']} bars; "
+                f"buy {len(entry_intents)} candidate(s): "
+                f"{', '.join(intent.symbol for intent in entry_intents)}"
             )
 
-        return StrategyDecision(
-            intents=[],
-            reasoning=DecisionReasoning(
-                rule="no_signal",
-                narrative=f"no NR7 candidates qualified — {len(rejected)} rejected",
-                triggering_values={"universe_size": len(context.universe)},
-                threshold={"range_lookback": parameters["range_lookback"]},
-                rejected_alternatives=rejected,
-            ),
+        return assemble_entry_decision(
+            intents=intents,
+            candidates=candidates,
+            capacity=capacity,
+            context=context,
+            parameters=parameters,
+            rejected_alternatives=rejected_alternatives,
+            signal_label="range_value",
+            signal_format=".4f",
+            ranking_enabled=parameters["ranking_enabled"],
+            entry_rule="breakout.nr7_entry",
+            entry_threshold_keys=("range_lookback", "ma_filter_length"),
+            entry_narrative_fn=entry_narrative,
         )
 
 
@@ -164,7 +131,7 @@ def _validated_parameters(context: StrategyContext) -> dict[str, Any]:
 def _entry_candidates(
     universe: tuple[str, ...],
     bars_by_symbol: dict[str, BarSet],
-    open_positions: dict[str, float],
+    already_open: set[str],
     parameters: dict[str, Any],
     rejected: list[dict[str, Any]],
 ) -> list[tuple[str, float, float]]:
@@ -172,7 +139,7 @@ def _entry_candidates(
     min_required = max(parameters["range_lookback"], parameters["ma_filter_length"])
     for symbol in universe:
         normalized = symbol.upper()
-        if normalized in open_positions:
+        if normalized in already_open:
             rejected.append({"symbol": normalized, "reason": "already open"})
             continue
         barset = bars_by_symbol.get(normalized)
@@ -245,6 +212,16 @@ def _exit_intents(
                 )
             )
     return results
+
+
+def _exit_narrative(rule: str, symbol: str, parameters: dict[str, Any]) -> str:
+    if rule == "breakout.nr7_initial_stop":
+        return f"close hit initial stop → sell {symbol}"
+    if rule == "breakout.nr7_max_hold":
+        return f"held >= max_hold_days {parameters['max_hold_days']} → sell {symbol}"
+    if rule == "breakout.nr7_trailing_low":
+        return f"close fell below prior-day low while profitable → sell {symbol}"
+    return f"exit triggered → sell {symbol}"
 
 
 def _exit_threshold(rule: str, parameters: dict[str, Any]) -> dict[str, float | int | str | None]:

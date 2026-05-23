@@ -9,13 +9,16 @@ import pandas as pd
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
-from milodex.execution.sizing import shares_for_notional_pct
 from milodex.strategies.base import (
-    DecisionReasoning,
     Strategy,
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+)
+from milodex.strategies.daily_cross_sectional import (
+    assemble_entry_decision,
+    evaluate_pre_entry_gates,
+    normalize_universe_and_positions,
 )
 
 
@@ -39,72 +42,54 @@ class MeanrevBbandsLowerbandStrategy(Strategy):
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         _ = bars
-        params = _validated(context)
-        universe = {symbol.upper() for symbol in context.universe}
-        positions = {
-            symbol.upper(): float(quantity)
-            for symbol, quantity in context.positions.items()
-            if float(quantity) > 0 and symbol.upper() in universe
-        }
-        bars_by_symbol = {
-            symbol.upper(): barset for symbol, barset in context.bars_by_symbol.items()
-        }
+        parameters = _validated(context)
+        norm = normalize_universe_and_positions(context)
+        rejected_alternatives: list[dict[str, Any]] = []
 
-        exits = _exit_intents(positions, bars_by_symbol, context, params)
-        if exits:
-            intent, rule = exits[0]
-            return StrategyDecision(
-                intents=[intent for intent, _rule in exits],
-                reasoning=DecisionReasoning(
-                    rule=rule,
-                    narrative=f"{rule}: sell {intent.symbol}",
-                    triggering_values={"symbol": intent.symbol},
-                ),
-            )
-
-        capacity = max(0, params["max_concurrent_positions"] - len(positions))
-        rejected: list[dict[str, Any]] = []
-        candidates = _entry_candidates(
-            context.universe, bars_by_symbol, positions, params, rejected
+        exit_details = _exit_intents(norm.open_positions, norm.bars_by_symbol, context, parameters)
+        # bbands has no regime params — regime_filter_enabled=False
+        gated = evaluate_pre_entry_gates(
+            norm=norm,
+            parameters=parameters,
+            exit_details=exit_details,
+            exit_narrative=_exit_narrative,
+            exit_threshold=_exit_threshold,
+            regime_filter_enabled=False,
         )
-        if params["ranking_enabled"]:
+        if isinstance(gated, StrategyDecision):
+            return gated
+        intents, remaining_after_exits, capacity = gated
+
+        candidates = _entry_candidates(
+            context.universe, norm.bars_by_symbol, remaining_after_exits, parameters,
+            rejected_alternatives
+        )
+        # bbands ranks ascending by zscore (most negative / most oversold first)
+        if parameters["ranking_enabled"]:
             candidates = sorted(candidates, key=lambda item: (item[2], item[0]))
 
-        intents: list[TradeIntent] = []
-        for symbol, close, _zscore in candidates[:capacity]:
-            shares = shares_for_notional_pct(
-                equity=context.equity,
-                notional_pct=params["per_position_notional_pct"],
-                unit_price=close,
+        def entry_narrative(
+            primary: tuple[str, float, float], entry_intents: list[TradeIntent]
+        ) -> str:
+            return (
+                f"close {primary[1]:.2f} z-score {primary[2]:.3f} below entry threshold; "
+                f"buy {len(entry_intents)} candidate(s): "
+                f"{', '.join(intent.symbol for intent in entry_intents)}"
             )
-            if shares > 0:
-                intents.append(
-                    TradeIntent(
-                        symbol=symbol,
-                        side=OrderSide.BUY,
-                        quantity=float(shares),
-                        order_type=OrderType.MARKET,
-                    )
-                )
-        if intents:
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="meanrev.bbands_entry",
-                    narrative=f"lower Bollinger touch: buy {', '.join(i.symbol for i in intents)}",
-                    triggering_values={"selected_symbol": intents[0].symbol},
-                    threshold={"bbands_stddev": params["bbands_stddev"]},
-                    rejected_alternatives=rejected,
-                ),
-            )
-        return StrategyDecision(
-            intents=[],
-            reasoning=DecisionReasoning(
-                rule="no_signal",
-                narrative=f"no Bollinger candidates qualified — {len(rejected)} rejected",
-                triggering_values={"universe_size": len(context.universe)},
-                rejected_alternatives=rejected,
-            ),
+
+        return assemble_entry_decision(
+            intents=intents,
+            candidates=candidates,
+            capacity=capacity,
+            context=context,
+            parameters=parameters,
+            rejected_alternatives=rejected_alternatives,
+            signal_label="zscore",
+            signal_format=".3f",
+            ranking_enabled=parameters["ranking_enabled"],
+            entry_rule="meanrev.bbands_entry",
+            entry_threshold_keys=("bbands_stddev", "bbands_lookback", "ma_filter_length"),
+            entry_narrative_fn=entry_narrative,
         )
 
 
@@ -127,7 +112,7 @@ def _validated(context: StrategyContext) -> dict[str, Any]:
 def _entry_candidates(
     universe: tuple[str, ...],
     bars_by_symbol: dict[str, BarSet],
-    positions: dict[str, float],
+    already_open: set[str],
     params: dict[str, Any],
     rejected: list[dict[str, Any]],
 ) -> list[tuple[str, float, float]]:
@@ -135,7 +120,7 @@ def _entry_candidates(
     required = max(params["bbands_lookback"], params["ma_filter_length"])
     for symbol in universe:
         normalized = symbol.upper()
-        if normalized in positions:
+        if normalized in already_open:
             continue
         barset = bars_by_symbol.get(normalized)
         if barset is None:
@@ -197,6 +182,26 @@ def _exit_intents(
                 )
             )
     return results
+
+
+def _exit_narrative(rule: str, symbol: str, params: dict[str, Any]) -> str:
+    if rule == "meanrev.bbands_stop_loss":
+        return (
+            f"close breached stop_loss {params['stop_loss_pct']:.2%} from entry → sell {symbol}"
+        )
+    if rule == "meanrev.bbands_max_hold":
+        return f"held >= max_hold_days {params['max_hold_days']} → sell {symbol}"
+    if rule == "meanrev.bbands_exit":
+        return f"close reverted above middle Bollinger band → sell {symbol}"
+    return f"exit triggered → sell {symbol}"
+
+
+def _exit_threshold(rule: str, params: dict[str, Any]) -> dict[str, Any]:
+    if rule == "meanrev.bbands_stop_loss":
+        return {"stop_loss_pct": params["stop_loss_pct"]}
+    if rule == "meanrev.bbands_max_hold":
+        return {"max_hold_days": params["max_hold_days"]}
+    return {}
 
 
 def _bands(closes: pd.Series, params: dict[str, Any]) -> tuple[float, float, float]:

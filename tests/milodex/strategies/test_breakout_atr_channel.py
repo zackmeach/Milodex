@@ -71,6 +71,73 @@ def test_atr_channel_exits_on_atr_stop() -> None:
     assert decision.intents[0].side == OrderSide.SELL
 
 
+def test_atr_channel_entry_payload_is_rich() -> None:
+    """Entry triggering_values include selected_close and selected_breakout_strength."""
+    strategy = BreakoutAtrChannelStrategy()
+    bars = _ramp_then_channel_break()
+    context = _context(bars_by_symbol={"XLK": _barset(bars), "SPY": _barset(_bullish_spy())})
+
+    decision = strategy.evaluate(_barset(bars), context)
+
+    assert decision.reasoning.rule == "breakout.atr_channel_entry"
+    tv = decision.reasoning.triggering_values
+    assert "selected_symbol" in tv
+    assert "selected_close" in tv
+    assert "selected_breakout_strength" in tv
+    assert tv["selected_symbol"] == "XLK"
+    assert isinstance(tv["selected_close"], float)
+    assert isinstance(tv["selected_breakout_strength"], float)
+    # Threshold must expose the entry-rule-defining parameters
+    assert "atr_entry_multiplier" in decision.reasoning.threshold
+    assert "ema_length" in decision.reasoning.threshold
+    assert "atr_lookback" in decision.reasoning.threshold
+
+
+def test_atr_channel_ranking_payload_populated() -> None:
+    """When ranking_enabled, the ranking list contains the signal label."""
+    strategy = BreakoutAtrChannelStrategy()
+    bars = _ramp_then_channel_break()
+    context = _context(bars_by_symbol={"XLK": _barset(bars), "SPY": _barset(_bullish_spy())})
+
+    decision = strategy.evaluate(_barset(bars), context)
+
+    assert decision.reasoning.ranking is not None
+    assert len(decision.reasoning.ranking) >= 1
+    first = decision.reasoning.ranking[0]
+    assert "symbol" in first
+    assert "breakout_strength" in first
+    assert "latest_close" in first
+
+
+def test_atr_channel_at_capacity_takes_precedence_over_regime_bearish() -> None:
+    """Shared helper order: capacity-zero fires before regime-bearish check.
+
+    The OLD atr_channel code checked regime BEFORE capacity. The shared
+    evaluate_pre_entry_gates helper checks capacity FIRST. When both conditions
+    hold (positions full AND regime bearish), the shared helper returns the
+    at-capacity decision — not the regime-bearish decision. This test pins
+    the new (correct) ordering.
+    """
+    strategy = BreakoutAtrChannelStrategy()
+    bars = _ramp_then_channel_break()
+    # XLK position open, max_concurrent_positions=1 → capacity=0 AND regime bearish
+    context = _context(
+        positions={"XLK": 10.0},
+        bars_by_symbol={
+            "XLK": _barset(bars),
+            "SPY": _barset(_bearish_spy()),  # regime IS bearish
+        },
+        override_parameters={"max_concurrent_positions": 1},
+    )
+
+    decision = strategy.evaluate(_barset(bars), context)
+
+    assert decision.reasoning.rule == "no_signal"
+    # Must be the capacity message, not the regime message
+    assert "capacity" in decision.reasoning.narrative
+    assert "bearish" not in decision.reasoning.narrative
+
+
 def test_loader_resolves_atr_channel_strategy_config() -> None:
     loaded = StrategyLoader().load(Path("configs/breakout_daily_atr_channel_sector_etfs_v1.yaml"))
 
