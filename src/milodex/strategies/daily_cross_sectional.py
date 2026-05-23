@@ -171,6 +171,7 @@ def assemble_entry_decision(
     entry_rule: str,
     entry_threshold_keys: tuple[str, ...],
     entry_narrative_fn: Callable[[tuple[str, float, float], list[TradeIntent]], str],
+    extra_triggering_values_fn: Callable[[tuple[str, float, float]], dict[str, Any]] | None = None,
 ) -> StrategyDecision:
     """Build the post-gate StrategyDecision (entry-success OR no-entry-qualified).
 
@@ -178,6 +179,15 @@ def assemble_entry_decision(
     loop, and the two terminal ``StrategyDecision`` shapes. The caller
     supplies ranked candidates (highest-priority first) and the entry
     narrative as a closure over its own ``parameters``.
+
+    ``extra_triggering_values_fn``, when provided, is called with the primary
+    candidate 3-tuple ``(symbol, latest_close, signal_value)`` in the
+    entry-success branch only.  The returned dict is merged into
+    ``triggering_values`` *after* the standard ``selected_symbol``,
+    ``selected_<signal_label>``, and ``selected_close`` keys are set, so it
+    can add new keys but must not rely on overriding those standard ones.
+    Mirrors how ``entry_narrative_fn`` is supplied as a closure over
+    strategy-specific state (e.g. a ``channel_highs_by_symbol`` map).
     """
     ranking_payload: list[dict[str, Any]] | None = None
     if ranking_enabled:
@@ -229,16 +239,19 @@ def assemble_entry_decision(
     threshold_payload = {key: parameters[key] for key in entry_threshold_keys}
     if entry_intents:
         primary = selected[0]
+        triggering_values: dict[str, Any] = {
+            "selected_symbol": primary[0],
+            f"selected_{signal_label}": primary[2],
+            "selected_close": primary[1],
+        }
+        if extra_triggering_values_fn is not None:
+            triggering_values.update(extra_triggering_values_fn(primary))
         return StrategyDecision(
             intents=intents,
             reasoning=DecisionReasoning(
                 rule=entry_rule,
                 narrative=entry_narrative_fn(primary, entry_intents),
-                triggering_values={
-                    "selected_symbol": primary[0],
-                    f"selected_{signal_label}": primary[2],
-                    "selected_close": primary[1],
-                },
+                triggering_values=triggering_values,
                 threshold=threshold_payload,
                 ranking=ranking_payload,
                 rejected_alternatives=rejected_alternatives,

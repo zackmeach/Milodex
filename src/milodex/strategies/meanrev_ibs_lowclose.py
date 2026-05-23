@@ -31,13 +31,16 @@ from typing import Any
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
-from milodex.execution.sizing import shares_for_notional_pct
 from milodex.strategies.base import (
-    DecisionReasoning,
     Strategy,
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+)
+from milodex.strategies.daily_cross_sectional import (
+    assemble_entry_decision,
+    evaluate_pre_entry_gates,
+    normalize_universe_and_positions,
 )
 
 _VALID_SIZING_RULES = {"equal_notional", "fixed_notional"}
@@ -65,153 +68,57 @@ class MeanrevIbsLowcloseStrategy(Strategy):
         _ = bars
 
         parameters = _validated_parameters(context)
-
-        # Same out-of-universe scoping as the RSI(2) template — see the long
-        # comment in meanrev_rsi2_pullback.py. A position on a symbol the IBS
-        # strategy never bought is not ours to unwind.
-        universe_symbols = {symbol.upper() for symbol in context.universe}
-        open_positions = {
-            symbol.upper(): float(quantity)
-            for symbol, quantity in context.positions.items()
-            if float(quantity) > 0 and symbol.upper() in universe_symbols
-        }
-        bars_by_symbol = {
-            symbol.upper(): barset for symbol, barset in context.bars_by_symbol.items()
-        }
-
+        norm = normalize_universe_and_positions(context)
         rejected_alternatives: list[dict[str, Any]] = []
-        intents: list[TradeIntent] = []
-        exit_details = _exit_intents(open_positions, bars_by_symbol, context, parameters)
-        intents.extend(intent for intent, _ in exit_details)
 
-        remaining_after_exits = set(open_positions) - {
-            intent.symbol for intent in intents if intent.side == OrderSide.SELL
-        }
-        capacity = max(0, parameters["max_concurrent_positions"] - len(remaining_after_exits))
-
-        if exit_details:
-            first_intent, first_rule = exit_details[0]
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule=first_rule,
-                    narrative=_exit_narrative(first_rule, first_intent.symbol, parameters),
-                    triggering_values={"symbol": first_intent.symbol},
-                    threshold=_exit_threshold(first_rule, parameters),
-                ),
-            )
-
-        if capacity <= 0:
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="no_signal",
-                    narrative=(
-                        f"at capacity: {len(remaining_after_exits)} open positions "
-                        f">= max {parameters['max_concurrent_positions']}"
-                    ),
-                    triggering_values={"open_positions": len(remaining_after_exits)},
-                    threshold={"max_concurrent_positions": parameters["max_concurrent_positions"]},
-                ),
-            )
+        exit_details = _exit_intents(norm.open_positions, norm.bars_by_symbol, context, parameters)
+        # IBS by design has no regime filter — the universe is broad index ETFs,
+        # not single-name positions, so regime_filter_enabled=False is correct.
+        gated = evaluate_pre_entry_gates(
+            norm=norm,
+            parameters=parameters,
+            exit_details=exit_details,
+            exit_narrative=_exit_narrative,
+            exit_threshold=_exit_threshold,
+            regime_filter_enabled=False,
+        )
+        if isinstance(gated, StrategyDecision):
+            return gated
+        intents, remaining_after_exits, capacity = gated
 
         candidates = _entry_candidates(
             universe=context.universe,
-            bars_by_symbol=bars_by_symbol,
+            bars_by_symbol=norm.bars_by_symbol,
             already_open=remaining_after_exits,
             parameters=parameters,
             rejected_alternatives=rejected_alternatives,
         )
-
         if parameters["ranking_enabled"]:
             candidates = _rank_candidates(candidates, parameters["ranking_metric"])
 
-        ranking_payload: list[dict[str, Any]] | None = None
-        if parameters["ranking_enabled"]:
-            ranking_payload = [
-                {"symbol": sym, "ibs": ibs, "latest_close": close} for sym, close, ibs in candidates
-            ]
-
-        selected = candidates[:capacity]
-        for sym, _close, ibs in candidates[capacity:]:
-            rejected_alternatives.append(
-                {
-                    "symbol": sym,
-                    "reason": f"capacity {capacity} full; ranked below selection (ibs={ibs:.3f})",
-                }
-            )
-
-        for symbol, latest_close, _ibs in selected:
-            shares = shares_for_notional_pct(
-                equity=context.equity,
-                notional_pct=parameters["per_position_notional_pct"],
-                unit_price=latest_close,
-            )
-            if shares <= 0:
-                rejected_alternatives.append(
-                    {
-                        "symbol": symbol,
-                        "reason": (
-                            f"equity {context.equity:.2f} cannot afford one share "
-                            f"at {latest_close:.2f} for "
-                            f"{parameters['per_position_notional_pct']:.2%} allocation"
-                        ),
-                    }
-                )
-                continue
-            intents.append(
-                TradeIntent(
-                    symbol=symbol,
-                    side=OrderSide.BUY,
-                    quantity=float(shares),
-                    order_type=OrderType.MARKET,
-                )
-            )
-
-        entry_intents = [intent for intent in intents if intent.side == OrderSide.BUY]
-        if entry_intents:
-            primary = selected[0]
-            narrative = (
+        def entry_narrative(
+            primary: tuple[str, float, float], entry_intents: list[TradeIntent]
+        ) -> str:
+            return (
                 f"IBS {primary[2]:.3f} below entry threshold "
                 f"{parameters['ibs_entry_threshold']} and close above MA; "
                 f"buy {len(entry_intents)} candidate(s): "
                 f"{', '.join(intent.symbol for intent in entry_intents)}"
             )
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="meanrev.ibs_entry",
-                    narrative=narrative,
-                    triggering_values={
-                        "selected_symbol": primary[0],
-                        "selected_ibs": primary[2],
-                        "selected_close": primary[1],
-                    },
-                    threshold={
-                        "ibs_entry_threshold": parameters["ibs_entry_threshold"],
-                        "ma_filter_length": parameters["ma_filter_length"],
-                    },
-                    ranking=ranking_payload,
-                    rejected_alternatives=rejected_alternatives,
-                ),
-            )
 
-        return StrategyDecision(
+        return assemble_entry_decision(
             intents=intents,
-            reasoning=DecisionReasoning(
-                rule="no_signal",
-                narrative=(
-                    "no entry candidates qualified — "
-                    f"{len(rejected_alternatives)} universe member(s) rejected"
-                ),
-                triggering_values={"universe_size": len(context.universe)},
-                threshold={
-                    "ibs_entry_threshold": parameters["ibs_entry_threshold"],
-                    "ma_filter_length": parameters["ma_filter_length"],
-                },
-                ranking=ranking_payload,
-                rejected_alternatives=rejected_alternatives,
-            ),
+            candidates=candidates,
+            capacity=capacity,
+            context=context,
+            parameters=parameters,
+            rejected_alternatives=rejected_alternatives,
+            signal_label="ibs",
+            signal_format=".3f",
+            ranking_enabled=parameters["ranking_enabled"],
+            entry_rule="meanrev.ibs_entry",
+            entry_threshold_keys=("ibs_entry_threshold", "ma_filter_length"),
+            entry_narrative_fn=entry_narrative,
         )
 
 
