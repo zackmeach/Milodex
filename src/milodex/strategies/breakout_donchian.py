@@ -36,16 +36,16 @@ import pandas as pd
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
-from milodex.execution.sizing import shares_for_notional_pct
 from milodex.strategies.base import (
-    DecisionReasoning,
     Strategy,
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
 )
 from milodex.strategies.daily_cross_sectional import (
-    market_regime_is_bullish as _market_regime_is_bullish,
+    assemble_entry_decision,
+    evaluate_pre_entry_gates,
+    normalize_universe_and_positions,
 )
 
 _VALID_SIZING_RULES = {"equal_notional", "fixed_notional"}
@@ -78,173 +78,69 @@ class BreakoutDonchianStrategy(Strategy):
         _ = bars
 
         parameters = _validated_parameters(context)
-
-        universe_symbols = {symbol.upper() for symbol in context.universe}
-        open_positions = {
-            symbol.upper(): float(quantity)
-            for symbol, quantity in context.positions.items()
-            if float(quantity) > 0 and symbol.upper() in universe_symbols
-        }
-        bars_by_symbol = {
-            symbol.upper(): barset for symbol, barset in context.bars_by_symbol.items()
-        }
-
+        norm = normalize_universe_and_positions(context)
         rejected_alternatives: list[dict[str, Any]] = []
-        intents: list[TradeIntent] = []
-        exit_details = _exit_intents(open_positions, bars_by_symbol, context, parameters)
-        intents.extend(intent for intent, _ in exit_details)
 
-        remaining_after_exits = set(open_positions) - {
-            intent.symbol for intent in intents if intent.side == OrderSide.SELL
-        }
-        capacity = max(0, parameters["max_concurrent_positions"] - len(remaining_after_exits))
+        exit_details = _exit_intents(norm.open_positions, norm.bars_by_symbol, context, parameters)
+        gated = evaluate_pre_entry_gates(
+            norm=norm,
+            parameters=parameters,
+            exit_details=exit_details,
+            exit_narrative=_exit_narrative,
+            exit_threshold=_exit_threshold,
+            regime_filter_enabled=True,
+        )
+        if isinstance(gated, StrategyDecision):
+            return gated
+        intents, remaining_after_exits, capacity = gated
 
-        if exit_details:
-            first_intent, first_rule = exit_details[0]
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule=first_rule,
-                    narrative=_exit_narrative(first_rule, first_intent.symbol, parameters),
-                    triggering_values={"symbol": first_intent.symbol},
-                    threshold=_exit_threshold(first_rule, parameters),
-                ),
-            )
-
-        if capacity <= 0:
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="no_signal",
-                    narrative=(
-                        f"at capacity: {len(remaining_after_exits)} open positions "
-                        f">= max {parameters['max_concurrent_positions']}"
-                    ),
-                    triggering_values={"open_positions": len(remaining_after_exits)},
-                    threshold={"max_concurrent_positions": parameters["max_concurrent_positions"]},
-                ),
-            )
-
-        if not _market_regime_is_bullish(bars_by_symbol, parameters):
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="no_signal",
-                    narrative=(
-                        f"market regime {parameters['market_regime_symbol']} bearish — "
-                        f"below {parameters['market_regime_ma_length']}-DMA; entries suppressed"
-                    ),
-                    triggering_values={
-                        "market_regime_symbol": parameters["market_regime_symbol"],
-                    },
-                    threshold={
-                        "market_regime_ma_length": parameters["market_regime_ma_length"],
-                    },
-                ),
-            )
-
-        candidates = _entry_candidates(
+        # _entry_candidates returns 4-tuples: (symbol, latest_close, breakout_strength,
+        # channel_high). Capture channel_high per symbol before narrowing to 3-tuples
+        # so the entry narrative and extra_triggering_values_fn can look it up.
+        raw_candidates = _entry_candidates(
             universe=context.universe,
-            bars_by_symbol=bars_by_symbol,
+            bars_by_symbol=norm.bars_by_symbol,
             already_open=remaining_after_exits,
             parameters=parameters,
             rejected_alternatives=rejected_alternatives,
         )
-
+        channel_highs_by_symbol: dict[str, float] = {
+            sym: ch_high for sym, _close, _strength, ch_high in raw_candidates
+        }
+        # Narrow to 3-tuples for the shared helper.
+        candidates: list[tuple[str, float, float]] = [
+            (sym, close, strength) for sym, close, strength, _ch_high in raw_candidates
+        ]
         if parameters["ranking_enabled"]:
             candidates = _rank_candidates(candidates, parameters["ranking_metric"])
 
-        ranking_payload: list[dict[str, Any]] | None = None
-        if parameters["ranking_enabled"]:
-            ranking_payload = [
-                {"symbol": sym, "breakout_strength": strength, "latest_close": close}
-                for sym, close, strength, _channel_high in candidates
-            ]
-
-        selected = candidates[:capacity]
-        for sym, _close, strength, _channel_high in candidates[capacity:]:
-            rejected_alternatives.append(
-                {
-                    "symbol": sym,
-                    "reason": (
-                        f"capacity {capacity} full; ranked below selection "
-                        f"(breakout_strength={strength:.4f})"
-                    ),
-                }
-            )
-
-        for symbol, latest_close, _strength, _channel_high in selected:
-            shares = shares_for_notional_pct(
-                equity=context.equity,
-                notional_pct=parameters["per_position_notional_pct"],
-                unit_price=latest_close,
-            )
-            if shares <= 0:
-                rejected_alternatives.append(
-                    {
-                        "symbol": symbol,
-                        "reason": (
-                            f"equity {context.equity:.2f} cannot afford one share "
-                            f"at {latest_close:.2f} for "
-                            f"{parameters['per_position_notional_pct']:.2%} allocation"
-                        ),
-                    }
-                )
-                continue
-            intents.append(
-                TradeIntent(
-                    symbol=symbol,
-                    side=OrderSide.BUY,
-                    quantity=float(shares),
-                    order_type=OrderType.MARKET,
-                )
-            )
-
-        entry_intents = [intent for intent in intents if intent.side == OrderSide.BUY]
-        if entry_intents:
-            primary = selected[0]
-            narrative = (
+        def entry_narrative(
+            primary: tuple[str, float, float], entry_intents: list[TradeIntent]
+        ) -> str:
+            channel_high = channel_highs_by_symbol[primary[0]]
+            return (
                 f"close {primary[1]:.2f} cleared {parameters['entry_channel_length']}-day "
-                f"channel high {primary[3]:.2f} (strength {primary[2]:.4f}) and is "
+                f"channel high {channel_high:.2f} (strength {primary[2]:.4f}) and is "
                 f"above MA; buy {len(entry_intents)} candidate(s): "
                 f"{', '.join(intent.symbol for intent in entry_intents)}"
             )
-            return StrategyDecision(
-                intents=intents,
-                reasoning=DecisionReasoning(
-                    rule="breakout.channel_entry",
-                    narrative=narrative,
-                    triggering_values={
-                        "selected_symbol": primary[0],
-                        "selected_close": primary[1],
-                        "selected_breakout_strength": primary[2],
-                        "selected_channel_high": primary[3],
-                    },
-                    threshold={
-                        "entry_channel_length": parameters["entry_channel_length"],
-                        "ma_filter_length": parameters["ma_filter_length"],
-                    },
-                    ranking=ranking_payload,
-                    rejected_alternatives=rejected_alternatives,
-                ),
-            )
 
-        return StrategyDecision(
+        return assemble_entry_decision(
             intents=intents,
-            reasoning=DecisionReasoning(
-                rule="no_signal",
-                narrative=(
-                    "no entry candidates qualified — "
-                    f"{len(rejected_alternatives)} universe member(s) rejected"
-                ),
-                triggering_values={"universe_size": len(context.universe)},
-                threshold={
-                    "entry_channel_length": parameters["entry_channel_length"],
-                    "ma_filter_length": parameters["ma_filter_length"],
-                },
-                ranking=ranking_payload,
-                rejected_alternatives=rejected_alternatives,
-            ),
+            candidates=candidates,
+            capacity=capacity,
+            context=context,
+            parameters=parameters,
+            rejected_alternatives=rejected_alternatives,
+            signal_label="breakout_strength",
+            signal_format=".4f",
+            ranking_enabled=parameters["ranking_enabled"],
+            entry_rule="breakout.channel_entry",
+            entry_threshold_keys=("entry_channel_length", "ma_filter_length"),
+            entry_narrative_fn=entry_narrative,
+            extra_triggering_values_fn=lambda primary: {
+                "selected_channel_high": channel_highs_by_symbol[primary[0]]
+            },
         )
 
 
@@ -568,9 +464,9 @@ def _exit_threshold(rule: str, parameters: dict[str, Any]) -> dict[str, float | 
 
 
 def _rank_candidates(
-    candidates: list[tuple[str, float, float, float]],
+    candidates: list[tuple[str, float, float]],
     metric: str,
-) -> list[tuple[str, float, float, float]]:
+) -> list[tuple[str, float, float]]:
     if metric == "breakout_strength_descending":
         # Highest strength first; symbol break-tie ascending for determinism.
         return sorted(candidates, key=lambda entry: (-entry[2], entry[0]))
