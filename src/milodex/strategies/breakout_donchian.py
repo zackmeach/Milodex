@@ -44,6 +44,9 @@ from milodex.strategies.base import (
     StrategyDecision,
     StrategyParameterSpec,
 )
+from milodex.strategies.daily_cross_sectional import (
+    market_regime_is_bullish as _market_regime_is_bullish,
+)
 
 _VALID_SIZING_RULES = {"equal_notional", "fixed_notional"}
 _VALID_RANKING_METRICS = {"breakout_strength_descending"}
@@ -338,25 +341,6 @@ def _validated_parameters(context: StrategyContext) -> dict[str, Any]:
         "market_regime_symbol": market_regime_symbol,
         "market_regime_ma_length": market_regime_ma_length,
     }
-
-
-def _market_regime_is_bullish(
-    bars_by_symbol: dict[str, BarSet],
-    parameters: dict[str, Any],
-) -> bool:
-    """Return True when the regime symbol is above its MA, or no filter is configured."""
-    regime_symbol = parameters.get("market_regime_symbol", "")
-    if not regime_symbol:
-        return True
-    ma_length = int(parameters.get("market_regime_ma_length", 200))
-    barset = bars_by_symbol.get(regime_symbol)
-    if barset is None:
-        return True
-    dataframe = barset.to_dataframe()
-    if len(dataframe) < ma_length:
-        return True
-    closes = dataframe["close"].astype(float)
-    return float(closes.iloc[-1]) > float(closes.tail(ma_length).mean())
 
 
 def _atr(highs: pd.Series, lows: pd.Series, closes: pd.Series, lookback: int) -> float | None:
