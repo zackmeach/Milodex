@@ -59,7 +59,7 @@ Parallelism guidance:
 | RM-003b | AUDIT-002 | Bench workflow-readiness seam | P0 | done | RM-003a |
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
 | RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | done | RM-001, RM-003a, RM-003b |
-| RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | in_progress | RM-001, RM-003a, RM-003b, RM-004 |
+| RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | done | RM-001, RM-003a, RM-003b, RM-004 |
 | RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | blocked | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
@@ -436,7 +436,7 @@ Done criteria:
 ## RM-006 - Daily Cross-Sectional Strategy Evaluation Flow
 
 Source: AUDIT-004
-Status: in_progress
+Status: done
 Priority: P2
 Last verified: 2026-05-23
 Dependencies: RM-001, RM-003a, RM-003b, RM-004
@@ -448,57 +448,59 @@ locality, `bars_by_symbol` normalization, exit-first precedence, capacity,
 regime filtering, ranking overflow, sizing/affordability, rejected alternatives,
 and `DecisionReasoning` shape.
 
-Progress (2026-05-23):
+Resolution (2026-05-23):
 
-First slice shipped: `src/milodex/strategies/daily_cross_sectional.py` now owns
-the shared evaluation flow. `meanrev_rsi2_pullback` and `momentum_daily_tsmom`
-migrated to it. The verbatim `_market_regime_is_bullish` copies in
-`breakout_donchian.py` and `momentum_xsec_rotation.py` are now alias imports
-from the shared module — the helper exists exactly once.
+Shared module `src/milodex/strategies/daily_cross_sectional.py` owns the
+evaluation flow. Seven of the nine daily cross-sectional strategies migrated
+across three PRs:
+
+- First slice (#178): `meanrev_rsi2_pullback`, `momentum_daily_tsmom`. The
+  verbatim `_market_regime_is_bullish` helper collapsed from three call sites
+  into one.
+- Second slice (#179): API extension (`extra_triggering_values_fn` callable
+  for per-candidate payload extras) + `meanrev_ibs_lowclose` (no regime
+  filter) + `breakout_donchian` (4-tuple candidates narrowed with a
+  channel-high closure for `selected_channel_high`). Behavior preserved
+  byte-for-byte; existing tests unchanged.
+- Third slice (#180): `breakout_atr_channel`, `breakout_nr7_inside`,
+  `meanrev_bbands_lowerband` migrated as a deliberate payload upgrade (thin
+  placeholder `triggering_values` replaced with the standardized rich shape).
+  Two intentional semantic changes pinned by new tests: atr_channel's
+  exits→regime→capacity ordering normalized to the shared exits→capacity→
+  regime order; bbands gained an explicit at-capacity short-circuit.
+
+Two strategies deferred indefinitely — both kept their bespoke `evaluate`
+bodies:
+
+- `momentum_xsec_rotation` — rebalance gate + two-phase exit lifecycle does
+  not fit `assemble_entry_decision`. A one-consumer rebalance helper would be
+  premature abstraction. The regime-helper consolidation already shipped in
+  the first-slice PR.
+- `momentum_52w_high_proximity` — structural mismatch with the shared helper:
+  dict-shaped candidates (not 3-tuples), no regime filter, terse
+  `"at capacity"` narrative vs the helper's verbose form, primary entry key
+  is `selected_latest_return` where the helper hardcodes `selected_close`,
+  always-on ranking payload. Preserving these byte-for-byte would require
+  three to four orthogonal knobs on the helper for a single consumer — the
+  same over-parameterization trap that kept `xsec_rotation` bespoke.
+  Migration would otherwise be a payload *downgrade* (`selected_latest_return`
+  is richer than `selected_close` for this strategy's narrative).
 
 Design spec:
 `docs/superpowers/specs/2026-05-23-rm-006-daily-cross-sectional-first-slice-design.md`.
 
-Expansion plan (queued, approved 2026-05-23):
+Done criteria (all met):
 
-1. Tiny: migrate `meanrev_ibs_lowclose` (pure mechanical, no API change).
-2. Small: extend `assemble_entry_decision` with an optional
-   `extra_triggering_values: dict[str, Any] | None` parameter, then migrate
-   `breakout_donchian` and `momentum_52w_high_proximity` (both need extra
-   `triggering_values` keys: `selected_channel_high` and
-   `selected_latest_return` respectively).
-3. Small: migrate `breakout_atr_channel`, `breakout_nr7_inside`, and
-   `meanrev_bbands_lowerband` (payload-upgrade trio — currently emit thin
-   `triggering_values`; migration adds `selected_close` + `selected_{signal}`).
-4. `momentum_xsec_rotation` flow migration is deferred indefinitely: its
-   rebalance gate + two-phase exit lifecycle does not fit
-   `assemble_entry_decision` and a one-consumer rebalance helper would be
-   premature abstraction. The strategy keeps its bespoke `evaluate` body. The
-   regime-helper consolidation already shipped in the first-slice PR.
-
-Implementation scope:
-
-- Do not change strategy parameters or YAML schema.
-- Do not move risk-layer caps into strategies.
-- Do not alter signal-specific thresholds.
-- Existing strategy tests are the behavioral-preservation proof; do not modify
-  them unless the migration is a deliberate payload upgrade (bbands /
-  atr_channel / nr7_inside).
-
-Validation per expansion PR:
-
-- `python -m pytest tests/milodex/strategies` — all green.
-- `python -m pytest tests/milodex/backtesting/test_engine.py` — all green.
-- `python -m ruff check src/ tests/`.
-
-Done criteria:
-
-- At least two strategies share the module without behavioral drift (met by
-  first slice).
-- The remaining mechanical / payload-upgrade strategies (6 of 9) are migrated
-  via the queued expansion PRs.
+- Shared module exists and is in use by 7 of 9 daily cross-sectional
+  strategies.
+- Behavioral preservation proven by unchanged strategy tests on the
+  mechanical migrations (rsi2, tsmom, ibs, donchian).
+- Payload upgrades on the trio (atr_channel, nr7, bbands) explicit and
+  pinned by new test coverage.
+- The two non-fitting strategies (`xsec_rotation`, `52w_high_proximity`) are
+  documented as won't-fix with reasoning, not silently skipped.
 - Test consolidation (moving common-flow tests to interface-level tests) is
-  deferred to a follow-up roadmap item once expansion lands.
+  deferred to a follow-up roadmap item.
 
 ## RM-007 - GUI Polling Adapter and Projection Locality
 
