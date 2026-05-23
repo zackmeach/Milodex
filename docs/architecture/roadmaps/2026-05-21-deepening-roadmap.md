@@ -60,7 +60,7 @@ Parallelism guidance:
 | RM-004 | AUDIT-003 | Risk profile activation/audit module | P0 | done | none |
 | RM-005 | AUDIT-005 | Backtest run lifecycle and simulation kernel | P2 | done | RM-001, RM-003a, RM-003b |
 | RM-006 | AUDIT-004 | Daily cross-sectional strategy evaluation flow | P2 | proposed | RM-001, RM-003a, RM-003b, RM-004 |
-| RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | proposed | RM-003a, RM-003b, RM-004 |
+| RM-007 | AUDIT-006 | GUI polling adapter and projection locality | P3 | blocked | RM-003a, RM-003b, RM-004 |
 | RM-008 | AUDIT-007 | Bench Qt bridge internal repetition | P3 | proposed | RM-001, RM-003a, RM-003b |
 | RM-009 | AUDIT-008 | Stale architecture prose cleanup | P3 | done | none |
 | RM-010 | RM-002 | Shared paper-promotion choreography entrypoint | P1 | done | RM-002 |
@@ -478,22 +478,53 @@ Done criteria:
 ## RM-007 - GUI Polling Adapter and Projection Locality
 
 Source: AUDIT-006
-Status: proposed
+Status: blocked
 Priority: P3
-Last verified: 2026-05-21
+Last verified: 2026-05-23
 Dependencies: RM-003a, RM-003b, RM-004
 
 Problem:
 
 `read_models.py` has `_PollingReadModel`, but adjacent state modules duplicate
 QTimer, QThreadPool, worker-signal, start/stop, and failure-handling lifecycle
-logic. Bench row projection, evidence packet projection, action intent preview,
-and ledger construction also share a large implementation surface.
+logic.
 
-Next action:
+The original audit also claimed Bench row projection, evidence packet
+projection, action intent preview, and ledger construction share a large
+implementation surface. **The 2026-05-23 investigation found this half of the
+case does not hold up on close inspection** — these projections are already
+co-located inside `read_models.py`, not duplicated across modules. The audit
+conflated co-location with duplication.
 
-After launch-safety work settles, identify one adjacent state module to migrate
-to the shared polling interface as a proof slice.
+The QThread lifecycle duplication is real in 7 of 8 adjacent state modules
+(`StrategyBankState`, `ActiveOpsState`, `AttentionState`, `MarketTapeState`,
+`RiskThroughputState`, `PerformanceState`, `ActivityFeedState`).
+`OperationalState` is a structural outlier (two timers, broker-client factory).
+
+Status reason (2026-05-23):
+
+Deferred behind RM-006. Two structural questions block the proof slice:
+
+1. `_PollingReadModel` is currently private to `read_models.py`. Migrating
+   `StrategyBankState` to inherit it requires either moving the class to a
+   shared GUI module or having `strategy_bank_state.py` import from
+   `read_models.py`. The right layering is not obvious.
+2. Tests in `tests/milodex/gui/test_strategy_bank_state.py` pin private
+   implementation names (`_thread_pool`, `_kick_refresh`, `_refresh_signals`)
+   at multiple call sites. Migration requires deliberate behavioral-test
+   rewrites, not just a class-hierarchy change.
+
+Both are tractable but neither is free. P3 cleanup payback does not justify
+going ahead of RM-006 (which has 9-strategy leverage). Revisit after RM-006
+lands.
+
+Next action (when unblocked):
+
+`StrategyBankState` is the proof-slice target — purest structural match to
+`_PollingReadModel`, no broker-client factory, deepest test coverage. Resolve
+the layering question first (probably: extract `_PollingReadModel` to its own
+GUI helper module), then migrate one state class as a behavioral-test-rewrite
+proof, then expand.
 
 Implementation scope:
 
