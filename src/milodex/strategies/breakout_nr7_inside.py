@@ -71,7 +71,7 @@ class BreakoutNr7InsideStrategy(Strategy):
             primary: tuple[str, float, float], entry_intents: list[TradeIntent]
         ) -> str:
             return (
-                f"NR7 contraction: {primary[0]} range {primary[2]:.4f} is the tightest "
+                f"NR7 contraction: range {primary[2]:.4f} is the tightest "
                 f"in {parameters['range_lookback']} bars; "
                 f"buy {len(entry_intents)} candidate(s): "
                 f"{', '.join(intent.symbol for intent in entry_intents)}"

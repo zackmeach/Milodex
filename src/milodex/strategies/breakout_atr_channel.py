@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
 from milodex.strategies.base import (
@@ -157,8 +158,6 @@ def _exit_intents(
     context: StrategyContext,
     params: dict[str, Any],
 ) -> list[tuple[TradeIntent, str]]:
-    from milodex.broker.models import OrderSide, OrderType
-
     results: list[tuple[TradeIntent, str]] = []
     for symbol, quantity in positions.items():
         frame = bars_by_symbol[symbol].to_dataframe()
@@ -214,19 +213,6 @@ def _exit_threshold(rule: str, params: dict[str, Any]) -> dict[str, Any]:
     if rule == "breakout.max_hold":
         return {"max_hold_days": params["max_hold_days"]}
     return {}
-
-
-def _regime_bullish(bars_by_symbol: dict[str, BarSet], params: dict[str, Any]) -> bool:
-    symbol = params["market_regime_symbol"]
-    if not symbol:
-        return True
-    barset = bars_by_symbol.get(symbol)
-    if barset is None:
-        return True
-    closes = barset.to_dataframe()["close"].astype(float)
-    if len(closes) < params["market_regime_ma_length"]:
-        return True
-    return float(closes.iloc[-1]) > float(closes.tail(params["market_regime_ma_length"]).mean())
 
 
 def _ema(closes: pd.Series, length: int) -> float:
