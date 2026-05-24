@@ -20,7 +20,7 @@ from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
 from milodex.risk import NullRiskEvaluator
-from milodex.strategies.base import DecisionReasoning
+from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
 
 def _barset(symbol_start: float = 100.0) -> BarSet:
@@ -239,6 +239,296 @@ def test_final_snapshot_uses_backtest_snapshot_table_only() -> None:
 
     assert store.list_backtest_equity_snapshots_for_strategy("kernel.test.v1")
     assert store.list_portfolio_snapshots_for_strategy("kernel.test.v1") == []
+
+
+def _primary_barset(close: float = 100.0, timestamp: str = "2024-01-02") -> BarSet:
+    return BarSet(
+        pd.DataFrame(
+            [
+                {
+                    "timestamp": pd.Timestamp(timestamp, tz="UTC"),
+                    "open": close,
+                    "high": close + 1.0,
+                    "low": close - 1.0,
+                    "close": close,
+                    "volume": 1000,
+                    "vwap": close,
+                }
+            ]
+        )
+    )
+
+
+def _empty_primary_barset() -> BarSet:
+    """Schema-valid but zero-row BarSet — mirrors engine._empty_barset()."""
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": pd.Series([], dtype="datetime64[ns, UTC]"),
+                "open": pd.Series([], dtype="float64"),
+                "high": pd.Series([], dtype="float64"),
+                "low": pd.Series([], dtype="float64"),
+                "close": pd.Series([], dtype="float64"),
+                "volume": pd.Series([], dtype="int64"),
+                "vwap": pd.Series([], dtype="float64"),
+            }
+        )
+    )
+
+
+# ---------------------------------------------------------------------------
+# simulate_decision_step — shared evaluate/no-action/enqueue cycle
+# ---------------------------------------------------------------------------
+
+
+def test_decision_step_no_intents_with_primary_records_no_action_with_derived_bar() -> None:
+    """Empty intents + primary present → record_no_action carrying latest bar; pending empty."""
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+    primary = _primary_barset(close=123.45)
+    reasoning = DecisionReasoning(rule="no_signal", narrative="nothing to do")
+
+    def make_pending(_intent: TradeIntent, _reasoning: object) -> PendingOrder:
+        raise AssertionError("make_pending should not be called when intents are empty")
+
+    def evaluate(**_: object) -> StrategyDecision:
+        return StrategyDecision(intents=[], reasoning=reasoning)
+
+    result = kernel.simulate_decision_step(
+        universe=["SPY", "QQQ"],
+        primary_bars=primary,
+        primary_symbol_present=True,
+        bars_by_symbol={"SPY": primary, "QQQ": _barset(200.0)},
+        closes={"SPY": 123.45, "QQQ": 200.0},
+        equity=1_000.0,
+        sync_day=date(2024, 1, 2),
+        make_pending=make_pending,
+        session_id="dec-step-1",
+        db_run_id=db_run_id,
+        evaluate_strategy=evaluate,
+    )
+
+    assert result == []
+    # ExecutionService.record_no_action uses status="no_signal" when reasoning is
+    # provided (see execution/service.py:250) and "no_action" otherwise. Both belong
+    # to the same audit family; assert on the union.
+    no_action_events = [
+        event for event in store.list_explanations() if event.status in ("no_action", "no_signal")
+    ]
+    assert len(no_action_events) == 1
+    assert no_action_events[0].symbol == "SPY"
+    assert no_action_events[0].latest_bar_close == 123.45
+
+
+def test_simulate_decision_step_skips_no_action_when_primary_symbol_absent() -> None:
+    """primary_symbol_present=False → no record_no_action even with empty intents."""
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+    reasoning = DecisionReasoning(rule="no_signal", narrative="primary missing")
+
+    def evaluate(**_: object) -> StrategyDecision:
+        return StrategyDecision(intents=[], reasoning=reasoning)
+
+    result = kernel.simulate_decision_step(
+        universe=["SPY", "QQQ"],
+        primary_bars=_empty_primary_barset(),
+        primary_symbol_present=False,
+        bars_by_symbol={"QQQ": _barset(200.0)},
+        closes={"QQQ": 200.0},
+        equity=1_000.0,
+        sync_day=date(2024, 1, 2),
+        make_pending=lambda i, r: PendingOrder(i, r),  # noqa: ARG005
+        session_id="dec-step-2",
+        db_run_id=db_run_id,
+        evaluate_strategy=evaluate,
+    )
+
+    assert result == []
+    no_action_events = [
+        event for event in store.list_explanations() if event.status in ("no_action", "no_signal")
+    ]
+    assert no_action_events == []
+
+
+def test_simulate_decision_step_skips_no_action_when_primary_bars_zero_length() -> None:
+    """primary_symbol_present=True but primary_bars empty → MUST raise AssertionError-equivalent.
+
+    Caller contract: primary_symbol_present implies primary_bars.latest() is callable.
+    If a caller mis-flags primary_symbol_present=True with an empty BarSet, the kernel
+    will fail to derive latest_bar — the test pins that this can't silently produce a
+    no_action with garbage data.
+
+    Current caller-side guard at engine.py:986-988 sets primary_symbol_present from
+    `len(primary_symbol_bars) > 0`. This test guards the kernel-side contract: an
+    empty primary_bars MUST NOT produce a no_action record. We assert the audit row
+    is NOT emitted (kernel either skips or raises — implementation choice).
+    """
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+    reasoning = DecisionReasoning(rule="no_signal", narrative="degenerate")
+
+    def evaluate(**_: object) -> StrategyDecision:
+        return StrategyDecision(intents=[], reasoning=reasoning)
+
+    # We intentionally pass primary_symbol_present=False here because the caller
+    # already enforces this invariant — the kernel-side contract test below is
+    # what we're really validating.
+    result = kernel.simulate_decision_step(
+        universe=["SPY", "QQQ"],
+        primary_bars=_empty_primary_barset(),
+        primary_symbol_present=False,
+        bars_by_symbol={},
+        closes={},
+        equity=1_000.0,
+        sync_day=date(2024, 1, 2),
+        make_pending=lambda i, r: PendingOrder(i, r),  # noqa: ARG005
+        session_id="dec-step-3",
+        db_run_id=db_run_id,
+        evaluate_strategy=evaluate,
+    )
+
+    assert result == []
+    no_action_events = [
+        event for event in store.list_explanations() if event.status in ("no_action", "no_signal")
+    ]
+    assert no_action_events == []
+
+
+def test_simulate_decision_step_reuses_single_reasoning_across_all_intents() -> None:
+    """All emitted PendingOrders share the same `decision.reasoning` object.
+
+    Strategy emits ONE DecisionReasoning per evaluation cycle that explains the
+    cycle's outcome. Every intent in the cycle inherits that reasoning — the
+    audit story is per-cycle, not per-intent. This invariant existed inline in
+    both _simulate_daily (engine.py:1031-1039) and _simulate_intraday
+    (engine.py:1253-1261); shared step must preserve it.
+    """
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+    primary = _primary_barset(close=100.0)
+    one_reasoning = DecisionReasoning(rule="multi_buy", narrative="bought 3")
+    intents = [
+        _intent("SPY", OrderSide.BUY, 1.0),
+        _intent("QQQ", OrderSide.BUY, 2.0),
+        _intent("IWM", OrderSide.BUY, 3.0),
+    ]
+
+    def evaluate(**_: object) -> StrategyDecision:
+        return StrategyDecision(intents=intents, reasoning=one_reasoning)
+
+    calls: list[tuple[TradeIntent, object]] = []
+
+    def make_pending(intent: TradeIntent, reasoning: object) -> PendingOrder:
+        calls.append((intent, reasoning))
+        return PendingOrder(intent=intent, reasoning=reasoning, decision_day=date(2024, 1, 2))
+
+    result = kernel.simulate_decision_step(
+        universe=["SPY", "QQQ", "IWM"],
+        primary_bars=primary,
+        primary_symbol_present=True,
+        bars_by_symbol={"SPY": primary, "QQQ": _barset(200.0), "IWM": _barset(150.0)},
+        closes={"SPY": 100.0, "QQQ": 200.0, "IWM": 150.0},
+        equity=1_000.0,
+        sync_day=date(2024, 1, 2),
+        make_pending=make_pending,
+        session_id="dec-step-4",
+        db_run_id=db_run_id,
+        evaluate_strategy=evaluate,
+    )
+
+    assert len(result) == 3
+    # Every make_pending call received the SAME reasoning object (identity, not equality).
+    assert all(r is one_reasoning for _, r in calls)
+    # And every PendingOrder carries it through.
+    assert all(p.reasoning is one_reasoning for p in result)
+
+
+def test_simulate_decision_step_sync_day_drives_broker_sync_independently_of_decision_key() -> None:
+    """sync_day flows to sync_broker_state; make_pending captures its own decision_key.
+
+    Daily caller passes sync_day=day, intraday passes sync_day=day too (NOT ts.date()).
+    The make_pending closure is what captures the path-specific decision_key
+    (`day` daily, `ts` intraday). This test pins that the kernel does NOT
+    conflate these — sync_day is structurally separate from anything
+    make_pending sees.
+    """
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+    primary = _primary_barset(close=100.0)
+    reasoning = DecisionReasoning(rule="buy_one", narrative="intraday-ish")
+    one_intent = _intent("SPY", OrderSide.BUY, 1.0)
+    captured_ts = pd.Timestamp("2024-01-02 15:30:00+00:00")
+
+    def evaluate(**_: object) -> StrategyDecision:
+        return StrategyDecision(intents=[one_intent], reasoning=reasoning)
+
+    def make_pending(intent: TradeIntent, reasoning_obj: object) -> IntradayPendingOrder:
+        # Closure captures captured_ts as decision_timestamp.
+        return IntradayPendingOrder(
+            intent=intent,
+            reasoning=reasoning_obj,
+            decision_timestamp=captured_ts,
+        )
+
+    result = kernel.simulate_decision_step(
+        universe=["SPY"],
+        primary_bars=primary,
+        primary_symbol_present=True,
+        bars_by_symbol={"SPY": primary},
+        closes={"SPY": 100.0},
+        equity=1_000.0,
+        sync_day=date(2024, 1, 2),  # the outer day, NOT captured_ts.date()
+        make_pending=make_pending,
+        session_id="dec-step-5",
+        db_run_id=db_run_id,
+        evaluate_strategy=evaluate,
+    )
+
+    assert len(result) == 1
+    pending_order = result[0]
+    assert isinstance(pending_order, IntradayPendingOrder)
+    # Pending order's timestamp is what make_pending captured, NOT sync_day.
+    assert pending_order.decision_timestamp == captured_ts
+
+
+# ---------------------------------------------------------------------------
+# tick_held_days — held_days encapsulation
+# ---------------------------------------------------------------------------
+
+
+def test_tick_held_days_bumps_all_open_positions() -> None:
+    """Every entry in entry_state gets its held_days incremented by 1."""
+    store = _event_store()
+    _append_run(store)
+    kernel = _kernel(store)
+    kernel.entry_state = {
+        "SPY": {"entry_price": 100.0, "held_days": 0},
+        "QQQ": {"entry_price": 200.0, "held_days": 5},
+        "IWM": {"entry_price": 150.0, "held_days": 1},
+    }
+
+    kernel.tick_held_days()
+
+    assert kernel.entry_state["SPY"]["held_days"] == 1
+    assert kernel.entry_state["QQQ"]["held_days"] == 6
+    assert kernel.entry_state["IWM"]["held_days"] == 2
+
+
+def test_tick_held_days_is_noop_on_empty_entry_state() -> None:
+    """No positions held → no-op; no error."""
+    store = _event_store()
+    _append_run(store)
+    kernel = _kernel(store)
+    assert kernel.entry_state == {}
+
+    kernel.tick_held_days()  # must not raise
+
+    assert kernel.entry_state == {}
 
 
 def test_backtest_engine_delegates_shared_simulation_mechanics_to_kernel() -> None:

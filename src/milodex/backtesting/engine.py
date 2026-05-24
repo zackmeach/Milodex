@@ -923,8 +923,7 @@ class BacktestEngine:
         pending: list[PendingOrder] = []
 
         for day in trading_days:
-            for sym in kernel.entry_state:
-                kernel.entry_state[sym]["held_days"] = int(kernel.entry_state[sym]["held_days"]) + 1
+            kernel.tick_held_days()
 
             bars_by_symbol = _slice_bars_to_day(all_bars, day, ts_index)
             fill_opens = _opens_on_day(bars_by_symbol, day, ts_index)
@@ -986,57 +985,32 @@ class BacktestEngine:
             primary_symbol_present = (
                 primary_symbol_bars is not None and len(primary_symbol_bars) > 0
             )
-            if primary_symbol_present:
-                primary_bars = primary_symbol_bars
-            else:
-                primary_bars = _empty_barset()
+            primary_bars = primary_symbol_bars if primary_symbol_present else _empty_barset()
 
             equity = _compute_equity(kernel.cash, kernel.positions, latest_closes)
-            kernel.sync_broker_state(
-                day=day,
+
+            # Shared decision step (RM-013 follow-up): sync + evaluate + primary-symbol
+            # guard + no-action vs enqueue lives ONCE on the kernel. Closure captures
+            # `day` for the daily PendingOrder.decision_day field. See kernel docstring
+            # for the full behavior contract.
+            new_pending = kernel.simulate_decision_step(
+                universe=universe,
+                primary_bars=primary_bars,
+                primary_symbol_present=primary_symbol_present,
+                bars_by_symbol=bars_by_symbol,
                 closes=latest_closes,
                 equity=equity,
+                sync_day=day,
+                make_pending=lambda intent, reasoning, _day=day: PendingOrder(
+                    intent=intent,
+                    reasoning=reasoning,
+                    decision_day=_day,
+                ),
+                session_id=session_id,
+                db_run_id=db_run_id,
+                evaluate_strategy=self._evaluate_strategy,
             )
-
-            decision = self._evaluate_strategy(
-                primary_bars=primary_bars,
-                bars_by_symbol=bars_by_symbol,
-                equity=equity,
-                positions=kernel.positions,
-                entry_state=kernel.entry_state,
-            )
-            intents = decision.intents
-
-            if not intents:
-                # The no-action audit row is anchored on universe[0]'s own
-                # bar (symbol + close).  When universe[0] is absent there is
-                # no honest primary bar to quote, and borrowing another
-                # symbol's close onto a row labelled ``symbol=universe[0]``
-                # would be a misleading audit entry — so skip the no-action
-                # record for that day.  This matches master's behaviour: on
-                # master a universe[0]-absent day was skipped entirely and
-                # produced no record either.  The day still stays live:
-                # equity is recorded below and strategies that DO emit
-                # intents (via context.bars_by_symbol) still queue them.
-                if primary_symbol_present:
-                    latest_bar = primary_bars.latest()
-                    kernel.record_no_action(
-                        symbol=universe[0],
-                        latest_bar_timestamp=latest_bar.timestamp,
-                        latest_bar_close=latest_bar.close,
-                        session_id=session_id,
-                        reasoning=decision.reasoning,
-                        db_run_id=db_run_id,
-                    )
-            else:
-                for intent in intents:
-                    pending.append(
-                        PendingOrder(
-                            intent=intent,
-                            reasoning=decision.reasoning,
-                            decision_day=day,
-                        )
-                    )
+            pending.extend(new_pending)
 
             # Mark-to-market at end of day. Equity reflects the post-decision
             # state, but since fills are deferred to the next bar, no cash or
@@ -1166,8 +1140,7 @@ class BacktestEngine:
             # ------------------------------------------------------------------
             # 1. Held-days accounting (mirror daily path).
             # ------------------------------------------------------------------
-            for sym in kernel.entry_state:
-                kernel.entry_state[sym]["held_days"] = int(kernel.entry_state[sym]["held_days"]) + 1
+            kernel.tick_held_days()
 
             # ------------------------------------------------------------------
             # 2. Build the event timeline for this day.
@@ -1206,10 +1179,7 @@ class BacktestEngine:
                         # Primary barset — must not be substituted (see _simulate_daily).
                         primary_bs = bars_by_symbol_visible.get(universe[0])
                         primary_symbol_present = primary_bs is not None and len(primary_bs) > 0
-                        if primary_symbol_present:
-                            primary_bars = primary_bs
-                        else:
-                            primary_bars = _empty_barset()
+                        primary_bars = primary_bs if primary_symbol_present else _empty_barset()
 
                         # Equity at evaluation time: latest visible close per symbol.
                         latest_closes_at_ts = _latest_close_at_ts(
@@ -1223,42 +1193,29 @@ class BacktestEngine:
                             latest_closes_at_ts,
                         )
 
-                        kernel.sync_broker_state(
-                            day=day,
+                        # Shared decision step (RM-013 follow-up): same kernel method
+                        # the daily path uses. Closure captures `ts` for the intraday
+                        # IntradayPendingOrder.decision_timestamp field. Note that
+                        # `sync_day` is the OUTER trading day (`day`), not `ts.date()`
+                        # — preserves the pre-refactor sync_broker_state argument.
+                        new_pending = kernel.simulate_decision_step(
+                            universe=universe,
+                            primary_bars=primary_bars,
+                            primary_symbol_present=primary_symbol_present,
+                            bars_by_symbol=bars_by_symbol_visible,
                             closes=latest_closes_at_ts,
                             equity=equity_at_eval,
+                            sync_day=day,
+                            make_pending=lambda intent, reasoning, _ts=ts: IntradayPendingOrder(
+                                intent=intent,
+                                reasoning=reasoning,
+                                decision_timestamp=_ts,
+                            ),
+                            session_id=session_id,
+                            db_run_id=db_run_id,
+                            evaluate_strategy=self._evaluate_strategy,
                         )
-
-                        decision = self._evaluate_strategy(
-                            primary_bars=primary_bars,
-                            bars_by_symbol=bars_by_symbol_visible,
-                            equity=equity_at_eval,
-                            positions=kernel.positions,
-                            entry_state=kernel.entry_state,
-                        )
-
-                        if not decision.intents:
-                            # Audit no-action only when primary symbol has visible bars
-                            # (same guard as _simulate_daily: no honest primary bar → no record).
-                            if primary_symbol_present:
-                                latest_bar = primary_bars.latest()
-                                kernel.record_no_action(
-                                    symbol=universe[0],
-                                    latest_bar_timestamp=latest_bar.timestamp,
-                                    latest_bar_close=latest_bar.close,
-                                    session_id=session_id,
-                                    reasoning=decision.reasoning,
-                                    db_run_id=db_run_id,
-                                )
-                        else:
-                            for intent in decision.intents:
-                                pending.append(
-                                    IntradayPendingOrder(
-                                        intent=intent,
-                                        reasoning=decision.reasoning,
-                                        decision_timestamp=ts,
-                                    )
-                                )
+                        pending.extend(new_pending)
 
                 # 3c. Drain pending orders that have a fill price available at T.
                 # Runs after evaluate so that newly-queued intents can fill at T's

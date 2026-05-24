@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import Enum
@@ -20,6 +21,7 @@ from milodex.execution.models import ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.execution.state import KillSwitchStateStore
 from milodex.risk import RiskEvaluator
+from milodex.strategies.base import DecisionReasoning, StrategyDecision
 
 
 class MissingOpenPolicy(Enum):
@@ -34,7 +36,7 @@ class PendingOrder:
     """An intent emitted by a daily bar decision, awaiting the next open."""
 
     intent: TradeIntent
-    reasoning: object
+    reasoning: DecisionReasoning
     decision_day: date | None = None
 
 
@@ -43,7 +45,7 @@ class IntradayPendingOrder:
     """An intent emitted by an intraday decision, awaiting a later open."""
 
     intent: TradeIntent
-    reasoning: object
+    reasoning: DecisionReasoning
     decision_timestamp: pd.Timestamp
 
 
@@ -121,8 +123,8 @@ class BacktestSimulationKernel:
         equity: float | None = None,
     ) -> None:
         """Inject simulated account/position state into broker and data provider."""
-        effective_equity = equity if equity is not None else compute_equity(
-            self.cash, self.positions, closes
+        effective_equity = (
+            equity if equity is not None else compute_equity(self.cash, self.positions, closes)
         )
         day_dt = day_to_dt(day)
         self.sim_broker.set_simulation_day(day=day_dt, closes=closes)
@@ -161,7 +163,7 @@ class BacktestSimulationKernel:
         latest_bar_timestamp: datetime,
         latest_bar_close: float,
         session_id: str,
-        reasoning: object,
+        reasoning: DecisionReasoning,
         db_run_id: int,
     ) -> None:
         """Record a backtest no-action explanation through ExecutionService."""
@@ -178,6 +180,115 @@ class BacktestSimulationKernel:
             submitted_by="backtest_engine",
             backtest_run_id=db_run_id,
         )
+
+    def simulate_decision_step(
+        self,
+        *,
+        universe: list[str],
+        primary_bars: BarSet,
+        primary_symbol_present: bool,
+        bars_by_symbol: dict[str, BarSet],
+        closes: dict[str, float],
+        equity: float,
+        sync_day: date,
+        make_pending: Callable[
+            [TradeIntent, DecisionReasoning], PendingOrder | IntradayPendingOrder
+        ],
+        session_id: str,
+        db_run_id: int,
+        evaluate_strategy: Callable[..., StrategyDecision],
+    ) -> list[PendingOrder | IntradayPendingOrder]:
+        """Single source of the sync / evaluate / primary-symbol guard / no-action / enqueue cycle.
+
+        Replaces duplicated decision-block logic that used to live in both
+        ``BacktestEngine._simulate_daily`` (engine.py:980-1039 pre-refactor)
+        and ``BacktestEngine._simulate_intraday`` (engine.py:1204-1261
+        pre-refactor). The primary-symbol guard (never substitute
+        ``universe[0]``; never emit a ``record_no_action`` row with a
+        borrowed symbol's bar) is enforced HERE — this is the invariant
+        that has already produced one real regime-analytics regression.
+
+        Coupling note: this method teaches the kernel about ``StrategyDecision``,
+        ``universe[0]`` semantics, and the no-action audit shape. That is real
+        new coupling — the kernel previously did not know about strategy
+        structure. The trade is "kernel grows one decision-step concept" vs
+        "two simulators duplicate the primary-symbol invariant." A future
+        reviewer must NOT extract this back out as "kernel shouldn't know
+        about strategies" — the duplication it eliminates has documented
+        bug history.
+
+        Caller responsibilities:
+          - Substitute an empty BarSet for ``primary_bars`` when
+            ``universe[0]`` is absent, and pass ``primary_symbol_present=False``.
+          - Pre-compute ``closes`` (latest closes per symbol) and ``equity``.
+            Daily path uses a pre-fetched ``latest_closes`` dict; intraday
+            computes ``latest_closes_at_ts`` live. Both end up as the same
+            ``dict[str, float]`` shape.
+          - Provide ``make_pending`` closure that captures ``day`` (daily) or
+            ``ts`` (intraday) for the resulting ``PendingOrder`` / ``IntradayPendingOrder``.
+          - Provide ``evaluate_strategy`` callable — typically
+            ``BacktestEngine._evaluate_strategy`` bound to the engine instance.
+
+        Behavior:
+          1. ``sync_broker_state(day=sync_day, closes=closes, equity=equity)``.
+          2. ``decision = evaluate_strategy(primary_bars=, bars_by_symbol=,
+             equity=, positions=self.positions, entry_state=self.entry_state)``.
+             Always called — even when ``primary_symbol_present=False`` — so
+             ``context.bars_by_symbol``-consuming strategies still evaluate
+             normally. The caller's empty-BarSet substitution trips the
+             insufficient-history guard for direct-``primary_bars`` consumers.
+          3. If ``decision.intents`` is non-empty: build
+             ``[make_pending(intent, decision.reasoning) for intent in intents]``
+             and return. ONE ``decision.reasoning`` is reused across all
+             intents (per-cycle reasoning, not per-intent).
+          4. Else if ``primary_symbol_present``: emit ``record_no_action`` with
+             ``primary_bars.latest()``'s timestamp and close, ``symbol=universe[0]``,
+             ``reasoning=decision.reasoning``. Return ``[]``.
+          5. Else (no intents AND primary absent): return ``[]`` without any
+             audit row. No honest primary bar to quote → no record.
+        """
+        self.sync_broker_state(day=sync_day, closes=closes, equity=equity)
+        decision = evaluate_strategy(
+            primary_bars=primary_bars,
+            bars_by_symbol=bars_by_symbol,
+            equity=equity,
+            positions=self.positions,
+            entry_state=self.entry_state,
+        )
+        if decision.intents:
+            return [make_pending(intent, decision.reasoning) for intent in decision.intents]
+        if primary_symbol_present:
+            latest_bar = primary_bars.latest()
+            self.record_no_action(
+                symbol=universe[0],
+                latest_bar_timestamp=latest_bar.timestamp,
+                latest_bar_close=latest_bar.close,
+                session_id=session_id,
+                reasoning=decision.reasoning,
+                db_run_id=db_run_id,
+            )
+        return []
+
+    def tick_held_days(self) -> None:
+        """Increment ``held_days`` for every symbol with an open position.
+
+        Replaces the inline pattern previously duplicated at engine.py:919-921
+        (daily) and engine.py:1164-1166 (intraday). The engine should not be
+        reaching into ``entry_state`` dict shape.
+
+        Documented intentional behavior:
+          - Ticks every calendar iteration the caller invokes, regardless of
+            whether the strategy actually evaluated that iteration. Daily
+            path calls this once per ``trading_days`` iteration; intraday
+            calls once per OUTER-day iteration (NOT per intraday bar). This
+            means an intraday strategy crossing a ``held_days`` threshold
+            fires on the FIRST intraday tick of the next day, not at EOD of
+            the entry day. Pre-existing behavior, preserved deliberately.
+          - A future reviewer must not "fix" this without auditing every
+            ``held_days`` consumer.
+        """
+        for sym in self.entry_state:
+            self.entry_state[sym]["held_days"] = int(self.entry_state[sym]["held_days"]) + 1
 
     def drain_pending_orders(
         self,
@@ -482,9 +593,7 @@ class BacktestSimulationKernel:
         if reason_code == "backtest_insufficient_cash":
             qty = float(order.intent.quantity)
             projected_cost = (
-                None
-                if projected_fill is None
-                else projected_fill * qty + self.commission_per_trade
+                None if projected_fill is None else projected_fill * qty + self.commission_per_trade
             )
             context.update({"cash": self.cash, "projected_cost": projected_cost})
         self._record_skipped_order(
@@ -605,8 +714,7 @@ def compute_equity(
     latest_closes: dict[str, float],
 ) -> float:
     market_value = sum(
-        qty * latest_closes.get(sym, entry_price)
-        for sym, (qty, entry_price) in positions.items()
+        qty * latest_closes.get(sym, entry_price) for sym, (qty, entry_price) in positions.items()
     )
     return cash + market_value
 
