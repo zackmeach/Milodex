@@ -108,7 +108,7 @@ def _seed_runner_lock(locks_dir: Path) -> Path:
 
     PID=1 exists on every test platform (Windows ``System Idle Process``,
     Linux ``init``/``systemd``), so the holder is treated as live by
-    ``AdvisoryLock._read_holder`` + ``_process_exists``.
+    ``AdvisoryLock.current_holder`` + ``_process_exists``.
     """
     holder_path = locks_dir / f"milodex.runtime.strategy.{STRATEGY_ID}.lock"
     holder_path.write_text(

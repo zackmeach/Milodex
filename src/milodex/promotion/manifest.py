@@ -24,7 +24,7 @@ from milodex.strategies.loader import (
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
 
-_FROZEN_STAGES = frozenset({"paper", "micro_live", "live"})
+FROZEN_STAGES = frozenset({"paper", "micro_live", "live"})
 
 
 def _hash_canonical(canonical: dict) -> str:
@@ -47,10 +47,10 @@ def freeze_manifest(
     a new row — never skips when the hash matches a prior freeze (AD-5).
     """
     config = load_strategy_config(config_path)
-    if config.stage not in _FROZEN_STAGES:
+    if config.stage not in FROZEN_STAGES:
         msg = (
             f"Cannot freeze strategy at stage '{config.stage}'. "
-            f"Freezing is only valid for promoted stages ({', '.join(sorted(_FROZEN_STAGES))})."
+            f"Freezing is only valid for promoted stages ({', '.join(sorted(FROZEN_STAGES))})."
         )
         raise ValueError(msg)
 

@@ -225,7 +225,7 @@ LABEL_OPEN_EVIDENCE = "Open Evidence"
 
 
 # Stages at which a strategy YAML can be frozen into the event store as a
-# StrategyManifestEvent. Mirrors ``milodex.promotion.manifest._FROZEN_STAGES``;
+# StrategyManifestEvent. Mirrors ``milodex.promotion.FROZEN_STAGES``;
 # backtest has nothing to snapshot yet. Phase D1 wires the freeze action.
 _FREEZE_MANIFEST_STAGES: frozenset[Stage] = frozenset(
     {Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE}

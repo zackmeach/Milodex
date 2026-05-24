@@ -46,13 +46,13 @@ from milodex.core.event_store import (
     PromotionEvent,
 )
 from milodex.promotion import (
+    FROZEN_STAGES,
     MIN_TRADES,
     PAPER_MAX_DRAWDOWN_PCT,
     PAPER_MIN_SHARPE,
     REASON_GATE_FAILED,
     REASON_INVALID_STAGE_TRANSITION,
     REASON_MISSING_BACKTEST_RUN,
-    STAGE_ORDER,
     PromoteBlocked,
     PromoteError,
     PromoteRequest,
@@ -108,13 +108,6 @@ ACTION_FAMILIES: tuple[str, ...] = (
 
 # Demotion targets the existing ``promotion.state_machine.demote`` accepts.
 DEMOTION_TARGETS: frozenset[str] = frozenset({"idle", "backtest", "disabled"})
-
-# Legacy sentinel blocker for submit paths that deliberately remain inert.
-_NOT_SUBMIT_CAPABLE_PHASE_B = "not_submit_capable_phase_b"
-_PHASE_B_MESSAGE = (
-    "Bench command facade still treats this action family as an inert legacy "
-    "submit path; see ADR 0051 §10 for the action-family wiring sequence."
-)
 
 
 @dataclass(frozen=True)
@@ -489,7 +482,7 @@ class BenchCommandFacade:
         """Propose freezing the strategy YAML at its current promoted stage.
 
         Freeze is only valid for promoted stages (``paper``, ``micro_live``,
-        ``live``) — matches ``milodex.promotion.manifest._FROZEN_STAGES``.
+        ``live``) — matches ``milodex.promotion.FROZEN_STAGES``.
         A backtest-stage strategy has nothing to snapshot yet.
 
         ``frozen_by`` is carried on the proposal so ``submit_freeze_manifest``
@@ -521,16 +514,16 @@ class BenchCommandFacade:
             Precondition("strategy_exists", passed=True, detail=f"resolved {config.path}"),
         ]
         blockers: list[Blocker] = []
-        if config.stage not in _FROZEN_STAGES:
+        if config.stage not in FROZEN_STAGES:
             blockers.append(
                 Blocker(
                     reason_code="stage_not_freezable",
                     message=(
                         f"Cannot freeze strategy at stage '{config.stage}'. "
                         f"Freezing is only valid for promoted stages "
-                        f"({', '.join(sorted(_FROZEN_STAGES))})."
+                        f"({', '.join(sorted(FROZEN_STAGES))})."
                     ),
-                    context={"stage": config.stage, "allowed_stages": sorted(_FROZEN_STAGES)},
+                    context={"stage": config.stage, "allowed_stages": sorted(FROZEN_STAGES)},
                 )
             )
             preconditions.append(Precondition("stage_is_freezable", passed=False))
@@ -2287,7 +2280,7 @@ class BenchCommandFacade:
             locks_dir=self._locks_dir,
             holder_name="bench.facade.peek",
         )
-        holder = lock._read_holder()  # noqa: SLF001 — single permitted peek
+        holder = lock.current_holder()
         if holder is None:
             return None
         return {
@@ -2331,34 +2324,6 @@ class BenchCommandFacade:
             proposed_at=self._now(),
             proposal_id=_new_proposal_id(),
         )
-
-    def _phase_b_blocked(self, proposal: CommandProposal, action_family: str) -> CommandResult:
-        return CommandResult(
-            proposal_id=proposal.proposal_id,
-            action_family=action_family,
-            status="blocked",
-            durable_refs={},
-            blockers=[
-                Blocker(
-                    reason_code=_NOT_SUBMIT_CAPABLE_PHASE_B,
-                    message=_PHASE_B_MESSAGE,
-                    context={"phase": "B", "action_family": action_family},
-                )
-            ],
-            warnings=[],
-            submitted_at=None,
-            audit_event_id=None,
-        )
-
-
-# Mirror milodex.promotion.manifest._FROZEN_STAGES locally so the facade has
-# no dependency on a private name. Stages where freezing is meaningful.
-_FROZEN_STAGES: frozenset[str] = frozenset({"paper", "micro_live", "live"})
-
-# Sanity: the locally mirrored stage names must remain valid stages.
-assert set(_FROZEN_STAGES).issubset(set(STAGE_ORDER)), (
-    "_FROZEN_STAGES must be a subset of promotion.STAGE_ORDER."
-)
 
 
 def _new_proposal_id() -> str:
