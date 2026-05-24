@@ -1314,102 +1314,69 @@ class BenchCommandFacade:
         ``Blocker`` records (mirroring ``submit_demote``) and returns durable
         manifest identifiers on success.
         """
-        if proposal.action_family != ACTION_FAMILY_FREEZE_MANIFEST:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=proposal.action_family,
-                status="error",
-                blockers=[
-                    Blocker(
-                        reason_code="proposal_action_family_mismatch",
-                        message=(
-                            f"submit_freeze_manifest received a proposal for "
-                            f"'{proposal.action_family}'; expected "
-                            f"'{ACTION_FAMILY_FREEZE_MANIFEST}'."
-                        ),
-                        context={
-                            "expected": ACTION_FAMILY_FREEZE_MANIFEST,
-                            "received": proposal.action_family,
-                        },
-                    )
-                ],
-            )
-
-        event_store = self._require_event_store(proposal)
-        if isinstance(event_store, CommandResult):
-            return event_store
-
         frozen_by = str(proposal.inputs.get("frozen_by", "operator"))
 
-        # Re-validate against the current world. A proposal that was
-        # admissible at propose-time may have gone stale (stage changed,
-        # YAML deleted, …) — refuse cleanly rather than dispatch.
-        revalidation = self.propose_freeze_manifest(
-            proposal.strategy_id,
-            frozen_by=frozen_by,
-        )
-        if not revalidation.admissible:
+        def _dispatch(
+            proposal: CommandProposal,
+            revalidation: CommandProposal,  # noqa: ARG001 - revalidation has no post-dispatch use here
+            config: StrategyConfig,
+            event_store: EventStore,
+        ) -> CommandResult:
+            try:
+                event = _governance_freeze_manifest(
+                    config.path,
+                    event_store=event_store,
+                    frozen_by=frozen_by,
+                    now=self._now(),
+                )
+            except ValueError as exc:
+                # Governance layer raised. Surface as a structured blocker so
+                # the exception does not cross the facade boundary.
+                return CommandResult(
+                    proposal_id=proposal.proposal_id,
+                    action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+                    status="blocked",
+                    blockers=[
+                        Blocker(
+                            reason_code="governance_refused",
+                            message=str(exc),
+                            context={
+                                "callee": "milodex.promotion.manifest.freeze_manifest",
+                            },
+                        )
+                    ],
+                )
+
+            durable_refs: dict[str, str] = {
+                "strategy_id": event.strategy_id,
+                "stage": event.stage,
+                "config_hash": event.config_hash,
+                "config_path": event.config_path,
+                "frozen_by": event.frozen_by,
+                "frozen_at": event.frozen_at.isoformat(),
+            }
+            if event.id is not None:
+                durable_refs["manifest_event_id"] = str(event.id)
+
             return CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_FREEZE_MANIFEST,
-                status="blocked",
-                blockers=list(revalidation.blockers),
+                status="submitted",
+                durable_refs=durable_refs,
+                blockers=[],
+                warnings=[],
+                submitted_at=event.frozen_at,
+                audit_event_id=str(event.id) if event.id is not None else None,
             )
 
-        config, resolve_blocker = self._resolve_config(proposal.strategy_id)
-        if resolve_blocker is not None or config is None:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_FREEZE_MANIFEST,
-                status="blocked",
-                blockers=[resolve_blocker] if resolve_blocker is not None else [],
-            )
-
-        try:
-            event = _governance_freeze_manifest(
-                config.path,
-                event_store=event_store,
+        return self._submit_with_config(
+            proposal,
+            expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+            revalidate=lambda: self.propose_freeze_manifest(
+                proposal.strategy_id,
                 frozen_by=frozen_by,
-                now=self._now(),
-            )
-        except ValueError as exc:
-            # Governance layer raised. Surface as a structured blocker so
-            # the exception does not cross the facade boundary.
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_FREEZE_MANIFEST,
-                status="blocked",
-                blockers=[
-                    Blocker(
-                        reason_code="governance_refused",
-                        message=str(exc),
-                        context={
-                            "callee": "milodex.promotion.manifest.freeze_manifest",
-                        },
-                    )
-                ],
-            )
-
-        durable_refs: dict[str, str] = {
-            "strategy_id": event.strategy_id,
-            "stage": event.stage,
-            "config_hash": event.config_hash,
-            "config_path": event.config_path,
-            "frozen_by": event.frozen_by,
-            "frozen_at": event.frozen_at.isoformat(),
-        }
-        if event.id is not None:
-            durable_refs["manifest_event_id"] = str(event.id)
-
-        return CommandResult(
-            proposal_id=proposal.proposal_id,
-            action_family=ACTION_FAMILY_FREEZE_MANIFEST,
-            status="submitted",
-            durable_refs=durable_refs,
-            blockers=[],
-            warnings=[],
-            submitted_at=event.frozen_at,
-            audit_event_id=str(event.id) if event.id is not None else None,
+            ),
+            dispatch=_dispatch,
         )
 
     def submit_promote_to_paper(self, proposal: CommandProposal) -> CommandResult:
@@ -1434,34 +1401,14 @@ class BenchCommandFacade:
         identity and evidence text are supplied by the bridge and threaded
         through unchanged.
         """
-        if proposal.action_family != ACTION_FAMILY_PROMOTE_TO_PAPER:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=proposal.action_family,
-                status="error",
-                blockers=[
-                    Blocker(
-                        reason_code="proposal_action_family_mismatch",
-                        message=(
-                            f"submit_promote_to_paper received a proposal for "
-                            f"'{proposal.action_family}'; expected "
-                            f"'{ACTION_FAMILY_PROMOTE_TO_PAPER}'."
-                        ),
-                        context={
-                            "expected": ACTION_FAMILY_PROMOTE_TO_PAPER,
-                            "received": proposal.action_family,
-                        },
-                    )
-                ],
-            )
-
-        event_store = self._require_event_store(proposal)
-        if isinstance(event_store, CommandResult):
-            return event_store
-
         # Extract operator-supplied inputs. These are the same fields the CLI's
         # `--recommendation` / `--risk` / `--run-id` / `--lifecycle-exempt` /
-        # `--approved-by` flags populate.
+        # `--approved-by` flags populate. The RAW shapes (None-able
+        # `recommendation`, the un-normalized `known_risks_raw`, the un-cast
+        # `run_id`) are what propose_promote_to_paper expects for revalidation
+        # — do NOT normalize before passing into the revalidate closure.
+        # PromoteRequest dispatch DOES normalize (str(recommendation) if … else
+        # ""), but revalidation must mirror the propose-side input shape.
         recommendation = proposal.inputs.get("recommendation")
         known_risks_raw = proposal.inputs.get("known_risks") or []
         known_risks = [str(r) for r in known_risks_raw if r and str(r).strip()]
@@ -1469,115 +1416,114 @@ class BenchCommandFacade:
         approved_by = str(proposal.inputs.get("approved_by", "operator"))
         lifecycle_exempt = bool(proposal.inputs.get("lifecycle_exempt", False))
 
-        # Stale-proposal revalidation: a proposal that was admissible at
-        # propose-time may have gone stale (stage drifted, YAML deleted, …)
-        # — refuse cleanly rather than dispatch. Mirrors submit_demote /
-        # submit_freeze_manifest.
-        revalidation = self.propose_promote_to_paper(
-            proposal.strategy_id,
-            recommendation=recommendation,
-            known_risks=list(known_risks_raw),
-            run_id=run_id,
-            approved_by=approved_by,
-            lifecycle_exempt=lifecycle_exempt,
-        )
-        if not revalidation.admissible:
+        def _dispatch(
+            proposal: CommandProposal,
+            revalidation: CommandProposal,  # noqa: ARG001 - no post-dispatch use here
+            config: StrategyConfig,
+            event_store: EventStore,
+        ) -> CommandResult:
+            from_stage = config.stage
+            to_stage = "paper"
+
+            # Delegate the choreography (validate_stage_transition →
+            # metrics_from_run → check_gate → compute_post_update_hash →
+            # assemble_evidence_package → transition) to the shared promotion
+            # orchestrator (RM-010). The Bench facade keeps proposal/submit
+            # lifecycle, workflow-readiness blockers, stale-proposal
+            # revalidation (in the shell), and Blocker translation; the
+            # orchestrator owns governance choreography. CLI and Bench cannot
+            # drift on gate behavior or evidence shape because both go
+            # through this entrypoint.
+            request = PromoteRequest(
+                strategy_id=config.strategy_id,
+                config_path=config.path,
+                to_stage=to_stage,
+                recommendation=str(recommendation) if recommendation else "",
+                known_risks=known_risks,
+                approved_by=approved_by,
+                run_id=run_id,
+                lifecycle_exempt=lifecycle_exempt,
+                now=self._now(),
+            )
+            result = prepare_and_record_promotion(request, event_store)
+
+            if isinstance(result, PromoteBlocked):
+                return CommandResult(
+                    proposal_id=proposal.proposal_id,
+                    action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                    status="blocked",
+                    blockers=_blockers_from_promote_blocked(
+                        result, from_stage=from_stage, to_stage=to_stage, run_id=run_id
+                    ),
+                )
+            if isinstance(result, PromoteError):
+                return CommandResult(
+                    proposal_id=proposal.proposal_id,
+                    action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+                    status="blocked",
+                    blockers=[
+                        Blocker(
+                            reason_code="governance_refused",
+                            message=result.message,
+                            context=dict(result.context),
+                        )
+                    ],
+                )
+
+            assert isinstance(result, PromoteSuccess)
+            durable_refs: dict[str, str] = {
+                "strategy_id": result.strategy_id,
+                "from_stage": result.from_stage,
+                "to_stage": result.to_stage,
+                "promotion_type": result.promotion_type,
+                "approved_by": approved_by,
+                "recorded_at": result.recorded_at.isoformat(),
+                "manifest_hash": result.manifest_hash,
+            }
+            if result.promotion_id is not None:
+                durable_refs["promotion_id"] = str(result.promotion_id)
+            if result.manifest_id is not None:
+                durable_refs["manifest_id"] = str(result.manifest_id)
+            if result.backtest_run_id is not None:
+                durable_refs["backtest_run_id"] = result.backtest_run_id
+            if result.sharpe_ratio is not None:
+                durable_refs["sharpe_ratio"] = f"{result.sharpe_ratio:.6f}"
+            if result.max_drawdown_pct is not None:
+                durable_refs["max_drawdown_pct"] = f"{result.max_drawdown_pct:.6f}"
+            if result.trade_count is not None:
+                durable_refs["trade_count"] = str(result.trade_count)
+
             return CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=list(revalidation.blockers),
+                status="submitted",
+                durable_refs=durable_refs,
+                blockers=[],
+                warnings=[],
+                submitted_at=result.recorded_at,
+                audit_event_id=str(result.promotion_id)
+                if result.promotion_id is not None
+                else None,
             )
 
-        config, resolve_blocker = self._resolve_config(proposal.strategy_id)
-        if resolve_blocker is not None or config is None:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=[resolve_blocker] if resolve_blocker is not None else [],
-            )
-
-        from_stage = config.stage
-        to_stage = "paper"
-
-        # Delegate the choreography (validate_stage_transition → metrics_from_run
-        # → check_gate → compute_post_update_hash → assemble_evidence_package →
-        # transition) to the shared promotion orchestrator (RM-010). The Bench
-        # facade keeps proposal/submit lifecycle, workflow-readiness blockers,
-        # stale-proposal revalidation, and Blocker translation; the orchestrator
-        # owns governance choreography. CLI and Bench cannot drift on gate
-        # behavior or evidence shape because both go through this entrypoint.
-        request = PromoteRequest(
-            strategy_id=config.strategy_id,
-            config_path=config.path,
-            to_stage=to_stage,
-            recommendation=str(recommendation) if recommendation else "",
-            known_risks=known_risks,
-            approved_by=approved_by,
-            run_id=run_id,
-            lifecycle_exempt=lifecycle_exempt,
-            now=self._now(),
-        )
-        result = prepare_and_record_promotion(request, event_store)
-
-        if isinstance(result, PromoteBlocked):
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=_blockers_from_promote_blocked(
-                    result, from_stage=from_stage, to_stage=to_stage, run_id=run_id
-                ),
-            )
-        if isinstance(result, PromoteError):
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-                status="blocked",
-                blockers=[
-                    Blocker(
-                        reason_code="governance_refused",
-                        message=result.message,
-                        context=dict(result.context),
-                    )
-                ],
-            )
-
-        assert isinstance(result, PromoteSuccess)
-        durable_refs: dict[str, str] = {
-            "strategy_id": result.strategy_id,
-            "from_stage": result.from_stage,
-            "to_stage": result.to_stage,
-            "promotion_type": result.promotion_type,
-            "approved_by": approved_by,
-            "recorded_at": result.recorded_at.isoformat(),
-            "manifest_hash": result.manifest_hash,
-        }
-        if result.promotion_id is not None:
-            durable_refs["promotion_id"] = str(result.promotion_id)
-        if result.manifest_id is not None:
-            durable_refs["manifest_id"] = str(result.manifest_id)
-        if result.backtest_run_id is not None:
-            durable_refs["backtest_run_id"] = result.backtest_run_id
-        if result.sharpe_ratio is not None:
-            durable_refs["sharpe_ratio"] = f"{result.sharpe_ratio:.6f}"
-        if result.max_drawdown_pct is not None:
-            durable_refs["max_drawdown_pct"] = f"{result.max_drawdown_pct:.6f}"
-        if result.trade_count is not None:
-            durable_refs["trade_count"] = str(result.trade_count)
-
-        return CommandResult(
-            proposal_id=proposal.proposal_id,
-            action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
-            status="submitted",
-            durable_refs=durable_refs,
-            blockers=[],
-            warnings=[],
-            submitted_at=result.recorded_at,
-            audit_event_id=str(result.promotion_id)
-            if result.promotion_id is not None
-            else None,
+        # H6 / v2-review-b: literal-copy ALL FIVE revalidation kwargs. The raw
+        # shapes (recommendation can be None; known_risks_raw is un-normalized;
+        # run_id is un-cast) must match what propose_promote_to_paper accepts.
+        # Do NOT normalize here — propose_promote_to_paper handles validation
+        # internally, and changing the kwarg shapes would silently shift
+        # revalidation outcomes.
+        return self._submit_with_config(
+            proposal,
+            expected_action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+            revalidate=lambda: self.propose_promote_to_paper(
+                proposal.strategy_id,
+                recommendation=recommendation,
+                known_risks=list(known_risks_raw),
+                run_id=run_id,
+                approved_by=approved_by,
+                lifecycle_exempt=lifecycle_exempt,
+            ),
+            dispatch=_dispatch,
         )
 
     def submit_demote(
@@ -1598,119 +1544,91 @@ class BenchCommandFacade:
         The facade does not duplicate those rules; it surfaces refusals as
         ``Blocker`` records and returns durable identifiers on success.
         """
-        if proposal.action_family != ACTION_FAMILY_DEMOTE:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=proposal.action_family,
-                status="error",
-                blockers=[
-                    Blocker(
-                        reason_code="proposal_action_family_mismatch",
-                        message=(
-                            f"submit_demote received a proposal for "
-                            f"'{proposal.action_family}'; expected "
-                            f"'{ACTION_FAMILY_DEMOTE}'."
-                        ),
-                        context={
-                            "expected": ACTION_FAMILY_DEMOTE,
-                            "received": proposal.action_family,
-                        },
-                    )
-                ],
-            )
 
-        event_store = self._require_event_store(proposal)
-        if isinstance(event_store, CommandResult):
-            return event_store
+        def _dispatch(
+            proposal: CommandProposal,
+            revalidation: CommandProposal,
+            config: StrategyConfig,
+            event_store: EventStore,
+        ) -> CommandResult:
+            to_stage = str(proposal.inputs["to_stage"])
+            reason = str(proposal.inputs["reason"])
+            approved_by = str(proposal.inputs.get("approved_by", "operator"))
+            evidence_ref = proposal.inputs.get("evidence_ref")
 
-        # Re-validate against the current world. A proposal that was admissible
-        # at propose-time may have gone stale (stage changed, evidence
-        # invalidated, …) — refuse cleanly rather than dispatch.
-        revalidation = self.propose_demote(
-            proposal.strategy_id,
-            to_stage=proposal.inputs.get("to_stage", ""),
-            reason=proposal.inputs.get("reason"),
-            approved_by=proposal.inputs.get("approved_by", "operator"),
-            evidence_ref=proposal.inputs.get("evidence_ref"),
-            gui_submit=gui_submit,
-        )
-        if not revalidation.admissible:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_DEMOTE,
-                status="blocked",
-                blockers=list(revalidation.blockers),
-            )
+            try:
+                event = _governance_demote(
+                    config_path=config.path,
+                    to_stage=to_stage,
+                    reason=reason,
+                    approved_by=approved_by,
+                    event_store=event_store,
+                    evidence_ref=evidence_ref,
+                    now=self._now(),
+                )
+            except ValueError as exc:
+                # The governance layer raised. Surface it as a structured
+                # blocker rather than letting the exception cross the facade
+                # boundary.
+                return CommandResult(
+                    proposal_id=proposal.proposal_id,
+                    action_family=ACTION_FAMILY_DEMOTE,
+                    status="blocked",
+                    blockers=[
+                        Blocker(
+                            reason_code="governance_refused",
+                            message=str(exc),
+                            context={
+                                "callee": "milodex.promotion.state_machine.demote",
+                            },
+                        )
+                    ],
+                )
 
-        config, resolve_blocker = self._resolve_config(proposal.strategy_id)
-        if resolve_blocker is not None or config is None:
-            return CommandResult(
-                proposal_id=proposal.proposal_id,
-                action_family=ACTION_FAMILY_DEMOTE,
-                status="blocked",
-                blockers=[resolve_blocker] if resolve_blocker is not None else [],
-            )
+            durable_refs: dict[str, str] = {}
+            if event.id is not None:
+                durable_refs["promotion_id"] = str(event.id)
+            if event.reverses_event_id is not None:
+                durable_refs["reverses_event_id"] = str(event.reverses_event_id)
+            durable_refs["strategy_id"] = event.strategy_id
+            durable_refs["from_stage"] = event.from_stage
+            durable_refs["to_stage"] = event.to_stage
+            durable_refs["promotion_type"] = event.promotion_type
 
-        to_stage = str(proposal.inputs["to_stage"])
-        reason = str(proposal.inputs["reason"])
-        approved_by = str(proposal.inputs.get("approved_by", "operator"))
-        evidence_ref = proposal.inputs.get("evidence_ref")
+            warnings: list[str] = self._readiness_warnings_from(revalidation)
+            if to_stage == "disabled":
+                warnings.append(
+                    "Demotion to 'disabled' is ledger-only: the YAML stage line is "
+                    "unchanged. Runtime refusal of disabled strategies is a "
+                    "separate concern (promotion.state_machine slice 3)."
+                )
 
-        try:
-            event = _governance_demote(
-                config_path=config.path,
-                to_stage=to_stage,
-                reason=reason,
-                approved_by=approved_by,
-                event_store=event_store,
-                evidence_ref=evidence_ref,
-                now=self._now(),
-            )
-        except ValueError as exc:
-            # The governance layer raised. Surface it as a structured blocker
-            # rather than letting the exception cross the facade boundary.
             return CommandResult(
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_DEMOTE,
-                status="blocked",
-                blockers=[
-                    Blocker(
-                        reason_code="governance_refused",
-                        message=str(exc),
-                        context={
-                            "callee": "milodex.promotion.state_machine.demote",
-                        },
-                    )
-                ],
+                status="submitted",
+                durable_refs=durable_refs,
+                blockers=[],
+                warnings=warnings,
+                submitted_at=event.recorded_at,
+                audit_event_id=str(event.id) if event.id is not None else None,
             )
 
-        durable_refs: dict[str, str] = {}
-        if event.id is not None:
-            durable_refs["promotion_id"] = str(event.id)
-        if event.reverses_event_id is not None:
-            durable_refs["reverses_event_id"] = str(event.reverses_event_id)
-        durable_refs["strategy_id"] = event.strategy_id
-        durable_refs["from_stage"] = event.from_stage
-        durable_refs["to_stage"] = event.to_stage
-        durable_refs["promotion_type"] = event.promotion_type
-
-        warnings: list[str] = self._readiness_warnings_from(revalidation)
-        if to_stage == "disabled":
-            warnings.append(
-                "Demotion to 'disabled' is ledger-only: the YAML stage line is "
-                "unchanged. Runtime refusal of disabled strategies is a "
-                "separate concern (promotion.state_machine slice 3)."
-            )
-
-        return CommandResult(
-            proposal_id=proposal.proposal_id,
-            action_family=ACTION_FAMILY_DEMOTE,
-            status="submitted",
-            durable_refs=durable_refs,
-            blockers=[],
-            warnings=warnings,
-            submitted_at=event.recorded_at,
-            audit_event_id=str(event.id) if event.id is not None else None,
+        # H2: the revalidation closure MUST capture `gui_submit` — propose_demote
+        # uses it to enforce the disabled-target GUI guard. Dropping it here
+        # would silently let GUI-submitted disabled demotions bypass the guard.
+        return self._submit_with_config(
+            proposal,
+            expected_action_family=ACTION_FAMILY_DEMOTE,
+            revalidate=lambda: self.propose_demote(
+                proposal.strategy_id,
+                to_stage=proposal.inputs.get("to_stage", ""),
+                reason=proposal.inputs.get("reason"),
+                approved_by=proposal.inputs.get("approved_by", "operator"),
+                evidence_ref=proposal.inputs.get("evidence_ref"),
+                gui_submit=gui_submit,
+            ),
+            dispatch=_dispatch,
         )
 
     def submit_start_paper_runner(self, proposal: CommandProposal) -> CommandResult:
@@ -2268,6 +2186,67 @@ class BenchCommandFacade:
             )
         return self._event_store_factory()
 
+    def _submit_with_config(
+        self,
+        proposal: CommandProposal,
+        *,
+        expected_action_family: str,
+        revalidate: Callable[[], CommandProposal],
+        dispatch: Callable[
+            [CommandProposal, CommandProposal, StrategyConfig, EventStore],
+            CommandResult,
+        ],
+    ) -> CommandResult:
+        """Shared spine for the four config-resolving submits.
+
+        Flow: family check → event-store require → revalidate → resolve config
+        → dispatch(proposal, revalidation, config, event_store) → return.
+
+        The dispatch callable receives BOTH the original proposal AND the
+        revalidation result, because some submits (notably demote) build
+        post-dispatch warnings from ``revalidation.blockers`` via
+        ``_readiness_warnings_from(revalidation)``. Passing revalidation
+        up-front avoids a wasteful second ``revalidate()`` call inside dispatch
+        and eliminates a drift risk between the shell's admissibility check
+        and the dispatch's warnings derivation.
+
+        Orchestration journaling stays OUTSIDE the shell — only backtest
+        journals on this code path (freeze/demote/promote do not). The backtest
+        dispatch callback owns its ``_create_orchestration_job`` /
+        ``_finish_orchestration_job`` pair explicitly because all error-path
+        returns inside the dispatch body must finish the job; the shell cannot
+        do that on the dispatch's behalf.
+
+        NOTE: any propose-side kwargs that affect admissibility (e.g.
+        ``gui_submit`` on demote) MUST be captured in the ``revalidate``
+        closure at the call site — the shell forwards no extra context.
+
+        Runner submits do NOT use this shell: they do not resolve config and
+        have lifecycle pre/post checks (``_peek_runner_lock`` /
+        ``_latest_open_session_id``) that don't fit the uniform spine.
+        """
+        if proposal.action_family != expected_action_family:
+            return _action_family_mismatch_result(proposal, expected=expected_action_family)
+        event_store_or_error = self._require_event_store(proposal)
+        if isinstance(event_store_or_error, CommandResult):
+            return event_store_or_error
+        revalidation = revalidate()
+        if not revalidation.admissible:
+            return _stale_proposal_result(proposal, revalidation)
+        config, resolve_blocker = self._resolve_config(proposal.strategy_id)
+        if resolve_blocker is not None or config is None:
+            return _resolve_failed_result(
+                proposal,
+                resolve_blocker
+                if resolve_blocker is not None
+                else Blocker(
+                    reason_code="strategy_not_found",
+                    message="strategy config unavailable",
+                    context={},
+                ),
+            )
+        return dispatch(proposal, revalidation, config, event_store_or_error)
+
     def _peek_runner_lock(self, strategy_id: str) -> dict[str, Any] | None:
         """Peek the per-strategy runner advisory lock without acquiring it.
 
@@ -2324,6 +2303,60 @@ class BenchCommandFacade:
             proposed_at=self._now(),
             proposal_id=_new_proposal_id(),
         )
+
+
+def _action_family_mismatch_result(
+    proposal: CommandProposal, *, expected: str
+) -> CommandResult:
+    """Build the standard `proposal_action_family_mismatch` error CommandResult.
+
+    Replaces the inline ``CommandResult(..., blockers=[Blocker(reason_code=
+    "proposal_action_family_mismatch", ...)])`` constructions that recur at
+    the top of each ``submit_*`` method. Keeps the error shape uniform.
+    """
+    return CommandResult(
+        proposal_id=proposal.proposal_id,
+        action_family=proposal.action_family,
+        status="error",
+        blockers=[
+            Blocker(
+                reason_code="proposal_action_family_mismatch",
+                message=(
+                    f"submit received a proposal for '{proposal.action_family}'; "
+                    f"expected '{expected}'."
+                ),
+                context={"expected": expected, "received": proposal.action_family},
+            )
+        ],
+    )
+
+
+def _stale_proposal_result(
+    proposal: CommandProposal, revalidation: CommandProposal
+) -> CommandResult:
+    """Build the standard `blocked` CommandResult for an inadmissible revalidation.
+
+    Propagates the revalidation's blockers verbatim — the propose-side already
+    constructed structured reasons (stage_drift, evidence_invalidated, etc.).
+    """
+    return CommandResult(
+        proposal_id=proposal.proposal_id,
+        action_family=proposal.action_family,
+        status="blocked",
+        blockers=list(revalidation.blockers),
+    )
+
+
+def _resolve_failed_result(
+    proposal: CommandProposal, resolve_blocker: Blocker
+) -> CommandResult:
+    """Build the standard `blocked` CommandResult for a resolve_config failure."""
+    return CommandResult(
+        proposal_id=proposal.proposal_id,
+        action_family=proposal.action_family,
+        status="blocked",
+        blockers=[resolve_blocker],
+    )
 
 
 def _new_proposal_id() -> str:
