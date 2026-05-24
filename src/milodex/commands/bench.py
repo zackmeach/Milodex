@@ -60,6 +60,7 @@ from milodex.promotion import (
     prepare_and_record_promotion,
 )
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
+from milodex.promotion.manifest import resolve_strategy_config_path
 from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE
 from milodex.promotion.state_machine import _update_stage_in_yaml as _governance_update_stage
 from milodex.promotion.state_machine import demote as _governance_demote
@@ -2074,8 +2075,25 @@ class BenchCommandFacade:
     def _resolve_config(self, strategy_id: str) -> tuple[StrategyConfig | None, Blocker | None]:
         """Locate the YAML for ``strategy_id`` under ``config_dir``.
 
-        Returns ``(config, None)`` on success or ``(None, blocker)`` on
-        failure. Read-only: no YAML mutation.
+        Bench-side adapter over the canonical
+        ``milodex.promotion.manifest.resolve_strategy_config_path``. Returns
+        ``(config, None)`` on success or ``(None, blocker)`` on failure.
+        Read-only: no YAML mutation.
+
+        Preserves three behaviors from the previous in-place glob loop:
+
+        1. **Blank-string short-circuit** with distinct ``strategy_id_blank``
+           reason code — the canonical helper has no blank check, but the
+           facade's contract pins this precondition.
+        2. **Multi-file glob ordering + parse-error skipping** owned by
+           ``resolve_strategy_config_path`` (not duplicated here).
+        3. **Malformed-YAML guard on the matched file** — defense-in-depth.
+           Today the canonical helper already calls ``load_strategy_config``
+           successfully before returning a path, so this guard rarely fires.
+           But protecting against future helper changes (or file-system races
+           between the helper's read and ours) keeps the facade's error
+           surface stable and structured rather than letting an uncaught
+           ``ValueError`` cross the boundary.
         """
         if not strategy_id or not strategy_id.strip():
             return None, Blocker(
@@ -2083,18 +2101,28 @@ class BenchCommandFacade:
                 message="strategy_id must be a non-empty string.",
                 context={},
             )
-        for path in sorted(self._config_dir.glob("*.yaml")):
-            try:
-                config = load_strategy_config(path)
-            except (ValueError, yaml.YAMLError):
-                continue
-            if config.strategy_id == strategy_id:
-                return config, None
-        return None, Blocker(
-            reason_code="strategy_not_found",
-            message=f"No strategy config found for strategy_id '{strategy_id}'.",
-            context={"strategy_id": strategy_id, "config_dir": str(self._config_dir)},
-        )
+        try:
+            config_path = resolve_strategy_config_path(
+                strategy_id, config_dir=self._config_dir
+            )
+        except ValueError:
+            return None, Blocker(
+                reason_code="strategy_not_found",
+                message=f"No strategy config found for strategy_id '{strategy_id}'.",
+                context={"strategy_id": strategy_id, "config_dir": str(self._config_dir)},
+            )
+        try:
+            config = load_strategy_config(config_path)
+        except (ValueError, yaml.YAMLError):
+            return None, Blocker(
+                reason_code="strategy_config_invalid",
+                message=(
+                    f"Strategy YAML at {config_path} matched strategy_id "
+                    f"'{strategy_id}' during path resolution but failed to load."
+                ),
+                context={"strategy_id": strategy_id, "config_path": str(config_path)},
+            )
+        return config, None
 
     def _state_snapshot(self, config: StrategyConfig) -> dict[str, Any]:
         """Compact, JSON-safe snapshot of the strategy state the facade saw."""
