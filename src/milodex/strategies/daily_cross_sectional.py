@@ -316,3 +316,24 @@ def assemble_entry_decision(
             rejected_alternatives=rejected_alternatives,
         ),
     )
+
+
+def rank_candidates(
+    candidates: list[tuple[str, float, float]],
+    *,
+    key_fn: Callable[[tuple[str, float, float]], tuple[Any, ...]],
+) -> list[tuple[str, float, float]]:
+    """Stable sort of cross-sectional entry candidates.
+
+    Canonical helper consumed by every cross-sectional strategy in place of
+    a per-strategy ``_rank_candidates`` shim or inline ``sorted(...)`` call.
+    The helper is intentionally minimal: each strategy supplies a ``key_fn``
+    lambda that encodes (a) which tuple element is the signal value and
+    (b) whether to rank ascending (``(c[2], c[0])``) or descending
+    (``(-c[2], c[0])``). Symbol-ascending is the canonical tiebreak.
+
+    Returns a new list; the input list is not mutated. ``sorted`` is stable,
+    so callers that hand in a partially-ordered list keep that order on ties
+    inside the ``key_fn`` output.
+    """
+    return sorted(candidates, key=key_fn)

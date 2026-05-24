@@ -23,6 +23,7 @@ from milodex.strategies.daily_cross_sectional import (
     assemble_entry_decision,
     evaluate_pre_entry_gates,
     normalize_universe_and_positions,
+    rank_candidates,
 )
 
 # ---------------------------------------------------------------------------
@@ -350,6 +351,49 @@ def test_assemble_entry_no_qualifying_candidates_returns_no_signal() -> None:
     assert decision.reasoning.rule == "no_signal"
     assert "no entry candidates qualified" in decision.reasoning.narrative
     assert "2 universe member(s) rejected" in decision.reasoning.narrative
+
+
+# ---------------------------------------------------------------------------
+# rank_candidates — canonical sort helper
+# ---------------------------------------------------------------------------
+
+
+def test_rank_candidates_ascending_orders_by_signal_value() -> None:
+    """Ascending key_fn puts the smallest signal value first."""
+    candidates = [("XLK", 100.0, 0.42), ("XLF", 50.0, 0.18), ("XLE", 80.0, 0.31)]
+
+    ranked = rank_candidates(candidates, key_fn=lambda c: (c[2], c[0]))
+
+    assert [c[0] for c in ranked] == ["XLF", "XLE", "XLK"]
+
+
+def test_rank_candidates_descending_orders_by_negated_signal_value() -> None:
+    """Descending key_fn (negate value) puts the largest signal value first."""
+    candidates = [("XLK", 100.0, 0.42), ("XLF", 50.0, 0.18), ("XLE", 80.0, 0.31)]
+
+    ranked = rank_candidates(candidates, key_fn=lambda c: (-c[2], c[0]))
+
+    assert [c[0] for c in ranked] == ["XLK", "XLE", "XLF"]
+
+
+def test_rank_candidates_symbol_tiebreak_ascending_on_value_ties() -> None:
+    """When signal values are equal, symbol breaks the tie alphabetically."""
+    candidates = [("XLK", 100.0, 0.30), ("XLF", 50.0, 0.30), ("XLE", 80.0, 0.30)]
+
+    ranked = rank_candidates(candidates, key_fn=lambda c: (c[2], c[0]))
+
+    assert [c[0] for c in ranked] == ["XLE", "XLF", "XLK"]
+
+
+def test_rank_candidates_is_stable_and_returns_new_list() -> None:
+    """Helper returns a freshly-sorted list without mutating the input."""
+    candidates = [("XLK", 100.0, 0.42), ("XLF", 50.0, 0.18)]
+    snapshot = list(candidates)
+
+    ranked = rank_candidates(candidates, key_fn=lambda c: (c[2], c[0]))
+
+    assert ranked is not candidates
+    assert candidates == snapshot
 
 
 # ---------------------------------------------------------------------------

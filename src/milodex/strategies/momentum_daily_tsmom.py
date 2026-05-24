@@ -37,6 +37,7 @@ from milodex.strategies.daily_cross_sectional import (
     assemble_entry_decision,
     evaluate_pre_entry_gates,
     normalize_universe_and_positions,
+    rank_candidates,
 )
 
 _VALID_SIZING_RULES = {"equal_notional", "fixed_notional"}
@@ -93,7 +94,7 @@ class MomentumDailyTsmomStrategy(Strategy):
             rejected_alternatives=rejected_alternatives,
         )
         if parameters["ranking_enabled"]:
-            candidates = _rank_candidates(candidates, parameters["ranking_metric"])
+            candidates = rank_candidates(candidates, key_fn=lambda c: (-c[2], c[0]))
 
         def entry_narrative(
             primary: tuple[str, float, float], entry_intents: list[TradeIntent]
@@ -354,16 +355,6 @@ def _exit_threshold(rule: str, parameters: dict[str, Any]) -> dict[str, float | 
     if rule == "momentum.max_hold":
         return {"max_hold_days": parameters["max_hold_days"]}
     return {}
-
-
-def _rank_candidates(
-    candidates: list[tuple[str, float, float]],
-    metric: str,
-) -> list[tuple[str, float, float]]:
-    if metric == "momentum_descending":
-        # Highest momentum first; symbol break-tie ascending for determinism.
-        return sorted(candidates, key=lambda entry: (-entry[2], entry[0]))
-    return candidates
 
 
 def _momentum_signal(closes: pd.Series, lookback: int) -> float | None:
