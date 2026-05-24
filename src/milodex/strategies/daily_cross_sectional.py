@@ -83,9 +83,23 @@ def market_regime_is_bullish(
     return float(closes.iloc[-1]) > float(closes.tail(ma_length).mean())
 
 
-# An early-return ``StrategyDecision`` OR a continuation tuple of
-# (intents-so-far, remaining-after-exits, capacity).
-PreEntryOutcome = StrategyDecision | tuple[list[TradeIntent], set[str], int]
+@dataclass(frozen=True)
+class PreEntryContinue:
+    """Continuation payload from ``evaluate_pre_entry_gates`` when no gate fired.
+
+    Returned in the happy-path case (no exits, capacity available, regime
+    bullish or filter disabled) so the caller can proceed into the entry
+    phase. Named fields replace the older ``(list, set, int)`` tuple shape
+    that required positional unpacking at every call site.
+    """
+
+    intents: list[TradeIntent]
+    remaining_after_exits: set[str]
+    capacity: int
+
+
+# An early-return ``StrategyDecision`` OR a continuation ``PreEntryContinue``.
+PreEntryOutcome = StrategyDecision | PreEntryContinue
 
 
 def evaluate_pre_entry_gates(
@@ -101,8 +115,8 @@ def evaluate_pre_entry_gates(
 
     Order is fixed: exit-first, then capacity-zero, then regime-bearish.
     Returns a ``StrategyDecision`` when one of those branches fires; otherwise
-    returns ``(intents, remaining_after_exits, capacity)`` for the caller to
-    continue into the entry phase.
+    returns a ``PreEntryContinue`` carrying the intents-so-far, the
+    set of symbols still open after exits, and the remaining capacity.
     """
     intents: list[TradeIntent] = [intent for intent, _rule in exit_details]
     remaining_after_exits = set(norm.open_positions) - {
@@ -154,7 +168,11 @@ def evaluate_pre_entry_gates(
             ),
         )
 
-    return intents, remaining_after_exits, capacity
+    return PreEntryContinue(
+        intents=intents,
+        remaining_after_exits=remaining_after_exits,
+        capacity=capacity,
+    )
 
 
 def assemble_entry_decision(
@@ -180,19 +198,44 @@ def assemble_entry_decision(
     supplies ranked candidates (highest-priority first) and the entry
     narrative as a closure over its own ``parameters``.
 
-    ``extra_triggering_values_fn``, when provided, is called with the primary
-    candidate 3-tuple ``(symbol, latest_close, signal_value)`` in the
-    entry-success branch only.  The returned dict is merged into
-    ``triggering_values`` *after* the standard ``selected_symbol``,
-    ``selected_<signal_label>``, and ``selected_close`` keys are set, so it
-    can add new keys but must not rely on overriding those standard ones.
-    Mirrors how ``entry_narrative_fn`` is supplied as a closure over
-    strategy-specific state (e.g. a ``channel_highs_by_symbol`` map).
+    Audit-key contract (stable across all cross-sectional strategies):
+
+    - ``triggering_values`` on entry-success carries ``selected_symbol``,
+      ``selected_signal_label`` (the strategy's signal name as a *value*,
+      e.g. ``"breakout_strength"``), ``selected_signal_value`` (the
+      numeric signal for the chosen primary), and ``selected_close``.
+    - ``ranking`` entries carry ``symbol``, ``signal_label``,
+      ``signal_value``, and ``latest_close``.
+
+    The label is stored as a value on stable keys rather than embedded in
+    the key name so the audit schema is uniform across strategies — a
+    downstream consumer can read "what was the signal value?" without
+    knowing which strategy produced the row. This is a deliberate
+    forward-only contract change from the older dynamic
+    ``selected_<signal_label>`` shape; historical ``explanations`` rows
+    on the event store are immutable per ADR 0011 and retain their
+    pre-change keys.
+
+    ``extra_triggering_values_fn`` — when provided, is called with the
+    primary candidate 3-tuple ``(symbol, latest_close, signal_value)`` in
+    the entry-success branch only. The returned dict is merged into
+    ``triggering_values`` *after* the standard keys are set, so it can
+    add new keys (e.g. ``selected_channel_high`` for Donchian) but must
+    not rely on overriding the standard ones. This is the approved (and
+    only approved) extension point for per-strategy entry fields that do
+    not fit the standard ``selected_signal_*`` shape; mirrors how
+    ``entry_narrative_fn`` is supplied as a closure over strategy-specific
+    state (e.g. a ``channel_highs_by_symbol`` map).
     """
     ranking_payload: list[dict[str, Any]] | None = None
     if ranking_enabled:
         ranking_payload = [
-            {"symbol": sym, signal_label: value, "latest_close": close}
+            {
+                "symbol": sym,
+                "signal_label": signal_label,
+                "signal_value": value,
+                "latest_close": close,
+            }
             for sym, close, value in candidates
         ]
 
@@ -241,7 +284,8 @@ def assemble_entry_decision(
         primary = selected[0]
         triggering_values: dict[str, Any] = {
             "selected_symbol": primary[0],
-            f"selected_{signal_label}": primary[2],
+            "selected_signal_label": signal_label,
+            "selected_signal_value": primary[2],
             "selected_close": primary[1],
         }
         if extra_triggering_values_fn is not None:

@@ -92,7 +92,9 @@ class BreakoutDonchianStrategy(Strategy):
         )
         if isinstance(gated, StrategyDecision):
             return gated
-        intents, remaining_after_exits, capacity = gated
+        intents = gated.intents
+        remaining_after_exits = gated.remaining_after_exits
+        capacity = gated.capacity
 
         # _entry_candidates returns 4-tuples: (symbol, latest_close, breakout_strength,
         # channel_high). Capture channel_high per symbol before narrowing to 3-tuples
