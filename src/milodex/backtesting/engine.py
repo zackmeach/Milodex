@@ -37,10 +37,17 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
 import pandas as pd
 import yaml
 
+from milodex.backtesting.intraday_simulation import (
+    _advance_cursors,
+    _build_intraday_event_timeline,
+    _build_visible_bars,
+    _latest_close_at_ts,
+    _mark_to_market_at_day_end,
+    _opens_at_timestamp,
+)
 from milodex.backtesting.run_manifest import (
     BacktestRunManifestInput,
     build_backtest_run_manifest,
@@ -917,9 +924,7 @@ class BacktestEngine:
 
         for day in trading_days:
             for sym in kernel.entry_state:
-                kernel.entry_state[sym]["held_days"] = int(
-                    kernel.entry_state[sym]["held_days"]
-                ) + 1
+                kernel.entry_state[sym]["held_days"] = int(kernel.entry_state[sym]["held_days"]) + 1
 
             bars_by_symbol = _slice_bars_to_day(all_bars, day, ts_index)
             fill_opens = _opens_on_day(bars_by_symbol, day, ts_index)
@@ -1162,9 +1167,7 @@ class BacktestEngine:
             # 1. Held-days accounting (mirror daily path).
             # ------------------------------------------------------------------
             for sym in kernel.entry_state:
-                kernel.entry_state[sym]["held_days"] = int(
-                    kernel.entry_state[sym]["held_days"]
-                ) + 1
+                kernel.entry_state[sym]["held_days"] = int(kernel.entry_state[sym]["held_days"]) + 1
 
             # ------------------------------------------------------------------
             # 2. Build the event timeline for this day.
@@ -1540,22 +1543,6 @@ def _latest_closes(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
     return closes
 
 
-def _latest_opens(bars_by_symbol: dict[str, BarSet]) -> dict[str, float]:
-    """Return the latest bar's *open* price per symbol.
-
-    Mirror of :func:`_latest_closes` for the T+1 fill model: pending orders
-    enqueued on bar T's close need the open of the next bar (already the
-    last bar in ``bars_by_symbol`` once it has been sliced to the current
-    simulation day).
-    """
-    opens: dict[str, float] = {}
-    for sym, barset in bars_by_symbol.items():
-        df = barset._df_view()  # noqa: SLF001 — read-only internal helper
-        if not df.empty:
-            opens[sym] = float(df["open"].iloc[-1])
-    return opens
-
-
 def _opens_on_day(
     bars_by_symbol: dict[str, BarSet],
     day: date,
@@ -1582,222 +1569,3 @@ def _opens_on_day(
             if not rows.empty:
                 opens[sym] = float(rows["open"].iloc[-1])
     return opens
-
-
-def _build_intraday_event_timeline(
-    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
-    day: date,
-    bar_size_minutes: int,
-) -> list[tuple[pd.Timestamp, dict[str, Any]]]:
-    """Return the chronological event timeline for one trading day.
-
-    Each entry is ``(timestamp, metadata)`` where ``metadata`` carries:
-    - ``fill_symbols``: list of symbols with a bar at ``bar_timestamp == timestamp``
-    - ``decision_symbols``: list of symbols with a bar at ``decision_time == timestamp``
-
-    The timeline is the chronological union of fill events (bar starts) and
-    decision events (bar completions) for all universe symbols whose bars
-    fall in ``day``. See spec §3 component #3.
-
-    Args:
-        per_symbol_ts_utc: precomputed UTC-tz-aware DatetimeIndex per symbol.
-            The Phase E ``_simulate_intraday`` builds these once at the top
-            of the simulation to avoid redundant ``to_dataframe()`` calls
-            inside the event loop (Correction 6).
-        day: the trading day to scope the timeline to (UTC dates may differ
-            from ET dates due to timezone; the helper filters on the UTC
-            timestamp's ``.date()`` value).
-        bar_size_minutes: bar size in minutes, used to compute
-            ``decision_time = bar_timestamp + bar_size``.
-    """
-    bar_size = pd.Timedelta(minutes=bar_size_minutes)
-    fill_map: dict[pd.Timestamp, list[str]] = {}
-    decision_map: dict[pd.Timestamp, list[str]] = {}
-
-    for symbol, ts_index in per_symbol_ts_utc.items():
-        for bar_ts in ts_index:
-            if bar_ts.date() != day:
-                continue
-            fill_map.setdefault(bar_ts, []).append(symbol)
-            decision_ts = bar_ts + bar_size
-            decision_map.setdefault(decision_ts, []).append(symbol)
-
-    all_event_times = sorted(set(fill_map.keys()) | set(decision_map.keys()))
-    return [
-        (
-            t,
-            {
-                "fill_symbols": fill_map.get(t, []),
-                "decision_symbols": decision_map.get(t, []),
-            },
-        )
-        for t in all_event_times
-    ]
-
-
-def _opens_at_timestamp(
-    per_symbol_open_by_ts: dict[str, dict[pd.Timestamp, float]],
-    timestamp: pd.Timestamp,
-) -> dict[str, float]:
-    """Return ``{symbol: open_price}`` for symbols with a bar at ``timestamp``.
-
-    Symbols without a bar at ``timestamp`` are not in the result. This means
-    the caller can safely iterate the returned dict and trust each key has
-    a fill price.
-
-    Args:
-        per_symbol_open_by_ts: precomputed nested dict mapping symbol →
-            {bar_timestamp: open_price}. The Phase E ``_simulate_intraday``
-            builds this once at simulation start to avoid DataFrame scans
-            inside the event loop (Correction 6).
-        timestamp: UTC-tz-aware Timestamp to look up.
-    """
-    opens: dict[str, float] = {}
-    for symbol, open_by_ts in per_symbol_open_by_ts.items():
-        if timestamp in open_by_ts:
-            opens[symbol] = open_by_ts[timestamp]
-    return opens
-
-
-def _mark_to_market_at_day_end(
-    positions: dict[str, tuple[float, float]],
-    per_symbol_df: dict[str, pd.DataFrame],
-    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
-    day: date,
-    cash: float,
-) -> float:
-    """Return end-of-day equity = cash + sum(qty * latest_close_for_symbol_on_day).
-
-    Uses each symbol's latest available close at or before the day's final
-    timestamp. Critical for multi-symbol universes where one symbol may
-    be missing the final bar of the day — falls back to prior day's last
-    close.
-
-    Args:
-        positions: {symbol: (qty, avg_cost)} for open positions.
-        per_symbol_df: precomputed OHLCV DataFrame per symbol. Must contain
-            a "close" column.
-        per_symbol_ts_utc: precomputed UTC-tz-aware DatetimeIndex per symbol,
-            aligned row-for-row with ``per_symbol_df``.
-        day: trading day to mark to.
-        cash: current cash balance.
-
-    Returns:
-        Equity = cash + sum of (qty × latest close on day, or prior close
-        if no bars on day).
-    """
-    equity = cash
-    for symbol, (qty, _avg_cost) in positions.items():
-        if symbol not in per_symbol_df:
-            continue
-        df = per_symbol_df[symbol]
-        ts_utc = per_symbol_ts_utc[symbol]
-        date_array = ts_utc.date  # numpy array of date objects
-        day_indices = np.flatnonzero(date_array == day)
-        if len(day_indices) > 0:
-            latest_close = float(df["close"].iloc[day_indices[-1]])
-        else:
-            prior_indices = np.flatnonzero(date_array < day)
-            if len(prior_indices) == 0:
-                continue
-            latest_close = float(df["close"].iloc[prior_indices[-1]])
-        equity += qty * latest_close
-    return equity
-
-
-def _build_visible_bars(
-    per_symbol_df: dict[str, pd.DataFrame],
-    cursors: dict[str, int],
-    universe: list[str],
-) -> dict[str, BarSet]:
-    """Return a {symbol: BarSet} view for every universe symbol, truncated to cursor.
-
-    ``cursors[symbol]`` is the EXCLUSIVE end index (see D5 invariant): visible
-    bars are ``df.iloc[:cursor]``.  Symbols with cursor == 0 (no history yet)
-    are omitted from the result so downstream code that checks ``len(barset) > 0``
-    behaves naturally.
-
-    Only universe symbols are included — symbols outside the declared universe
-    never appear in strategy.evaluate() regardless of bar availability.
-    """
-    result: dict[str, BarSet] = {}
-    for sym in universe:
-        df = per_symbol_df.get(sym)
-        if df is None:
-            continue
-        cur = cursors.get(sym, 0)
-        if cur == 0:
-            continue
-        sliced = df.iloc[:cur]
-        if not sliced.empty:
-            result[sym] = BarSet(sliced.reset_index(drop=True))
-    return result
-
-
-def _latest_close_at_ts(
-    per_symbol_df: dict[str, pd.DataFrame],
-    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
-    ts: pd.Timestamp | None,
-) -> dict[str, float]:
-    """Return the latest close per symbol at or before ``ts``.
-
-    When ``ts`` is ``None``, returns the very last close in each symbol's
-    full bar history (used for end-of-backtest bookkeeping).
-
-    Symbols with no bars at or before ``ts`` are omitted.
-    """
-    closes: dict[str, float] = {}
-    for symbol, df in per_symbol_df.items():
-        if df.empty:
-            continue
-        dti = per_symbol_ts_utc.get(symbol)
-        if dti is None or len(dti) == 0:
-            continue
-        if ts is None:
-            closes[symbol] = float(df["close"].iloc[-1])
-        else:
-            # Find the latest bar whose timestamp <= ts.
-            idx = dti.searchsorted(ts, side="right") - 1
-            if idx >= 0:
-                closes[symbol] = float(df["close"].iloc[idx])
-    return closes
-
-
-def _advance_cursors(
-    cursors: dict[str, int],
-    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
-    timestamp: pd.Timestamp,
-    bar_size_minutes: int,
-) -> bool:
-    """Advance ``cursors[symbol]`` for each symbol whose next-unconsumed bar
-    has ``decision_time <= timestamp``. Return True if any cursor advanced.
-
-    Cursor invariant: ``cursor[symbol]`` is the EXCLUSIVE end index of the
-    symbol's visible bar history. Visible = ``df.iloc[:cursor[symbol]]``.
-
-    Args:
-        cursors: per-symbol exclusive-end-index map. MUTATED IN PLACE.
-        per_symbol_ts_utc: precomputed UTC-tz-aware DatetimeIndex per symbol
-            (Correction 6).
-        timestamp: the event timestamp to advance cursors up to.
-        bar_size_minutes: bar size in minutes (decision_time = bar_ts + bar_size).
-
-    Returns:
-        True if any cursor advanced; False otherwise. Phase E uses this to
-        decide whether to call _evaluate_strategy.
-    """
-    bar_size = pd.Timedelta(minutes=bar_size_minutes)
-    advanced = False
-    for symbol, ts_index in per_symbol_ts_utc.items():
-        idx = cursors.get(symbol, 0)
-        n = len(ts_index)
-        while idx < n:
-            bar_ts = ts_index[idx]
-            decision_time = bar_ts + bar_size
-            if decision_time <= timestamp:
-                idx += 1
-                advanced = True
-            else:
-                break
-        cursors[symbol] = idx
-    return advanced

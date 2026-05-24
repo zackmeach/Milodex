@@ -31,7 +31,7 @@ def test_event_timeline_for_single_symbol_5min_session() -> None:
     is the chronological union of fill events (every bar's start) and
     decision events (every bar's completion).
     """
-    from milodex.backtesting.engine import _build_intraday_event_timeline
+    from milodex.backtesting.intraday_simulation import _build_intraday_event_timeline
 
     per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
 
@@ -75,7 +75,7 @@ def test_opens_at_timestamp_returns_only_symbols_with_bar_at_t() -> None:
     map ONLY for symbols whose bar starts at T. Symbols absent at T are not
     in the result.
     """
-    from milodex.backtesting.engine import _opens_at_timestamp
+    from milodex.backtesting.intraday_simulation import _opens_at_timestamp
 
     # Build per-symbol-open-by-timestamp maps for SPY and QQQ. SPY has the
     # 10:05 ET (15:05 UTC) bar; QQQ does not.
@@ -249,7 +249,7 @@ strategy:
 
 def test_mark_to_market_at_day_end_basic() -> None:
     """End-of-day equity = cash + qty × latest close for each open position."""
-    from milodex.backtesting.engine import _mark_to_market_at_day_end
+    from milodex.backtesting.intraday_simulation import _mark_to_market_at_day_end
 
     target_day = date(2024, 1, 15)
     # SPY has 3 bars on the day: closes 500.0, 501.0, 502.0
@@ -305,7 +305,7 @@ def test_mark_to_market_at_day_end_basic() -> None:
 
 def test_mark_to_market_at_day_end_falls_back_to_prior_close() -> None:
     """If a symbol has NO bars on the target day, use latest close before that day."""
-    from milodex.backtesting.engine import _mark_to_market_at_day_end
+    from milodex.backtesting.intraday_simulation import _mark_to_market_at_day_end
 
     target_day = date(2024, 1, 16)  # SPY has no bars on this day
     # SPY only has bars on the prior day (2024-01-15)
@@ -368,7 +368,7 @@ def test_advance_cursors_includes_bar_with_decision_time_eq_t() -> None:
     14:55 + 5min = 15:00 UTC) IS visible after advancement. Cursor advances
     from 0 to 6 (six bars: 9:30, 9:35, 9:40, 9:45, 9:50, 9:55).
     """
-    from milodex.backtesting.engine import _advance_cursors
+    from milodex.backtesting.intraday_simulation import _advance_cursors
 
     per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
     cursors = {"SPY": 0}
@@ -389,7 +389,7 @@ def test_advance_cursors_excludes_bar_with_decision_time_gt_t() -> None:
     """At T = 15:00 UTC, the 10:00 bar (decision_time 15:05 UTC) MUST NOT
     be included. Cursor advances to exactly 6, not 7.
     """
-    from milodex.backtesting.engine import _advance_cursors
+    from milodex.backtesting.intraday_simulation import _advance_cursors
 
     per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
     cursors = {"SPY": 0}
@@ -411,7 +411,7 @@ def test_advance_cursors_multiple_symbols_independent() -> None:
     """Symbols advance independently. Drop the 9:30 bar from QQQ; at T=15:00
     UTC, SPY advances to 6 (full opening 30 min), QQQ advances to 5.
     """
-    from milodex.backtesting.engine import _advance_cursors
+    from milodex.backtesting.intraday_simulation import _advance_cursors
 
     per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY", "QQQ"])
     # Drop the first bar (9:30 / 14:30 UTC) from QQQ
@@ -433,7 +433,7 @@ def test_advance_cursors_initial_zero_means_no_history() -> None:
     """At simulation start, cursors[symbol] = 0 means iloc[:0] is empty —
     no bars visible to the strategy.
     """
-    from milodex.backtesting.engine import _advance_cursors
+    from milodex.backtesting.intraday_simulation import _advance_cursors
 
     per_symbol_ts_utc = _build_synthetic_5min_session_ts_only("2024-01-15", ["SPY"])
     cursors = {"SPY": 0}
@@ -867,7 +867,7 @@ def test_multi_symbol_missing_current_bar_still_visible() -> None:
     - QQQ is NOT in opens_at_timestamp.
     - QQQ's history through its prior bar IS visible to the strategy.
     """
-    from milodex.backtesting.engine import _opens_at_timestamp
+    from milodex.backtesting.intraday_simulation import _opens_at_timestamp
 
     # Build SPY: full session 9:30–16:00 (78 bars)
     # Build QQQ: same session but with 10:05 bar removed
@@ -910,7 +910,7 @@ def test_multi_symbol_missing_current_bar_still_visible() -> None:
     assert "QQQ" not in opens, "QQQ should NOT be in opens at 10:05 (bar missing)"
 
     # Now verify QQQ's history through its prior bar (10:00) IS visible using cursors.
-    from milodex.backtesting.engine import _advance_cursors, _build_visible_bars
+    from milodex.backtesting.intraday_simulation import _advance_cursors, _build_visible_bars
 
     per_symbol_ts_utc = {
         "SPY": pd.DatetimeIndex(spy_ts_utc),
@@ -1033,7 +1033,7 @@ def test_independent_cursor_advancement() -> None:
     (bar_index=1). We advance cursors step by step and verify lengths
     diverge at the right points, then re-converge after the gap.
     """
-    from milodex.backtesting.engine import _advance_cursors, _build_visible_bars
+    from milodex.backtesting.intraday_simulation import _advance_cursors, _build_visible_bars
 
     session_date = "2024-01-08"
     spy_full = _build_synthetic_5min_barset([session_date], symbol="SPY")
@@ -1319,7 +1319,7 @@ def test_walk_forward_intraday_prefetch_uses_minute_5() -> None:
 
 def test_build_visible_bars_cursor_zero_omits_symbol() -> None:
     """Test A (M-1): _build_visible_bars with cursor=0 omits the symbol."""
-    from milodex.backtesting.engine import _build_visible_bars
+    from milodex.backtesting.intraday_simulation import _build_visible_bars
 
     df = pd.DataFrame(
         {
@@ -1345,7 +1345,7 @@ def test_build_visible_bars_cursor_zero_omits_symbol() -> None:
 
 def test_build_visible_bars_symbol_absent_silently_skipped() -> None:
     """Test A (M-1): _build_visible_bars skips symbols absent from per_symbol_df."""
-    from milodex.backtesting.engine import _build_visible_bars
+    from milodex.backtesting.intraday_simulation import _build_visible_bars
 
     per_symbol_df: dict[str, pd.DataFrame] = {}  # empty — no symbol data at all
     cursors = {"SPY": 5}
@@ -1359,7 +1359,7 @@ def test_build_visible_bars_symbol_absent_silently_skipped() -> None:
 
 def test_build_visible_bars_happy_path_cursor_5() -> None:
     """Test A (M-1): _build_visible_bars with cursor=5 returns BarSet with 5 rows."""
-    from milodex.backtesting.engine import _build_visible_bars
+    from milodex.backtesting.intraday_simulation import _build_visible_bars
 
     # Build 10 rows
     rows = []
@@ -1388,7 +1388,7 @@ def test_build_visible_bars_happy_path_cursor_5() -> None:
 
 def test_latest_close_at_ts_none_sentinel_returns_last_close() -> None:
     """Test B (M-1): _latest_close_at_ts with ts=None returns each symbol's last close."""
-    from milodex.backtesting.engine import _latest_close_at_ts
+    from milodex.backtesting.intraday_simulation import _latest_close_at_ts
 
     spy_df = pd.DataFrame(
         {
@@ -1419,7 +1419,7 @@ def test_latest_close_at_ts_none_sentinel_returns_last_close() -> None:
 
 def test_latest_close_at_ts_before_first_bar_omits_symbol() -> None:
     """Test B (M-1): ts before the first bar → symbol omitted from result."""
-    from milodex.backtesting.engine import _latest_close_at_ts
+    from milodex.backtesting.intraday_simulation import _latest_close_at_ts
 
     spy_df = pd.DataFrame(
         {
@@ -1443,7 +1443,7 @@ def test_latest_close_at_ts_before_first_bar_omits_symbol() -> None:
 
 def test_latest_close_at_ts_between_bars_returns_most_recent() -> None:
     """Test B (M-1): ts between two bars → returns the most recent bar's close at or before ts."""
-    from milodex.backtesting.engine import _latest_close_at_ts
+    from milodex.backtesting.intraday_simulation import _latest_close_at_ts
 
     spy_df = pd.DataFrame(
         {
