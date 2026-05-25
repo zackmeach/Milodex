@@ -2194,6 +2194,253 @@ def test_facade_module_does_not_import_cli_internals() -> None:
             )
 
 
+# --------------------------------------------------------------------------- #
+# `_submit_with_config` shell — shared spine for the four config-resolving
+# submits (freeze, demote, promote_to_paper, backtest). These tests pin the
+# shell's contract directly so any future migration sees regressions
+# immediately rather than only through the public-API tests above.
+# --------------------------------------------------------------------------- #
+
+
+def _admissible_proposal(action_family: str) -> CommandProposal:
+    """Build a minimal admissible proposal for shell tests.
+
+    Admissibility is implicit on the dataclass (no blockers, all preconditions
+    pass). The shell only checks `revalidation.admissible` — it doesn't inspect
+    inputs/state_snapshot — so empty values are fine here.
+    """
+    return CommandProposal(
+        action_family=action_family,
+        strategy_id=STRATEGY_ID,
+        inputs={},
+        state_snapshot={},
+        preconditions=[Precondition("ok", passed=True)],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime(2026, 5, 24, 12, 0, 0),
+        proposal_id="shell-test-revalidation",
+    )
+
+
+def _shell_dispatch_success(proposal, revalidation, config, event_store):  # noqa: ARG001
+    """Stub dispatch that returns a generic submitted CommandResult."""
+    return CommandResult(
+        proposal_id=proposal.proposal_id,
+        action_family=proposal.action_family,
+        status="submitted",
+        durable_refs={"shell": "dispatched"},
+        blockers=[],
+        warnings=[],
+        submitted_at=datetime(2026, 5, 24, 12, 0, 1),
+        audit_event_id="shell-test-audit",
+    )
+
+
+def test__submit_with_config_returns_action_family_mismatch_when_proposal_wrong_family(
+    make_facade, config_dir: Path
+) -> None:
+    """Shell rejects a proposal whose action_family does not match `expected`
+    with `proposal_action_family_mismatch`, BEFORE invoking revalidate or
+    dispatch (so neither callable runs)."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = _admissible_proposal(ACTION_FAMILY_DEMOTE)  # wrong family
+
+    calls = {"revalidate": 0, "dispatch": 0}
+
+    def _record_revalidate():
+        calls["revalidate"] += 1
+        return _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+
+    def _record_dispatch(*args, **kwargs):  # noqa: ARG001
+        calls["dispatch"] += 1
+        return _shell_dispatch_success(proposal, None, None, None)
+
+    result = facade._submit_with_config(
+        proposal,
+        expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        revalidate=_record_revalidate,
+        dispatch=_record_dispatch,
+    )
+
+    assert result.status == "error"
+    assert any(b.reason_code == "proposal_action_family_mismatch" for b in result.blockers)
+    assert calls == {"revalidate": 0, "dispatch": 0}
+
+
+def test__submit_with_config_requires_event_store_before_dispatch(
+    make_facade, config_dir: Path
+) -> None:
+    """Shell short-circuits with `event_store_unavailable` when the facade was
+    constructed without an event_store_factory, BEFORE invoking revalidate or
+    dispatch."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade(with_event_store=False)
+    proposal = _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+
+    calls = {"revalidate": 0, "dispatch": 0}
+
+    def _record_revalidate():
+        calls["revalidate"] += 1
+        return _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+
+    def _record_dispatch(*args, **kwargs):  # noqa: ARG001
+        calls["dispatch"] += 1
+        return _shell_dispatch_success(proposal, None, None, None)
+
+    result = facade._submit_with_config(
+        proposal,
+        expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        revalidate=_record_revalidate,
+        dispatch=_record_dispatch,
+    )
+
+    assert result.status == "error"
+    assert any(b.reason_code == "event_store_unavailable" for b in result.blockers)
+    assert calls == {"revalidate": 0, "dispatch": 0}
+
+
+def test__submit_with_config_returns_blocked_when_revalidation_is_inadmissible(
+    make_facade, config_dir: Path
+) -> None:
+    """Shell returns a `blocked` CommandResult propagating the revalidation's
+    blockers when revalidate() returns an inadmissible proposal. Dispatch is
+    NOT called."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+
+    stale = CommandProposal(
+        action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        strategy_id=STRATEGY_ID,
+        inputs={},
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[Blocker(reason_code="stage_drift", message="stage changed", context={})],
+        proposed_at=datetime(2026, 5, 24, 12, 0, 0),
+        proposal_id="stale-rev",
+    )
+
+    dispatch_calls = []
+
+    def _record_dispatch(*args, **kwargs):
+        dispatch_calls.append((args, kwargs))
+        return _shell_dispatch_success(proposal, None, None, None)
+
+    result = facade._submit_with_config(
+        proposal,
+        expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        revalidate=lambda: stale,
+        dispatch=_record_dispatch,
+    )
+
+    assert result.status == "blocked"
+    assert any(b.reason_code == "stage_drift" for b in result.blockers)
+    assert dispatch_calls == []
+
+
+def test__submit_with_config_returns_blocked_when_resolve_config_fails(
+    make_facade, config_dir: Path  # noqa: ARG001  config_dir intentionally empty
+) -> None:
+    """Shell returns a `blocked` CommandResult with `strategy_not_found` when
+    `_resolve_config` cannot locate the strategy's YAML. Dispatch is NOT
+    called."""
+    # Note: config_dir fixture is empty — no _write_strategy call.
+    facade = make_facade()
+    proposal = _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+
+    dispatch_calls = []
+
+    def _record_dispatch(*args, **kwargs):
+        dispatch_calls.append((args, kwargs))
+        return _shell_dispatch_success(proposal, None, None, None)
+
+    result = facade._submit_with_config(
+        proposal,
+        expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        revalidate=lambda: _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST),
+        dispatch=_record_dispatch,
+    )
+
+    assert result.status == "blocked"
+    assert any(b.reason_code == "strategy_not_found" for b in result.blockers)
+    assert dispatch_calls == []
+
+
+def test__submit_with_config_forwards_revalidation_to_dispatch(
+    make_facade, config_dir: Path
+) -> None:
+    """Shell calls `dispatch(proposal, revalidation, config, event_store)` with
+    the EXACT revalidation CommandProposal returned by revalidate() — not a
+    fresh re-revalidation, not the original proposal. This is what lets demote
+    derive post-dispatch warnings from revalidation.blockers without re-running
+    propose_demote inside dispatch."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+    revalidation_result = _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST)
+
+    captured: dict[str, object] = {}
+
+    def _record_dispatch(received_proposal, received_revalidation, received_config, received_store):
+        captured["proposal"] = received_proposal
+        captured["revalidation"] = received_revalidation
+        captured["config"] = received_config
+        captured["event_store"] = received_store
+        return _shell_dispatch_success(
+            received_proposal, received_revalidation, received_config, received_store
+        )
+
+    result = facade._submit_with_config(
+        proposal,
+        expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        revalidate=lambda: revalidation_result,
+        dispatch=_record_dispatch,
+    )
+
+    assert result.status == "submitted"
+    assert captured["proposal"] is proposal
+    assert captured["revalidation"] is revalidation_result
+    # config is the loaded StrategyConfig (non-None) and event_store is the live store
+    assert captured["config"] is not None
+    assert captured["event_store"] is not None
+
+
+def test_submit_demote_revalidation_captures_gui_submit_kwarg(
+    make_facade, config_dir: Path
+) -> None:
+    """H2 mitigation: the migrated `submit_demote` MUST capture `gui_submit`
+    in its revalidation closure. The existing pre-migration code at
+    bench.py:1635 does this; this test pins the convention so the migration
+    cannot accidentally drop it.
+
+    Verification strategy: with to_stage='disabled' the propose-side guard
+    blocks ONLY when gui_submit=True (see propose_demote `gui_disabled_ok`
+    check). If the migrated closure forgets to forward gui_submit, revalidation
+    would default to False and the guard would not fire — letting the demote
+    proceed. So gui_submit=True with to_stage='disabled' MUST end up blocked
+    via revalidation's `disabled_demote_gui_ready` precondition.
+    """
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = _make_demote_proposal(
+        to_stage="disabled",
+        reason="Stop trading and shelve via GUI.",
+    )
+
+    result = facade.submit_demote(proposal, gui_submit=True)
+
+    # Revalidation must have run with gui_submit=True and the guard must have
+    # produced a blocker — proves the closure forwarded the kwarg.
+    assert result.status == "blocked"
+    assert any(
+        b.reason_code in {"disabled_demote_gui_not_ready", "stage_not_demotable"}
+        or "disabled" in b.message.lower()
+        for b in result.blockers
+    )
+
+
 def test_gui_qml_files_still_forbid_submit_broker_eventstore() -> None:
     """ADR 0049 perimeter survives Bench command wiring.
 
