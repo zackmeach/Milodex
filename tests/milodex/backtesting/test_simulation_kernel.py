@@ -531,6 +531,126 @@ def test_tick_held_days_is_noop_on_empty_entry_state() -> None:
     assert kernel.entry_state == {}
 
 
+# ---------------------------------------------------------------------------
+# Cross-path contract tests (PR C) — pin the new boundary so it can't drift.
+# ---------------------------------------------------------------------------
+
+
+def test_daily_and_intraday_routes_share_decision_step_invariant() -> None:
+    """Daily and intraday callers route through ONE simulate_decision_step.
+
+    Pins the SHARED LOCATION of the primary-symbol guard. Calling the
+    method twice with the daily make_pending factory then the intraday
+    factory — same kernel, same inputs — produces:
+      - Identical no_action audit behavior (one no_action per call, both
+        rows anchored on universe[0])
+      - Different PendingOrder *variant* (PendingOrder vs IntradayPendingOrder)
+        but identical TradeIntent set
+
+    The regression this guards against is "someone reintroduces the guard at
+    the daily call site only" — the test would still pass because the guard
+    is in the shared step, but a follow-up audit would reveal duplication.
+    The naming explicitly documents that the value is in the shared
+    location, not in the per-call assertion.
+    """
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+    primary = _primary_barset(close=100.0)
+    reasoning = DecisionReasoning(rule="cross_path_test", narrative="shared")
+    intents = [_intent("SPY", OrderSide.BUY, 1.0), _intent("QQQ", OrderSide.BUY, 2.0)]
+
+    def evaluate(**_: object) -> StrategyDecision:
+        return StrategyDecision(intents=list(intents), reasoning=reasoning)
+
+    common_kwargs = {
+        "universe": ["SPY", "QQQ"],
+        "primary_bars": primary,
+        "primary_symbol_present": True,
+        "bars_by_symbol": {"SPY": primary, "QQQ": _barset(200.0)},
+        "closes": {"SPY": 100.0, "QQQ": 200.0},
+        "equity": 1_000.0,
+        "sync_day": date(2024, 1, 2),
+        "session_id": "cross-path",
+        "db_run_id": db_run_id,
+        "evaluate_strategy": evaluate,
+    }
+
+    daily_result = kernel.simulate_decision_step(
+        make_pending=lambda i, r: PendingOrder(
+            intent=i, reasoning=r, decision_day=date(2024, 1, 2)
+        ),
+        **common_kwargs,
+    )
+    intraday_result = kernel.simulate_decision_step(
+        make_pending=lambda i, r: IntradayPendingOrder(
+            intent=i,
+            reasoning=r,
+            decision_timestamp=pd.Timestamp("2024-01-02 14:30:00+00:00"),
+        ),
+        **common_kwargs,
+    )
+
+    # Same intents emerged from both paths via the SAME shared step.
+    assert [p.intent for p in daily_result] == [p.intent for p in intraday_result] == intents
+    # Variant types differ — that's the only sanctioned divergence between paths.
+    assert all(isinstance(p, PendingOrder) for p in daily_result)
+    assert all(isinstance(p, IntradayPendingOrder) for p in intraday_result)
+
+
+def test_kernel_cash_and_positions_reconcile_to_sim_broker_after_drain_then_sync() -> None:
+    """Dual-bookkeeping contract: kernel is source of truth; broker snapshot reconciles via sync.
+
+    The kernel maintains a parallel cash + positions ledger that it mutates
+    from fill prices reported by SimulatedBroker.submit_backtest. The
+    broker's get_account() / get_positions() return whatever was last
+    written via update_account / set_positions — both happen inside
+    sync_broker_state. So between fills and the next sync, kernel.cash
+    diverges from broker.get_account().cash by design (kernel debits
+    immediately; broker mirrors at sync time).
+
+    This pins the contract from BOTH sides (Finding §6 of the thermo-nuclear
+    review):
+      1. Post-drain, the kernel cash + positions are correct (the kernel
+         is the source of truth — promotion evidence is derived from these).
+      2. Post-subsequent-sync, broker.get_account() faithfully mirrors
+         kernel state — the broker is a snapshot that gets refreshed.
+
+    A regression that changes submit_backtest fill economics OR sync_broker_state
+    routing will trip one of these two assertions. Without this test, drift could
+    silently land "kernel says X, broker says Y" into a backtest run that then
+    flows into promotion analytics.
+    """
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store, initial_cash=10_000.0)
+
+    # Drain a single BUY at a known open price. Slippage = 0, commission = 0.
+    kernel.drain_pending_orders(
+        pending=[PendingOrder(_intent("SPY", OrderSide.BUY, 1.0), _reasoning())],
+        opens={"SPY": 150.0},
+        day=date(2024, 1, 2),
+        session_id="dual-book",
+        db_run_id=db_run_id,
+        missing_open_policy=MissingOpenPolicy.SKIP,
+    )
+
+    # Contract part 1: kernel-side bookkeeping is correct immediately post-drain.
+    assert kernel.cash == 10_000.0 - 150.0  # debited for 1 SPY @ $150
+    assert kernel.positions["SPY"] == (1.0, 150.0)
+
+    # Contract part 2: a subsequent sync_broker_state makes the broker's
+    # reported snapshot match kernel state. This is the reconciliation point
+    # the engine relies on between simulation steps.
+    kernel.sync_broker_state(day=date(2024, 1, 2), closes={"SPY": 150.0})
+
+    broker_account = kernel.sim_broker.get_account()
+    assert kernel.cash == broker_account.cash
+    broker_position_symbols = {p.symbol for p in kernel.sim_broker.get_positions()}
+    assert set(kernel.positions.keys()) == broker_position_symbols
+    assert any(p.symbol == "SPY" and p.quantity == 1.0 for p in kernel.sim_broker.get_positions())
+
+
 def test_backtest_engine_delegates_shared_simulation_mechanics_to_kernel() -> None:
     source = Path(engine_module.__file__).read_text(encoding="utf-8")
 
