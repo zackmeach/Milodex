@@ -345,8 +345,8 @@ def test_query_performance_ytd_window(tmp_path) -> None:
     dec31 = datetime(2025, 12, 31, 0, 0, 0, tzinfo=UTC).isoformat()
     yesterday = (now - timedelta(days=1)).isoformat()
 
-    _seed_snapshot(db, dec31, 90_000.0)   # outside YTD
-    _seed_snapshot(db, jan2, 100_000.0)   # first in YTD
+    _seed_snapshot(db, dec31, 90_000.0)  # outside YTD
+    _seed_snapshot(db, jan2, 100_000.0)  # first in YTD
     _seed_snapshot(db, yesterday, 110_000.0)
 
     result = _query_performance(db, now)
@@ -876,27 +876,17 @@ def test_all_paper_return_post_migration_handles_pre_split_mixed_data(
     # Apply migrations 001-009 ONLY via raw sqlite3 (no EventStore yet,
     # so migration 010 hasn't run). Mirrors the helper pattern in
     # tests/milodex/core/test_migrations.py:_run_migrations_up_to.
-    migrations_dir = (
-        Path(__file__).resolve().parents[3]
-        / "src"
-        / "milodex"
-        / "core"
-        / "migrations"
-    )
+    migrations_dir = Path(__file__).resolve().parents[3] / "src" / "milodex" / "core" / "migrations"
     conn = sqlite3.connect(str(db))
     try:
-        conn.executescript(
-            "CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)"
-        )
+        conn.executescript("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
         for path in sorted(migrations_dir.glob("*.sql")):
             version = int(path.stem.split("_", maxsplit=1)[0])
             if version > 9:
                 continue
             conn.executescript(path.read_text(encoding="utf-8"))
             conn.execute("DELETE FROM _schema_version")
-            conn.execute(
-                "INSERT INTO _schema_version(version) VALUES (?)", (version,)
-            )
+            conn.execute("INSERT INTO _schema_version(version) VALUES (?)", (version,))
             conn.commit()
 
         # Seed the pre-010 mixed-table state — the bug-shape.
@@ -1003,3 +993,81 @@ def test_all_paper_return_post_migration_handles_pre_split_mixed_data(
         f"— migration 010 leaked backtest rows; -98.99% regression"
     )
     assert dd <= 0.0, f"ALL-PAPER drawdown {dd:.4%} must be non-positive"
+
+
+# ---------------------------------------------------------------------------
+# Stale-signal precision (regression: opus reviewer 2026-05-24)
+# ---------------------------------------------------------------------------
+
+
+@_skip_no_qt
+def test_apply_result_fires_only_changed_stale_signals(qapp, tmp_path) -> None:
+    """Each of isStaleChanged / hasSnapshotChanged / staleAsOfChanged fires
+    only when its specific field actually changes — never as a fan-out from
+    a compound `stale_changed` boolean.
+
+    Regression for the Opus reviewer finding 2026-05-24: pre-fix, _apply_result
+    used a compound OR (`new_is_stale != self._is_stale or
+    new_stale_as_of != self._stale_as_of or new_has_snapshot != ...`) and
+    fired all three signals together.  That caused spurious QML re-evaluation
+    of the unchanged two properties on every refresh where any one of them
+    changed.
+
+    The fix splits the diff into three independent comparisons and emits
+    each *Changed signal only when its own field's value transitioned.
+    """
+    _ = qapp
+    db = tmp_path / "perf.db"
+    _create_fixture_db(db)
+
+    state = _make_state(db)
+
+    # Counters bumped by Qt signal connections.
+    counts = {"is_stale": 0, "has_snapshot": 0, "stale_as_of": 0}
+    state.isStaleChanged.connect(lambda: counts.__setitem__("is_stale", counts["is_stale"] + 1))
+    state.hasSnapshotChanged.connect(
+        lambda: counts.__setitem__("has_snapshot", counts["has_snapshot"] + 1)
+    )
+    state.staleAsOfChanged.connect(
+        lambda: counts.__setitem__("stale_as_of", counts["stale_as_of"] + 1)
+    )
+
+    base_result: dict[str, object] = {
+        "by_slice": {"today": None},
+        "benchmark_by_slice": {"today": None},
+        "sparkline": [],
+        "newest_recorded_at": None,  # hasSnapshot=False, isStale=False, staleAsOf=""
+    }
+
+    # 1st apply: transition from initial (False/False/"") → same → ALL stable; no signals fire.
+    state._apply_result(base_result)  # noqa: SLF001
+    assert counts == {"is_stale": 0, "has_snapshot": 0, "stale_as_of": 0}, (
+        "Initial-state-matching apply must fire no stale signals"
+    )
+
+    # 2nd apply: introduce a fresh snapshot — hasSnapshot False→True, staleAsOf ""→ts.
+    # isStale stays False (snapshot is fresh).
+    yesterday = (datetime.now(tz=UTC) - timedelta(days=1)).isoformat()
+    state._apply_result({**base_result, "newest_recorded_at": yesterday})  # noqa: SLF001
+    assert counts["has_snapshot"] == 1, "hasSnapshot transitioned False→True; signal must fire once"
+    assert counts["stale_as_of"] == 1, "staleAsOf changed; signal must fire once"
+    assert counts["is_stale"] == 0, (
+        "isStale did NOT change (False→False); signal must NOT fire — but did, "
+        "indicating the compound stale_changed fan-out bug is back"
+    )
+
+    # 3rd apply: same newest_recorded_at → no field changes → no signals fire.
+    state._apply_result({**base_result, "newest_recorded_at": yesterday})  # noqa: SLF001
+    assert counts == {"is_stale": 0, "has_snapshot": 1, "stale_as_of": 1}, (
+        "Re-applying identical result must fire no additional signals"
+    )
+
+    # 4th apply: bump the timestamp (staleAsOf only changes; isStale False→False,
+    # hasSnapshot stays True). Only staleAsOf signal should fire.
+    today = datetime.now(tz=UTC).isoformat()
+    state._apply_result({**base_result, "newest_recorded_at": today})  # noqa: SLF001
+    assert counts["stale_as_of"] == 2, "staleAsOf changed; signal must fire"
+    assert counts["has_snapshot"] == 1, "hasSnapshot unchanged; signal must NOT fire again"
+    assert counts["is_stale"] == 0, "isStale unchanged; signal must NOT fire again"
+
+    state.stop()

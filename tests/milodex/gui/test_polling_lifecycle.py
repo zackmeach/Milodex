@@ -205,3 +205,47 @@ def test_builder_result_without_lastRefreshedAt_falls_back_to_now_iso() -> None:
     assert state.lastRefreshedAt != ""
     # And the result still got applied to the subclass.
     assert state.applied_results == [{"payload": "no_ts"}]
+
+
+def test_restart_after_stop_resumes_polling() -> None:
+    """A `start() → stop() → start()` cycle must resume delivering refreshes.
+
+    Regression test for a defect where `stop()` disconnected the per-state
+    `_signals.completed` / `_signals.failed` slots but `start()` did NOT
+    reconnect them.  A user (or a test harness) restarting the poller after
+    a stop would silently get no refresh results — workers would run, but
+    their emits would land on a disconnected signal and be dropped.
+
+    Discovered by the Opus regression reviewer 2026-05-24 while auditing
+    the centralized base contract.  The pre-extraction per-module copies
+    had the same bug, but only one consumer (a future restart-aware GUI
+    surface) would trip it.  The fix lives in `polling_lifecycle.py`.
+    """
+    call_count = {"n": 0}
+
+    def builder() -> dict[str, Any]:
+        call_count["n"] += 1
+        return {
+            "payload": f"call_{call_count['n']}",
+            "lastRefreshedAt": f"2026-05-24T00:00:{call_count['n']:02d}+00:00",
+        }
+
+    state = _FakeState(builder=builder, refresh_interval_ms=30_000)
+
+    # First start: refresh delivers normally.
+    state.start()
+    assert _spin_until(lambda: state.dataStatus == "ready", timeout_ms=2_000)
+    first_applied = len(state.applied_results)
+    assert first_applied >= 1, "First start() should have delivered at least one result"
+
+    # Stop + restart cycle.
+    state.stop()
+    state.start()
+
+    # Second start: must deliver a NEW refresh.  Wait for applied_results to grow.
+    assert _spin_until(lambda: len(state.applied_results) > first_applied, timeout_ms=2_000), (
+        "Restart after stop did not deliver a refresh — "
+        "signals dropped silently because stop() disconnected and start() did not reconnect"
+    )
+
+    state.stop()

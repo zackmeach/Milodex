@@ -87,6 +87,7 @@ class PollingReadModel(QObject):
         self._data_error_message = ""
         self._last_refreshed_at = ""
         self._refresh_in_flight = False
+        self._signals_connected = False
 
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(1)
@@ -95,13 +96,45 @@ class PollingReadModel(QObject):
         self._timer.setInterval(self._refresh_interval_ms)
         self._timer.timeout.connect(self._kick_refresh)
 
+        # Signals connect in __init__ AND re-connect in start().  Both go
+        # through _connect_signals(), which short-circuits via the
+        # _signals_connected flag so duplicate connect() calls don't
+        # double-fire the slot.  This keeps direct _kick_refresh() callers
+        # working (tests that bypass start() rely on __init__ having
+        # connected) AND fixes the restart-after-stop silent-drop bug
+        # (stop() disconnects; start() re-connects).
         self._signals = RefreshSignals(self)
+        self._connect_signals()
+
+    def _connect_signals(self) -> None:
+        """Connect refresh signals exactly once.  Uses a state-tracking flag
+        because PySide6's ``Qt.ConnectionType`` enum does NOT support
+        bitwise-OR with ``UniqueConnection`` (unlike PyQt), so we can't
+        delegate uniqueness enforcement to Qt itself.
+        """
+        if self._signals_connected:
+            return
         self._signals.completed.connect(
             self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
         )
         self._signals.failed.connect(self._on_refresh_failed, Qt.ConnectionType.QueuedConnection)
+        self._signals_connected = True
+
+    def _disconnect_signals(self) -> None:
+        """Disconnect refresh signals if currently connected.  Idempotent."""
+        if not self._signals_connected:
+            return
+        try:
+            self._signals.completed.disconnect(self._on_refresh_complete)
+            self._signals.failed.disconnect(self._on_refresh_failed)
+        except (RuntimeError, TypeError):
+            pass
+        self._signals_connected = False
 
     def start(self) -> None:
+        # Re-arm signal connections in case a prior stop() disconnected them.
+        # No-op when this is the initial start (already connected by __init__).
+        self._connect_signals()
         self._kick_refresh()
         if not self._timer.isActive():
             self._timer.start()
@@ -109,11 +142,7 @@ class PollingReadModel(QObject):
     def stop(self) -> None:
         self._timer.stop()
         self._thread_pool.waitForDone(2000)
-        try:
-            self._signals.completed.disconnect(self._on_refresh_complete)
-            self._signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
+        self._disconnect_signals()
 
     def _kick_refresh(self) -> None:
         if self._refresh_in_flight:
