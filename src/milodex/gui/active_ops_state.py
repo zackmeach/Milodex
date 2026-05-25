@@ -36,18 +36,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (  # pragma: no cover
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
 from milodex.core.advisory_lock import AdvisoryLock
+from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.strategies.paper_runner_control import (
     controlled_stop_request_path,
     runner_lock_name,
@@ -265,51 +257,45 @@ def _load_config(strategy_id: str, configs_dir: Path | None) -> dict[str, Any] |
     return None
 
 
-class _ActiveOpsRefreshSignals(QObject):
-    """Signal carrier for the ActiveOpsState refresh worker."""
+def _build_active_ops_snapshot(
+    db_path: Path,
+    configs_dir: Path | None,
+    locks_dir: Path | None,
+) -> dict[str, Any]:
+    """Adapter for ``PollingReadModel`` — wraps `_query_active_ops` list return
+    into the dict shape the polling lifecycle expects (Opus B1 fix).
 
-    completed = Signal(list)
-    failed = Signal(str)
-
-
-class _ActiveOpsRefreshRunnable(QRunnable):
-    """One-shot refresh executed on a QThreadPool worker thread."""
-
-    def __init__(
-        self,
-        db_path: Path,
-        configs_dir: Path | None,
-        locks_dir: Path | None,
-        signals: _ActiveOpsRefreshSignals,
-    ) -> None:
-        super().__init__()
-        self._db_path = db_path
-        self._configs_dir = configs_dir
-        self._locks_dir = locks_dir
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover
-        try:
-            now = datetime.now(tz=UTC)
-            runners = _query_active_ops(
-                self._db_path,
-                now,
-                configs_dir=self._configs_dir,
-                locks_dir=self._locks_dir,
-            )
-            self._signals.completed.emit(runners)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ActiveOpsState: DB refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
+    Pre-RM-007 PR C, the worker emitted ``Signal(list)``; ``PollingReadModel``
+    requires a dict with an optional ``lastRefreshedAt`` key. The closed-over
+    ``configs_dir`` and ``locks_dir`` args (immutable ``Path`` objects in
+    practice) are captured by the lambda in ``ActiveOpsState.__init__``.
+    """
+    now = datetime.now(tz=UTC)
+    runners = _query_active_ops(
+        db_path,
+        now,
+        configs_dir=configs_dir,
+        locks_dir=locks_dir,
+    )
+    return {"runners": runners, "lastRefreshedAt": now.isoformat()}
 
 
-class ActiveOpsState(QObject):
-    """Active runner operations state exposed to QML as Q_PROPERTYs."""
+class ActiveOpsState(PollingReadModel):
+    """Active runner operations state exposed to QML as Q_PROPERTYs.
+
+    Inherits the canonical polling lifecycle from
+    :class:`milodex.gui.polling_lifecycle.PollingReadModel`. Worker payload
+    was ``Signal(list)`` pre-migration — adapted in
+    :func:`_build_active_ops_snapshot` to the dict shape the polling
+    lifecycle expects (Opus B1 fix). ``_apply_result`` reads
+    ``result["runners"]`` to restore the runner-list shape.
+
+    Closed-over args: ``configs_dir`` and ``locks_dir`` are captured by the
+    builder lambda in ``__init__``. They are immutable ``Path`` objects in
+    practice; lambda capture is safe.
+    """
 
     runnersChanged = Signal()  # noqa: N815
-    lastRefreshedAtChanged = Signal()  # noqa: N815
-    dataStatusChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -319,114 +305,41 @@ class ActiveOpsState(QObject):
         refresh_interval_ms: int = 30_000,
         parent: QObject | None = None,
     ) -> None:
-        super().__init__(parent)
-
         if db_path is None:
             from milodex.config import get_data_dir
+
             db_path = get_data_dir() / "milodex.db"
         self._db_path = db_path
 
         if configs_dir is None:
             from milodex.config import get_bundled_resource_dir
+
             configs_dir = get_bundled_resource_dir() / "configs"
         self._configs_dir = configs_dir
 
         if locks_dir is None:
             from milodex.config import get_locks_dir
+
             locks_dir = get_locks_dir()
         self._locks_dir = locks_dir
 
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
         self._runners: list[dict[str, Any]] = []
-        self._last_refreshed_at: str = ""
-        self._data_status: str = "loading"
-        self._data_error_message: str = ""
-
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(self._refresh_interval_ms)
-        self._refresh_timer.timeout.connect(self._kick_refresh)
-
-        self._refresh_signals = _ActiveOpsRefreshSignals(self)
-        self._refresh_signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._refresh_signals.failed.connect(
-            self._on_refresh_failed, Qt.ConnectionType.QueuedConnection
+        super().__init__(
+            builder=lambda: _build_active_ops_snapshot(db_path, configs_dir, locks_dir),
+            refresh_interval_ms=refresh_interval_ms,
+            parent=parent,
         )
 
-        self._refresh_in_flight: bool = False
-
-    def start(self) -> None:
-        """Begin periodic DB polling with an immediate first refresh."""
-        self._kick_refresh()
-        if not self._refresh_timer.isActive():
-            self._refresh_timer.start()
-
-    def stop(self) -> None:
-        """Halt polling and drain any in-flight DB worker."""
-        self._refresh_timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._refresh_signals.completed.disconnect(self._on_refresh_complete)
-            self._refresh_signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
-
-    def _kick_refresh(self) -> None:
-        if self._refresh_in_flight:
-            return
-        self._refresh_in_flight = True
-        runnable = _ActiveOpsRefreshRunnable(
-            self._db_path,
-            self._configs_dir,
-            self._locks_dir,
-            self._refresh_signals,
-        )
-        self._thread_pool.start(runnable)
-
-    @Slot(list)
-    def _on_refresh_complete(self, runners: list[dict[str, Any]]) -> None:
-        self._refresh_in_flight = False
-        now_iso = datetime.now(tz=UTC).isoformat()
+    def _apply_result(self, result: dict[str, Any]) -> None:
+        runners = result["runners"]
         runners_changed = runners != self._runners
         self._runners = runners
-        self._last_refreshed_at = now_iso
-        self.lastRefreshedAtChanged.emit()
         if runners_changed:
             self.runnersChanged.emit()
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
 
     def _get_runners(self) -> list:
         return self._runners
 
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
     runners = Property("QVariantList", _get_runners, notify=runnersChanged)
-    lastRefreshedAt = Property(  # noqa: N815
-        str, _get_last_refreshed_at, notify=lastRefreshedAtChanged
-    )
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(  # noqa: N815
-        str, _get_data_error_message, notify=dataStatusChanged
-    )
+
+    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel
