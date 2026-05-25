@@ -73,8 +73,8 @@ logger = logging.getLogger(__name__)
 # Module-level constants
 # ---------------------------------------------------------------------------
 
-DRIFT_NO_FILLS_DAYS: int = 7   # flag if no paper fills seen in this many days
-DRIFT_LIST_CAP: int = 20       # maximum entries in driftList
+DRIFT_NO_FILLS_DAYS: int = 7  # flag if no paper fills seen in this many days
+DRIFT_LIST_CAP: int = 20  # maximum entries in driftList
 
 # ---------------------------------------------------------------------------
 # Pure helpers
@@ -210,7 +210,8 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
     - ``needs_review``: int
     - ``underperforming``: int
     - ``drift_list``: list[dict]
-    - ``refreshed_at``: str (filled by caller)
+    - ``lastRefreshedAt``: str (filled by ``_build_attention_snapshot`` caller
+      per the ``PollingReadModel`` contract)
     """
     # Call _query_bank for paper/blocked (single source of truth).
     paper_list, blocked_list = _query_bank(db_path)
@@ -227,12 +228,9 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
             r["strategy_id"] for r in conn.execute(_SQL_PROMOTED_TO_PAPER).fetchall()
         }
         promoted_to_micro_live: set[str] = {
-            r["strategy_id"]
-            for r in conn.execute(_SQL_PROMOTED_TO_MICRO_LIVE).fetchall()
+            r["strategy_id"] for r in conn.execute(_SQL_PROMOTED_TO_MICRO_LIVE).fetchall()
         }
-        demoted: set[str] = {
-            r["strategy_id"] for r in conn.execute(_SQL_DEMOTED).fetchall()
-        }
+        demoted: set[str] = {r["strategy_id"] for r in conn.execute(_SQL_DEMOTED).fetchall()}
         frozen: set[str] = {
             r["strategy_id"] for r in conn.execute(_SQL_FROZEN_MANIFESTS).fetchall()
         }
@@ -385,9 +383,7 @@ def _build_drift_list(
                 stale = True
         if stale:
             days_desc = f"{DRIFT_NO_FILLS_DAYS} days"
-            items.append(
-                {"name": sid, "note": f"no fills in {days_desc}", "tone": "info"}
-            )
+            items.append({"name": sid, "note": f"no fills in {days_desc}", "tone": "info"})
 
     return items[:DRIFT_LIST_CAP]
 

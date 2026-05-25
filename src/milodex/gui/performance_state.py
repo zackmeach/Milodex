@@ -417,11 +417,15 @@ class PerformanceState(PollingReadModel):
         new_is_stale = _is_stale(newest, now)
         new_stale_as_of = newest or ""
 
-        stale_changed = (
-            new_is_stale != self._is_stale
-            or new_stale_as_of != self._stale_as_of
-            or new_has_snapshot != self._has_snapshot
-        )
+        # Per-field diffs so each *Changed signal fires only when its own
+        # property's value transitioned.  The earlier compound `stale_changed`
+        # boolean fan-out caused spurious QML re-evaluation of the two
+        # unchanged properties whenever any of the three actually changed
+        # (Opus reviewer 2026-05-24).
+        is_stale_changed = new_is_stale != self._is_stale
+        has_snapshot_changed = new_has_snapshot != self._has_snapshot
+        stale_as_of_changed = new_stale_as_of != self._stale_as_of
+
         self._is_stale = new_is_stale
         self._has_snapshot = new_has_snapshot
         self._stale_as_of = new_stale_as_of
@@ -432,9 +436,11 @@ class PerformanceState(PollingReadModel):
             self.benchmarkBySliceChanged.emit()
         if sparkline_changed:
             self.sparklineChanged.emit()
-        if stale_changed:
+        if is_stale_changed:
             self.isStaleChanged.emit()
+        if has_snapshot_changed:
             self.hasSnapshotChanged.emit()
+        if stale_as_of_changed:
             self.staleAsOfChanged.emit()
 
     def _get_by_slice(self) -> dict:
