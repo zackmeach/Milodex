@@ -79,7 +79,9 @@ class MeanrevRsi2PullbackStrategy(Strategy):
         )
         if isinstance(gated, StrategyDecision):
             return gated
-        intents, remaining_after_exits, capacity = gated
+        intents = gated.intents
+        remaining_after_exits = gated.remaining_after_exits
+        capacity = gated.capacity
 
         candidates = _entry_candidates(
             universe=context.universe,

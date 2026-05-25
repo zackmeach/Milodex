@@ -83,10 +83,10 @@ def test_atr_channel_entry_payload_is_rich() -> None:
     tv = decision.reasoning.triggering_values
     assert "selected_symbol" in tv
     assert "selected_close" in tv
-    assert "selected_breakout_strength" in tv
+    assert tv["selected_signal_label"] == "breakout_strength"
     assert tv["selected_symbol"] == "XLK"
     assert isinstance(tv["selected_close"], float)
-    assert isinstance(tv["selected_breakout_strength"], float)
+    assert isinstance(tv["selected_signal_value"], float)
     # Threshold must expose the entry-rule-defining parameters
     assert "atr_entry_multiplier" in decision.reasoning.threshold
     assert "ema_length" in decision.reasoning.threshold
@@ -105,7 +105,8 @@ def test_atr_channel_ranking_payload_populated() -> None:
     assert len(decision.reasoning.ranking) >= 1
     first = decision.reasoning.ranking[0]
     assert "symbol" in first
-    assert "breakout_strength" in first
+    assert first["signal_label"] == "breakout_strength"
+    assert "signal_value" in first
     assert "latest_close" in first
 
 

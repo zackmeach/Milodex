@@ -58,7 +58,9 @@ class MeanrevBbandsLowerbandStrategy(Strategy):
         )
         if isinstance(gated, StrategyDecision):
             return gated
-        intents, remaining_after_exits, capacity = gated
+        intents = gated.intents
+        remaining_after_exits = gated.remaining_after_exits
+        capacity = gated.capacity
 
         candidates = _entry_candidates(
             context.universe, norm.bars_by_symbol, remaining_after_exits, parameters,

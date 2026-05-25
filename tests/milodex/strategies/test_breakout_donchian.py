@@ -386,8 +386,8 @@ def test_breakout_entry_reasoning_captures_strength_and_channel() -> None:
     assert decision.reasoning.rule == "breakout.channel_entry"
     triggers = decision.reasoning.triggering_values
     assert "selected_channel_high" in triggers
-    assert "selected_breakout_strength" in triggers
-    assert triggers["selected_breakout_strength"] > 0
+    assert triggers["selected_signal_label"] == "breakout_strength"
+    assert triggers["selected_signal_value"] > 0
 
 
 def test_breakout_rejects_invalid_exit_channel_geq_entry_channel() -> None:

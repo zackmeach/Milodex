@@ -79,12 +79,12 @@ def test_bbands_entry_payload_is_rich() -> None:
     tv = decision.reasoning.triggering_values
     assert "selected_symbol" in tv
     assert "selected_close" in tv
-    assert "selected_zscore" in tv
+    assert tv["selected_signal_label"] == "zscore"
     assert tv["selected_symbol"] == "AAPL"
     assert isinstance(tv["selected_close"], float)
-    assert isinstance(tv["selected_zscore"], float)
+    assert isinstance(tv["selected_signal_value"], float)
     # zscore for an oversold bar should be negative
-    assert tv["selected_zscore"] < 0
+    assert tv["selected_signal_value"] < 0
     assert "bbands_stddev" in decision.reasoning.threshold
     assert "bbands_lookback" in decision.reasoning.threshold
     assert "ma_filter_length" in decision.reasoning.threshold
