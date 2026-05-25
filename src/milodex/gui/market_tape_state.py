@@ -30,19 +30,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (  # pragma: no cover
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
 from milodex.config import get_cache_dir
 from milodex.gui._market_cache import _latest_cache_version  # noqa: PLC2701
+from milodex.gui.polling_lifecycle import PollingReadModel
 
 logger = logging.getLogger(__name__)
 
@@ -134,33 +126,17 @@ def _read_tape(cache_dir: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-class _MarketTapeRefreshSignals(QObject):
-    """Signal carrier for the MarketTapeState refresh worker."""
+def _build_market_tape_snapshot(cache_dir: Path) -> dict[str, Any]:
+    """Adapter for ``PollingReadModel`` — wraps the list payload `_read_tape`
+    returns into the dict shape the polling lifecycle expects (Opus B1 fix).
 
-    completed = Signal(list)
-    failed = Signal(str)
-
-
-class _MarketTapeRefreshRunnable(QRunnable):
-    """One-shot cache read executed on a QThreadPool worker thread."""
-
-    def __init__(
-        self,
-        cache_dir: Path,
-        signals: _MarketTapeRefreshSignals,
-    ) -> None:
-        super().__init__()
-        self._cache_dir = cache_dir
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover — exercised via tests with fixture caches
-        try:
-            rows = _read_tape(self._cache_dir)
-            self._signals.completed.emit(rows)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("MarketTapeState: cache refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
+    Pre-RM-007 PR C, the worker emitted ``Signal(list)`` and the
+    ``_on_refresh_complete`` slot accepted a bare list. ``PollingReadModel``
+    expects a dict with an optional ``lastRefreshedAt`` key — this adapter
+    converts the list into ``{"rows": [...], "lastRefreshedAt": "..."}``.
+    """
+    rows = _read_tape(cache_dir)
+    return {"rows": rows, "lastRefreshedAt": datetime.now(tz=UTC).isoformat()}
 
 
 # ---------------------------------------------------------------------------
@@ -168,15 +144,20 @@ class _MarketTapeRefreshRunnable(QRunnable):
 # ---------------------------------------------------------------------------
 
 
-class MarketTapeState(QObject):
+class MarketTapeState(PollingReadModel):
     """Market tape state exposed to QML as Q_PROPERTYs.
 
-    See module docstring for threading model and design decisions.
+    Inherits the canonical polling lifecycle from
+    :class:`milodex.gui.polling_lifecycle.PollingReadModel`. See module
+    docstring for cache-read design decisions.
+
+    Worker payload was ``Signal(list)`` pre-migration — adapted in
+    :func:`_build_market_tape_snapshot` to the dict shape the polling
+    lifecycle expects (Opus B1 fix). ``_apply_result`` reads
+    ``result["rows"]`` to restore the list-of-row shape.
     """
 
     rowsChanged = Signal()  # noqa: N815
-    lastRefreshedAtChanged = Signal()  # noqa: N815
-    dataStatusChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -184,116 +165,26 @@ class MarketTapeState(QObject):
         refresh_interval_ms: int = 60_000,
         parent: QObject | None = None,
     ) -> None:
-        super().__init__(parent)
-
         if cache_dir is None:
             cache_dir = get_cache_dir()
         self._cache_dir = cache_dir
-
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
-        # State backing fields
         self._rows: list[dict[str, Any]] = []
-        self._last_refreshed_at: str = ""
-        self._data_status: str = "loading"
-        self._data_error_message: str = ""
-
-        # QTimer
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(self._refresh_interval_ms)
-        self._refresh_timer.timeout.connect(self._kick_refresh)
-
-        # Signal carrier
-        self._refresh_signals = _MarketTapeRefreshSignals(self)
-        self._refresh_signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._refresh_signals.failed.connect(
-            self._on_refresh_failed, Qt.ConnectionType.QueuedConnection
+        super().__init__(
+            builder=lambda: _build_market_tape_snapshot(cache_dir),
+            refresh_interval_ms=refresh_interval_ms,
+            parent=parent,
         )
 
-        self._refresh_in_flight: bool = False
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def start(self) -> None:
-        """Begin periodic cache polling with an immediate first refresh."""
-        self._kick_refresh()
-        if not self._refresh_timer.isActive():
-            self._refresh_timer.start()
-
-    def stop(self) -> None:
-        """Halt polling and drain any in-flight cache worker."""
-        self._refresh_timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._refresh_signals.completed.disconnect(self._on_refresh_complete)
-            self._refresh_signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
-
-    # ------------------------------------------------------------------
-    # Worker scheduling
-    # ------------------------------------------------------------------
-
-    def _kick_refresh(self) -> None:
-        if self._refresh_in_flight:
-            return
-        self._refresh_in_flight = True
-        runnable = _MarketTapeRefreshRunnable(self._cache_dir, self._refresh_signals)
-        self._thread_pool.start(runnable)
-
-    @Slot(list)
-    def _on_refresh_complete(self, rows: list[dict[str, Any]]) -> None:
-        self._refresh_in_flight = False
-
+    def _apply_result(self, result: dict[str, Any]) -> None:
+        rows = result["rows"]
         rows_changed = rows != self._rows
         self._rows = rows
-        self._last_refreshed_at = datetime.now(tz=UTC).isoformat()
-
-        self.lastRefreshedAtChanged.emit()
         if rows_changed:
             self.rowsChanged.emit()
-
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
-
-    # ------------------------------------------------------------------
-    # Q_PROPERTY accessors
-    # ------------------------------------------------------------------
 
     def _get_rows(self) -> list:
         return self._rows
 
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
     rows = Property("QVariantList", _get_rows, notify=rowsChanged)
-    lastRefreshedAt = Property(  # noqa: N815
-        str, _get_last_refreshed_at, notify=lastRefreshedAtChanged
-    )
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(  # noqa: N815
-        str, _get_data_error_message, notify=dataStatusChanged
-    )
+
+    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel

@@ -14,8 +14,6 @@ from __future__ import annotations
 
 import json
 import sqlite3
-import threading
-import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -911,102 +909,6 @@ def test_refresh_populates_rollups(qapp, tmp_path) -> None:
     state.stop()
 
 
-@_skip_no_qt
-def test_missing_db_sets_error_status(qapp, tmp_path) -> None:
-    """Pointing at a non-existent DB sets dataStatus='error'."""
-    _ = qapp
-    db = tmp_path / "does_not_exist.db"
-    state = _make_state(db)
-
-    state._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state)
-
-    assert state.dataStatus == "error"
-    assert state.dataErrorMessage != ""
-    assert state.rollups == {}
-
-    state.stop()
-
-
-@_skip_no_qt
-def test_error_after_success_preserves_last_known(qapp, tmp_path) -> None:
-    """After a successful refresh, a failure leaves the last-known rollups intact."""
-    _ = qapp
-    db = tmp_path / "att.db"
-    _create_fixture_db(db)
-
-    _seed_strategy_run(db, strategy_id="s1")
-
-    state = _make_state(db)
-    state._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state)
-
-    assert state.dataStatus == "ready"
-    first_rollups = dict(state.rollups)
-
-    state._db_path = tmp_path / "gone.db"  # noqa: SLF001
-    state._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state)
-
-    assert state.dataStatus == "error"
-    assert dict(state.rollups) == first_rollups  # preserved
-
-    state.stop()
-
-
-@_skip_no_qt
-def test_concurrent_kick_drops_when_in_flight(qapp, tmp_path) -> None:
-    """A second _kick_refresh while one is in flight is a no-op."""
-    _ = qapp
-    db = tmp_path / "att.db"
-    _create_fixture_db(db)
-    state = _make_state(db)
-
-    state._refresh_in_flight = True  # noqa: SLF001
-    pool_before = state._thread_pool.activeThreadCount()  # noqa: SLF001
-
-    state._kick_refresh()  # noqa: SLF001
-    assert state._thread_pool.activeThreadCount() == pool_before  # noqa: SLF001
-
-    state._refresh_in_flight = False  # noqa: SLF001
-    state.stop()
-
-
-@_skip_no_qt
-def test_stop_drains_in_flight_worker(qapp, tmp_path) -> None:
-    """stop() must wait for in-flight workers before returning (corrected drain form)."""
-    from milodex.gui.attention_state import _AttentionRefreshRunnable
-
-    db = tmp_path / "att.db"
-    _create_fixture_db(db)
-
-    state = _make_state(db)
-
-    release = threading.Event()
-    worker_ran = threading.Event()
-
-    original_run = _AttentionRefreshRunnable.run
-
-    def slow_run(self):  # noqa: ANN001
-        worker_ran.set()
-        release.wait(timeout=5.0)
-        original_run(self)
-
-    _AttentionRefreshRunnable.run = slow_run
-
-    try:
-        state._kick_refresh()  # noqa: SLF001
-        assert worker_ran.wait(timeout=3.0), "Worker did not start within 3s"
-
-        # Schedule the unblock AFTER stop() starts so stop() must actually wait.
-        threading.Timer(0.5, release.set).start()
-
-        t0 = time.monotonic()
-        state.stop()
-        elapsed = time.monotonic() - t0
-
-        assert state._thread_pool.activeThreadCount() == 0  # noqa: SLF001
-        assert elapsed >= 0.4, f"stop() returned too fast ({elapsed:.2f}s) — drain not exercised"
-        assert elapsed < 2.0, f"stop() took {elapsed:.2f}s — expected < 2s (hit timeout?)"
-    finally:
-        _AttentionRefreshRunnable.run = original_run
+# Lifecycle scaffold tests (missing-DB error, error-after-success preservation,
+# in-flight drop, stop-drains-worker) were removed in PR C of RM-007 — those
+# contracts are now covered ONCE in tests/milodex/gui/test_polling_lifecycle.py.

@@ -70,19 +70,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (  # pragma: no cover
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
 from milodex.config import get_cache_dir
 from milodex.gui._market_cache import _latest_cache_version  # noqa: PLC2701
+from milodex.gui.polling_lifecycle import PollingReadModel
 
 logger = logging.getLogger(__name__)
 
@@ -346,37 +338,12 @@ def _compute_benchmark(
 # ---------------------------------------------------------------------------
 
 
-class _PerfRefreshSignals(QObject):
-    """Signal carrier for the PerformanceState refresh worker."""
-
-    completed = Signal(dict)
-    failed = Signal(str)
-
-
-class _PerfRefreshRunnable(QRunnable):
-    """One-shot refresh executed on a QThreadPool worker thread."""
-
-    def __init__(
-        self,
-        db_path: Path,
-        cache_dir: Path,
-        signals: _PerfRefreshSignals,
-    ) -> None:
-        super().__init__()
-        self._db_path = db_path
-        self._cache_dir = cache_dir
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover — exercised via tests with fixture DBs
-        try:
-            now = datetime.now(tz=UTC)
-            result = _query_performance(self._db_path, now, cache_dir=self._cache_dir)
-            result["refreshed_at"] = now.isoformat()
-            self._signals.completed.emit(result)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("PerformanceState: DB refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
+def _build_performance_snapshot(db_path: Path, cache_dir: Path) -> dict[str, Any]:
+    """Adapter for ``PollingReadModel`` — packs perf query into polling dict."""
+    now = datetime.now(tz=UTC)
+    result = _query_performance(db_path, now, cache_dir=cache_dir)
+    result["lastRefreshedAt"] = now.isoformat()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -384,11 +351,18 @@ class _PerfRefreshRunnable(QRunnable):
 # ---------------------------------------------------------------------------
 
 
-class PerformanceState(QObject):
+class PerformanceState(PollingReadModel):
     """Portfolio performance state exposed to QML as Q_PROPERTYs.
 
-    See module docstring for threading model, slice definitions, and SPY
-    benchmark sourcing.
+    Inherits the canonical polling lifecycle from
+    :class:`milodex.gui.polling_lifecycle.PollingReadModel`. See module
+    docstring for slice definitions and SPY benchmark sourcing.
+
+    This module has the most complex ``_apply_result`` of the PR C batch:
+    it owns 3 slice-style properties (``bySlice``, ``benchmarkBySlice``,
+    ``sparkline``) AND 3 staleness-derived properties (``isStale``,
+    ``hasSnapshot``, ``staleAsOf``). Staleness is computed from
+    ``result["newest_recorded_at"]`` vs the current time.
     """
 
     bySliceChanged = Signal()  # noqa: N815
@@ -397,8 +371,6 @@ class PerformanceState(QObject):
     isStaleChanged = Signal()  # noqa: N815
     hasSnapshotChanged = Signal()  # noqa: N815
     staleAsOfChanged = Signal()  # noqa: N815
-    lastRefreshedAtChanged = Signal()  # noqa: N815
-    dataStatusChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -407,85 +379,29 @@ class PerformanceState(QObject):
         refresh_interval_ms: int = 30_000,
         parent: QObject | None = None,
     ) -> None:
-        super().__init__(parent)
-
         if db_path is None:
             from milodex.config import get_data_dir
 
             db_path = get_data_dir() / "milodex.db"
         self._db_path = db_path
-
         if cache_dir is None:
             cache_dir = get_cache_dir()
         self._cache_dir = cache_dir
 
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
-        # State backing fields
         self._by_slice: dict[str, Any] = {}
         self._benchmark_by_slice: dict[str, Any] = {}
         self._sparkline: list[float] = []
         self._is_stale: bool = False
         self._has_snapshot: bool = False
         self._stale_as_of: str = ""
-        self._last_refreshed_at: str = ""
-        self._data_status: str = "loading"
-        self._data_error_message: str = ""
 
-        # QTimer
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(self._refresh_interval_ms)
-        self._refresh_timer.timeout.connect(self._kick_refresh)
-
-        # Signal carrier
-        self._refresh_signals = _PerfRefreshSignals(self)
-        self._refresh_signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._refresh_signals.failed.connect(
-            self._on_refresh_failed, Qt.ConnectionType.QueuedConnection
+        super().__init__(
+            builder=lambda: _build_performance_snapshot(db_path, cache_dir),
+            refresh_interval_ms=refresh_interval_ms,
+            parent=parent,
         )
 
-        self._refresh_in_flight: bool = False
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def start(self) -> None:
-        """Begin periodic DB polling with an immediate first refresh."""
-        self._kick_refresh()
-        if not self._refresh_timer.isActive():
-            self._refresh_timer.start()
-
-    def stop(self) -> None:
-        """Halt polling and drain any in-flight DB worker."""
-        self._refresh_timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._refresh_signals.completed.disconnect(self._on_refresh_complete)
-            self._refresh_signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
-
-    # ------------------------------------------------------------------
-    # Worker scheduling
-    # ------------------------------------------------------------------
-
-    def _kick_refresh(self) -> None:
-        if self._refresh_in_flight:
-            return
-        self._refresh_in_flight = True
-        runnable = _PerfRefreshRunnable(self._db_path, self._cache_dir, self._refresh_signals)
-        self._thread_pool.start(runnable)
-
-    @Slot(dict)
-    def _on_refresh_complete(self, result: dict[str, Any]) -> None:
-        self._refresh_in_flight = False
-
+    def _apply_result(self, result: dict[str, Any]) -> None:
         by_slice_changed = result["by_slice"] != self._by_slice
         benchmark_changed = result["benchmark_by_slice"] != self._benchmark_by_slice
         sparkline_changed = result["sparkline"] != self._sparkline
@@ -493,9 +409,8 @@ class PerformanceState(QObject):
         self._by_slice = result["by_slice"]
         self._benchmark_by_slice = result["benchmark_by_slice"]
         self._sparkline = result["sparkline"]
-        self._last_refreshed_at = result["refreshed_at"]
 
-        # Compute staleness and snapshot presence
+        # Compute staleness and snapshot presence.
         now = datetime.now(tz=UTC)
         newest = result.get("newest_recorded_at")
         new_has_snapshot = newest is not None
@@ -511,7 +426,6 @@ class PerformanceState(QObject):
         self._has_snapshot = new_has_snapshot
         self._stale_as_of = new_stale_as_of
 
-        self.lastRefreshedAtChanged.emit()
         if by_slice_changed:
             self.bySliceChanged.emit()
         if benchmark_changed:
@@ -522,23 +436,6 @@ class PerformanceState(QObject):
             self.isStaleChanged.emit()
             self.hasSnapshotChanged.emit()
             self.staleAsOfChanged.emit()
-
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
-
-    # ------------------------------------------------------------------
-    # Q_PROPERTY accessors
-    # ------------------------------------------------------------------
 
     def _get_by_slice(self) -> dict:
         return self._by_slice
@@ -558,15 +455,6 @@ class PerformanceState(QObject):
     def _get_stale_as_of(self) -> str:
         return self._stale_as_of
 
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
     bySlice = Property(  # noqa: N815
         "QVariantMap", _get_by_slice, notify=bySliceChanged
     )
@@ -579,10 +467,5 @@ class PerformanceState(QObject):
     isStale = Property(bool, _get_is_stale, notify=isStaleChanged)  # noqa: N815
     hasSnapshot = Property(bool, _get_has_snapshot, notify=hasSnapshotChanged)  # noqa: N815
     staleAsOf = Property(str, _get_stale_as_of, notify=staleAsOfChanged)  # noqa: N815
-    lastRefreshedAt = Property(  # noqa: N815
-        str, _get_last_refreshed_at, notify=lastRefreshedAtChanged
-    )
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(  # noqa: N815
-        str, _get_data_error_message, notify=dataStatusChanged
-    )
+
+    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel

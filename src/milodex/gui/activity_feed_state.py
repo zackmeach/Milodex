@@ -66,18 +66,10 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (  # pragma: no cover
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
 from milodex.gui._dashboard_scope import EXPLANATION_PAPER_SQL, TRADE_PAPER_SQL
+from milodex.gui.polling_lifecycle import PollingReadModel
 
 logger = logging.getLogger(__name__)
 
@@ -266,34 +258,10 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-class _ActivityFeedRefreshSignals(QObject):
-    """Signal carrier for the ActivityFeedState refresh worker."""
-
-    completed = Signal(dict)
-    failed = Signal(str)
-
-
-class _ActivityFeedRefreshRunnable(QRunnable):
-    """One-shot refresh executed on a QThreadPool worker thread."""
-
-    def __init__(
-        self,
-        db_path: Path,
-        signals: _ActivityFeedRefreshSignals,
-    ) -> None:
-        super().__init__()
-        self._db_path = db_path
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover — exercised via tests with fixture DBs
-        try:
-            rows = _query_feed(self._db_path)
-            now = datetime.now(tz=UTC)
-            self._signals.completed.emit({"rows": rows, "refreshed_at": now.isoformat()})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ActivityFeedState: DB refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
+def _build_feed_snapshot(db_path: Path) -> dict[str, Any]:
+    """Adapter for ``PollingReadModel`` — packs activity feed query into polling dict."""
+    rows = _query_feed(db_path)
+    return {"rows": rows, "lastRefreshedAt": datetime.now(tz=UTC).isoformat()}
 
 
 # ---------------------------------------------------------------------------
@@ -301,27 +269,27 @@ class _ActivityFeedRefreshRunnable(QRunnable):
 # ---------------------------------------------------------------------------
 
 
-class ActivityFeedState(QObject):
+class ActivityFeedState(PollingReadModel):
     """Paper-scoped activity feed state exposed to QML as Q_PROPERTYs.
 
-    See module docstring for threading model, feed shape, and paper scoping.
+    Inherits the canonical polling lifecycle from
+    :class:`milodex.gui.polling_lifecycle.PollingReadModel`. See module
+    docstring for feed shape and paper scoping.
 
     Q_PROPERTYs
     -----------
     - ``rows``             — QVariantList of normalized dicts, newest-first, ≤200
-    - ``lastRefreshedAt``  — ISO timestamp of last successful refresh
-    - ``dataStatus``       — one of: ``loading``, ``ready``, ``error``
-    - ``dataErrorMessage`` — error message (empty unless dataStatus == ``error``)
+    - ``lastRefreshedAt``  — inherited (ISO timestamp of last successful refresh)
+    - ``dataStatus``       — inherited (``loading`` / ``ready`` / ``error``)
+    - ``dataErrorMessage`` — inherited (empty unless dataStatus == ``error``)
 
     Client-side filtering note
     --------------------------
     QML PR 8 filters All / Orders / Rejections / Signals / Fills client-side
-    on the ``kind`` field.  The full capped feed is always emitted here.
+    on the ``kind`` field. The full capped feed is always emitted here.
     """
 
     rowsChanged = Signal()  # noqa: N815
-    lastRefreshedAtChanged = Signal()  # noqa: N815
-    dataStatusChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -329,118 +297,27 @@ class ActivityFeedState(QObject):
         refresh_interval_ms: int = 30_000,
         parent: QObject | None = None,
     ) -> None:
-        super().__init__(parent)
-
         if db_path is None:
             from milodex.config import get_data_dir
 
             db_path = get_data_dir() / "milodex.db"
         self._db_path = db_path
-
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
-        # State backing fields
         self._rows: list[dict[str, Any]] = []
-        self._last_refreshed_at: str = ""
-        self._data_status: str = "loading"
-        self._data_error_message: str = ""
-
-        # QTimer
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(self._refresh_interval_ms)
-        self._refresh_timer.timeout.connect(self._kick_refresh)
-
-        # Signal carrier
-        self._refresh_signals = _ActivityFeedRefreshSignals(self)
-        self._refresh_signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._refresh_signals.failed.connect(
-            self._on_refresh_failed, Qt.ConnectionType.QueuedConnection
+        super().__init__(
+            builder=lambda: _build_feed_snapshot(db_path),
+            refresh_interval_ms=refresh_interval_ms,
+            parent=parent,
         )
 
-        self._refresh_in_flight: bool = False
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def start(self) -> None:
-        """Begin periodic DB polling with an immediate first refresh."""
-        self._kick_refresh()
-        if not self._refresh_timer.isActive():
-            self._refresh_timer.start()
-
-    def stop(self) -> None:
-        """Halt polling and drain any in-flight DB worker."""
-        self._refresh_timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._refresh_signals.completed.disconnect(self._on_refresh_complete)
-            self._refresh_signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
-
-    # ------------------------------------------------------------------
-    # Worker scheduling
-    # ------------------------------------------------------------------
-
-    def _kick_refresh(self) -> None:
-        if self._refresh_in_flight:
-            return
-        self._refresh_in_flight = True
-        runnable = _ActivityFeedRefreshRunnable(self._db_path, self._refresh_signals)
-        self._thread_pool.start(runnable)
-
-    @Slot(dict)
-    def _on_refresh_complete(self, result: dict[str, Any]) -> None:
-        self._refresh_in_flight = False
-
+    def _apply_result(self, result: dict[str, Any]) -> None:
         rows_changed = result["rows"] != self._rows
         self._rows = result["rows"]
-        self._last_refreshed_at = result["refreshed_at"]
-
-        self.lastRefreshedAtChanged.emit()
         if rows_changed:
             self.rowsChanged.emit()
-
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
-
-    # ------------------------------------------------------------------
-    # Q_PROPERTY accessors
-    # ------------------------------------------------------------------
 
     def _get_rows(self) -> list:
         return self._rows
 
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
     rows = Property("QVariantList", _get_rows, notify=rowsChanged)
-    lastRefreshedAt = Property(  # noqa: N815
-        str, _get_last_refreshed_at, notify=lastRefreshedAtChanged
-    )
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(  # noqa: N815
-        str, _get_data_error_message, notify=dataStatusChanged
-    )
+
+    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel
