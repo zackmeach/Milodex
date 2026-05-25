@@ -61,17 +61,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (  # pragma: no cover
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
+from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.gui.strategy_bank_state import _compute_gate_failures, _query_bank
 from milodex.promotion.state_machine import MIN_TRADES
 
@@ -405,30 +397,11 @@ def _build_drift_list(
 # ---------------------------------------------------------------------------
 
 
-class _AttentionRefreshSignals(QObject):
-    """Signal carrier for the AttentionState refresh worker."""
-
-    completed = Signal(dict)
-    failed = Signal(str)
-
-
-class _AttentionRefreshRunnable(QRunnable):
-    """One-shot DB refresh executed on a QThreadPool worker thread."""
-
-    def __init__(self, db_path: Path, signals: _AttentionRefreshSignals) -> None:
-        super().__init__()
-        self._db_path = db_path
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover — exercised via tests with fixture DBs
-        try:
-            result = _query_attention(self._db_path)
-            result["refreshed_at"] = datetime.now(tz=UTC).isoformat()
-            self._signals.completed.emit(result)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("AttentionState: DB refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
+def _build_attention_snapshot(db_path: Path) -> dict[str, Any]:
+    """Adapter for ``PollingReadModel`` — packs attention query into polling dict."""
+    result = _query_attention(db_path)
+    result["lastRefreshedAt"] = datetime.now(tz=UTC).isoformat()
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -436,17 +409,16 @@ class _AttentionRefreshRunnable(QRunnable):
 # ---------------------------------------------------------------------------
 
 
-class AttentionState(QObject):
+class AttentionState(PollingReadModel):
     """Attention-state rollups and drift list exposed to QML as Q_PROPERTYs.
 
-    See module docstring for threading model, locked definitions, and
-    scope-drift notes.
+    Inherits the canonical polling lifecycle from
+    :class:`milodex.gui.polling_lifecycle.PollingReadModel`. See module
+    docstring for locked definitions and scope-drift notes.
     """
 
     rollupsChanged = Signal()  # noqa: N815
     driftListChanged = Signal()  # noqa: N815
-    lastRefreshedAtChanged = Signal()  # noqa: N815
-    dataStatusChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -454,80 +426,20 @@ class AttentionState(QObject):
         refresh_interval_ms: int = 30_000,
         parent: QObject | None = None,
     ) -> None:
-        super().__init__(parent)
-
         if db_path is None:
             from milodex.config import get_data_dir
 
             db_path = get_data_dir() / "milodex.db"
         self._db_path = db_path
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
-        # State backing fields
         self._rollups: dict[str, Any] = {}
         self._drift_list: list[dict[str, Any]] = []
-        self._last_refreshed_at: str = ""
-        self._data_status: str = "loading"
-        self._data_error_message: str = ""
-
-        # QTimer
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(self._refresh_interval_ms)
-        self._refresh_timer.timeout.connect(self._kick_refresh)
-
-        # Signal carrier
-        self._refresh_signals = _AttentionRefreshSignals(self)
-        self._refresh_signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._refresh_signals.failed.connect(
-            self._on_refresh_failed, Qt.ConnectionType.QueuedConnection
+        super().__init__(
+            builder=lambda: _build_attention_snapshot(db_path),
+            refresh_interval_ms=refresh_interval_ms,
+            parent=parent,
         )
 
-        self._refresh_in_flight: bool = False
-
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def start(self) -> None:
-        """Begin periodic DB polling with an immediate first refresh."""
-        self._kick_refresh()
-        if not self._refresh_timer.isActive():
-            self._refresh_timer.start()
-
-    def stop(self) -> None:
-        """Halt polling and drain any in-flight DB worker.
-
-        Idempotent.  Drains the per-instance pool before disconnecting signals
-        to prevent teardown-race on Windows shutdown.
-        """
-        self._refresh_timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._refresh_signals.completed.disconnect(self._on_refresh_complete)
-            self._refresh_signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
-
-    # ------------------------------------------------------------------
-    # Worker scheduling
-    # ------------------------------------------------------------------
-
-    def _kick_refresh(self) -> None:
-        if self._refresh_in_flight:
-            return
-        self._refresh_in_flight = True
-        runnable = _AttentionRefreshRunnable(self._db_path, self._refresh_signals)
-        self._thread_pool.start(runnable)
-
-    @Slot(dict)
-    def _on_refresh_complete(self, result: dict[str, Any]) -> None:
-        self._refresh_in_flight = False
-
+    def _apply_result(self, result: dict[str, Any]) -> None:
         new_rollups = {
             "runningNow": result["running_now"],
             "paperTesting": len(result["paper_list"]),
@@ -537,33 +449,12 @@ class AttentionState(QObject):
         }
         rollups_changed = new_rollups != self._rollups
         drift_changed = result["drift_list"] != self._drift_list
-
         self._rollups = new_rollups
         self._drift_list = result["drift_list"]
-        self._last_refreshed_at = result["refreshed_at"]
-        self.lastRefreshedAtChanged.emit()
-
         if rollups_changed:
             self.rollupsChanged.emit()
         if drift_changed:
             self.driftListChanged.emit()
-
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
-
-    # ------------------------------------------------------------------
-    # Q_PROPERTY accessors
-    # ------------------------------------------------------------------
 
     def _get_rollups(self) -> dict:
         return self._rollups
@@ -571,23 +462,9 @@ class AttentionState(QObject):
     def _get_drift_list(self) -> list:
         return self._drift_list
 
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
     rollups = Property("QVariantMap", _get_rollups, notify=rollupsChanged)
     driftList = Property(  # noqa: N815
         "QVariantList", _get_drift_list, notify=driftListChanged
     )
-    lastRefreshedAt = Property(  # noqa: N815
-        str, _get_last_refreshed_at, notify=lastRefreshedAtChanged
-    )
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(  # noqa: N815
-        str, _get_data_error_message, notify=dataStatusChanged
-    )
+
+    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel
