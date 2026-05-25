@@ -593,9 +593,7 @@ def test_propose_demote_with_active_runner_blocks_required_readiness(
     )
 
     assert "reconciliation_drift" in {b.reason_code for b in proposal.blockers}
-    assert readiness.calls[0]["required_checks"] == frozenset(
-        {"reconciliation", "kill_switch"}
-    )
+    assert readiness.calls[0]["required_checks"] == frozenset({"reconciliation", "kill_switch"})
     assert readiness.calls[0]["inspected_checks"] == frozenset(
         {"data_freshness", "broker_reachability"}
     )
@@ -789,8 +787,7 @@ def test_propose_stop_paper_runner_blocks_only_required_kill_switch_readiness(
 
     assert {b.reason_code for b in proposal.blockers} == {"kill_switch_open"}
     readiness_issues = {
-        issue["reason_code"]
-        for issue in proposal.projected_outcome["workflow_readiness"]["issues"]
+        issue["reason_code"] for issue in proposal.projected_outcome["workflow_readiness"]["issues"]
     }
     assert readiness_issues == {
         "kill_switch_open",
@@ -1057,11 +1054,7 @@ class _FakeWalkForwardEngine:
         self.bar_size: str = "1D"
         # Kept ``_loaded`` stub for any legacy access path that still reads
         # ``tempo["bar_size"]`` via the loaded config; harmless if unused.
-        self._loaded = type("_L", (), {
-            "config": type("_C", (), {
-                "tempo": {"bar_size": "1D"}
-            })()
-        })()
+        self._loaded = type("_L", (), {"config": type("_C", (), {"tempo": {"bar_size": "1D"}})()})()
 
     def prefetch_bars(self, start: date, end: date, *, timeframe=None) -> dict[str, BarSet]:  # noqa: ARG002
         self.prefetched = (start, end)
@@ -1117,15 +1110,18 @@ def test_submit_backtest_runs_single_period_engine_and_returns_payload(
 
     assert result.status == "submitted", result.blockers
     assert engine.calls == [(date(2020, 1, 1), date(2020, 1, 8), "bench-run")]
-    assert result.durable_refs.items() >= {
-        "run_id": "bench-run",
-        "strategy_id": STRATEGY_ID,
-        "start": "2020-01-01",
-        "end": "2020-01-08",
-        "walk_forward": "false",
-        "risk_policy": "bypass",
-        "backtest_run_db_id": "101",
-    }.items()
+    assert (
+        result.durable_refs.items()
+        >= {
+            "run_id": "bench-run",
+            "strategy_id": STRATEGY_ID,
+            "start": "2020-01-01",
+            "end": "2020-01-08",
+            "walk_forward": "false",
+            "risk_policy": "bypass",
+            "backtest_run_db_id": "101",
+        }.items()
+    )
     assert result.durable_refs["orchestration_job_id"]
     assert result.durable_refs["orchestration_batch_id"]
     job = event_store.get_orchestration_job(result.durable_refs["orchestration_job_id"])
@@ -2259,6 +2255,7 @@ def test__submit_with_config_returns_action_family_mismatch_when_proposal_wrong_
     result = facade._submit_with_config(
         proposal,
         expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        caller_method="submit_freeze_manifest",
         revalidate=_record_revalidate,
         dispatch=_record_dispatch,
     )
@@ -2266,6 +2263,39 @@ def test__submit_with_config_returns_action_family_mismatch_when_proposal_wrong_
     assert result.status == "error"
     assert any(b.reason_code == "proposal_action_family_mismatch" for b in result.blockers)
     assert calls == {"revalidate": 0, "dispatch": 0}
+
+
+def test__action_family_mismatch_message_names_the_calling_submit(
+    make_facade, config_dir: Path
+) -> None:
+    """Per-method specificity in the mismatch error message — `caller_method`
+    appears in the blocker text so an operator reading raw logs can tell
+    which submit refused the proposal without cross-referencing context.
+
+    Opus reviewer 2026-05-24 flagged a regression where PR #185 collapsed
+    all three submits into a shared ``_submit_with_config`` shell and the
+    message lost its per-method prefix (became ``"submit received..."``
+    instead of ``"submit_freeze_manifest received..."`` etc).
+    """
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    proposal = _admissible_proposal(ACTION_FAMILY_DEMOTE)  # wrong family
+
+    result = facade._submit_with_config(
+        proposal,
+        expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        caller_method="submit_freeze_manifest",
+        revalidate=lambda: _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST),
+        dispatch=lambda *args, **kwargs: _shell_dispatch_success(proposal, None, None, None),
+    )
+
+    mismatch_blockers = [
+        b for b in result.blockers if b.reason_code == "proposal_action_family_mismatch"
+    ]
+    assert len(mismatch_blockers) == 1
+    assert "submit_freeze_manifest received" in mismatch_blockers[0].message, (
+        f"caller_method must appear in message; got {mismatch_blockers[0].message!r}"
+    )
 
 
 def test__submit_with_config_requires_event_store_before_dispatch(
@@ -2291,6 +2321,7 @@ def test__submit_with_config_requires_event_store_before_dispatch(
     result = facade._submit_with_config(
         proposal,
         expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        caller_method="submit_freeze_manifest",
         revalidate=_record_revalidate,
         dispatch=_record_dispatch,
     )
@@ -2331,6 +2362,7 @@ def test__submit_with_config_returns_blocked_when_revalidation_is_inadmissible(
     result = facade._submit_with_config(
         proposal,
         expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        caller_method="submit_freeze_manifest",
         revalidate=lambda: stale,
         dispatch=_record_dispatch,
     )
@@ -2341,7 +2373,8 @@ def test__submit_with_config_returns_blocked_when_revalidation_is_inadmissible(
 
 
 def test__submit_with_config_returns_blocked_when_resolve_config_fails(
-    make_facade, config_dir: Path  # noqa: ARG001  config_dir intentionally empty
+    make_facade,
+    config_dir: Path,  # noqa: ARG001  config_dir intentionally empty
 ) -> None:
     """Shell returns a `blocked` CommandResult with `strategy_not_found` when
     `_resolve_config` cannot locate the strategy's YAML. Dispatch is NOT
@@ -2359,6 +2392,7 @@ def test__submit_with_config_returns_blocked_when_resolve_config_fails(
     result = facade._submit_with_config(
         proposal,
         expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        caller_method="submit_freeze_manifest",
         revalidate=lambda: _admissible_proposal(ACTION_FAMILY_FREEZE_MANIFEST),
         dispatch=_record_dispatch,
     )
@@ -2395,6 +2429,7 @@ def test__submit_with_config_forwards_revalidation_to_dispatch(
     result = facade._submit_with_config(
         proposal,
         expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+        caller_method="submit_freeze_manifest",
         revalidate=lambda: revalidation_result,
         dispatch=_record_dispatch,
     )
