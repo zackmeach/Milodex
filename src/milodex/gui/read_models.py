@@ -15,14 +15,13 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
-from PySide6.QtCore import Property, QObject, QRunnable, Qt, QThreadPool, QTimer, Signal, Slot
+from PySide6.QtCore import Property, Signal, Slot
 
 from milodex.gui.bench_v1 import (
     BenchStrategyState,
@@ -32,6 +31,7 @@ from milodex.gui.bench_v1 import (
     Stage,
     compute_menu_items,
 )
+from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
 from milodex.strategies.loader import StrategyConfig, load_strategy_config
 
@@ -125,117 +125,7 @@ class _StrategyRow:
         }
 
 
-class _RefreshSignals(QObject):
-    completed = Signal(dict)
-    failed = Signal(str)
-
-
-class _RefreshRunnable(QRunnable):
-    def __init__(self, builder: Callable[[], dict[str, Any]], signals: _RefreshSignals) -> None:
-        super().__init__()
-        self._builder = builder
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover - exercised through QObject lifecycle tests
-        try:
-            self._signals.completed.emit(self._builder())
-        except Exception as exc:  # noqa: BLE001 - read model sources can fail in varied ways
-            logger.warning("GUI read-model refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
-
-
-class _PollingReadModel(QObject):
-    """Shared Q_PROPERTY lifecycle for read-only GUI models."""
-
-    dataStatusChanged = Signal()  # noqa: N815
-    refreshedAtChanged = Signal()  # noqa: N815
-
-    def __init__(
-        self,
-        *,
-        builder: Callable[[], dict[str, Any]],
-        refresh_interval_ms: int = 30_000,
-        parent: QObject | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self._builder = builder
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-        self._data_status = "loading"
-        self._data_error_message = ""
-        self._last_refreshed_at = ""
-        self._refresh_in_flight = False
-
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
-        self._timer = QTimer(self)
-        self._timer.setInterval(self._refresh_interval_ms)
-        self._timer.timeout.connect(self._kick_refresh)
-
-        self._signals = _RefreshSignals(self)
-        self._signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._signals.failed.connect(self._on_refresh_failed, Qt.ConnectionType.QueuedConnection)
-
-    def start(self) -> None:
-        self._kick_refresh()
-        if not self._timer.isActive():
-            self._timer.start()
-
-    def stop(self) -> None:
-        self._timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._signals.completed.disconnect(self._on_refresh_complete)
-            self._signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass
-
-    def _kick_refresh(self) -> None:
-        if self._refresh_in_flight:
-            return
-        self._refresh_in_flight = True
-        self._thread_pool.start(_RefreshRunnable(self._builder, self._signals))
-
-    @Slot(dict)
-    def _on_refresh_complete(self, result: dict[str, Any]) -> None:
-        self._refresh_in_flight = False
-        self._last_refreshed_at = str(result.get("lastRefreshedAt") or _now_iso())
-        self.refreshedAtChanged.emit()
-        self._apply_result(result)
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
-
-    def _apply_result(self, result: dict[str, Any]) -> None:
-        raise NotImplementedError
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(str, _get_data_error_message, notify=dataStatusChanged)  # noqa: N815
-    lastRefreshedAt = Property(str, _get_last_refreshed_at, notify=refreshedAtChanged)  # noqa: N815
-
-
-class FrontPageState(_PollingReadModel):
+class FrontPageState(PollingReadModel):
     """Read model for the calm FRONT digest."""
 
     summaryChanged = Signal()  # noqa: N815
@@ -259,7 +149,7 @@ class FrontPageState(_PollingReadModel):
     summary = Property("QVariantMap", _get_summary, notify=summaryChanged)
 
 
-class BenchState(_PollingReadModel):
+class BenchState(PollingReadModel):
     """Read model for the Phase 5 view-only strategy bench."""
 
     sectionsChanged = Signal()  # noqa: N815
@@ -295,7 +185,7 @@ class BenchState(_PollingReadModel):
     selectedStrategyId = Property(str, _get_selected_strategy_id, notify=selectedStrategyChanged)  # noqa: N815
 
 
-class KanbanState(_PollingReadModel):
+class KanbanState(PollingReadModel):
     """Read model for the Phase 6 read-only operator Kanban."""
 
     lanesChanged = Signal()  # noqa: N815
@@ -329,7 +219,7 @@ class KanbanState(_PollingReadModel):
     summary = Property("QVariantMap", _get_summary, notify=summaryChanged)
 
 
-class LedgerState(_PollingReadModel):
+class LedgerState(PollingReadModel):
     """Read model for the filterable paper-of-record ledger."""
 
     entriesChanged = Signal()  # noqa: N815
@@ -729,15 +619,12 @@ _ACTION_INTENT_COPY: dict[str, str] = {
         "Restore this strategy to a previously eligible stage or return it to the idle shelf."
     ),
     "start_trading": (
-        "Start a paper trading session for this strategy through the controlled "
-        "runner boundary."
+        "Start a paper trading session for this strategy through the controlled runner boundary."
     ),
     "stop_trading": (
         "Request a controlled stop for the current paper session. This is not the kill switch."
     ),
-    "initiate_backtest": (
-        "Run canonical walk-forward backtest evidence for this strategy."
-    ),
+    "initiate_backtest": ("Run canonical walk-forward backtest evidence for this strategy."),
     "refresh_backtest": (
         "Refresh aging or stale evidence with the canonical walk-forward backtest."
     ),
@@ -1296,9 +1183,7 @@ def _new_strategy_entries(conn: sqlite3.Connection, configs_dir: Path) -> list[d
     for yaml_path in Path(configs_dir).glob("*.yaml"):
         sid = _strategy_id_from_yaml(yaml_path)
         if sid and sid not in seen_with_history:
-            mtime_iso = datetime.fromtimestamp(
-                yaml_path.stat().st_mtime, tz=UTC
-            ).isoformat()
+            mtime_iso = datetime.fromtimestamp(yaml_path.stat().st_mtime, tz=UTC).isoformat()
             entries.append(
                 {
                     "timestamp": mtime_iso,
