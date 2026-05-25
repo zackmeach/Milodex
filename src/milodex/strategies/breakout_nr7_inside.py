@@ -17,6 +17,7 @@ from milodex.strategies.daily_cross_sectional import (
     assemble_entry_decision,
     evaluate_pre_entry_gates,
     normalize_universe_and_positions,
+    rank_candidates,
 )
 
 _VALID_RANKING_METRICS = {"nr7_range_ascending"}
@@ -62,12 +63,15 @@ class BreakoutNr7InsideStrategy(Strategy):
         capacity = gated.capacity
 
         candidates = _entry_candidates(
-            context.universe, norm.bars_by_symbol, remaining_after_exits, parameters,
-            rejected_alternatives
+            context.universe,
+            norm.bars_by_symbol,
+            remaining_after_exits,
+            parameters,
+            rejected_alternatives,
         )
         # NR7 ranks ascending by range (tightest contraction first); pre-rank before helper
         if parameters["ranking_enabled"]:
-            candidates = sorted(candidates, key=lambda item: (item[2], item[0]))
+            candidates = rank_candidates(candidates, key_fn=lambda c: (c[2], c[0]))
 
         def entry_narrative(
             primary: tuple[str, float, float], entry_intents: list[TradeIntent]

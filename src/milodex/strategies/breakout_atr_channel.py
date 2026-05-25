@@ -19,6 +19,7 @@ from milodex.strategies.daily_cross_sectional import (
     assemble_entry_decision,
     evaluate_pre_entry_gates,
     normalize_universe_and_positions,
+    rank_candidates,
 )
 
 
@@ -64,11 +65,14 @@ class BreakoutAtrChannelStrategy(Strategy):
         capacity = gated.capacity
 
         candidates = _entry_candidates(
-            context.universe, norm.bars_by_symbol, remaining_after_exits, parameters,
-            rejected_alternatives
+            context.universe,
+            norm.bars_by_symbol,
+            remaining_after_exits,
+            parameters,
+            rejected_alternatives,
         )
         if parameters["ranking_enabled"]:
-            candidates = sorted(candidates, key=lambda item: (-item[2], item[0]))
+            candidates = rank_candidates(candidates, key_fn=lambda c: (-c[2], c[0]))
 
         def entry_narrative(
             primary: tuple[str, float, float], entry_intents: list[TradeIntent]
@@ -199,9 +203,7 @@ def _exit_intents(
 
 def _exit_narrative(rule: str, symbol: str, params: dict[str, Any]) -> str:
     if rule == "breakout.atr_stop":
-        return (
-            f"close breached entry × {params['atr_stop_multiplier']} ATR stop → sell {symbol}"
-        )
+        return f"close breached entry × {params['atr_stop_multiplier']} ATR stop → sell {symbol}"
     if rule == "breakout.max_hold":
         return f"held >= max_hold_days {params['max_hold_days']} → sell {symbol}"
     if rule == "breakout.atr_channel_exit":

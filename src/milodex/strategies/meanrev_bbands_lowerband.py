@@ -19,7 +19,11 @@ from milodex.strategies.daily_cross_sectional import (
     assemble_entry_decision,
     evaluate_pre_entry_gates,
     normalize_universe_and_positions,
+    rank_candidates,
 )
+
+_VALID_SIZING_RULES = {"equal_notional", "fixed_notional"}
+_VALID_RANKING_METRICS = {"bbands_zscore_ascending"}
 
 
 class MeanrevBbandsLowerbandStrategy(Strategy):
@@ -63,12 +67,15 @@ class MeanrevBbandsLowerbandStrategy(Strategy):
         capacity = gated.capacity
 
         candidates = _entry_candidates(
-            context.universe, norm.bars_by_symbol, remaining_after_exits, parameters,
-            rejected_alternatives
+            context.universe,
+            norm.bars_by_symbol,
+            remaining_after_exits,
+            parameters,
+            rejected_alternatives,
         )
         # bbands ranks ascending by zscore (most negative / most oversold first)
         if parameters["ranking_enabled"]:
-            candidates = sorted(candidates, key=lambda item: (item[2], item[0]))
+            candidates = rank_candidates(candidates, key_fn=lambda c: (c[2], c[0]))
 
         def entry_narrative(
             primary: tuple[str, float, float], entry_intents: list[TradeIntent]
@@ -97,6 +104,17 @@ class MeanrevBbandsLowerbandStrategy(Strategy):
 
 def _validated(context: StrategyContext) -> dict[str, Any]:
     params = context.parameters
+    sizing_rule = str(params["sizing_rule"])
+    ranking_metric = str(params["ranking_metric"])
+    if sizing_rule not in _VALID_SIZING_RULES:
+        raise ValueError(
+            f"invalid sizing_rule {sizing_rule!r}; expected one of {sorted(_VALID_SIZING_RULES)}"
+        )
+    if ranking_metric not in _VALID_RANKING_METRICS:
+        raise ValueError(
+            f"invalid ranking_metric {ranking_metric!r}; "
+            f"expected one of {sorted(_VALID_RANKING_METRICS)}"
+        )
     return {
         "bbands_lookback": int(params["bbands_lookback"]),
         "bbands_stddev": float(params["bbands_stddev"]),
@@ -104,10 +122,10 @@ def _validated(context: StrategyContext) -> dict[str, Any]:
         "stop_loss_pct": float(params["stop_loss_pct"]),
         "max_hold_days": int(params["max_hold_days"]),
         "max_concurrent_positions": int(params["max_concurrent_positions"]),
-        "sizing_rule": str(params["sizing_rule"]),
+        "sizing_rule": sizing_rule,
         "per_position_notional_pct": float(params["per_position_notional_pct"]),
         "ranking_enabled": bool(params["ranking_enabled"]),
-        "ranking_metric": str(params["ranking_metric"]),
+        "ranking_metric": ranking_metric,
     }
 
 
@@ -188,9 +206,7 @@ def _exit_intents(
 
 def _exit_narrative(rule: str, symbol: str, params: dict[str, Any]) -> str:
     if rule == "meanrev.bbands_stop_loss":
-        return (
-            f"close breached stop_loss {params['stop_loss_pct']:.2%} from entry → sell {symbol}"
-        )
+        return f"close breached stop_loss {params['stop_loss_pct']:.2%} from entry → sell {symbol}"
     if rule == "meanrev.bbands_max_hold":
         return f"held >= max_hold_days {params['max_hold_days']} → sell {symbol}"
     if rule == "meanrev.bbands_exit":
