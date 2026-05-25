@@ -17,6 +17,7 @@ Public submodules:
 
 from milodex.promotion.evidence import EvidencePackage, assemble_evidence_package
 from milodex.promotion.manifest import (
+    FROZEN_STAGES,
     freeze_manifest,
     get_active_manifest_hash,
     resolve_strategy_config_path,
@@ -58,6 +59,7 @@ __all__ = [
     "REASON_MISSING_BACKTEST_RUN",
     "RECOGNIZED_MODES",
     "STAGE_ORDER",
+    "FROZEN_STAGES",
     "EvidencePackage",
     "PromoteBlocked",
     "PromoteError",
