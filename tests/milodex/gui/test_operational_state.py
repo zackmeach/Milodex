@@ -72,8 +72,10 @@ def test_account_to_snapshot_shape() -> None:
     assert snap["cash"] == 400.0
     assert snap["buying_power"] == 800.0
     assert snap["open_positions_count"] == 1
-    # refreshed_at is an ISO-8601 timestamp; just check it parses.
-    assert datetime.fromisoformat(snap["refreshed_at"])
+    # lastRefreshedAt is an ISO-8601 timestamp; just check it parses.
+    # (Pre-PR D this key was "refreshed_at"; renamed to match the
+    # PollingReadModel base contract — see RM-007 PR D.)
+    assert datetime.fromisoformat(snap["lastRefreshedAt"])
 
 
 # ---------------------------------------------------------------------------
@@ -227,8 +229,8 @@ def test_broker_state_updates_from_factory_call(qapp) -> None:
     factory = MagicMock(return_value=broker)
     state = _make_state(factory=factory)
 
-    state._kick_broker_poll()  # noqa: SLF001
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+    state._broker_poller._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
 
     assert state.brokerStatus == "connected"
     assert state.equity == 1234.56
@@ -251,15 +253,15 @@ def test_broker_failure_sets_error_status(qapp) -> None:
     state = _make_state(factory=factory)
 
     # First poll succeeds — equity = 999.0
-    state._kick_broker_poll()  # noqa: SLF001
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+    state._broker_poller._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
     assert state.brokerStatus == "connected"
     assert state.equity == 999.0
 
     # Second poll fails — broker raises
     broker.get_account.side_effect = RuntimeError("alpaca timeout")
-    state._kick_broker_poll()  # noqa: SLF001
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+    state._broker_poller._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
 
     assert state.brokerStatus == "error"
     assert "alpaca timeout" in state.brokerErrorMessage
@@ -278,15 +280,15 @@ def test_broker_recovery_clears_error(qapp) -> None:
     factory = MagicMock(return_value=broker)
     state = _make_state(factory=factory)
 
-    state._kick_broker_poll()  # noqa: SLF001
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+    state._broker_poller._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
     assert state.brokerStatus == "error"
 
     # Recover
     broker.get_account.side_effect = None
     broker.get_account.return_value = _make_account(equity=500.0, cash=100.0)
-    state._kick_broker_poll()  # noqa: SLF001
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+    state._broker_poller._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
 
     assert state.brokerStatus == "connected"
     assert state.brokerErrorMessage == ""
@@ -295,19 +297,20 @@ def test_broker_recovery_clears_error(qapp) -> None:
 
 @_skip_no_qt
 def test_start_stop_lifecycle(qapp) -> None:
-    """start() begins polling; stop() halts it.  No errors either way."""
+    """start() begins polling; stop() halts it.  No errors either way.
+
+    Broker-half lifecycle (timer active / pool drain) is now owned by the
+    composed _BrokerPoller (RM-007 PR D) and covered ONCE in
+    test_polling_lifecycle.py. This test just asserts the kill-switch timer
+    bridges through start()/stop() correctly.
+    """
     _ = qapp
     state = _make_state()
     state.start()
     assert state._kill_switch_timer.isActive()  # noqa: SLF001
-    assert state._broker_timer.isActive()  # noqa: SLF001
 
     state.stop()
     assert not state._kill_switch_timer.isActive()  # noqa: SLF001
-    assert not state._broker_timer.isActive()  # noqa: SLF001
-    # stop() itself already drains; the call here is a belt-and-braces check
-    # that there is nothing left to drain (i.e. it's idempotent).
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
 
 
 @_skip_no_qt
@@ -334,83 +337,10 @@ def test_reset_kill_switch_requires_confirmation_token(qapp) -> None:
     assert state.killSwitchActive is False
 
 
-@_skip_no_qt
-def test_concurrent_poll_kicks_drop_when_in_flight(qapp) -> None:
-    """A second _kick_broker_poll while one is in flight is a no-op (no pile-up)."""
-    _ = qapp
-    state = _make_state()
-    state._broker_poll_in_flight = True  # noqa: SLF001 — simulate in-flight
-    factory_calls_before = state._broker_factory.call_count  # noqa: SLF001
-
-    state._kick_broker_poll()  # noqa: SLF001
-    # No new worker scheduled while in-flight; the factory wasn't called again.
-    assert state._broker_factory.call_count == factory_calls_before  # noqa: SLF001
-
-
-@_skip_no_qt
-def test_stop_drains_in_flight_broker_worker(qapp) -> None:
-    """stop() must wait for in-flight broker workers to complete before returning.
-
-    Defends the architectural contract that the load-bearing failure mode on
-    Windows shutdown — worker emits signal to a torn-down OperationalState —
-    cannot occur.  Replicates the pattern Strategy Bank / Attribution will
-    inherit; this test is the regression guard.
-
-    Strategy: the broker mock blocks on get_account() until the test releases
-    a threading.Event.  We kick a poll, then call stop() while the worker is
-    blocked.  stop() must not return until the worker has finished.  After
-    stop() returns the OperationalState can be safely destroyed.
-    """
-    import threading
-    import time
-
-    from milodex.gui.operational_state import OperationalState
-
-    release = threading.Event()
-    worker_ran = threading.Event()
-
-    def slow_get_account():
-        worker_ran.set()  # signal that the worker started
-        release.wait(timeout=5.0)  # block until the test releases us
-        return _make_account()
-
-    broker = MagicMock()
-    broker.get_account.side_effect = slow_get_account
-    broker.is_market_open.return_value = True
-    broker.get_positions.return_value = []
-    factory = MagicMock(return_value=broker)
-
-    store = MagicMock()
-    store.get_state.return_value = MagicMock(active=False, reason=None, last_triggered_at=None)
-
-    state = OperationalState(
-        broker_client_factory=factory,
-        kill_switch_store=store,
-        trading_mode="paper",
-        kill_switch_poll_seconds=9999.0,
-        broker_poll_seconds=9999.0,
-    )
-
-    # Kick a broker poll and wait until the worker has actually started blocking.
-    state._kick_broker_poll()  # noqa: SLF001
-    assert worker_ran.wait(timeout=3.0), "Worker did not start within 3 s"
-
-    # Release the worker and immediately call stop().  stop() must drain the
-    # pool — i.e. it must not return until the worker finishes.
-    release.set()
-    t0 = time.monotonic()
-    state.stop()
-    elapsed = time.monotonic() - t0
-
-    # The worker was unblocked synchronously before stop() was called, so stop()
-    # should return quickly (well under 1 s).  The important assertion is that
-    # the pool is now empty — no in-flight work remains.
-    assert state._thread_pool.activeThreadCount() == 0  # noqa: SLF001
-    assert elapsed < 2.0, f"stop() took {elapsed:.2f}s — should drain in well under 2 s"
-
-    # After stop() the worker's signal is disconnected; destroying state is safe
-    # even if a queued event was somehow still pending.
-    del state
+# Lifecycle scaffold tests (in-flight drop, stop-drains-worker) were removed
+# in RM-007 PR D — those contracts are now covered ONCE in
+# tests/milodex/gui/test_polling_lifecycle.py via the composed _BrokerPoller's
+# inherited PollingReadModel base.
 
 
 @_skip_no_qt
@@ -476,8 +406,8 @@ def test_daily_pnl_updates_from_broker_poll(qapp) -> None:
     factory = MagicMock(return_value=broker)
     state = _make_state(factory=factory)
 
-    state._kick_broker_poll()  # noqa: SLF001
-    _wait_for_pool(state._thread_pool)  # noqa: SLF001
+    state._broker_poller._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
 
     assert state.dailyPnl == 42.50  # noqa: N815
 

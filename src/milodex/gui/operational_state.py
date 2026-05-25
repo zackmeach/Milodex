@@ -52,20 +52,12 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
-from PySide6.QtCore import (
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Qt, QThreadPool, QTimer, Signal, Slot
 
 from milodex.broker.client import BrokerClient
 from milodex.broker.models import AccountInfo, Position
 from milodex.execution.state import KillSwitchStateStore
+from milodex.gui.polling_lifecycle import PollingReadModel
 
 logger = logging.getLogger(__name__)
 
@@ -76,59 +68,8 @@ RESET_KILL_SWITCH_TOKEN = "CONFIRM"
 
 
 # ---------------------------------------------------------------------------
-# Worker
+# Broker poll — composed PollingReadModel
 # ---------------------------------------------------------------------------
-
-
-class _BrokerPollSignals(QObject):
-    """Signal carrier for the worker — QRunnable cannot emit signals itself.
-
-    A separate QObject owns the signals; the runnable holds a reference and
-    emits on completion.  The carrier is parented to the OperationalState so
-    it lives as long as the polling lifecycle.
-    """
-
-    completed = Signal(dict)  # snapshot dict on success
-    failed = Signal(str)  # error message on failure
-
-
-class _BrokerPollRunnable(QRunnable):
-    """One-shot broker poll executed on a QThreadPool worker thread.
-
-    Calls ``broker.get_account()``, ``broker.is_market_open()``, and
-    ``broker.get_positions()`` sequentially.  On success emits
-    :attr:`_BrokerPollSignals.completed` with a snapshot dict; on any
-    exception emits :attr:`_BrokerPollSignals.failed` with the error
-    message.  The runnable does not access any QObject state directly —
-    everything flows back to the main thread via the signal carrier.
-    """
-
-    def __init__(
-        self,
-        broker_client_factory: Callable[[], BrokerClient],
-        signals: _BrokerPollSignals,
-    ) -> None:
-        super().__init__()
-        self._factory = broker_client_factory
-        self._signals = signals
-        # Workers are short-lived; the pool's auto-delete path is safe.
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover — exercised via tests with stubs
-        try:
-            broker = self._factory()
-            account = broker.get_account()
-            market_open = broker.is_market_open()
-            positions = broker.get_positions()
-            snapshot = _account_to_snapshot(
-                account=account,
-                market_open=market_open,
-                positions=positions,
-            )
-            self._signals.completed.emit(snapshot)
-        except Exception as exc:  # noqa: BLE001 — broker exceptions vary by provider
-            logger.warning("OperationalState: broker poll failed: %s", exc)
-            self._signals.failed.emit(str(exc))
 
 
 def _account_to_snapshot(
@@ -139,9 +80,10 @@ def _account_to_snapshot(
 ) -> dict[str, Any]:
     """Convert broker call results into the dict shape the main thread expects.
 
-    Pulled out as a module-level helper so it's testable without Qt.  The
-    dict shape is what :meth:`OperationalState._on_broker_complete` reads
-    to update its Q_PROPERTYs.
+    Pulled out as a module-level helper so it's testable without Qt. The
+    ``lastRefreshedAt`` key is the PollingReadModel base's contract; the
+    rest are domain fields ``OperationalState._on_broker_snapshot_ready``
+    reads to update its Q_PROPERTYs.
     """
     return {
         "market_open": bool(market_open),
@@ -150,8 +92,43 @@ def _account_to_snapshot(
         "buying_power": float(account.buying_power),
         "daily_pnl": float(account.daily_pnl),
         "open_positions_count": len(positions),
-        "refreshed_at": datetime.now(tz=UTC).isoformat(),
+        "lastRefreshedAt": datetime.now(tz=UTC).isoformat(),
     }
+
+
+def _build_broker_snapshot(broker_factory: Callable[[], BrokerClient]) -> dict[str, Any]:
+    """PollingReadModel builder — sequential broker calls + snapshot construction.
+
+    Used by the composed ``_BrokerPoller`` (private subclass below). Errors
+    bubble up naturally; ``PollingReadModel.RefreshRunnable`` catches them
+    and routes to ``dataStatus = 'error'``.
+    """
+    broker = broker_factory()
+    account = broker.get_account()
+    market_open = broker.is_market_open()
+    positions = broker.get_positions()
+    return _account_to_snapshot(account=account, market_open=market_open, positions=positions)
+
+
+class _BrokerPoller(PollingReadModel):
+    """Private composition target — feeds broker snapshots up to OperationalState.
+
+    Inherits ``PollingReadModel``'s canonical lifecycle (timer, per-instance
+    ``QThreadPool(max=1)``, in-flight drop, ``waitForDone(2000)`` shutdown,
+    last-known data preservation on error). Each successful refresh emits
+    :attr:`snapshotReady` with the broker snapshot dict.
+
+    OperationalState composes one of these for its broker half and forwards
+    ``dataStatusChanged`` / ``refreshedAtChanged`` / ``snapshotReady`` into
+    its own QML-facing signals. The kill-switch half stays on the main
+    thread inside OperationalState itself (1s cadence, local SQLite — no
+    worker pool needed).
+    """
+
+    snapshotReady = Signal(dict)  # noqa: N815
+
+    def _apply_result(self, result: dict[str, Any]) -> None:
+        self.snapshotReady.emit(result)
 
 
 # ---------------------------------------------------------------------------
@@ -181,7 +158,7 @@ class OperationalState(QObject):
         trading_mode: str,
         kill_switch_poll_seconds: float = 1.0,
         broker_poll_seconds: float = 15.0,
-        thread_pool: QThreadPool | None = None,
+        thread_pool: QThreadPool | None = None,  # noqa: ARG002 — accepted for API stability
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
@@ -191,18 +168,6 @@ class OperationalState(QObject):
         self._trading_mode = trading_mode
         self._kill_switch_poll_ms = max(1, int(kill_switch_poll_seconds * 1000))
         self._broker_poll_ms = max(1, int(broker_poll_seconds * 1000))
-
-        # Dedicated pool (max 1 thread — broker polls are sequential by design).
-        # A per-instance pool means waitForDone() in stop() drains ONLY our
-        # workers; using globalInstance() would block on unrelated pool users
-        # added by future surfaces (Strategy Bank, Attribution, etc.).
-        if thread_pool is not None:
-            self._thread_pool = thread_pool
-            self._owns_thread_pool = False
-        else:
-            self._thread_pool = QThreadPool()
-            self._thread_pool.setMaxThreadCount(1)
-            self._owns_thread_pool = True
 
         # State backing fields — see Q_PROPERTY definitions below.
         self._kill_switch_active: bool = False
@@ -216,39 +181,34 @@ class OperationalState(QObject):
         self._daily_pnl: float = 0.0
         self._currency: str = "USD"
         self._open_positions_count: int = 0
-        self._last_refreshed_at: str = ""
 
         self._broker_status: str = "stale"
         self._broker_error_message: str = ""
 
-        # KILL-SWITCH POLL THREAD: runs on the GUI thread (1s timer). SQLite
-        # reads are fast — current store size keeps _poll_kill_switch well
-        # under 1ms. If the event store grows large enough that this exceeds
-        # ~8ms, move it onto _broker_pool to avoid frame drops.
+        # KILL-SWITCH POLL: stays on the GUI thread (1s timer). SQLite reads
+        # are fast — well under 1ms with the current store size. If it ever
+        # exceeds ~8ms, move it onto a worker pool to avoid frame drops.
         # Round-2 reviewer flag; not fix-now.
         self._kill_switch_timer = QTimer(self)
         self._kill_switch_timer.setInterval(self._kill_switch_poll_ms)
         self._kill_switch_timer.timeout.connect(self._poll_kill_switch)
 
-        self._broker_timer = QTimer(self)
-        self._broker_timer.setInterval(self._broker_poll_ms)
-        self._broker_timer.timeout.connect(self._kick_broker_poll)
-
-        # Signal carrier for worker -> main-thread bridging.  Parented to
-        # this OperationalState so its lifetime is tied to ours.  The
-        # connections use QueuedConnection so the receiver runs on the
-        # main thread (the thread that owns this QObject).
-        self._poll_signals = _BrokerPollSignals(self)
-        self._poll_signals.completed.connect(
-            self._on_broker_complete, Qt.ConnectionType.QueuedConnection
+        # BROKER POLL: composed PollingReadModel (RM-007 PR D). Owns its own
+        # QTimer + per-instance QThreadPool(max=1) + in-flight drop +
+        # waitForDone(2000) shutdown + error-state preservation. Snapshots
+        # bubble up via snapshotReady; dataStatus / refreshedAtChanged are
+        # bridged into OperationalState's brokerStatus / refreshedAt below.
+        self._broker_poller = _BrokerPoller(
+            builder=lambda: _build_broker_snapshot(broker_client_factory),
+            refresh_interval_ms=self._broker_poll_ms,
+            parent=self,
         )
-        self._poll_signals.failed.connect(
-            self._on_broker_failed, Qt.ConnectionType.QueuedConnection
+        self._broker_poller.snapshotReady.connect(
+            self._on_broker_snapshot_ready, Qt.ConnectionType.QueuedConnection
         )
-
-        # Whether a broker poll is currently in flight — guards against
-        # piling up workers if the broker is slower than the poll interval.
-        self._broker_poll_in_flight: bool = False
+        # Bridge base lifecycle signals -> OperationalState's QML-facing signals.
+        self._broker_poller.refreshedAtChanged.connect(self.refreshedAtChanged)
+        self._broker_poller.dataStatusChanged.connect(self._on_broker_data_status_changed)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -257,57 +217,35 @@ class OperationalState(QObject):
     def start(self) -> None:
         """Begin polling.
 
-        Not strictly idempotent: calling twice enqueues a second immediate
-        kill-switch poll and a second broker poll attempt (the in-flight guard
-        drops the duplicate broker worker, so no pile-up occurs, but the
-        kill-switch poll does re-run).  The QTimer guards (``isActive()``)
-        prevent the timers from being restarted.  Callers should call start()
-        exactly once per lifecycle.
+        Kill-switch is read synchronously once so the GUI doesn't render a
+        stale "OPERATIONAL" first frame if the kill switch is actually active.
+        ``_broker_poller.start()`` fires an immediate broker poll AND starts
+        the 15s timer (inherited from PollingReadModel).
 
-        The kill-switch poll runs immediately so the UI has correct state
-        from the very first frame.  The broker poll fires on the next
-        timer tick (15 s) to avoid a race with QML root-object creation;
-        ``broker_status`` reads as ``"stale"`` until then.
+        Not strictly idempotent — calling twice triggers a second immediate
+        kill-switch poll. The QTimer ``isActive()`` guards prevent timer
+        double-start; PollingReadModel's in-flight guard prevents broker-
+        worker pile-up. Callers should call start() exactly once per
+        lifecycle anyway.
         """
-        # Read kill-switch state synchronously once so the GUI doesn't
-        # render a stale "OPERATIONAL" first frame if the kill switch is
-        # actually active.
         self._poll_kill_switch()
-        # Kick a broker poll right away too — better to show real numbers
-        # ASAP than wait the full interval for the first paint.
-        self._kick_broker_poll()
+        self._broker_poller.start()
         if not self._kill_switch_timer.isActive():
             self._kill_switch_timer.start()
-        if not self._broker_timer.isActive():
-            self._broker_timer.start()
 
     def stop(self) -> None:
         """Halt polling and drain any in-flight broker worker.
 
         Idempotent: safe to call from a Qt-aware shell after start(); also
-        safe to call before start() (does nothing).
+        safe to call before start() (no-op).
 
-        Drains in-flight broker work so a queued signal can never fire on a
-        torn-down receiver during interpreter shutdown — the load-bearing
-        failure mode otherwise on Windows.  Then disconnects the signals so
-        any event that slipped through the race window becomes a no-op.
-
-        This pattern is inherited by Strategy Bank, Attribution, and
-        Paper-Session Status — the drain + disconnect contract must stay here.
+        ``_broker_poller.stop()`` drains the worker via ``waitForDone(2000)``
+        and defensively disconnects its internal signals — the
+        Windows-shutdown contract is preserved by the composed
+        PollingReadModel base.
         """
         self._kill_switch_timer.stop()
-        self._broker_timer.stop()
-        # Drain any in-flight worker.  Broker calls finish in well under 1 s
-        # normally; 2 000 ms gives a generous margin for slow networks.
-        self._thread_pool.waitForDone(2000)
-        # Defensive disconnect: any event queued before waitForDone() returned
-        # (e.g. a signal the worker emitted right before the pool drained)
-        # would otherwise fire on a potentially torn-down receiver.
-        try:
-            self._poll_signals.completed.disconnect(self._on_broker_complete)
-            self._poll_signals.failed.disconnect(self._on_broker_failed)
-        except (RuntimeError, TypeError):
-            pass  # already disconnected — idempotent stop
+        self._broker_poller.stop()
 
     # ------------------------------------------------------------------
     # Kill-switch poll (main thread)
@@ -336,23 +274,19 @@ class OperationalState(QObject):
             self.killSwitchChanged.emit()
 
     # ------------------------------------------------------------------
-    # Broker poll (worker thread -> main thread via QueuedConnection)
+    # Broker poll handlers (bridged from composed _BrokerPoller)
     # ------------------------------------------------------------------
 
-    def _kick_broker_poll(self) -> None:
-        """Schedule a broker poll on the QThreadPool, dropping if one is in flight."""
-        if self._broker_poll_in_flight:
-            # Don't pile up runnables if the broker is slow.  We'll catch
-            # the next tick.
-            return
-        self._broker_poll_in_flight = True
-        runnable = _BrokerPollRunnable(self._broker_factory, self._poll_signals)
-        self._thread_pool.start(runnable)
-
     @Slot(dict)
-    def _on_broker_complete(self, snapshot: dict[str, Any]) -> None:
-        """Apply a successful broker snapshot on the main thread."""
-        self._broker_poll_in_flight = False
+    def _on_broker_snapshot_ready(self, snapshot: dict[str, Any]) -> None:
+        """Apply a successful broker snapshot on the main thread.
+
+        Called via QueuedConnection from ``_broker_poller.snapshotReady``,
+        which itself is emitted from the base's ``_apply_result`` after the
+        worker successfully built the snapshot dict. The base has already
+        cleared its in-flight flag, updated lastRefreshedAt, and emitted
+        refreshedAtChanged (which we forward) by the time this slot runs.
+        """
         market_changed = snapshot["market_open"] != self._market_open
         account_changed = (
             snapshot["equity"] != self._equity
@@ -368,32 +302,37 @@ class OperationalState(QObject):
         self._buying_power = snapshot["buying_power"]
         self._daily_pnl = snapshot["daily_pnl"]
         self._open_positions_count = snapshot["open_positions_count"]
-        self._last_refreshed_at = snapshot["refreshed_at"]
-        self.refreshedAtChanged.emit()
 
         if market_changed:
             self.marketStateChanged.emit()
         if account_changed:
             self.accountChanged.emit()
 
-        # Clear any prior error.
-        if self._broker_status != "connected" or self._broker_error_message:
-            self._broker_status = "connected"
-            self._broker_error_message = ""
-            self.brokerStatusChanged.emit()
+    @Slot()
+    def _on_broker_data_status_changed(self) -> None:
+        """Translate the base's data_status vocabulary to OperationalState's brokerStatus.
 
-    @Slot(str)
-    def _on_broker_failed(self, message: str) -> None:
-        """Record a broker failure on the main thread without losing state.
-
-        Per module docstring: keep last-known account values so the
-        operator still sees the most recent equity/cash even when the
-        broker is unreachable; the GUI shows a stale/error indicator.
+        Base PollingReadModel uses ``loading`` / ``ready`` / ``error``;
+        OperationalState's QML surface uses ``stale`` / ``connected`` /
+        ``error``. Per module docstring: keep last-known account values
+        through errors so the operator still sees the most recent
+        equity/cash — the base preserves last-known data on error by
+        not calling _apply_result on failure.
         """
-        self._broker_poll_in_flight = False
-        if self._broker_status != "error" or self._broker_error_message != message:
-            self._broker_status = "error"
-            self._broker_error_message = message
+        base_status = self._broker_poller.dataStatus
+        if base_status == "ready":
+            new_status = "connected"
+            new_msg = ""
+        elif base_status == "error":
+            new_status = "error"
+            new_msg = self._broker_poller.dataErrorMessage
+        else:  # "loading" — before any refresh has resolved
+            new_status = "stale"
+            new_msg = ""
+
+        if new_status != self._broker_status or new_msg != self._broker_error_message:
+            self._broker_status = new_status
+            self._broker_error_message = new_msg
             self.brokerStatusChanged.emit()
 
     # ------------------------------------------------------------------
@@ -434,7 +373,9 @@ class OperationalState(QObject):
         return self._open_positions_count
 
     def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
+        # Delegate to composed poller — base manages the ISO timestamp
+        # (with _now_iso fallback if the snapshot omits lastRefreshedAt).
+        return self._broker_poller.lastRefreshedAt
 
     def _get_broker_status(self) -> str:
         return self._broker_status
