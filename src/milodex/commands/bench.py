@@ -845,9 +845,7 @@ class BenchCommandFacade:
                 self._evaluate_workflow_readiness(
                     action_family=ACTION_FAMILY_DEMOTE,
                     strategy_id=strategy_id,
-                    required_checks=frozenset(
-                        {READINESS_RECONCILIATION, READINESS_KILL_SWITCH}
-                    ),
+                    required_checks=frozenset({READINESS_RECONCILIATION, READINESS_KILL_SWITCH}),
                     inspected_checks=frozenset(
                         {READINESS_DATA_FRESHNESS, READINESS_BROKER_REACHABILITY}
                     ),
@@ -1373,6 +1371,7 @@ class BenchCommandFacade:
         return self._submit_with_config(
             proposal,
             expected_action_family=ACTION_FAMILY_FREEZE_MANIFEST,
+            caller_method="submit_freeze_manifest",
             revalidate=lambda: self.propose_freeze_manifest(
                 proposal.strategy_id,
                 frozen_by=frozen_by,
@@ -1516,6 +1515,7 @@ class BenchCommandFacade:
         return self._submit_with_config(
             proposal,
             expected_action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+            caller_method="submit_promote_to_paper",
             revalidate=lambda: self.propose_promote_to_paper(
                 proposal.strategy_id,
                 recommendation=recommendation,
@@ -1621,6 +1621,7 @@ class BenchCommandFacade:
         return self._submit_with_config(
             proposal,
             expected_action_family=ACTION_FAMILY_DEMOTE,
+            caller_method="submit_demote",
             revalidate=lambda: self.propose_demote(
                 proposal.strategy_id,
                 to_stage=proposal.inputs.get("to_stage", ""),
@@ -2102,9 +2103,7 @@ class BenchCommandFacade:
                 context={},
             )
         try:
-            config_path = resolve_strategy_config_path(
-                strategy_id, config_dir=self._config_dir
-            )
+            config_path = resolve_strategy_config_path(strategy_id, config_dir=self._config_dir)
         except ValueError:
             return None, Blocker(
                 reason_code="strategy_not_found",
@@ -2219,6 +2218,7 @@ class BenchCommandFacade:
         proposal: CommandProposal,
         *,
         expected_action_family: str,
+        caller_method: str,
         revalidate: Callable[[], CommandProposal],
         dispatch: Callable[
             [CommandProposal, CommandProposal, StrategyConfig, EventStore],
@@ -2254,7 +2254,9 @@ class BenchCommandFacade:
         ``_latest_open_session_id``) that don't fit the uniform spine.
         """
         if proposal.action_family != expected_action_family:
-            return _action_family_mismatch_result(proposal, expected=expected_action_family)
+            return _action_family_mismatch_result(
+                proposal, expected=expected_action_family, caller_method=caller_method
+            )
         event_store_or_error = self._require_event_store(proposal)
         if isinstance(event_store_or_error, CommandResult):
             return event_store_or_error
@@ -2263,16 +2265,18 @@ class BenchCommandFacade:
             return _stale_proposal_result(proposal, revalidation)
         config, resolve_blocker = self._resolve_config(proposal.strategy_id)
         if resolve_blocker is not None or config is None:
-            return _resolve_failed_result(
-                proposal,
-                resolve_blocker
-                if resolve_blocker is not None
-                else Blocker(
-                    reason_code="strategy_not_found",
-                    message="strategy config unavailable",
-                    context={},
-                ),
+            # _resolve_config's contract pairs None config with a non-None
+            # Blocker (never returns (None, None)).  The assert is a tripwire
+            # in case a future change to _resolve_config weakens that
+            # invariant — fail loudly with a clear message rather than
+            # producing a malformed CommandResult with no blocker.  Opus
+            # reviewer 2026-05-24 flagged the prior synthesis fallback as
+            # dead defensive code post-PR #186.
+            assert resolve_blocker is not None, (
+                "_resolve_config contract violated: returned (None, None) "
+                f"for strategy_id={proposal.strategy_id!r}"
             )
+            return _resolve_failed_result(proposal, resolve_blocker)
         return dispatch(proposal, revalidation, config, event_store_or_error)
 
     def _peek_runner_lock(self, strategy_id: str) -> dict[str, Any] | None:
@@ -2334,13 +2338,18 @@ class BenchCommandFacade:
 
 
 def _action_family_mismatch_result(
-    proposal: CommandProposal, *, expected: str
+    proposal: CommandProposal, *, expected: str, caller_method: str
 ) -> CommandResult:
     """Build the standard `proposal_action_family_mismatch` error CommandResult.
 
     Replaces the inline ``CommandResult(..., blockers=[Blocker(reason_code=
     "proposal_action_family_mismatch", ...)])`` constructions that recur at
     the top of each ``submit_*`` method. Keeps the error shape uniform.
+
+    ``caller_method`` is the name of the submit method that received the
+    mismatch (e.g. ``"submit_freeze_manifest"``) — used in the message so an
+    operator reading raw logs can tell which submit refused the proposal
+    without having to cross-reference ``context['received']``.
     """
     return CommandResult(
         proposal_id=proposal.proposal_id,
@@ -2350,7 +2359,7 @@ def _action_family_mismatch_result(
             Blocker(
                 reason_code="proposal_action_family_mismatch",
                 message=(
-                    f"submit received a proposal for '{proposal.action_family}'; "
+                    f"{caller_method} received a proposal for '{proposal.action_family}'; "
                     f"expected '{expected}'."
                 ),
                 context={"expected": expected, "received": proposal.action_family},
@@ -2375,9 +2384,7 @@ def _stale_proposal_result(
     )
 
 
-def _resolve_failed_result(
-    proposal: CommandProposal, resolve_blocker: Blocker
-) -> CommandResult:
+def _resolve_failed_result(proposal: CommandProposal, resolve_blocker: Blocker) -> CommandResult:
     """Build the standard `blocked` CommandResult for a resolve_config failure."""
     return CommandResult(
         proposal_id=proposal.proposal_id,
