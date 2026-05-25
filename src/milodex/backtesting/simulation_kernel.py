@@ -1,4 +1,51 @@
-"""Shared mechanics for daily and intraday backtest simulations."""
+"""Shared mechanics for daily and intraday backtest simulations.
+
+Pragmatic boundary, not pure-functional kernel
+-----------------------------------------------
+This module is the "kernel" half of the kernel/shell split extracted from
+``BacktestEngine`` in PRs #187-#189.  But it is NOT a Hickey-style
+pure-functional kernel — it imports and orchestrates real I/O surfaces:
+
+- :class:`milodex.core.event_store.EventStore` — writes ``ExplanationEvent``
+  and ``TradeEvent`` rows.
+- :func:`milodex.analytics.snapshots.record_backtest_equity_snapshot` —
+  writes equity rows to ``backtest_equity_snapshots``.
+- :class:`milodex.broker.simulated.SimulatedBroker` — mutates broker state.
+
+"Kernel" here means "factored out of the engine for testability and reuse
+across daily/intraday paths," not "no side effects."  Treat it as a
+pragmatic seam, not a referentially-transparent core.  If you weaken
+something on the assumption that the kernel is pure, the bug will land
+in equity-curve audit data and the event store.
+
+``sync_broker_state(day=day, ...)`` passes the OUTER trading day
+---------------------------------------------------------------
+In the intraday simulation path (``engine.py:_simulate_intraday``,
+specifically the inner loop at ~line 1223), the kernel call uses the
+outer trading-day variable as ``day``:
+
+    kernel.sync_broker_state(day=day, closes=..., equity=...)
+
+It does NOT use ``ts.date()`` (the inner bar timestamp's calendar date).
+This is intentional and matches the pre-extraction behavior — broker
+snapshots key on the outer trading day so cross-UTC-day intraday bars
+(e.g. an Asian-session bar whose UTC date is the *next* calendar day
+relative to the trading session) do not split into a second snapshot.
+
+A future refactor "fixing" this to ``ts.date()`` would silently shift
+broker snapshots and equity audit rows on UTC/ET-boundary intraday bars.
+Do not change it without re-baselining
+``tests/milodex/backtesting/test_engine_daily_regression.py`` AND any
+intraday regression suite (see ``test_engine_intraday_regression.py``).
+
+``tick_held_days()`` ticks per outer-day iteration, not per evaluation
+---------------------------------------------------------------------
+See the docstring on :meth:`tick_held_days` (currently at line 289-291).
+The increment is unconditional once per outer trading day on both the
+daily and intraday paths.  A strategy with ``held_days >= max_hold`` will
+exit on the **first intraday tick of the next day**, not at EOD of the
+entry day.  Preserved deliberately; pinned here for the next reader.
+"""
 
 from __future__ import annotations
 
