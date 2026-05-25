@@ -2441,6 +2441,88 @@ def test_submit_demote_revalidation_captures_gui_submit_kwarg(
     )
 
 
+# --------------------------------------------------------------------------- #
+# `_resolve_config` contract — these tests pin the resolver's three exit
+# shapes so PR C's swap to canonical `resolve_strategy_config_path` cannot
+# silently regress: blank-string short-circuit, malformed-YAML guard on the
+# matched file (defense-in-depth via monkeypatched helper), and unknown
+# strategy_id fall-through.
+# --------------------------------------------------------------------------- #
+
+
+def test__resolve_config_blank_strategy_id_returns_strategy_id_blank(
+    make_facade,
+) -> None:
+    """B2: blank or whitespace-only strategy_id short-circuits before any
+    glob/load, returning a distinct `strategy_id_blank` reason code.
+
+    The canonical `resolve_strategy_config_path` has no blank check; PR C's
+    wrapper must preserve this precondition explicitly. Pins the distinct
+    reason code so the wrapper cannot silently collapse it into
+    `strategy_not_found`.
+    """
+    facade = make_facade()
+    config, blocker = facade._resolve_config("")
+    assert config is None
+    assert blocker is not None
+    assert blocker.reason_code == "strategy_id_blank"
+
+    config, blocker = facade._resolve_config("   ")
+    assert config is None
+    assert blocker is not None
+    assert blocker.reason_code == "strategy_id_blank"
+
+
+def test__resolve_config_unknown_strategy_id_returns_strategy_not_found(
+    make_facade, config_dir: Path
+) -> None:
+    """Regression cover for the PR C swap: unknown strategy_id (no matching
+    YAML in config_dir) returns the `strategy_not_found` reason code,
+    matching today's behavior."""
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+    config, blocker = facade._resolve_config("nonexistent.strategy.v1")
+    assert config is None
+    assert blocker is not None
+    assert blocker.reason_code == "strategy_not_found"
+
+
+def test__resolve_config_malformed_matched_yaml_returns_strategy_config_invalid(
+    make_facade, config_dir: Path, monkeypatch
+) -> None:
+    """B3 defense-in-depth: if `resolve_strategy_config_path` returns a path
+    but `load_strategy_config(path)` raises on the matched file (race
+    condition or future canonical-helper change), the wrapper MUST surface a
+    structured `strategy_config_invalid` Blocker rather than letting the
+    exception cross the facade boundary.
+
+    This guards a failure mode that doesn't occur in normal operation today
+    (the canonical helper already calls `load_strategy_config` successfully
+    before returning a path), but the explicit guard protects against future
+    canonical-helper changes and file-system races.
+
+    Test strategy: monkeypatch the canonical helper to return a
+    deliberately-nonexistent path; `load_strategy_config` then raises
+    ValueError("Config file does not exist"), and the wrapper must catch
+    and return `strategy_config_invalid`.
+    """
+    _write_strategy(config_dir, stage="paper")
+    facade = make_facade()
+
+    nonexistent_path = config_dir / "ghost-config.yaml"
+    monkeypatch.setattr(
+        facade_module,
+        "resolve_strategy_config_path",
+        lambda strategy_id, config_dir: nonexistent_path,  # noqa: ARG005
+    )
+
+    config, blocker = facade._resolve_config(STRATEGY_ID)
+    assert config is None
+    assert blocker is not None
+    assert blocker.reason_code == "strategy_config_invalid"
+    assert "ghost-config" in str(blocker.context.get("config_path", ""))
+
+
 def test_gui_qml_files_still_forbid_submit_broker_eventstore() -> None:
     """ADR 0049 perimeter survives Bench command wiring.
 
