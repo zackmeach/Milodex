@@ -71,17 +71,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import (  # pragma: no cover
-    Property,
-    QObject,
-    QRunnable,
-    Qt,
-    QThreadPool,
-    QTimer,
-    Signal,
-    Slot,
-)
+from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
+from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
 
 logger = logging.getLogger(__name__)
@@ -200,50 +192,24 @@ def _compute_gate_failures(
 
 
 # ---------------------------------------------------------------------------
-# Worker
+# Builder
 # ---------------------------------------------------------------------------
 
 
-class _BankRefreshSignals(QObject):
-    """Signal carrier for the refresh worker.
+def _build_bank_snapshot(db_path: Path) -> dict[str, Any]:
+    """Adapter for ``PollingReadModel`` — wraps ``_query_bank``'s tuple return.
 
-    QRunnable cannot emit signals itself; a separate QObject owns the
-    signals.  Parented to StrategyBankState so it lives as long as the
-    polling lifecycle.
+    ``_query_bank`` retains its ``tuple[list, list]`` signature for external
+    callers (``milodex.gui.attention_state`` consumes it directly). This
+    shim packs the tuple into the ``dict`` payload the polling lifecycle
+    expects, including the ``lastRefreshedAt`` ISO timestamp.
     """
-
-    completed = Signal(dict)  # {"paper": [...], "blocked": [...], "refreshed_at": "..."}
-    failed = Signal(str)  # error message on failure
-
-
-class _BankRefreshRunnable(QRunnable):
-    """One-shot DB refresh executed on a QThreadPool worker thread.
-
-    Runs the two SQL queries against the SQLite DB, builds the paper and
-    blocked lists, and emits results via the signal carrier.  Does not
-    access any QObject state directly — all data flows back to the main
-    thread via QueuedConnection.
-    """
-
-    def __init__(self, db_path: Path, signals: _BankRefreshSignals) -> None:
-        super().__init__()
-        self._db_path = db_path
-        self._signals = signals
-        self.setAutoDelete(True)
-
-    def run(self) -> None:  # pragma: no cover — exercised via tests with fixture DBs
-        try:
-            paper, blocked = _query_bank(self._db_path)
-            self._signals.completed.emit(
-                {
-                    "paper": paper,
-                    "blocked": blocked,
-                    "refreshed_at": datetime.now(tz=UTC).isoformat(),
-                }
-            )
-        except Exception as exc:  # noqa: BLE001 — SQLite errors vary
-            logger.warning("StrategyBankState: DB refresh failed: %s", exc)
-            self._signals.failed.emit(str(exc))
+    paper, blocked = _query_bank(db_path)
+    return {
+        "paper": paper,
+        "blocked": blocked,
+        "lastRefreshedAt": datetime.now(tz=UTC).isoformat(),
+    }
 
 
 def _query_bank(db_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -314,18 +280,20 @@ def _fetch_blocked(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
-class StrategyBankState(QObject):
+class StrategyBankState(PollingReadModel):
     """Strategy bank state exposed to QML as Q_PROPERTYs.
 
-    See module docstring for threading model, tolerance behaviour, and SQL
-    query sourcing.
+    Inherits the canonical polling lifecycle from
+    :class:`milodex.gui.polling_lifecycle.PollingReadModel` — see module
+    docstring for tolerance behaviour and SQL query sourcing. Lifecycle
+    concerns (timer, thread pool, in-flight drop, error preservation,
+    ``waitForDone(2000)`` shutdown) live on the base. Per-strategy
+    state (paper / blocked lists) and their Q_PROPERTYs / change signals
+    live here.
     """
 
-    # Signals — camelCase per Qt convention.
     paperStrategiesChanged = Signal()  # noqa: N815
     blockedStrategiesChanged = Signal()  # noqa: N815
-    refreshedAtChanged = Signal()  # noqa: N815
-    dataStatusChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -333,131 +301,36 @@ class StrategyBankState(QObject):
         refresh_interval_ms: int = 30_000,
         parent: QObject | None = None,
     ) -> None:
-        super().__init__(parent)
-
         if db_path is None:
             from milodex.config import get_data_dir
 
             db_path = get_data_dir() / "milodex.db"
         self._db_path = db_path
-        self._refresh_interval_ms = max(1, refresh_interval_ms)
-
-        # Per-instance pool (maxThreadCount=1 — DB reads are sequential by
-        # design).  Per-instance pool means waitForDone() in stop() drains
-        # ONLY our workers; sharing globalInstance() would block unrelated
-        # pool users (OperationalState, Attribution, etc.).
-        self._thread_pool = QThreadPool()
-        self._thread_pool.setMaxThreadCount(1)
-
-        # State backing fields.
         self._paper_strategies: list[dict[str, Any]] = []
         self._blocked_strategies: list[dict[str, Any]] = []
-        self._last_refreshed_at: str = ""
-        self._data_status: str = "loading"
-        self._data_error_message: str = ""
-
-        # QTimer for periodic refresh.
-        self._refresh_timer = QTimer(self)
-        self._refresh_timer.setInterval(self._refresh_interval_ms)
-        self._refresh_timer.timeout.connect(self._kick_refresh)
-
-        # Signal carrier: worker -> main-thread via QueuedConnection.
-        self._refresh_signals = _BankRefreshSignals(self)
-        self._refresh_signals.completed.connect(
-            self._on_refresh_complete, Qt.ConnectionType.QueuedConnection
-        )
-        self._refresh_signals.failed.connect(
-            self._on_refresh_failed, Qt.ConnectionType.QueuedConnection
+        super().__init__(
+            builder=lambda: _build_bank_snapshot(db_path),
+            refresh_interval_ms=refresh_interval_ms,
+            parent=parent,
         )
 
-        # In-flight guard — mirrors _broker_poll_in_flight from OperationalState.
-        self._refresh_in_flight: bool = False
+    def _apply_result(self, result: dict[str, Any]) -> None:
+        """Update paper/blocked lists and emit change signals when shapes change.
 
-    # ------------------------------------------------------------------
-    # Lifecycle
-    # ------------------------------------------------------------------
-
-    def start(self) -> None:
-        """Begin periodic DB polling.
-
-        Fires an immediate refresh so the surface has real data on the
-        first frame.  The timer continues at ``refresh_interval_ms``
-        thereafter.  Calling start() more than once is safe — the timer's
-        ``isActive()`` guard prevents double-start.
+        Last-known data preservation on error is handled by the base — when
+        a refresh fails after a previous success, this method is not invoked
+        and the lists stay as they were. The base also manages
+        ``lastRefreshedAt`` (from the builder's ``lastRefreshedAt`` key) and
+        ``dataStatus`` transitions.
         """
-        self._kick_refresh()
-        if not self._refresh_timer.isActive():
-            self._refresh_timer.start()
-
-    def stop(self) -> None:
-        """Halt polling and drain any in-flight DB worker.
-
-        Idempotent: safe to call before start() or after stop().  Drains
-        the per-instance pool before disconnecting signals so a queued
-        worker result cannot fire on a torn-down receiver during interpreter
-        shutdown — the same Windows-shutdown contract as OperationalState.
-        """
-        self._refresh_timer.stop()
-        self._thread_pool.waitForDone(2000)
-        try:
-            self._refresh_signals.completed.disconnect(self._on_refresh_complete)
-            self._refresh_signals.failed.disconnect(self._on_refresh_failed)
-        except (RuntimeError, TypeError):
-            pass  # already disconnected — idempotent stop
-
-    # ------------------------------------------------------------------
-    # Worker scheduling
-    # ------------------------------------------------------------------
-
-    def _kick_refresh(self) -> None:
-        """Schedule a DB refresh on the thread pool, dropping if one is in flight."""
-        if self._refresh_in_flight:
-            # Don't pile up workers if the DB is slow.
-            return
-        self._refresh_in_flight = True
-        runnable = _BankRefreshRunnable(self._db_path, self._refresh_signals)
-        self._thread_pool.start(runnable)
-
-    @Slot(dict)
-    def _on_refresh_complete(self, result: dict[str, Any]) -> None:
-        """Apply a successful DB snapshot on the main thread."""
-        self._refresh_in_flight = False
-
         paper_changed = result["paper"] != self._paper_strategies
         blocked_changed = result["blocked"] != self._blocked_strategies
-
         self._paper_strategies = result["paper"]
         self._blocked_strategies = result["blocked"]
-        self._last_refreshed_at = result["refreshed_at"]
-        self.refreshedAtChanged.emit()
-
         if paper_changed:
             self.paperStrategiesChanged.emit()
         if blocked_changed:
             self.blockedStrategiesChanged.emit()
-
-        if self._data_status != "ready" or self._data_error_message:
-            self._data_status = "ready"
-            self._data_error_message = ""
-            self.dataStatusChanged.emit()
-
-    @Slot(str)
-    def _on_refresh_failed(self, message: str) -> None:
-        """Record a DB failure without losing last-known strategy lists.
-
-        Per module docstring: preserve the last-known paper/blocked lists
-        so the surface still shows the most recent snapshot even when the
-        DB is transiently unreachable.
-        """
-        self._refresh_in_flight = False
-        if self._data_status != "error" or self._data_error_message != message:
-            self._data_status = "error"
-            self._data_error_message = message
-            self.dataStatusChanged.emit()
-
-    # ------------------------------------------------------------------
-    # Q_PROPERTY accessors
-    # ------------------------------------------------------------------
 
     def _get_paper_strategies(self) -> list:
         return self._paper_strategies
@@ -465,25 +338,11 @@ class StrategyBankState(QObject):
     def _get_blocked_strategies(self) -> list:
         return self._blocked_strategies
 
-    def _get_last_refreshed_at(self) -> str:
-        return self._last_refreshed_at
-
-    def _get_data_status(self) -> str:
-        return self._data_status
-
-    def _get_data_error_message(self) -> str:
-        return self._data_error_message
-
     paperStrategies = Property(  # noqa: N815
         "QVariantList", _get_paper_strategies, notify=paperStrategiesChanged
     )
     blockedStrategies = Property(  # noqa: N815
         "QVariantList", _get_blocked_strategies, notify=blockedStrategiesChanged
     )
-    lastRefreshedAt = Property(  # noqa: N815
-        str, _get_last_refreshed_at, notify=refreshedAtChanged
-    )
-    dataStatus = Property(str, _get_data_status, notify=dataStatusChanged)  # noqa: N815
-    dataErrorMessage = Property(  # noqa: N815
-        str, _get_data_error_message, notify=dataStatusChanged
-    )
+
+    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel
