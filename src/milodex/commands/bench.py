@@ -45,6 +45,7 @@ from milodex.core.event_store import (
     OrchestrationJobEvent,
     PromotionEvent,
 )
+from milodex.operations.reconciliation import latest_readiness
 from milodex.promotion import (
     FROZEN_STAGES,
     MIN_TRADES,
@@ -278,18 +279,13 @@ class _DefaultWorkflowReadiness:
                     issues.append(issue)
                 continue
             if dimension == READINESS_RECONCILIATION:
-                issues.append(
-                    WorkflowReadinessIssue(
-                        dimension=dimension,
-                        reason_code="reconciliation_scaffolded",
-                        message=(
-                            "Workflow readiness cannot prove reconciliation clean yet; "
-                            "the reconciliation submit gate is scaffolded."
-                        ),
-                        context={"action_family": action_family, "strategy_id": strategy_id},
-                        blocking=blocking,
-                    )
+                issue = self._reconciliation_issue(
+                    action_family=action_family,
+                    strategy_id=strategy_id,
+                    blocking=blocking,
                 )
+                if issue is not None:
+                    issues.append(issue)
                 continue
             if dimension == READINESS_DATA_FRESHNESS:
                 issues.append(
@@ -319,6 +315,39 @@ class _DefaultWorkflowReadiness:
                     )
                 )
         return WorkflowReadinessReport(issues=tuple(issues))
+
+    def _reconciliation_issue(
+        self,
+        *,
+        action_family: str,
+        strategy_id: str,
+        blocking: bool,
+    ) -> WorkflowReadinessIssue | None:
+        if self._event_store_factory is None:
+            return WorkflowReadinessIssue(
+                dimension=READINESS_RECONCILIATION,
+                reason_code="reconciliation_required",
+                message=(
+                    "Workflow readiness cannot read durable reconciliation state; "
+                    "submit-capable workflow actions fail closed."
+                ),
+                context={"action_family": action_family, "strategy_id": strategy_id},
+                blocking=blocking,
+            )
+        readiness = latest_readiness(self._event_store_factory())
+        if readiness.ready:
+            return None
+        return WorkflowReadinessIssue(
+            dimension=READINESS_RECONCILIATION,
+            reason_code=readiness.reason_code or "reconciliation_required",
+            message=readiness.message,
+            context={
+                "action_family": action_family,
+                "strategy_id": strategy_id,
+                **dict(readiness.context),
+            },
+            blocking=blocking,
+        )
 
     def _kill_switch_issue(self, *, blocking: bool) -> WorkflowReadinessIssue | None:
         if self._event_store_factory is None:

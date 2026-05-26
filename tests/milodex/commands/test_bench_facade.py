@@ -21,8 +21,9 @@ import re
 import sys
 import textwrap
 from dataclasses import FrozenInstanceError, is_dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -49,7 +50,12 @@ from milodex.commands.bench import (
     WorkflowReadinessIssue,
     WorkflowReadinessReport,
 )
-from milodex.core.event_store import BacktestRunEvent, EventStore, StrategyRunEvent
+from milodex.core.event_store import (
+    BacktestRunEvent,
+    EventStore,
+    ReconciliationRunEvent,
+    StrategyRunEvent,
+)
 from milodex.data.models import BarSet
 from milodex.risk.policy import RiskPolicy
 from milodex.strategies.paper_runner_control import (
@@ -216,7 +222,9 @@ def _healthy_readiness() -> _FakeWorkflowReadiness:
 def _readiness_issue(reason_code: str, *, blocking: bool = True) -> WorkflowReadinessIssue:
     dimension_by_code = {
         "reconciliation_drift": "reconciliation",
-        "reconciliation_scaffolded": "reconciliation",
+        "reconciliation_required": "reconciliation",
+        "reconciliation_stale": "reconciliation",
+        "reconciliation_incomplete": "reconciliation",
         "kill_switch_open": "kill_switch",
         "data_stale": "data_freshness",
         "broker_unreachable": "broker_reachability",
@@ -487,7 +495,6 @@ def test_propose_promote_to_paper_blocks_wrong_source_stage(make_facade, config_
     "reason_code",
     [
         "reconciliation_drift",
-        "reconciliation_scaffolded",
         "kill_switch_open",
         "data_stale",
         "broker_unreachable",
@@ -515,6 +522,48 @@ def test_propose_promote_to_paper_blocks_required_workflow_readiness(
     assert readiness.calls[0]["required_checks"] == frozenset(
         {"reconciliation", "kill_switch", "data_freshness", "broker_reachability"}
     )
+
+
+def test_default_workflow_readiness_reads_durable_reconciliation(event_store: EventStore) -> None:
+    readiness = facade_module._DefaultWorkflowReadiness(lambda: event_store)
+
+    missing = readiness.evaluate(
+        action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({"reconciliation"}),
+        inspected_checks=frozenset(),
+    )
+    assert [issue.reason_code for issue in missing.issues] == ["reconciliation_required"]
+
+    event_store.append_reconciliation_run(
+        ReconciliationRunEvent(
+            run_id="bench-clean",
+            recorded_at=datetime.now(tz=UTC),
+            as_of=datetime.now(tz=UTC),
+            local_trading_day=datetime.now(tz=UTC)
+            .astimezone(ZoneInfo("America/New_York"))
+            .date()
+            .isoformat(),
+            status="clean",
+            broker_connected=True,
+            market_open=True,
+            checked_dimensions_version="R-OPS-004.v1.1",
+            checked_dimensions=["positions"],
+            deferred_checks=[],
+            incident_hash=None,
+            incident_recorded=False,
+            incident_deduplicated=False,
+            reason_codes=[],
+            summary={},
+        )
+    )
+    clean = readiness.evaluate(
+        action_family=ACTION_FAMILY_START_PAPER_RUNNER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({"reconciliation"}),
+        inspected_checks=frozenset(),
+    )
+    assert clean.issues == ()
 
 
 # --------------------------------------------------------------------------- #
@@ -724,7 +773,6 @@ def test_propose_start_paper_runner_blocks_when_advisory_lock_held(
     "reason_code",
     [
         "reconciliation_drift",
-        "reconciliation_scaffolded",
         "kill_switch_open",
         "data_stale",
         "broker_unreachable",

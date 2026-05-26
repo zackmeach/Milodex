@@ -260,6 +260,46 @@ class OrchestrationJobEvent:
     id: int | None = None
 
 
+@dataclass(frozen=True)
+class ReconciliationRunEvent:
+    """Durable broker/local reconciliation verdict (R-OPS-004)."""
+
+    run_id: str
+    recorded_at: datetime
+    as_of: datetime
+    local_trading_day: str
+    status: str
+    broker_connected: bool
+    market_open: bool | None
+    checked_dimensions_version: str
+    checked_dimensions: list[str]
+    deferred_checks: list[str]
+    incident_hash: str | None
+    incident_recorded: bool
+    incident_deduplicated: bool
+    reason_codes: list[str]
+    summary: dict[str, Any]
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class ReconciliationAdjustmentEvent:
+    """Append-only compensating position adjustment for reconciliation drift."""
+
+    adjustment_id: str
+    recorded_at: datetime
+    effective_at: datetime
+    approved_by: str
+    symbol: str
+    local_qty_before: float
+    broker_qty: float
+    delta_qty: float
+    reason: str
+    source_incident_hash: str
+    context: dict[str, Any]
+    id: int | None = None
+
+
 _STRATEGY_RUN_SUBMITTERS: frozenset[str] = frozenset({"strategy_runner", "backtest_engine"})
 """Submitter labels whose explanation rows must carry a run ancestor.
 
@@ -270,7 +310,7 @@ have no run ancestry by design and pass through unchecked.
 """
 
 
-MIN_COMPATIBLE_SCHEMA_VERSION = 10
+MIN_COMPATIBLE_SCHEMA_VERSION = 12
 """Minimum event-store schema version this build can safely operate on.
 
 Bumped whenever a migration introduces a column or table that older code
@@ -575,6 +615,118 @@ class EventStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
         return [_trade_from_row(row) for row in rows]
+
+    def append_reconciliation_run(self, event: ReconciliationRunEvent) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO reconciliation_runs (
+                    run_id,
+                    recorded_at,
+                    as_of,
+                    local_trading_day,
+                    status,
+                    broker_connected,
+                    market_open,
+                    checked_dimensions_version,
+                    checked_dimensions_json,
+                    deferred_checks_json,
+                    incident_hash,
+                    incident_recorded,
+                    incident_deduplicated,
+                    reason_codes_json,
+                    summary_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.run_id,
+                    _dt(event.recorded_at),
+                    _dt(event.as_of),
+                    event.local_trading_day,
+                    event.status,
+                    int(event.broker_connected),
+                    None if event.market_open is None else int(event.market_open),
+                    event.checked_dimensions_version,
+                    _dump_json(event.checked_dimensions),
+                    _dump_json(event.deferred_checks),
+                    event.incident_hash,
+                    int(event.incident_recorded),
+                    int(event.incident_deduplicated),
+                    _dump_json(event.reason_codes),
+                    _dump_json(event.summary),
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_reconciliation_runs(self) -> list[ReconciliationRunEvent]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM reconciliation_runs ORDER BY id ASC"
+            ).fetchall()
+        return [_reconciliation_run_from_row(row) for row in rows]
+
+    def get_latest_reconciliation_run(self) -> ReconciliationRunEvent | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM reconciliation_runs ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        return None if row is None else _reconciliation_run_from_row(row)
+
+    def append_reconciliation_adjustment(
+        self,
+        event: ReconciliationAdjustmentEvent,
+    ) -> int:
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO reconciliation_adjustments (
+                    adjustment_id,
+                    recorded_at,
+                    effective_at,
+                    approved_by,
+                    symbol,
+                    local_qty_before,
+                    broker_qty,
+                    delta_qty,
+                    reason,
+                    source_incident_hash,
+                    context_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.adjustment_id,
+                    _dt(event.recorded_at),
+                    _dt(event.effective_at),
+                    event.approved_by,
+                    event.symbol,
+                    event.local_qty_before,
+                    event.broker_qty,
+                    event.delta_qty,
+                    event.reason,
+                    event.source_incident_hash,
+                    _dump_json(event.context),
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_reconciliation_adjustments(
+        self,
+        *,
+        symbol: str | None = None,
+    ) -> list[ReconciliationAdjustmentEvent]:
+        query = "SELECT * FROM reconciliation_adjustments"
+        params: tuple[Any, ...] = ()
+        if symbol is not None:
+            query += " WHERE symbol = ?"
+            params = (symbol.strip().upper(),)
+        query += " ORDER BY id ASC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_reconciliation_adjustment_from_row(row) for row in rows]
 
     def count_recent_submitted_orders(
         self,
@@ -1538,6 +1690,44 @@ def _orchestration_job_from_row(row: sqlite3.Row) -> OrchestrationJobEvent:
         error_code=row["error_code"],
         error_message=row["error_message"],
         metadata=dict(_load_json(row["metadata_json"])),
+    )
+
+
+def _reconciliation_run_from_row(row: sqlite3.Row) -> ReconciliationRunEvent:
+    return ReconciliationRunEvent(
+        id=int(row["id"]),
+        run_id=str(row["run_id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        as_of=_parse_datetime(row["as_of"]),
+        local_trading_day=str(row["local_trading_day"]),
+        status=str(row["status"]),
+        broker_connected=bool(row["broker_connected"]),
+        market_open=None if row["market_open"] is None else bool(row["market_open"]),
+        checked_dimensions_version=str(row["checked_dimensions_version"]),
+        checked_dimensions=list(_load_json(row["checked_dimensions_json"])),
+        deferred_checks=list(_load_json(row["deferred_checks_json"])),
+        incident_hash=row["incident_hash"],
+        incident_recorded=bool(row["incident_recorded"]),
+        incident_deduplicated=bool(row["incident_deduplicated"]),
+        reason_codes=list(_load_json(row["reason_codes_json"])),
+        summary=dict(_load_json(row["summary_json"])),
+    )
+
+
+def _reconciliation_adjustment_from_row(row: sqlite3.Row) -> ReconciliationAdjustmentEvent:
+    return ReconciliationAdjustmentEvent(
+        id=int(row["id"]),
+        adjustment_id=str(row["adjustment_id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        effective_at=_parse_datetime(row["effective_at"]),
+        approved_by=str(row["approved_by"]),
+        symbol=str(row["symbol"]),
+        local_qty_before=float(row["local_qty_before"]),
+        broker_qty=float(row["broker_qty"]),
+        delta_qty=float(row["delta_qty"]),
+        reason=str(row["reason"]),
+        source_incident_hash=str(row["source_incident_hash"]),
+        context=dict(_load_json(row["context_json"])),
     )
 
 

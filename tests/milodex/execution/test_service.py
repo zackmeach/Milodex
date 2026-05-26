@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -16,7 +17,7 @@ from milodex.broker.models import (
     Position,
     TimeInForce,
 )
-from milodex.core.event_store import EventStore
+from milodex.core.event_store import EventStore, ReconciliationRunEvent
 from milodex.data.models import Bar
 from milodex.execution import (
     ExecutionService,
@@ -195,14 +196,60 @@ def build_service(
         submit_order=submitted_order,
     )
     provider = StubProvider(latest_bar)
-    store = KillSwitchStateStore(tmp_path / "kill_switch.json")
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
     service = ExecutionService(
         broker_client=broker,
         data_provider=provider,
         risk_defaults_path=risk_defaults_file,
         kill_switch_store=store,
+        event_store=event_store,
     )
     return service, broker
+
+
+def _append_clean_reconciliation_run(event_store: EventStore, *, when: datetime | None = None):
+    _append_reconciliation_run(event_store, status="clean", when=when)
+
+
+def _append_reconciliation_run(
+    event_store: EventStore,
+    *,
+    status: str,
+    when: datetime | None = None,
+    broker_connected: bool = True,
+    reason_codes: list[str] | None = None,
+):
+    recorded_at = when or datetime.now(tz=UTC)
+    event_store.append_reconciliation_run(
+        ReconciliationRunEvent(
+            run_id=f"test-reconcile-{recorded_at.timestamp()}",
+            recorded_at=recorded_at,
+            as_of=recorded_at,
+            local_trading_day=recorded_at.astimezone(
+                ZoneInfo("America/New_York")
+            ).date().isoformat(),
+            status=status,
+            broker_connected=broker_connected,
+            market_open=True,
+            checked_dimensions_version="R-OPS-004.v1.1",
+            checked_dimensions=["positions", "open_orders"],
+            deferred_checks=[
+                "filled_since_last_sync",
+                "canceled_since_last_sync",
+                "strategy_linkage",
+            ],
+            incident_hash="test-incident-hash" if reason_codes else None,
+            incident_recorded=False,
+            incident_deduplicated=False,
+            reason_codes=reason_codes or [],
+            summary={},
+        )
+    )
 
 
 def test_preview_does_not_submit(
@@ -521,6 +568,7 @@ def test_preview_and_submit_record_explanations_and_trades(
     )
     provider = StubProvider(latest_bar)
     event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
     kill_switch_store = KillSwitchStateStore(
         event_store=event_store,
         legacy_path=tmp_path / "kill_switch.json",
@@ -546,9 +594,9 @@ def test_preview_and_submit_record_explanations_and_trades(
     assert [record.status for record in trades] == ["preview", "submitted"]
     assert trades[0].explanation_id == explanations[0].id
     assert trades[1].explanation_id == explanations[1].id
-    # 13 checks = ADR 0024 baseline (12) + ADR 0029
-    # strategy_concurrent_positions.
-    assert len(explanations[0].risk_checks) == 13
+    # 14 checks = ADR 0024 baseline (12) + ADR 0029
+    # strategy_concurrent_positions + R-OPS-004 reconciliation.
+    assert len(explanations[0].risk_checks) == 14
     assert explanations[1].risk_allowed is True
 
 
@@ -566,6 +614,7 @@ def test_strategy_config_hash_is_recorded_on_explanations(
     )
     provider = StubProvider(latest_bar)
     event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
     kill_switch_store = KillSwitchStateStore(
         event_store=event_store,
         legacy_path=tmp_path / "kill_switch.json",
@@ -610,6 +659,7 @@ def test_kill_switch_events_are_persisted_in_event_store(
     )
     provider = StubProvider(latest_bar)
     event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
     kill_switch_store = KillSwitchStateStore(
         event_store=event_store,
         legacy_path=tmp_path / "kill_switch.json",
@@ -643,6 +693,7 @@ def test_submit_paper_records_runner_session_id(
     )
     provider = StubProvider(latest_bar)
     event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
     kill_switch_store = KillSwitchStateStore(
         event_store=event_store,
         legacy_path=tmp_path / "kill_switch.json",
@@ -690,6 +741,7 @@ def test_submit_paper_records_pending_broker_status(
     broker = StubBroker(account=sample_account, submit_order=pending_order)
     provider = StubProvider(latest_bar)
     event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
     kill_switch_store = KillSwitchStateStore(
         event_store=event_store,
         legacy_path=tmp_path / "kill_switch.json",
@@ -714,6 +766,176 @@ def test_submit_paper_records_pending_broker_status(
     assert len(trades) == 1
     assert trades[0].broker_status == "pending"
     assert trades[0].broker_order_id == "order-pending-1"
+
+
+@pytest.mark.parametrize(
+    "seed, expected_reason",
+    [
+        ("missing", "reconciliation_required"),
+        ("dirty", "reconciliation_drift"),
+        ("stale", "reconciliation_stale"),
+        ("incomplete", "reconciliation_incomplete"),
+    ],
+)
+def test_reconciliation_readiness_blocks_exposure_increasing_preview_and_submit(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    seed,
+    expected_reason,
+):
+    broker = StubBroker(account=sample_account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    if seed == "dirty":
+        _append_reconciliation_run(
+            event_store,
+            status="dirty",
+            reason_codes=["position_local_only"],
+        )
+    elif seed == "stale":
+        _append_clean_reconciliation_run(
+            event_store,
+            when=datetime.now(tz=UTC) - timedelta(days=1),
+        )
+    elif seed == "incomplete":
+        _append_reconciliation_run(
+            event_store,
+            status="incomplete",
+            broker_connected=False,
+        )
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    preview = service.preview(intent)
+    submit = service.submit_paper(intent)
+
+    assert preview.status == ExecutionStatus.PREVIEW
+    assert preview.risk_decision.allowed is False
+    assert expected_reason in preview.risk_decision.reason_codes
+    assert submit.status == ExecutionStatus.BLOCKED
+    assert expected_reason in submit.risk_decision.reason_codes
+    assert broker.submit_calls == []
+
+
+def test_reconciliation_readiness_does_not_block_reducing_sell(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    long_position = Position(
+        symbol="SPY",
+        quantity=10.0,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        market_value=1000.0,
+        unrealized_pnl=0.0,
+        unrealized_pnl_pct=0.0,
+    )
+    sell_order = Order(
+        id="order-sell-1",
+        symbol="SPY",
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=5.0,
+        time_in_force=TimeInForce.DAY,
+        status=OrderStatus.PENDING,
+        submitted_at=datetime.now(tz=UTC),
+    )
+    broker = StubBroker(
+        account=sample_account,
+        positions=[long_position],
+        submit_order=sell_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_reconciliation_run(
+        event_store,
+        status="dirty",
+        reason_codes=["position_local_only"],
+    )
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.SELL, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert "reconciliation_drift" not in result.risk_decision.reason_codes
+    assert len(broker.submit_calls) == 1
+
+
+def test_reconciliation_readiness_blocks_sell_beyond_broker_position(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    broker_position = Position(
+        symbol="SPY",
+        quantity=10.0,
+        avg_entry_price=100.0,
+        current_price=100.0,
+        market_value=1000.0,
+        unrealized_pnl=0.0,
+        unrealized_pnl_pct=0.0,
+    )
+    broker = StubBroker(
+        account=sample_account,
+        positions=[broker_position],
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_reconciliation_run(
+        event_store,
+        status="dirty",
+        reason_codes=["position_local_only"],
+    )
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.SELL, quantity=15, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.BLOCKED
+    assert "reconciliation_drift" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
 
 
 # ---------------------------------------------------------------------------
@@ -1082,6 +1304,7 @@ def test_duplicate_order_detected_via_event_store_when_broker_fetch_truncated(
     BLOCKED with ``duplicate_order_window``.
     """
     event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
     _seed_submitted_trade(
         event_store,
         symbol="SPY",

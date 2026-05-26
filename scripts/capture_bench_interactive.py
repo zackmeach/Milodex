@@ -76,13 +76,27 @@ def _make_states():
 
 
 def _find_promotable_row_and_action(bench_state):
-    """Find a Bench row whose actions include a directional (promotion) verb."""
+    """Find a Bench row/action pair for opening the confirmation modal."""
+    fallback_directional = None
+    fallback_invocation = None
+    fallback_row = None
     for section in bench_state.sections or []:
         for row in section.get("strategies", []) or []:
+            fallback_row = fallback_row or row
             for action in row.get("actions", []) or []:
                 if action.get("verbClass") == "directional" and \
                    "Promote" in (action.get("label") or ""):
                     return row, action
+                if action.get("verbClass") == "directional" and fallback_directional is None:
+                    fallback_directional = (row, action)
+                if fallback_invocation is None:
+                    fallback_invocation = (row, action)
+    if fallback_directional is not None:
+        return fallback_directional
+    if fallback_invocation is not None:
+        return fallback_invocation
+    if fallback_row is not None:
+        return fallback_row, None
     return None, None
 
 

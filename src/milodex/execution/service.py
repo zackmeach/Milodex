@@ -27,6 +27,7 @@ from milodex.execution.models import (
     UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchStateStore
+from milodex.operations.reconciliation import latest_readiness
 from milodex.risk import (
     EvaluationContext,
     NullRiskEvaluator,
@@ -363,12 +364,15 @@ class ExecutionService:
                     else None
                 )
                 trading_mode = get_trading_mode()
+            positions = self._broker.get_positions()
+            reconciliation_readiness = latest_readiness(self._event_store)
             context = EvaluationContext(
                 intent=normalized_intent,
                 request=request,
                 account=account,
-                positions=self._broker.get_positions(),
+                positions=positions,
                 recent_orders=self._broker.get_orders(limit=100),
+                reconciliation_readiness=reconciliation_readiness,
                 latest_bar=latest_bar,
                 market_open=market_open,
                 trading_mode=trading_mode,

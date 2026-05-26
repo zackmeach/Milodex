@@ -219,6 +219,10 @@ def test_reconcile_clean_when_broker_and_local_agree(tmp_path: Path) -> None:
     assert err.getvalue() == ""
     assert "Result: CLEAN" in out.getvalue()
     assert _incident_count(tmp_path) == 0
+    runs = EventStore(tmp_path / "milodex.db").list_reconciliation_runs()
+    assert len(runs) == 1
+    assert runs[0].status == "clean"
+    assert runs[0].local_trading_day
 
 
 def test_reconcile_empty_state_is_clean(tmp_path: Path) -> None:
@@ -388,6 +392,62 @@ def test_reconcile_broker_unreachable_degrades_gracefully(tmp_path: Path) -> Non
     assert any("Broker unreachable" in w for w in payload["warnings"])
     # No incident when we cannot prove drift.
     assert _incident_count(tmp_path) == 0
+    runs = EventStore(tmp_path / "milodex.db").list_reconciliation_runs()
+    assert len(runs) == 1
+    assert runs[0].status == "incomplete"
+    assert runs[0].broker_connected is False
+
+
+def test_resolve_position_appends_adjustment_for_local_only_drift(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _append_local_trade(store, symbol="SPY", side="buy", quantity=210.0)
+
+    exit_code, out, err = _run(
+        [
+            "reconcile",
+            "resolve-position",
+            "SPY",
+            "--reason",
+            "known stale local SPY position from paper ledger incident",
+            "--json",
+        ],
+        tmp_path,
+        broker=_StubBroker(),
+    )
+
+    assert exit_code == 0
+    assert err.getvalue() == ""
+    payload = json.loads(out.getvalue())
+    assert payload["data"]["symbol"] == "SPY"
+    assert payload["data"]["local_qty_before"] == 210.0
+    assert payload["data"]["broker_qty"] == 0.0
+    assert payload["data"]["delta_qty"] == -210.0
+
+    adjustments = EventStore(tmp_path / "milodex.db").list_reconciliation_adjustments()
+    assert len(adjustments) == 1
+    assert adjustments[0].source_incident_hash == payload["data"]["source_incident_hash"]
+
+    second_code, second_out, _ = _run(["reconcile", "--json"], tmp_path, broker=_StubBroker())
+    assert second_code == 0
+    second_data = json.loads(second_out.getvalue())["data"]
+    assert second_data["reconciliation_clean"] is True
+    assert second_data["positions"]["mismatches"] == []
+
+
+def test_resolve_position_refuses_qty_mismatch(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _append_local_trade(store, symbol="SPY", side="buy", quantity=10.0)
+    broker = _StubBroker(positions=[_broker_position("SPY", 9.0)])
+
+    exit_code, _, err = _run(
+        ["reconcile", "resolve-position", "SPY", "--reason", "not local-only", "--json"],
+        tmp_path,
+        broker=broker,
+    )
+
+    assert exit_code == 1
+    payload = json.loads(err.getvalue())
+    assert "local-only" in payload["errors"][0]["message"]
 
 
 # ---------------------------------------------------------------------------

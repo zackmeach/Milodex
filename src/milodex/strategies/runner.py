@@ -20,6 +20,7 @@ from milodex.data.timeframes import timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
+from milodex.operations.reconciliation import run_reconciliation
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
 from milodex.strategies.paper_runner_control import consume_controlled_stop_request
@@ -100,6 +101,7 @@ class StrategyRunner:
         self._processed_intent_keys: set[tuple[datetime, str, str]] = set()
         self._processed_intent_bar_at: datetime | None = None
         self._requested_shutdown: str | None = None
+        self._startup_reconciled = False
         self._closed = False
         self._dialog_open = False
         # Reconcile any prior strategy_runs row for this strategy still left
@@ -221,6 +223,7 @@ class StrategyRunner:
         opens.  The gate checks ``is_market_open()`` FIRST, before any network
         I/O, so closed-market cycles are cheap regardless of fetch cost.
         """
+        self._ensure_startup_reconciliation()
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
         if is_daily_bar and market_open:
@@ -337,6 +340,15 @@ class StrategyRunner:
             exit_reason=exit_reason,
         )
         self._closed = True
+
+    def _ensure_startup_reconciliation(self) -> None:
+        if self._startup_reconciled:
+            return
+        run_reconciliation(
+            event_store=self._event_store,
+            broker=self._broker,
+        )
+        self._startup_reconciled = True
 
     def _now(self) -> datetime:
         return datetime.now(tz=UTC)

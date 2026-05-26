@@ -19,7 +19,8 @@ from typing import TYPE_CHECKING
 
 from milodex.broker.models import OrderSide, OrderStatus
 from milodex.risk.config import RiskDefaults
-from milodex.risk.models import RiskCheckResult, RiskDecision
+from milodex.risk.exposure import is_exposure_increasing
+from milodex.risk.models import ReconciliationReadiness, RiskCheckResult, RiskDecision
 
 if TYPE_CHECKING:
     from milodex.broker.models import AccountInfo, Order, Position
@@ -39,6 +40,7 @@ class EvaluationContext:
     account: AccountInfo
     positions: list[Position]
     recent_orders: list[Order]
+    reconciliation_readiness: ReconciliationReadiness | None
     latest_bar: Bar | None
     market_open: bool
     trading_mode: str
@@ -96,6 +98,7 @@ class RiskEvaluator:
     _CHECKS = (
         "_check_kill_switch",
         "_check_trading_mode",
+        "_check_reconciliation_readiness",
         "_check_strategy_stage",
         "_check_manifest_drift",
         "_check_market_open",
@@ -174,6 +177,36 @@ class RiskEvaluator:
                 reason_code="paper_mode_required",
             )
         return RiskCheckResult("paper_mode", True, "Paper trading mode confirmed.")
+
+    def _check_reconciliation_readiness(self, context: EvaluationContext) -> RiskCheckResult:
+        if context.is_backtest:
+            return RiskCheckResult(
+                "reconciliation",
+                True,
+                "Backtest mode - reconciliation readiness not enforced.",
+            )
+        if not is_exposure_increasing(context.intent, context.positions):
+            return RiskCheckResult(
+                "reconciliation",
+                True,
+                "Intent reduces broker-held exposure; reconciliation gate does not block.",
+            )
+        readiness = context.reconciliation_readiness
+        if readiness is None:
+            return RiskCheckResult(
+                name="reconciliation",
+                passed=False,
+                message="No reconciliation readiness verdict is available; failing closed.",
+                reason_code="reconciliation_required",
+            )
+        if readiness.ready:
+            return RiskCheckResult("reconciliation", True, readiness.message)
+        return RiskCheckResult(
+            name="reconciliation",
+            passed=False,
+            message=readiness.message,
+            reason_code=readiness.reason_code or "reconciliation_required",
+        )
 
     def _check_strategy_stage(self, context: EvaluationContext) -> RiskCheckResult:
         if context.strategy_config is None:

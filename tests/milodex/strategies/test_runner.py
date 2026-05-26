@@ -344,7 +344,11 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
     runner.shutdown(mode="controlled")
 
     assert results == []
-    explanations = event_store.list_explanations()
+    explanations = [
+        event
+        for event in event_store.list_explanations()
+        if event.decision_type != "reconcile_incident"
+    ]
     assert len(explanations) == 1
     assert explanations[0].decision_type == "no_trade"
     assert explanations[0].status in {"no_signal", "no_action"}

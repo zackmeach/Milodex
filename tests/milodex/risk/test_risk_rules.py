@@ -33,6 +33,7 @@ from milodex.execution.models import ExecutionRequest, TradeIntent
 from milodex.execution.state import KillSwitchState
 from milodex.risk import (
     EvaluationContext,
+    ReconciliationReadiness,
     RiskCheckResult,
     RiskDecision,
     RiskDefaults,
@@ -52,6 +53,7 @@ DEFAULT_RISK_DEFAULTS = RiskDefaults(
     duplicate_order_window_seconds=60,
     max_data_staleness_seconds=300,
 )
+_DEFAULT_RECONCILIATION_READINESS = object()
 
 
 def _fresh_bar() -> Bar:
@@ -106,6 +108,7 @@ def make_context(
     request_strategy_name: str | None = None,
     event_store=None,
     is_backtest: bool = False,
+    reconciliation_readiness=_DEFAULT_RECONCILIATION_READINESS,
 ) -> EvaluationContext:
     """Build an ``EvaluationContext`` pre-configured to pass every rule
     except the one under test."""
@@ -155,6 +158,18 @@ def make_context(
         account=account,
         positions=list(positions),
         recent_orders=list(recent_orders),
+        reconciliation_readiness=(
+            reconciliation_readiness
+            if reconciliation_readiness is not _DEFAULT_RECONCILIATION_READINESS
+            else ReconciliationReadiness(
+                ready=True,
+                reason_code=None,
+                message="test clean reconciliation",
+                local_trading_day="2026-05-25",
+                status="clean",
+                broker_connected=True,
+            )
+        ),
         latest_bar=latest_bar or _fresh_bar(),
         market_open=market_open,
         trading_mode=trading_mode,
@@ -480,6 +495,142 @@ def test_concurrent_positions_cap_tightened_by_strategy_config():
     result = check_result(decision, "concurrent_positions")
     assert result.passed is False
     assert result.reason_code == "max_concurrent_positions_exceeded"
+
+
+# --- _check_reconciliation_readiness ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    "readiness, expected_reason",
+    [
+        (None, "reconciliation_required"),
+        (
+            ReconciliationReadiness(
+                ready=False,
+                reason_code="reconciliation_drift",
+                message="dirty",
+                status="dirty",
+                broker_connected=True,
+            ),
+            "reconciliation_drift",
+        ),
+        (
+            ReconciliationReadiness(
+                ready=False,
+                reason_code="reconciliation_stale",
+                message="stale",
+                status="clean",
+                broker_connected=True,
+            ),
+            "reconciliation_stale",
+        ),
+        (
+            ReconciliationReadiness(
+                ready=False,
+                reason_code="reconciliation_incomplete",
+                message="incomplete",
+                status="incomplete",
+                broker_connected=False,
+            ),
+            "reconciliation_incomplete",
+        ),
+    ],
+)
+def test_reconciliation_blocks_exposure_increasing_intents(readiness, expected_reason):
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            reconciliation_readiness=readiness,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+
+    result = check_result(decision, "reconciliation")
+    assert result.passed is False
+    assert result.reason_code == expected_reason
+    assert expected_reason in decision.reason_codes
+
+
+def test_reconciliation_allows_current_clean_readiness():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            reconciliation_readiness=ReconciliationReadiness(
+                ready=True,
+                reason_code=None,
+                message="clean today",
+                status="clean",
+                broker_connected=True,
+            ),
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+
+    assert check_result(decision, "reconciliation").passed is True
+
+
+def test_reconciliation_does_not_block_reducing_sell_against_broker_long():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=5.0,
+            positions=[_position("SPY", 10.0)],
+            reconciliation_readiness=ReconciliationReadiness(
+                ready=False,
+                reason_code="reconciliation_drift",
+                message="dirty",
+                status="dirty",
+                broker_connected=True,
+            ),
+            risk_defaults=_with_overrides(
+                max_single_position_pct=1.0,
+                max_total_exposure_pct=1.0,
+                max_order_value_pct=1.0,
+            ),
+        )
+    )
+
+    assert check_result(decision, "reconciliation").passed is True
+    assert "reconciliation_drift" not in decision.reason_codes
+
+
+def test_reconciliation_blocks_sell_beyond_broker_held_quantity():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=15.0,
+            positions=[_position("SPY", 10.0)],
+            reconciliation_readiness=ReconciliationReadiness(
+                ready=False,
+                reason_code="reconciliation_drift",
+                message="dirty",
+                status="dirty",
+                broker_connected=True,
+            ),
+            risk_defaults=_with_overrides(
+                max_single_position_pct=1.0,
+                max_total_exposure_pct=1.0,
+                max_order_value_pct=1.0,
+            ),
+        )
+    )
+
+    result = check_result(decision, "reconciliation")
+    assert result.passed is False
+    assert result.reason_code == "reconciliation_drift"
+
+
+def test_reconciliation_exempt_for_backtests():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            is_backtest=True,
+            reconciliation_readiness=None,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+
+    assert check_result(decision, "reconciliation").passed is True
 
 
 # --- helpers ---------------------------------------------------------------

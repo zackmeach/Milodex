@@ -27,9 +27,8 @@ _MARKER_RE = re.compile(r"#\s*scaffolded:", re.IGNORECASE)
 # that must appear on a ``# scaffolded:`` comment line in that file. Update
 # this dict in the same commit that adds or removes a marker.
 CANONICAL_SCAFFOLDED_MARKERS: dict[str, list[str]] = {
-    "cli/commands/reconcile.py": [
+    "operations/reconciliation.py": [
         "deferred reconciliation checks",
-        "submit-gate wiring",
     ],
 }
 

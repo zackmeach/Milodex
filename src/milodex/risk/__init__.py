@@ -18,7 +18,7 @@ from milodex.risk.config import (
     load_risk_defaults,
 )
 from milodex.risk.evaluator import EvaluationContext, RiskEvaluator
-from milodex.risk.models import RiskCheckResult, RiskDecision
+from milodex.risk.models import ReconciliationReadiness, RiskCheckResult, RiskDecision
 from milodex.risk.policy import (
     BYPASS_SUMMARY,
     BacktestStructuralRiskEvaluator,
@@ -33,6 +33,7 @@ __all__ = [
     "CeilingViolationError",
     "EvaluationContext",
     "NullRiskEvaluator",
+    "ReconciliationReadiness",
     "RiskCheckResult",
     "RiskDecision",
     "RiskDefaults",
