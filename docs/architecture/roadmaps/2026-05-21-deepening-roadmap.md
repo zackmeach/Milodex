@@ -284,7 +284,7 @@ their authoritative read models are not yet available.
 | Action family | reconciliation clean | kill switch inactive | data fresh | broker reachable |
 |---|---|---|---|---|
 | promote_to_paper | required | required | required | required |
-| start_paper_runner | required | required | required | required |
+| start_paper_runner | required | required | runner-local close-lockin | required |
 | stop_paper_runner | inspect/report | required | inspect/report | inspect/report |
 | demote with active runner | required | required | inspect/report | inspect/report |
 

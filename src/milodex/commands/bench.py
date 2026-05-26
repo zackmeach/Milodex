@@ -98,6 +98,13 @@ _WORKFLOW_REQUIRED_FULL: frozenset[str] = frozenset(
         READINESS_BROKER_REACHABILITY,
     }
 )
+_WORKFLOW_REQUIRED_START_RUNNER: frozenset[str] = frozenset(
+    {
+        READINESS_RECONCILIATION,
+        READINESS_KILL_SWITCH,
+        READINESS_BROKER_REACHABILITY,
+    }
+)
 
 ACTION_FAMILIES: tuple[str, ...] = (
     ACTION_FAMILY_BACKTEST,
@@ -302,18 +309,13 @@ class _DefaultWorkflowReadiness:
                 )
                 continue
             if dimension == READINESS_BROKER_REACHABILITY:
-                issues.append(
-                    WorkflowReadinessIssue(
-                        dimension=dimension,
-                        reason_code="broker_unreachable",
-                        message=(
-                            "Workflow readiness cannot prove broker reachability; "
-                            "submit-capable workflow actions fail closed."
-                        ),
-                        context={"action_family": action_family, "strategy_id": strategy_id},
-                        blocking=blocking,
-                    )
+                issue = self._broker_reachability_issue(
+                    action_family=action_family,
+                    strategy_id=strategy_id,
+                    blocking=blocking,
                 )
+                if issue is not None:
+                    issues.append(issue)
         return WorkflowReadinessReport(issues=tuple(issues))
 
     def _reconciliation_issue(
@@ -344,6 +346,43 @@ class _DefaultWorkflowReadiness:
             context={
                 "action_family": action_family,
                 "strategy_id": strategy_id,
+                **dict(readiness.context),
+            },
+            blocking=blocking,
+        )
+
+    def _broker_reachability_issue(
+        self,
+        *,
+        action_family: str,
+        strategy_id: str,
+        blocking: bool,
+    ) -> WorkflowReadinessIssue | None:
+        if self._event_store_factory is None:
+            return WorkflowReadinessIssue(
+                dimension=READINESS_BROKER_REACHABILITY,
+                reason_code="broker_unreachable",
+                message=(
+                    "Workflow readiness cannot read durable reconciliation state; "
+                    "broker reachability cannot be proven."
+                ),
+                context={"action_family": action_family, "strategy_id": strategy_id},
+                blocking=blocking,
+            )
+        readiness = latest_readiness(self._event_store_factory())
+        if readiness.ready and readiness.broker_connected:
+            return None
+        return WorkflowReadinessIssue(
+            dimension=READINESS_BROKER_REACHABILITY,
+            reason_code="broker_unreachable",
+            message=(
+                "Workflow readiness cannot prove current-day broker reachability; "
+                "run a clean reconciliation before starting a paper runner."
+            ),
+            context={
+                "action_family": action_family,
+                "strategy_id": strategy_id,
+                "reconciliation_reason_code": readiness.reason_code,
                 **dict(readiness.context),
             },
             blocking=blocking,
@@ -1003,7 +1042,7 @@ class BenchCommandFacade:
             self._evaluate_workflow_readiness(
                 action_family=ACTION_FAMILY_START_PAPER_RUNNER,
                 strategy_id=strategy_id,
-                required_checks=_WORKFLOW_REQUIRED_FULL,
+                required_checks=_WORKFLOW_REQUIRED_START_RUNNER,
             )
         )
         blockers.extend(readiness_blockers)

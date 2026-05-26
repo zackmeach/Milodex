@@ -560,7 +560,7 @@ def test_default_workflow_readiness_reads_durable_reconciliation(event_store: Ev
     clean = readiness.evaluate(
         action_family=ACTION_FAMILY_START_PAPER_RUNNER,
         strategy_id=STRATEGY_ID,
-        required_checks=frozenset({"reconciliation"}),
+        required_checks=frozenset({"broker_reachability", "reconciliation"}),
         inspected_checks=frozenset(),
     )
     assert clean.issues == ()
@@ -792,6 +792,9 @@ def test_propose_start_paper_runner_blocks_required_workflow_readiness(
     assert reason_code in {b.reason_code for b in proposal.blockers}
     first_issue = proposal.projected_outcome["workflow_readiness"]["issues"][0]
     assert first_issue["reason_code"] == reason_code
+    assert readiness.calls[0]["required_checks"] == frozenset(
+        {"reconciliation", "kill_switch", "broker_reachability"}
+    )
 
 
 def test_propose_stop_paper_runner_blocks_when_no_runner(make_facade, config_dir: Path) -> None:
