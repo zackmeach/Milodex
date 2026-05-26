@@ -199,7 +199,7 @@ Done criteria:
 Source: AUDIT-002
 Status: done
 Priority: P0
-Last verified: 2026-05-21
+Last verified: 2026-05-26
 Dependencies: RM-001
 
 Problem:
@@ -257,25 +257,29 @@ Dependencies: RM-003a
 
 Problem:
 
-Bench paper-runner proposals check strategy existence, trading mode, stage, and
-advisory lock, but ADR 0051 requires workflow-readiness checks for submit-capable
-actions: reconciliation cleanliness, kill-switch state, data freshness, and
-broker reachability. `OPERATIONS.md` makes these submit-gate conditions for
-workflow-relevant commands.
+Bench paper-runner proposals must include workflow-readiness checks for
+submit-capable actions: reconciliation cleanliness, kill-switch state, data
+freshness, and broker reachability. `OPERATIONS.md` makes these submit-gate
+conditions for workflow-relevant commands.
 
 Evidence:
 
-- Bench start proposal checks only local stage/mode/lock conditions in
-  [`src/milodex/commands/bench.py`](../../../src/milodex/commands/bench.py).
-- ADR 0051 requires workflow readiness for promotion, runner start, runner stop,
-  and active-runner demotion.
-- The reconciliation command surface currently has scaffolded pieces, so the
-  roadmap must not imply a complete reconciliation gate already exists.
+- Durable reconciliation readiness is implemented through
+  [`src/milodex/operations/reconciliation.py`](../../../src/milodex/operations/reconciliation.py)
+  and consumed by risk, execution, runner startup, CLI reconcile, and Bench.
+- Bench no longer returns the fail-closed `reconciliation_scaffolded` placeholder
+  for runner readiness; it reads the latest durable verdict and blocks missing,
+  stale, dirty, broker-unreachable, or incomplete readiness.
+- Deferred reconciliation dimensions remain warning-only for v1.2; they do not
+  by themselves make a run dirty or incomplete.
 
 Next action:
 
-Design and implement a workflow-readiness seam for Bench submit-capable actions.
-The first implementation pass must define the matrix below before code changes:
+Keep the workflow-readiness seam current as new submit-capable action families
+are added. The current reconciliation slice implements durable current-NY-day
+readiness for exposure-increasing paper previews/submits; data freshness and
+broker reachability outside the reconciliation run remain named blockers where
+their authoritative read models are not yet available.
 
 | Action family | reconciliation clean | kill switch inactive | data fresh | broker reachable |
 |---|---|---|---|---|
@@ -284,20 +288,18 @@ The first implementation pass must define the matrix below before code changes:
 | stop_paper_runner | inspect/report | required | inspect/report | inspect/report |
 | demote with active runner | required | required | inspect/report | inspect/report |
 
-The exact blocker codes should be stable and named before implementation:
-`reconciliation_drift`, `kill_switch_open`, `data_stale`,
-`broker_unreachable`, plus a specific code for any scaffolded reconciliation
-dependency that cannot yet produce a final answer.
+The current stable blocker codes include `reconciliation_required`,
+`reconciliation_stale`, `reconciliation_drift`, `reconciliation_incomplete`,
+`kill_switch_open`, `data_stale`, and `broker_unreachable`.
 
 Implementation scope:
 
-- Keep readiness checks behind a small interface with local adapters and test
+- Keep readiness checks behind small interfaces with local adapters and test
   fakes.
 - Do not add broker calls directly to `src/milodex/gui/`.
 - Do not block safe-anytime backtests on broker reachability.
 - Do not treat controlled stop as a kill-switch action.
-- If reconciliation cannot yet provide a real clean/dirty verdict, land an
-  explicit blocker or decision note rather than a silent pass.
+- Do not regress durable reconciliation to a scaffolded or silent-pass verdict.
 
 Validation:
 

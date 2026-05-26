@@ -13,7 +13,7 @@ These are the CLI surfaces the operator should reach for daily. They shape the p
 1. **`status`** — current system health, strategy state, warnings, and next expected actions.
 2. **`preview`** — what Milodex would do before it commits.
 3. **`report`** — the most recent strategy, portfolio, or trust report.
-4. **`reconcile`** — compare and sync local state with broker state.
+4. **`reconcile`** — compare broker state with the event store, persist the durable readiness verdict, and surface warning-only deferred dimensions.
 5. **Daily workflow command** (e.g., `run daily` or equivalent) — execute the normal daily operating cycle.
 
 These five must be first-class, discoverable, documented, and reliable. If any of them feels awkward, clever, or brittle, the product feels wrong regardless of how good the internals are.
@@ -27,7 +27,7 @@ From opening the terminal to closing it:
 1. Open terminal and run `status`.
 2. Confirm system health, broker/data connectivity, and whether any incidents or halted states exist.
 3. Review a concise summary of active strategies, open positions, and expected next actions.
-4. Run `reconcile` if needed to confirm broker and local state match.
+4. Run `reconcile` before workflow-relevant paper-runner start or exposure-increasing submit; the latest clean run must be for today's America/New_York trading date.
 5. Run `preview` for the day's eligible actions or strategy decisions.
 6. Review the reasoning, risk checks, and any warnings.
 7. If appropriate, approve and run the next workflow step or submit-capable action.

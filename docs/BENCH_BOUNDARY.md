@@ -13,9 +13,9 @@
 **Audience:** Any contributor who looks at the Bench code and wonders whether a Bench action can be wired to a real command path.
 **Short answer:** Only through the ADR 0051 command facade and bridge. Everything else stays preview-only.
 
-> **Forward pointer — ADR 0051 (Bench Command Infrastructure v1).** The successor program is named and architected in [ADR 0051](adr/0051-bench-command-infrastructure-v1.md). That ADR opens a narrow, named set of action families (backtest, freeze manifest, promote to paper, demote, start/stop paper runner) along a single Python facade at `src/milodex/commands/bench.py` and a Qt bridge under `src/milodex/gui/`. **Until each action family is actually wired in its own Phase C–F PR, ADR 0049 and this document remain the binding contract** for that family — preview-only, no submit, no broker call, no event-store write, no runner construction.
+> **Forward pointer — ADR 0051 (Bench Command Infrastructure v1).** [ADR 0051](adr/0051-bench-command-infrastructure-v1.md) is now the binding command boundary for Bench submit-capable families. A narrow, named set of action families (backtest, freeze manifest, promote to paper, demote, start/stop paper runner) crosses from QML through the Qt bridge into a single Python facade at `src/milodex/commands/bench.py`. ADR 0049 remains binding for everything outside those named families: no direct broker calls, no direct event-store writes, no runner construction, and no YAML mutation from QML.
 >
-> **Implementation status — Phase D2 (2026-05-14).**
+> **Implementation status — post-Phase F with durable readiness gate (2026-05-26).**
 >
 > * ADR 0049 remains binding for every Bench path not explicitly opened below. Forbidden-token tests on QML (`submitCommand`, `dispatchCommand`, `broker.`, `eventStore.`, `BenchState.demote`, `config.write`, …) remain in force across all QML files.
 > * ADR 0051 command infrastructure exists: `src/milodex/commands/bench.py` ships `BenchCommandFacade` with six `propose_*` methods and `CommandProposal` / `CommandResult` / `Blocker` / `Precondition` dataclasses.
@@ -25,8 +25,8 @@
 > * **The confirmation modal is action-aware.** Demote renders a required reason and "Confirm demotion"; freeze renders "Confirm freeze"; backtest renders "Run backtest"; promote-to-paper renders recommendation/risk inputs and "Confirm promotion"; Start Trading renders "Start paper runner"; Stop Trading renders "Request stop." Return actions still render the inert "Not wired in v1" primary and the non-submit-capable draft banner.
 > * **Promote-to-paper (`submit_promote_to_paper`) is end-to-end GUI-submit-capable (Phase D3).** The bridge exposes `proposePromoteToPaper` / `submitPromoteToPaper`, sources `approved_by` backend-side, and uses the same `milodex.promotion.state_machine.transition` governance callee as the CLI. The modal requires operator recommendation and known-risk text, passes the row's evidence run id, and surfaces gate, evidence, stale-stage, and unknown-run blockers from the facade.
 > * **Paper runner controls (`submit_start_paper_runner`, `submit_stop_paper_runner`) are submit-capable (Phase F).** Start launches the existing `milodex strategy run <strategy_id>` path through a non-blocking runner-control boundary. Stop writes a controlled-stop request consumed by `StrategyRunner` between cycles; it does not trigger the kill switch.
+> * **Start/promote readiness consults durable reconciliation readiness.** Bench reads the latest durable readiness verdict instead of the former `reconciliation_scaffolded` placeholder. Exposure-increasing paper paths require a clean reconcile for the current America/New_York date; deferred reconciliation dimensions remain warning-only in this slice.
 > * **QML still cannot mutate state directly.** No QML file imports the facade, calls a broker client, opens a runner, writes the event store, or edits YAML. The bridge is the command boundary. Forbidden tokens (`BenchState.demote`, `broker.`, `eventStore.`, `config.write`, `submitCommand`, `dispatchCommand`, `CommandProposal`) are still rejected by `test_bench_pr_n_no_mutation_token_drift` in every Bench QML file.
-> * **`_ADR_0051_COMMAND_INFRA_ALLOWLIST` remains at the same three entries as Phase C2.** Phase D1 reuses the existing bridge file (`src/milodex/gui/bench_command_bridge.py`); freeze slots use action-specific method names (`proposeFreezeManifest`, `submitFreezeManifest`) that do not match the forbidden patterns. No allowlist widening was required.
 
 ## What Bench is
 
@@ -89,14 +89,14 @@ A **local, QML-only** composition of `evidencePacket + actionIntentPreview` rend
 
 The name `commandDraftPreview` is the **single permitted `command*` token** in the Bench QML files. Every other `command*` token (`CommandProposal`, `submitCommand`, `dispatchCommand`, etc.) is rejected by the forbidden-token tests in `tests/milodex/gui/test_qml_load_smoke.py`. This is deliberate: any future PR that tries to graft a submit path onto this object must either rename the property and break the layout/safety tests, or introduce a new forbidden token — both routes surface the intent in code review.
 
-## How to wire real commands later
+## How to add a new submit-capable action family
 
 Any future move from "preview" to "submit" must:
 
-1. Open a new ADR amending or superseding ADR 0049 Decision 2.
-2. Land in a separate PR. No `CommandProposal` class, no `submitCommand` function, no broker call, no event-store write may be introduced piecewise inside an unrelated Bench refactor.
-3. Update this document and the `_COPY_*` constants in `BenchConfirmationModal.qml` so the visible banner no longer says *"Bench v1 cannot submit it."*
-4. Update the forbidden-token list in `tests/milodex/gui/test_qml_load_smoke.py` to reflect the new contract — do **not** silently widen the allowlist.
+1. Amend the ADR 0051 action-family list, or open a new ADR if the action changes the safety model.
+2. Land in a separate PR that routes through `BenchCommandBridge -> BenchCommandFacade`; no QML file may call a broker, event store, runner, YAML writer, or risk service directly.
+3. Add proposal and submit slots with submit-time revalidation, including workflow-readiness checks when the action can affect paper execution state.
+4. Update this document, the `_COPY_*` constants in `BenchConfirmationModal.qml`, and the forbidden-token tests so the visible banner and code contract match the new action family.
 
 ## What protects this boundary
 

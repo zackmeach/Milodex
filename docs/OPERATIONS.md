@@ -46,6 +46,8 @@ Every Milodex startup, regardless of entrypoint, must:
 
 Startup is the moment Milodex establishes whether the system is **safe and coherent enough to proceed**. Commands that could affect execution state must not be available until startup completes successfully.
 
+Before starting a new trading-day paper runner or any exposure-increasing paper submit, run `python -m milodex.cli.main reconcile` and confirm the latest durable verdict is clean for the current America/New_York calendar date. A clean run from a prior NY date is stale for the next session and must be refreshed before flight.
+
 ---
 
 ## Shutdown
@@ -65,22 +67,27 @@ Shutdown must never silently discard operationally important context. A kill-swi
 
 ## State Reconciliation
 
-Local state and Alpaca must be reconciled at startup, at the start of each workflow window, and on demand. At minimum, reconciliation covers:
+Local state and Alpaca must be reconciled at startup, at the start of each workflow window, and on demand. Reconciliation now writes a durable readiness verdict for every run, clean or dirty, including the NY-local trading date, broker connectivity, checked-dimensions version, incident hash/reasons, and JSON-ready summary payload.
+
+For the v1.1 durable gate, exposure-increasing paper previews and submits require the latest clean reconciliation run to have `recorded_at` converted to today's America/New_York calendar date. Missing, stale, dirty, broker-unreachable, or incomplete runs block exposure-increasing paper actions with structured reason codes (`reconciliation_required`, `reconciliation_stale`, `reconciliation_drift`, or `reconciliation_incomplete`). Broker-grounded reducing actions remain allowed; backtests remain exempt.
+
+The enforced v1.1 dimensions are:
 
 - open orders
-- filled orders since last sync
-- canceled or rejected orders
 - current positions
 - account equity and buying power relevant to policy
 - order identifiers and local submission records
-- strategy-to-order linkage
 - any halt- or incident-relevant discrepancies
+
+Filled-order catch-up since last sync, canceled/rejected order parity, and strategy-to-order linkage remain warning-only deferred dimensions for v1.2. Deferred-dimension warnings do not by themselves make a reconciliation run incomplete or dirty in this slice.
 
 If local and broker state disagree on any execution-critical fact, Milodex must:
 
 - surface the mismatch with both values shown,
 - log the disagreement as an incident,
 - **block exposure-increasing actions** until reconciliation is resolved.
+
+Known local-only position drift can be corrected only through the audited append-only path: `python -m milodex.cli.main reconcile resolve-position SYMBOL --reason "..."`. The command computes the broker-local delta from the current comparison, binds the adjustment to the active incident hash, and refuses stale or non-local-only mismatches. Resolving a position drift is necessary but not sufficient for flight if another incident-triggering drift remains.
 
 This is consistent with R-XC-010 (split source-of-truth) and R-EXE-004 (broker-vs-local reconciliation check).
 
@@ -119,7 +126,7 @@ Milodex uses a **single-operator, serialized-critical-action** concurrency model
 - **Serialized within the global namespace (`milodex.runtime`):** reconcile, manual `trade submit`, promote, demote, kill-switch handling, config-changing operations, and any state-changing governance event. These commands hold a single shared lock and serialize against each other.
 - **Serialized within the per-strategy namespace (`milodex.runtime.strategy.<strategy_id>`):** the `milodex strategy run <strategy_id>` runner. Each runner holds a lock scoped to its own `strategy_id`, so two different strategies can run concurrently in separate foreground processes (per [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md)) but a second invocation of the same `strategy_id` is refused with `advisory_lock_held` identifying the running PID.
 
-Concurrency guards are implemented via file locks under `state/locks/` (per R-XC-006). The two namespaces are deliberately disjoint: a runner does not block a reconcile, and a reconcile does not block a runner. Cross-namespace safety for execution-critical state falls to the broker via the risk evaluator's per-call position query ([ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md)), not to inter-process locks.
+Concurrency guards are implemented via file locks under `data/locks/` as resolved by `milodex.config.get_locks_dir()` (per R-XC-006). The two namespaces are deliberately disjoint: a runner does not block a reconcile, and a reconcile does not block a runner. Cross-namespace safety for execution-critical state falls to the broker via the risk evaluator's per-call position query ([ADR 0024](adr/0024-account-scoped-position-caps-are-authoritative.md)), not to inter-process locks.
 
 R-EXE-013 carries the current testable contract for the per-strategy lock invariant (it formerly required "at most one strategy runs at a time" in Phase 1; that restriction was lifted in Phase 3 per ADR 0026).
 

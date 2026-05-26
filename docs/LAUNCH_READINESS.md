@@ -11,6 +11,8 @@
 **Pass run:** 2026-05-14, commit `fee27fe`, on `master`.
 **Method:** command/script-driven. No UI click automation. Manual operator checks called out explicitly per §1 item.
 
+**Superseding flight note (2026-05-26, after `d8d0a4a`):** paper flight is additionally gated on a current-day durable reconciliation verdict. Before starting live paper runners, run `python -m milodex.cli.main reconcile` and confirm the latest clean run's `recorded_at` resolves to today's America/New_York date. A stale local-only position drift is resolved through `python -m milodex.cli.main reconcile resolve-position SYMBOL --reason "..."`, which records an append-only audited adjustment; do not edit or delete trade rows.
+
 ---
 
 ## 0. Phase 1 paper lifecycle acceptance (2026-05-15)
@@ -134,7 +136,7 @@ No lifecycle-blocking patch PR was needed from this walk.
 - [x] **Front, Desk, Bench, Ledger render under Editorial Dark with token-driven design.** Visually verified from PNGs:
   - Front: Newsreader serif headline, paper-only safety strip, "AT THE GATE" Sma200 Rotation card, snapshot sparkline.
   - Desk: paper-locked status row, strategy bank grouped by stage (backtest/paper/micro_live/full live), promotion-ledger column.
-  - Bench: read-only board with backtest + paper sections, no mutation surface visible.
+  - Bench: command-boundary board with backtest + paper sections; submit-capable actions route through `BenchCommandBridge` and the ADR 0051 command facade.
   - Ledger: chronological promotion / kill-switch ledger.
 - [x] **No raw-hex leaks in operator surfaces.** Grep of `Bronze|Editorial Light` in `src/milodex/gui/qml/` returns hits only in: `qmldir` (module registration), `Theme.qml` (registry), `themes/*.qml` (concrete theme files), `DesignSystemShowcase.qml` (the showcase that explicitly disables them). No hits in `Front*`, `Desk*`, `Bench*`, `Ledger*`, `StrategyBank*`, or `components/`.
 
@@ -186,9 +188,9 @@ No lifecycle-blocking patch PR was needed from this walk.
   2. Confirm Front + Operations renders kill-switch state unmistakably (color + label + reason).
   3. Confirm reset requires explicit confirmation.
 
-### 1.10 Bench read-only boundary — PASS
+### 1.10 Bench command boundary — PASS
 
-- [x] **Bench surface renders without mutation affordances.** Captured Bench screenshot shows row list with no inline edit, delete, or run controls. Action verbs route through `BenchConfirmationModal`, which is a preview surface (see §1.11).
+- [x] **Bench surface renders without direct mutation affordances.** Captured Bench screenshot shows row list with no inline edit, delete, or raw broker/event-store controls. Submit-capable action verbs route through `BenchConfirmationModal`, `BenchCommandBridge`, and the ADR 0051 command facade (see §1.11).
 - [x] **`bench_v1_fixtures.py` is a separate module** from `bench_v1.py` and the production `BenchState` read model.
 - [x] **BenchConfirmationModal renders a preview, not a writer.** Captured modal shows "What will happen", "Current paper state", "Modules included in confirm", "Safety notice" — all read-out. The Approve button is the operator's commit point, not the modal's; ADR 0004 keeps capital-bearing approvals locked.
 
@@ -359,7 +361,7 @@ Maps to §1.7.
 - ✅ §1.4 Editorial Dark screenshot state
 - ✅ §1.6 No Light/Bronze affordance in operator surfaces
 - ✅ §1.8 Paper-mode safety posture (ADR 0004 enforced in modal copy, header strip, CLI status)
-- ✅ §1.10 Bench read-only boundary
+- ✅ §1.10 Bench command boundary
 - ✅ §1.11 Evidence rail + Confirmation modal behavior
 - ✅ §1.12 CLI smoke (with corrected subcommand list)
 - ✅ §1.13 pytest (1259 passed, 4 xfailed), ruff (clean), coverage 89.00% (exact gate).
@@ -377,7 +379,7 @@ Maps to §1.7.
 - Light or Bronze affordances reachable from the production GUI.
 - Live trading reachable from any UI surface or CLI flag.
 - Kill-switch can auto-reset.
-- Bench can mutate state.
+- Bench can mutate state outside `BenchCommandBridge` / the ADR 0051 command facade.
 
 **Recommendation: CONDITIONAL GO.** Every script-verifiable blocker passes against `fee27fe` on `master`. The launch is gated only on the three operator-manual walks in §5. When those land green and their screenshots are saved into `artifacts/gui-screenshots/20260514-102413/`, append the final outcome line below and tag the release.
 
