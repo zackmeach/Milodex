@@ -1408,7 +1408,7 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     assert '"start": "2020-01-01"' in modal_src
     assert '"end": "2024-12-31"' in modal_src
     assert '"walk_forward": true' in modal_src
-    assert '"initial_equity": 1000' in modal_src
+    assert '"initial_equity": 100000' in modal_src
     assert '"risk_policy": "bypass"' in modal_src
     assert "Run canonical walk-forward backtest evidence" in modal_src
 

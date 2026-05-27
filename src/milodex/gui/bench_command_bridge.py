@@ -352,7 +352,7 @@ class BenchCommandBridge(QObject):
         start = _date_from_qvariant(inputs.get("start"), date(2020, 1, 1))
         end = _date_from_qvariant(inputs.get("end"), date(2024, 12, 31))
         walk_forward = bool(inputs.get("walk_forward", True))
-        initial_equity = float(inputs.get("initial_equity", 1_000.0))
+        initial_equity = float(inputs.get("initial_equity", 100_000.0))
         slippage_raw = inputs.get("slippage")
         slippage = float(slippage_raw) if slippage_raw not in (None, "") else None
         run_id_raw = inputs.get("run_id")

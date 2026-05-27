@@ -512,7 +512,7 @@ def test_propose_backtest_returns_dict_and_caches_proposal(
     assert payload["inputs"]["start"] == "2020-01-01"
     assert payload["inputs"]["end"] == "2024-12-31"
     assert payload["inputs"]["walk_forward"] is True
-    assert payload["inputs"]["initial_equity"] == 1000.0
+    assert payload["inputs"]["initial_equity"] == 100_000.0
     assert payload["inputs"]["risk_policy"] == "bypass"
     # The proposal is cached for the matching submit call — verify behaviorally
     # by submitting and confirming we get past the unknown-proposal-id guard.

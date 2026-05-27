@@ -383,7 +383,7 @@ Item {
     // Canonical backtest submit (PR 13).
     //
     // Runs the evidence shape used by the strategy bank: walk-forward,
-    // 2020-01-01 through 2024-12-31, $1,000 initial equity, and raw
+    // 2020-01-01 through 2024-12-31, $100,000 initial equity, and raw
     // research risk policy (`bypass`). QML supplies only the strategy id
     // and canonical run settings; all validation and execution stays behind
     // the Python command bridge.
@@ -406,7 +406,7 @@ Item {
             "start": "2020-01-01",
             "end": "2024-12-31",
             "walk_forward": true,
-            "initial_equity": 1000,
+            "initial_equity": 100000,
             "risk_policy": "bypass"
         })
 
