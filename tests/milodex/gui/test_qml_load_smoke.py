@@ -40,10 +40,8 @@ import pytest
 # when a surface that imports them loads successfully.
 _QML_TARGETS = [
     "surfaces/AnchorSurface.qml",
-    "surfaces/StrategyBankSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
-    "surfaces/KanbanSurface.qml",
     "surfaces/BenchSurface.qml",
     "surfaces/LedgerSurface.qml",
     "surfaces/DeskSurface.qml",

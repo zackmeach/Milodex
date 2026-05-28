@@ -69,7 +69,6 @@ NUMERIC_QML_FILES: tuple[str, ...] = (
     "surfaces/DeskSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
-    "surfaces/KanbanSurface.qml",
     "surfaces/LedgerSurface.qml",
 )
 

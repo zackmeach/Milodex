@@ -18,8 +18,6 @@
 //   - Component.onCompleted logs Qt+QML+ThemeManager connectivity
 //   - engine.quit is connected to app.quit by the Python shell
 //
-// Strategy Bank tab (PR E): enabled; loads StrategyBankSurface.qml
-// (live observability surface).
 // Bench tab (PR F-bench): enabled; loads BenchSurface.qml (active
 // management surface, mock data — drag mechanics deferred to PR2).
 // Attribution tab remains stubbed; PR F will enable it.
@@ -379,10 +377,10 @@ Window {
             if (root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"
             if (root.activeSurface === "ledger")         return "surfaces/LedgerSurface.qml"
             if (root.activeSurface === "desk")           return "surfaces/DeskSurface.qml"
-            // Hidden surfaces (kept in codebase for reference):
+            // Hidden surfaces (reachable only by programmatic activeSurface assignment):
+            //   "anchor"         — kill-switch reset modal (sole GUI path; ADR 0035)
+            //   "design-system"  — token/theme preview (developer-internal; ADR 0035 integration smoke)
             if (root.activeSurface === "anchor")         return "surfaces/AnchorSurface.qml"
-            if (root.activeSurface === "strategy-bank")  return "surfaces/StrategyBankSurface.qml"
-            if (root.activeSurface === "bench-legacy")   return "surfaces/KanbanSurface.qml"
             if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
             return ""  // unknown id renders the placeholder
         }
