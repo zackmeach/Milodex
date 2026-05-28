@@ -84,8 +84,9 @@ def _find_promotable_row_and_action(bench_state):
         for row in section.get("strategies", []) or []:
             fallback_row = fallback_row or row
             for action in row.get("actions", []) or []:
-                if action.get("verbClass") == "directional" and \
-                   "Promote" in (action.get("label") or ""):
+                if action.get("verbClass") == "directional" and "Promote" in (
+                    action.get("label") or ""
+                ):
                     return row, action
                 if action.get("verbClass") == "directional" and fallback_directional is None:
                     fallback_directional = (row, action)
@@ -160,8 +161,10 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     stack: list[QObject] = list(root.findChildren(QObject))
     for child in stack:
         try:
-            if child.property("evidenceModalOpen") is not None and \
-               child.property("confirmationPreviewOpen") is not None:
+            if (
+                child.property("activeModal") is not None
+                and child.property("evidenceModalRow") is not None
+            ):
                 bench = child
                 break
         except Exception:
@@ -178,7 +181,7 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     if row is None:
         raise RuntimeError("no Bench rows available for Evidence rail capture")
     bench.setProperty("evidenceModalRow", row)
-    bench.setProperty("evidenceModalOpen", True)
+    bench.setProperty("activeModal", "evidence")
     _process_events(app, 900)
 
     img_a = screen.grabWindow(root.winId())
@@ -189,7 +192,7 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
         raise RuntimeError(f"failed to save: {path_a}")
     saved.append(path_a)
 
-    bench.setProperty("evidenceModalOpen", False)
+    bench.setProperty("activeModal", "none")
     _process_events(app, 400)
 
     # --- (B) Confirmation Preview modal open -------------------------------
@@ -205,7 +208,7 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
         raise RuntimeError("no row with a directional action found")
     bench.setProperty("confirmationPreviewRow", row_p)
     bench.setProperty("confirmationPreviewAction", action_p)
-    bench.setProperty("confirmationPreviewOpen", True)
+    bench.setProperty("activeModal", "confirmation")
     _process_events(app, 900)
 
     img_b = screen.grabWindow(root.winId())

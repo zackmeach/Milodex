@@ -478,8 +478,8 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
     assert surface_src.count("BenchEvidenceModal {") == 1, (
         "BenchSurface.qml must contain exactly one BenchEvidenceModal instantiation"
     )
-    assert "evidenceModalOpen" in surface_src, (
-        "BenchSurface.qml must declare property evidenceModalOpen"
+    assert "activeModal" in surface_src, (
+        "BenchSurface.qml must declare property activeModal (the modal state enum)"
     )
     assert "evidenceModalRow" in surface_src, (
         "BenchSurface.qml must declare property evidenceModalRow"
@@ -487,8 +487,10 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
     assert "onEvidenceRequested:" in surface_src, (
         "BenchSurface.qml must handle onEvidenceRequested: on the BenchRow delegate"
     )
-    assert "onCloseRequested: root.evidenceModalOpen = false" in surface_src, (
-        "BenchSurface.qml must wire onCloseRequested to clear evidenceModalOpen"
+    # Both modals' onCloseRequested handlers route through closeAllModals().
+    assert surface_src.count("onCloseRequested: root.closeAllModals()") >= 2, (
+        "BenchSurface.qml must wire onCloseRequested through root.closeAllModals() "
+        "in at least 2 places (BenchEvidenceModal and BenchConfirmationModal)"
     )
 
 
@@ -800,8 +802,8 @@ def test_bench_pr_k_confirmation_modal_wiring() -> None:
     assert surface_src.count("BenchConfirmationModal {") == 1, (
         "BenchSurface.qml must contain exactly one BenchConfirmationModal instantiation"
     )
-    assert "confirmationPreviewOpen" in surface_src, (
-        "BenchSurface.qml must declare property confirmationPreviewOpen"
+    assert 'activeModal === "confirmation"' in surface_src, (
+        'BenchSurface.qml must gate BenchConfirmationModal.open on activeModal === "confirmation"'
     )
     assert "confirmationPreviewRow" in surface_src, (
         "BenchSurface.qml must declare property confirmationPreviewRow"
@@ -812,20 +814,9 @@ def test_bench_pr_k_confirmation_modal_wiring() -> None:
     assert "onActionPreviewRequested:" in surface_src, (
         "BenchSurface.qml must handle onActionPreviewRequested: on the BenchRow delegate"
     )
-    assert "onCloseRequested: root.confirmationPreviewOpen = false" in surface_src, (
-        "BenchSurface.qml must wire onCloseRequested to clear confirmationPreviewOpen"
-    )
-    # Mutual exclusion: each handler clears the other modal.
-    # confirmationPreviewOpen = false appears in onEvidenceRequested AND onCloseRequested.
-    assert surface_src.count("confirmationPreviewOpen = false") >= 2, (
-        "BenchSurface.qml must clear confirmationPreviewOpen in at least 2 places "
-        "(onEvidenceRequested mutual-exclusion + onCloseRequested)"
-    )
-    # evidenceModalOpen referenced in onActionPreviewRequested AND onCloseRequested.
-    assert surface_src.count("evidenceModalOpen") >= 2, (
-        "BenchSurface.qml must reference evidenceModalOpen in at least 2 clearing contexts "
-        "(onActionPreviewRequested mutual-exclusion + onCloseRequested)"
-    )
+    # Mutual exclusion is now structural: activeModal is single-valued, so the
+    # legacy count-based guards (`confirmationPreviewOpen = false` count >= 2,
+    # `evidenceModalOpen` count >= 2) are redundant and have been removed.
 
 
 def test_bench_pr_k_modal_wording_contract() -> None:
@@ -884,7 +875,7 @@ def test_bench_pr_k_bleed_through_guards() -> None:
     """
     surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
 
-    guard = "root.evidenceModalOpen || root.confirmationPreviewOpen"
+    guard = 'root.activeModal !== "none"'
     assert surface_src.count(guard) >= 2, (
         f"BenchSurface.qml must contain the bleed-through guard "
         f'"{guard}" in at least 2 places (Keys.onPressed and WheelHandler.onWheel)'
@@ -1319,9 +1310,9 @@ def test_bench_pr_c2_modal_demote_submit_affordance() -> None:
       ADR 0049 (covered by test_bench_pr_n_no_mutation_token_drift; this
       test only adds the C2-specific positive assertions).
     """
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     # Inert "Not wired in v1" still present — non-demote actions still see it.
     assert "Not wired in v1" in modal_src
@@ -1367,9 +1358,9 @@ def test_bench_pr_d1_modal_freeze_manifest_submit_affordance() -> None:
     * the modal still rejects the literal mutation tokens forbidden by
       ADR 0049 (covered by test_bench_pr_n_no_mutation_token_drift).
     """
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     assert "Not wired in v1" in modal_src
     assert "Confirm freeze" in modal_src
@@ -1396,9 +1387,9 @@ def test_bench_pr_d1_modal_freeze_manifest_submit_affordance() -> None:
 
 def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     """PR 13: backtest evidence actions route through the command bridge."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     assert "Run backtest" in modal_src
     assert "_isBacktestSubmit" in modal_src
@@ -1414,9 +1405,9 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
 
 
 def test_bench_modal_long_running_submits_use_async_bridge_slots() -> None:
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     assert "BenchCommandBridge.submitBacktestAsync(" in modal_src
     assert "BenchCommandBridge.submitStartPaperRunnerAsync(" in modal_src
@@ -1431,9 +1422,9 @@ def test_bench_modal_long_running_submits_use_async_bridge_slots() -> None:
 
 def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
     """PR 14: Promote to Paper routes through the command bridge."""
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     assert "Confirm promotion" in modal_src
     assert "_isPromoteToPaperSubmit" in modal_src
@@ -1453,9 +1444,9 @@ def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
 
 
 def test_bench_modal_promote_to_paper_prefills_operator_evidence() -> None:
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     assert "function _defaultRecommendationText()" in modal_src
     assert "function _defaultKnownRiskText()" in modal_src
@@ -1471,9 +1462,9 @@ def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
     which primary renders must look at the action kind, not at a global
     flag.
     """
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     # The submit-capable predicate must be derived from a fixed set of
     # action kinds, not from a hardcoded "always submit" flag.
@@ -1495,9 +1486,9 @@ def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
 
 
 def test_bench_modal_return_to_idle_routes_through_demote_submit() -> None:
-    modal_src = (
-        _MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml"
-    ).read_text(encoding="utf-8")
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
 
     assert "readonly property bool _isReturnToIdleSubmit" in modal_src
     assert "root._isDemoteSubmit || root._isReturnToIdleSubmit" in modal_src
@@ -1507,9 +1498,7 @@ def test_bench_modal_return_to_idle_routes_through_demote_submit() -> None:
 def test_bench_pr_c2_surface_listens_for_submitted() -> None:
     """ADR 0051 Phase C2: BenchSurface listens for the modal's ``submitted``
     signal so the preview state clears after a successful demotion."""
-    surface_src = (
-        _MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml"
-    ).read_text(encoding="utf-8")
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
     assert "onSubmitted" in surface_src, (
         "BenchSurface.qml must handle BenchConfirmationModal.submitted "
         "so the preview closes after a successful demotion."
@@ -1536,8 +1525,7 @@ def test_adr_0051_command_infra_allowlist_only_lists_existing_facade_paths() -> 
     )
     for rel in _ADR_0051_COMMAND_INFRA_ALLOWLIST:
         assert (repo_root / rel).exists(), (
-            f"Allowlist entry {rel!r} does not exist on disk. Remove the "
-            "entry or land the file."
+            f"Allowlist entry {rel!r} does not exist on disk. Remove the entry or land the file."
         )
 
 
