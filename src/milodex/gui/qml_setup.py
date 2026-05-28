@@ -295,8 +295,8 @@ def register_qml_types(
 
     if risk_profile_bridge is not None:
         # ADR 0054 / PR-7c: register the risk-profile bridge so QML can call
-        # activeProfileName() and attemptSwitch() and receive profileChanged,
-        # switchApplied, and switchRefused signals.
+        # activeProfileName() and attemptSwitch() and receive switchApplied
+        # and switchRefused signals.
         qmlRegisterSingletonInstance(
             RiskProfileBridge,
             QML_IMPORT_URI,

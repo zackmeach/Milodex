@@ -22,7 +22,6 @@ from milodex.risk.profile_activation import (
 class RiskProfileBridge(QObject):
     """GUI-facing bridge for risk-profile inspection and switching (ADR 0054)."""
 
-    profileChanged = Signal()  # noqa: N815
     switchRefused = Signal(str, str)  # noqa: N815  (reason_code, human_message)
     switchApplied = Signal(str)  # noqa: N815  new profile name
 
@@ -46,7 +45,6 @@ class RiskProfileBridge(QObject):
             self.switchRefused.emit(result.reason_code or "unknown", result.message or "")
             return False
         self.switchApplied.emit(result.to_profile)
-        self.profileChanged.emit()
         return True
 
 
