@@ -80,7 +80,7 @@ Item {
     // -----------------------------------------------------------------------
 
     function formattedSharpe(row) {
-        if (row.sharpe === undefined || row.sharpe === null) return "—"
+        if (row.sharpe === undefined || row.sharpe === null || !isFinite(Number(row.sharpe))) return "—"
         return ("+" + Number(row.sharpe).toFixed(2)).replace("+-", "-")
     }
 
