@@ -68,7 +68,7 @@ strategy:
     # (range_low re-entry), but the risk layer's stop_loss_pct still applies.
     stop_loss_pct: 0.01
 
-  stage: "backtest"
+  stage: "paper"
 
   backtest:
     # Alpaca charges $0/trade on retail equities; the engine's
