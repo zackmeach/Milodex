@@ -346,7 +346,7 @@ Item {
             // Section divider
             Rectangle {
                 Layout.fillWidth: true
-                height: 1
+                Layout.preferredHeight: 1
                 color: Theme.color.border.regular
             }
 
@@ -430,7 +430,7 @@ Item {
             // Section divider
             Rectangle {
                 Layout.fillWidth: true
-                height: 1
+                Layout.preferredHeight: 1
                 color: Theme.color.border.regular
             }
 
@@ -488,7 +488,7 @@ Item {
                 }
 
                 // Bottom spacer
-                Item { height: Theme.space[4] }
+                Item { Layout.preferredHeight: Theme.space[4] }
             }
         }
     }
