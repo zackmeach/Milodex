@@ -432,7 +432,7 @@ Item {
                         font: parent.font
                         color: modelData.verbClass === "directional"
                                ? Theme.color.brand.accentHover
-                               : Theme.color.text.onBrand
+                               : Theme.color.text.primary
                         leftPadding: 12
                         rightPadding: 12
                         verticalAlignment: Text.AlignVCenter
