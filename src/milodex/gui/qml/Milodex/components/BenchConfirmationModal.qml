@@ -192,8 +192,10 @@ Item {
         }
     }
 
-    Component.onCompleted: BenchCommandBridge.submitCompleted.connect(root._handleAsyncSubmitCompleted)
-    Component.onDestruction: BenchCommandBridge.submitCompleted.disconnect(root._handleAsyncSubmitCompleted)
+    Connections {
+        target: BenchCommandBridge
+        function onSubmitCompleted(result) { root._handleAsyncSubmitCompleted(result) }
+    }
 
     function _defaultReasonText() {
         if (!root._isStageWalkbackSubmit) {

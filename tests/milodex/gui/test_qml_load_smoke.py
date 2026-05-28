@@ -1425,7 +1425,7 @@ def test_bench_modal_long_running_submits_use_async_bridge_slots() -> None:
     assert "BenchCommandBridge.submitStartPaperRunner(" not in modal_src
     assert "BenchCommandBridge.submitStopPaperRunner(" not in modal_src
     assert "_handleAsyncSubmitCompleted" in modal_src
-    assert "submitCompleted.connect" in modal_src
+    assert "onSubmitCompleted" in modal_src  # declarative Connections{} handler
     assert "_pendingProposalId" in modal_src
 
 
@@ -1631,7 +1631,7 @@ def test_bench_pr_o_command_draft_preview_no_submit_handler() -> None:
         encoding="utf-8"
     )
     forbidden_handlers = (
-        "onSubmit",
+        "onSubmit(",      # narrowed: onSubmitCompleted is a bridge listener, not a draft dispatch
         "submitDraft",
         "submit(",
         "dispatch(",
