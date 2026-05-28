@@ -420,7 +420,7 @@ Window {
         anchors.top:    parent.top
         anchors.bottom: parent.bottom
         anchors.right:  parent.right
-        z: 9000
+        z: 10000
         activeProfile: root._activeProfile
 
         // Relay switchRequested up to the bridge (RiskProfileBridge QML singleton)
