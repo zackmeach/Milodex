@@ -839,25 +839,40 @@ class EventStore:
             ).fetchone()
         return int(row[0]) if row else 0
 
-    def prune_backtest_explanations_without_trades(self) -> int:
-        """Delete cascade-safe backtest explanations; return rows deleted.
+    def prune_backtest_explanations_without_trades(self, *, batch_size: int = 20_000) -> int:
+        """Delete cascade-safe backtest explanations in batches; return total deleted.
 
         Safety is structural: ``backtest_run_id IS NOT NULL`` excludes every live
         (NULL) row, and ``id NOT IN (SELECT explanation_id FROM trades)`` means the
         ``trades.explanation_id ON DELETE CASCADE`` can never remove a trade.
         ``trades.explanation_id`` is NOT NULL, so the subquery never contains NULL
         (no NOT-IN-with-NULL pitfall).
+
+        Deleting ~1M rows as one transaction balloons the WAL and is slow /
+        non-resumable, so the prune runs in committed batches (bounded WAL,
+        incremental progress). Each batch re-evaluates the same safe predicate.
         """
+        total = 0
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                DELETE FROM explanations
-                WHERE backtest_run_id IS NOT NULL
-                  AND id NOT IN (SELECT explanation_id FROM trades)
-                """
-            )
-            connection.commit()
-            return int(cursor.rowcount)
+            while True:
+                cursor = connection.execute(
+                    """
+                    DELETE FROM explanations
+                    WHERE id IN (
+                        SELECT id FROM explanations
+                        WHERE backtest_run_id IS NOT NULL
+                          AND id NOT IN (SELECT explanation_id FROM trades)
+                        LIMIT ?
+                    )
+                    """,
+                    (batch_size,),
+                )
+                connection.commit()
+                deleted = int(cursor.rowcount)
+                total += deleted
+                if deleted == 0:
+                    break
+        return total
 
     def vacuum(self) -> None:
         """Rewrite the DB file to reclaim freed pages.
