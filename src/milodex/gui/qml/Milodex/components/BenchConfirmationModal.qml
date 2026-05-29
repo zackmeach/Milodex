@@ -219,6 +219,23 @@ Item {
         return "Paper mode only; monitor live-feed behavior and stop if evidence drifts."
     }
 
+    // Format EVERY blocker's operator-facing message as a refusal summary, so a
+    // blocked proposal surfaces all reasons (not just the first) framed as a hard
+    // refusal. The prior code showed only the first blocker's message, silently
+    // dropping additional blockers — e.g. start_paper_runner refused with both
+    // broker_unreachable AND reconciliation_drift only showed the first
+    // (2026-05-29 "nothing happened" report). Falls back to `fallback` when empty.
+    function _blockerSummary(blockers, fallback) {
+        if (!blockers || blockers.length === 0)
+            return fallback
+        var lines = []
+        for (var i = 0; i < blockers.length; i++) {
+            var b = blockers[i] || ({})
+            lines.push("• " + (b.message || b.reason_code || "Blocked."))
+        }
+        return "Blocked — not submitted:\n" + lines.join("\n")
+    }
+
     function _handleAsyncSubmitCompleted(result) {
         if (!root.open || !result || result.proposal_id !== root._pendingProposalId) {
             return
@@ -230,7 +247,7 @@ Item {
         if (result.status !== "submitted") {
             var msg = ""
             if (result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
+                msg = root._blockerSummary(result.blockers, "Submit refused.")
             }
             root._submitErrorMessage = msg
             root.submitBlocked(result.blockers || [])
@@ -251,7 +268,7 @@ Item {
         root._submitInFlight = false
         var msg = ""
         if (result && result.blockers && result.blockers.length > 0) {
-            msg = result.blockers[0].message || "Submit refused."
+            msg = root._blockerSummary(result.blockers, "Submit refused.")
         }
         root._submitErrorMessage = msg || "Submit could not be queued."
         root.submitBlocked(result ? (result.blockers || []) : [])
@@ -302,7 +319,7 @@ Item {
 
         if (proposal.blockers && proposal.blockers.length > 0) {
             root._submitInFlight = false
-            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
             root.submitBlocked(proposal.blockers)
             return
         }
@@ -313,7 +330,7 @@ Item {
         if (!result || result.status !== "submitted") {
             var msg = ""
             if (result && result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
+                msg = root._blockerSummary(result.blockers, "Submit refused.")
             }
             root._submitErrorMessage = msg
             root.submitBlocked(result ? (result.blockers || []) : [])
@@ -359,7 +376,7 @@ Item {
 
         if (proposal.blockers && proposal.blockers.length > 0) {
             root._submitInFlight = false
-            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
             root.submitBlocked(proposal.blockers)
             return
         }
@@ -370,7 +387,7 @@ Item {
         if (!result || result.status !== "submitted") {
             var msg = ""
             if (result && result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
+                msg = root._blockerSummary(result.blockers, "Submit refused.")
             }
             root._submitErrorMessage = msg
             root.submitBlocked(result ? (result.blockers || []) : [])
@@ -420,7 +437,7 @@ Item {
 
         if (proposal.blockers && proposal.blockers.length > 0) {
             root._submitInFlight = false
-            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
             root.submitBlocked(proposal.blockers)
             return
         }
@@ -470,7 +487,7 @@ Item {
 
         if (proposal.blockers && proposal.blockers.length > 0) {
             root._submitInFlight = false
-            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
             root.submitBlocked(proposal.blockers)
             return
         }
@@ -481,7 +498,7 @@ Item {
         if (!result || result.status !== "submitted") {
             var msg = ""
             if (result && result.blockers && result.blockers.length > 0) {
-                msg = result.blockers[0].message || "Submit refused."
+                msg = root._blockerSummary(result.blockers, "Submit refused.")
             }
             root._submitErrorMessage = msg
             root.submitBlocked(result ? (result.blockers || []) : [])
@@ -525,7 +542,7 @@ Item {
 
         if (proposal.blockers && proposal.blockers.length > 0) {
             root._submitInFlight = false
-            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
             root.submitBlocked(proposal.blockers)
             return
         }
@@ -560,7 +577,7 @@ Item {
 
         if (proposal.blockers && proposal.blockers.length > 0) {
             root._submitInFlight = false
-            root._submitErrorMessage = proposal.blockers[0].message || "Proposal blocked."
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
             root.submitBlocked(proposal.blockers)
             return
         }
@@ -1187,10 +1204,9 @@ Item {
                 width: parent.width
                 text: root._submitErrorMessage
                 color: Theme.status.negative
-                font.family:    Theme.typography.data.xs.family
-                font.pixelSize: Theme.typography.data.xs.size
-                font.features:  Theme.typography.data.xs.features
-                font.italic: true
+                font.family:    Theme.typography.data.sm.family
+                font.pixelSize: Theme.typography.data.sm.size
+                font.features:  Theme.typography.data.sm.features
                 wrapMode: Text.WordWrap
             }
         }
