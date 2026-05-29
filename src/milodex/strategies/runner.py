@@ -243,6 +243,17 @@ class StrategyRunner:
         if already_seen:
             return []
 
+        if (
+            is_daily_bar
+            and not market_open
+            and not self._is_current_session_bar(latest_bar)
+        ):
+            # Pre-open / weekend launch: the latest available daily bar is a
+            # PRIOR session's close (date < today). Locking it in would poison
+            # the watermark and suppress today's real post-close evaluation.
+            # Decline until a bar for the current session is available.
+            return []
+
         account = self._broker.get_account()
         context = replace(
             self._loaded.context,
@@ -352,6 +363,20 @@ class StrategyRunner:
 
     def _now(self) -> datetime:
         return datetime.now(tz=UTC)
+
+    def _is_current_session_bar(self, latest_bar) -> bool:
+        """True iff the latest daily bar is for the current session (or newer),
+        not a prior session's stale close.
+
+        Both sides are UTC: ``_now()`` returns ``datetime.now(tz=UTC)`` and
+        BarSet timestamps are ``datetime64[ns, UTC]`` (data/models.py), so the
+        comparison is dependency-free (no tzdata).  ``>=`` (not ``==``) is
+        required: real bars are never future-dated in production, but the test
+        harness builds today-dated bars against a fixed historical fake clock,
+        so ``==`` would reject them.  A pre-open / weekend launch sees a
+        prior-session bar (date < today) and is correctly declined.
+        """
+        return latest_bar.timestamp.date() >= self._now().date()
 
     def _maybe_advance_lockin_watermark(self, latest_bar) -> bool:
         """Gate post-close watermark advance on bar finalization stability.

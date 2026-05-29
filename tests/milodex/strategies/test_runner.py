@@ -1255,6 +1255,68 @@ def test_runner_post_close_timeout_advances_watermark_even_without_stability(
 
 
 # ---------------------------------------------------------------------------
+# Pre-open poisoning: a stale prior-session bar must never lock in
+# ---------------------------------------------------------------------------
+
+
+def test_daily_pre_open_stale_bar_does_not_lock_in(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Pre-open launch: the latest available daily bar is a PRIOR session's
+    close (bar date < today). The runner must NOT lock it in -- doing so would
+    poison the watermark and suppress today's real post-close evaluation."""
+    runner, _, provider, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    # Bars end at "real today" (build_barset). Make them STALE relative to now
+    # by advancing the runner clock two days past the latest bar -- i.e. the
+    # latest available bar is from a prior session, exactly the pre-open case.
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime() + timedelta(days=2)]
+    runner._now = lambda: fake_now[0]
+
+    results = runner.run_cycle()
+    # Even after the stability interval elapses, a stale bar never locks in.
+    fake_now[0] = fake_now[0] + timedelta(seconds=60)
+    runner.run_cycle()
+
+    assert results == []
+    assert runner._last_processed_bar_at is None
+
+
+def test_daily_post_close_current_bar_locks_in(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Post-close (incl. cold launch): latest bar is TODAY's close
+    (bar date == now date). The current-session guard must allow lock-in."""
+    runner, _, provider, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+        close_lockin_min_interval_seconds=30.0,
+    )
+    # Anchor the clock to the SAME UTC date as the latest bar -> "today's close".
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime().replace(hour=20, minute=5)]
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()  # first cycle: pending stability
+    assert runner._last_processed_bar_at is None
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # second cycle: lock in
+
+    assert runner._last_processed_bar_at is not None
+
+
+# ---------------------------------------------------------------------------
 # Regression: in-progress bar must not poison _last_processed_bar_at
 # ---------------------------------------------------------------------------
 
