@@ -938,6 +938,44 @@ def test_append_explanation_allows_operator_without_ancestor(tmp_path):
     assert all(r.session_id is None and r.backtest_run_id is None for r in rows)
 
 
+def test_latest_reconcile_incident_hash_returns_none_when_empty(tmp_path):
+    """No reconcile_incident rows -> None (startup idempotency check)."""
+    store = EventStore(tmp_path / "milodex.db")
+    assert store.latest_reconcile_incident_hash() is None
+
+
+def test_latest_reconcile_incident_hash_returns_most_recent(tmp_path):
+    """Returns the most recent reconcile_incident config_hash, ignoring other
+    decision types and earlier incidents."""
+    store = EventStore(tmp_path / "milodex.db")
+    # An unrelated decision type must be ignored.
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(submitted_by="operator", config_hash="not-an-incident")
+        )
+    )
+    # Two incidents; the most recently appended one wins.
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="reconcile",
+                decision_type="reconcile_incident",
+                config_hash="incident-old",
+            )
+        )
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="reconcile",
+                decision_type="reconcile_incident",
+                config_hash="incident-new",
+            )
+        )
+    )
+    assert store.latest_reconcile_incident_hash() == "incident-new"
+
+
 def test_append_explanation_rejects_invalid_backtest_run_id_via_fk(tmp_path):
     """SQLite FK rejects backtest_run_id that doesn't reference a real row."""
     import sqlite3
