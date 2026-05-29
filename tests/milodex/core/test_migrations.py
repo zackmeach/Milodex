@@ -164,7 +164,7 @@ def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
 
     # Opening EventStore applies migrations 010 through current head.
     store = EventStore(db_path)
-    assert store.schema_version == 12
+    assert store.schema_version == 13
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -244,7 +244,7 @@ def test_011_creates_risk_profile_changes_table(tmp_path):
     db_path = tmp_path / "milodex.db"
 
     store = EventStore(db_path)
-    assert store.schema_version == 12
+    assert store.schema_version == 13
 
     with sqlite3.connect(str(db_path)) as conn:
         cur = conn.execute(
