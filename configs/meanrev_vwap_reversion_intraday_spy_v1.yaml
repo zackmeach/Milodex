@@ -62,7 +62,7 @@ strategy:
     # layer's stop_loss_pct is the runtime backstop.
     stop_loss_pct: 0.005
 
-  stage: "backtest"
+  stage: "paper"
 
   backtest:
     commission_per_trade: 0.00
