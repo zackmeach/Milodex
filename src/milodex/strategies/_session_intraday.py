@@ -204,6 +204,105 @@ def entry_window_bars(
     )
 
 
+def session_close_offset_minutes(session_date: date) -> int:
+    """Return minutes from 9:30 ET to the session close (adapts to half-days).
+
+    Full session: 390 (9:30 -> 16:00). Half-day: 210 (9:30 -> 13:00).
+    """
+    close_t = MARKET_CLOSE_ET_HALF if is_half_day(session_date) else MARKET_CLOSE_ET_FULL
+    return (close_t.hour - MARKET_OPEN_ET.hour) * 60 + (close_t.minute - MARKET_OPEN_ET.minute)
+
+
+def regular_session_bars(df: pd.DataFrame, session_date: date) -> pd.DataFrame:
+    """Return ``session_date``'s regular cash-session bars, sorted ascending.
+
+    Restricts to bars whose offset from 9:30 ET is in ``[0, session_close_offset)``
+    — i.e. 9:30 ET through the last bar before the close (15:55 ET on a full
+    session, 12:55 ET on a half-day) — excluding any pre-market / after-hours
+    bars present in the cache. Index is reset; empty DataFrame when the session
+    has no regular-session bars.
+    """
+    session = session_bars_et(df, session_date)
+    if session.empty:
+        return session.iloc[:0]
+    et = pd.DatetimeIndex(session["timestamp"]).tz_convert(ET_TZ)
+    offsets = pd.Series([_et_time_offset_minutes(t) for t in et], index=session.index)
+    close_offset = session_close_offset_minutes(session_date)
+    return (
+        session.loc[(offsets >= 0) & (offsets < close_offset)]
+        .sort_values("timestamp")
+        .reset_index(drop=True)
+    )
+
+
+def session_vwap_series(
+    df: pd.DataFrame,
+    session_date: date,
+    *,
+    regular_session_only: bool = True,
+) -> pd.DataFrame:
+    """Return ``session_date``'s bars with an added cumulative-session-VWAP column.
+
+    The returned DataFrame is the session's bars sorted ascending by timestamp
+    (index reset), with one extra column ``vwap_cum`` holding the cumulative
+    session VWAP *through and including* each bar:
+
+        vwap_cum[i] = sum_{k<=i}(typical_k * volume_k) / sum_{k<=i}(volume_k)
+
+    where ``typical = (high + low + close) / 3`` (the textbook VWAP input —
+    deliberately not the per-bar ``vwap`` column, so the value is well-defined
+    even when that column is absent or unreliable).
+
+    Because the input ``df`` is the cursor-truncated view the backtest engine
+    passes to ``evaluate`` (bars only up to the current decision bar), the
+    cumulative VWAP is computed over completed bars only — no look-ahead.
+
+    ``regular_session_only=True`` (default) restricts accumulation to regular
+    cash-session bars (via :func:`regular_session_bars`), excluding any
+    pre-market / after-hours bars present in the cache. Bars with non-positive
+    cumulative volume yield ``NaN`` in ``vwap_cum`` (VWAP undefined). Returns an
+    empty DataFrame when the session has no qualifying bars.
+    """
+    if regular_session_only:
+        session = regular_session_bars(df, session_date)
+    else:
+        session = session_bars_et(df, session_date).sort_values("timestamp").reset_index(drop=True)
+    if session.empty:
+        return session.iloc[:0]
+    typical = (
+        session["high"].astype(float)
+        + session["low"].astype(float)
+        + session["close"].astype(float)
+    ) / 3.0
+    volume = session["volume"].astype(float).clip(lower=0.0)
+    cum_pv = (typical * volume).cumsum()
+    cum_v = volume.cumsum()
+    session = session.copy()
+    session["vwap_cum"] = cum_pv.where(cum_v > 0) / cum_v.where(cum_v > 0)
+    return session
+
+
+def session_vwap(
+    df: pd.DataFrame,
+    session_date: date,
+    *,
+    regular_session_only: bool = True,
+) -> float | None:
+    """Return the cumulative session VWAP through the latest bar of ``session_date``.
+
+    Thin wrapper over :func:`session_vwap_series` returning the final
+    ``vwap_cum`` value. ``None`` when the session has no qualifying bars or
+    cumulative volume is zero throughout (VWAP undefined).
+    """
+    series = session_vwap_series(df, session_date, regular_session_only=regular_session_only)
+    if series.empty:
+        return None
+    last = series["vwap_cum"].iloc[-1]
+    if pd.isna(last):
+        return None
+    return float(last)
+
+
 def _et_time_offset_minutes(et_ts: pd.Timestamp | datetime) -> int:
     """Return minutes from 9:30 ET to ``et_ts`` (negative if pre-open)."""
     t = et_ts.time()

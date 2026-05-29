@@ -2,7 +2,7 @@
 
 ## What can I run today?
 
-Six strategies have graduated to paper testing and are authorized to run:
+Six statistically- or lifecycle-justified strategies are at paper stage and are the deserving runnable list:
 
 - `regime.daily.sma200_rotation.spy_shy.v1`
 - `breakout.daily.atr_channel.sector_etfs.v1`
@@ -11,27 +11,36 @@ Six strategies have graduated to paper testing and are authorized to run:
 - `momentum.daily.tsmom.curated_largecap.v1`
 - `breakout.daily.donchian_20_10.sector_etfs.v1`
 
-Seven strategies remain at backtest stage and are blocked from promotion. See the blocked table below for the reason each one failed and what would need to change. The newest addition is the first intraday candidate (`breakout.orb.intraday.spy.v1`), which produced the expected null result on 2022–2025 walk-forward — see callout below.
+> 🧪 **Two additional strategies are at paper stage as deliberate intraday-harness validation canaries — running on purpose, not for alpha:**
+> - `breakout.orb.intraday.spy.v1` — promoted to paper 2026-05-28 via `lifecycle_exempt`, OOS Sharpe **−1.06**.
+> - `benchmark.unconditional_intraday_long.spy.v1` — promoted to paper 2026-05-28 via `lifecycle_exempt`, OOS Sharpe **−1.69**.
+>
+> These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. Both are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
+
+Three strategies are at the **idle** stage (demoted out of active rotation 2026-05-19). Three remain genuinely at **backtest** stage (never promoted) and are blocked — see the blocked table and the new Idle section below.
 
 ---
 
 ## As of date and source of truth
 
-This document reflects `feat/intraday-orb-spy-v1` (2026-05-20).
+This document reflects the event-store state as of 2026-05-28 (branch `fix/promotion-ordering-and-bank-refresh`).
 
-Changes since the 2026-05-16 (commit `7d5fd0c`) update:
-- First intraday strategy run end-to-end through the new intraday backtest engine ([Milodex#164](https://github.com/zackmeach/Milodex/pull/164)): `breakout.orb.intraday.spy.v1` over 2022–2025 walk-forward. Result is a clean negative-Sharpe null. Added to the blocked table below.
-- Paired benchmark `benchmark.unconditional_intraday_long.spy.v1` was run over the same window. It is not a promotion candidate — it exists so that any intraday signal can be measured against unconditional intraday long on the same universe and friction.
+Changes since the 2026-05-20 (`feat/intraday-orb-spy-v1`) update:
+- **ORB and the intraday benchmark were promoted to paper on 2026-05-28 via `lifecycle_exempt`** (promotions ids 25 and 24) as deliberate intraday-harness validation canaries (`approved_by=operator-zack`) — knowingly-losing strategies kept at paper to exercise the intraday runner. Both were re-run on 2026-05-27 (ORB evid `6a556eec` Sharpe −1.06; benchmark evid `ab6b88d7` Sharpe −1.69), figures that differ from the 2026-05-20 blocked-table numbers because those were earlier runs. See the Intraday harness-validation canaries section.
+- **Three strategies were demoted to the new `idle` stage on 2026-05-19** ("Return to Idle via Bench GUI"): `momentum.daily.52w_high_proximity.largecap.v1`, `momentum.daily.xsec_rotation.sector_etfs.v1`, `seasonality.daily.turn_of_month.spy.v1`. They are no longer in the blocked-at-backtest table.
+- `breakout.daily.atr_channel.sector_etfs.v1` and `breakout.daily.donchian_20_10.sector_etfs.v1` went through idle→backtest→paper recycles on 2026-05-19 (promotions ids 17–21); both are back at paper with their original evidence runs and metrics unchanged.
+- `regime.daily.sma200_rotation.spy_shy.v1` was re-promoted to paper on 2026-05-15 (lifecycle_exempt, promotion id 12); its promotion-record evidence run is now `0733d4d1` (which carries no WF stats — a lifecycle-exempt regime can't accumulate gate-able trades). The last full WF re-baseline remains `f7e0730c` (Sharpe 1.19 / MaxDD 0.95 / 27 trades).
+- `momentum.daily.dual_absolute.gem_weekly.v1` was re-run (run `f8588224`): MaxDD 17.88→**15.80**, trade count still 20 — gate verdict unchanged (`[D][N]`).
 
-Paper-stage roster is unchanged: six strategies at paper, now seven blocked at backtest.
+Roster now: **6 deserving paper + 2 intraday-harness canaries = 8 at paper stage**, 3 at idle, 3 genuinely blocked at backtest.
 
 The authoritative data source is `data/milodex.db`. The tables that drive this document are `promotions` and `backtest_runs`. The promotion records are the binding source for stage; backtest run metadata is the source for all Sharpe, drawdown, and trade-count figures.
 
-Paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052.
+Statistical paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052. Note that a `lifecycle_exempt` promotion **bypasses this gate entirely** — which is how the two negative-Sharpe intraday canaries were intentionally placed at paper (see Intraday harness-validation canaries).
 
 ### How to refresh
 
-Run both queries against `data/milodex.db` to regenerate the tables in this document.
+Run the three queries below against `data/milodex.db` to regenerate the tables in this document (paper, blocked-at-backtest, idle).
 
 **Paper-stage strategies (the runnable list):**
 
@@ -54,7 +63,7 @@ WHERE p.to_stage = 'paper'
 ORDER BY p.recorded_at;
 ```
 
-Note: the regime strategy row returns `evidence_run_id = NULL` because it was promoted under a lifecycle exemption before the re-baseline run `f7e0730c-fbdb-4c05-919d-622f8b61185d` was recorded. The walk-forward metrics for regime are sourced from that run in `backtest_runs`, not from the promotion record.
+Note: the regime strategy row now returns `evidence_run_id = 0733d4d1-...` (the 2026-05-15 re-promotion id=12 carries this `backtest_run_id`), but that run holds no WF stats — a lifecycle-exempt regime can't accumulate gate-able trades. The walk-forward metrics for regime (Sharpe 1.19 / MaxDD 0.95 / 27 trades) are sourced from the last full re-baseline run `f7e0730c-fbdb-4c05-919d-622f8b61185d` in `backtest_runs`, not from the promotion record.
 
 **Backtest-stage strategies (blocked):**
 
@@ -79,6 +88,22 @@ AND br.status = 'completed'
 ORDER BY br.strategy_id;
 ```
 
+⚠️ **This blocked-stage query over-includes idle strategies** — it excludes only paper-promoted strategies, so any strategy whose latest event is `idle` still appears here. Cross-reference the idle query below and move idle strategies to the Idle section; only strategies with **no promotion event at all** are genuinely blocked-at-backtest.
+
+**Idle-stage strategies (demoted from rotation):**
+
+```sql
+SELECT p.strategy_id, p.recorded_at, p.notes
+FROM promotions p
+INNER JOIN (
+    SELECT strategy_id, MAX(recorded_at) AS mx
+    FROM promotions
+    GROUP BY strategy_id
+) latest ON p.strategy_id = latest.strategy_id AND p.recorded_at = latest.mx
+WHERE p.to_stage = 'idle'
+ORDER BY p.strategy_id;
+```
+
 To verify any metric from a run ID directly:
 
 ```bash
@@ -91,16 +116,25 @@ python -m milodex.cli.main analytics metrics <run_id>
 
 Walk-forward evidence sourced from `docs/reviews/screen_2026-05-07.md`. Metrics are OOS-aggregate across 4 walk-forward windows, 2020-01-01 to 2024-12-31 canonical range. All promotion records are in `data/milodex.db` / `promotions` table.
 
+**Deserving paper roster (statistical + lifecycle-proof regime):**
+
 | strategy_id | promoted_at | evidence run_id | WF Sharpe | WF MaxDD% | WF Trades | promotion_type |
 |---|---|---|---|---|---|---|
-| `regime.daily.sma200_rotation.spy_shy.v1` | 2026-04-23 | `f7e0730c-fbdb-4c05-919d-622f8b61185d` * | 1.19 | 0.95 | 27 | lifecycle_exempt |
-| `breakout.daily.atr_channel.sector_etfs.v1` | 2026-05-07 | `294d404a-43b5-4d01-9af2-321cea66366f` | 0.64 | 4.30 | 433 | statistical |
+| `regime.daily.sma200_rotation.spy_shy.v1` | 2026-05-15 | `f7e0730c-fbdb-4c05-919d-622f8b61185d` * | 1.19 | 0.95 | 27 | lifecycle_exempt |
+| `breakout.daily.atr_channel.sector_etfs.v1` | 2026-05-19 | `294d404a-43b5-4d01-9af2-321cea66366f` | 0.64 | 4.30 | 433 | statistical |
 | `meanrev.daily.bbands_lowerband.curated_largecap.v1` | 2026-05-07 | `4c91eada-34fc-4ffe-9347-ddb48b6568ea` | 0.52 | 3.38 | 361 | statistical |
 | `meanrev.daily.pullback_rsi2.curated_largecap.v1` | 2026-05-07 | `5210be26-5d60-4ad5-8834-7efc162cb391` | 0.73 | 3.98 | 776 | statistical |
 | `momentum.daily.tsmom.curated_largecap.v1` | 2026-05-07 | `16636a03-509c-4816-a2cc-1e2214dffd7e` | 0.88 | 6.25 | 458 | statistical |
-| `breakout.daily.donchian_20_10.sector_etfs.v1` | 2026-05-07 | `a6f59a53-0e5a-4811-8b78-1cf4bc82b787` | 0.87 | 7.59 | 435 | statistical |
+| `breakout.daily.donchian_20_10.sector_etfs.v1` | 2026-05-19 | `a6f59a53-0e5a-4811-8b78-1cf4bc82b787` | 0.87 | 7.59 | 435 | statistical |
 
-\* `f7e0730c` is the walk-forward re-baseline run recorded 2026-05-07. The promotion event (id=4 in `promotions`) predates this run and carries no `backtest_run_id` because the exemption was granted before the backtest infra was in place. The re-baseline is the authoritative walk-forward evidence for this strategy.
+\* The regime row's *promotion-record* evidence run is now `0733d4d1` (re-promotion 2026-05-15, id=12), which carries no WF stats — a lifecycle-exempt regime trades too infrequently to produce gate-able metrics. The metrics shown (1.19 / 0.95 / 27) are sourced from the last full walk-forward re-baseline `f7e0730c` (2026-05-07), which remains the authoritative WF evidence for this strategy. The original 2026-04-23 exemption (id=4) predated the backtest infra and carried no `backtest_run_id`.
+
+**Intraday harness-validation canaries (lifecycle_exempt, knowingly-losing — intentionally at paper, see section below):**
+
+| strategy_id | promoted_at | evidence run_id | WF Sharpe | WF MaxDD% | WF Trades | promotion_type |
+|---|---|---|---|---|---|---|
+| `breakout.orb.intraday.spy.v1` | 2026-05-28 | `6a556eec-1ed2-4cc7-a808-3473b8380e00` | **−1.06** | 2.58 | 856 | lifecycle_exempt |
+| `benchmark.unconditional_intraday_long.spy.v1` | 2026-05-28 | `ab6b88d7-0e49-4482-847a-71865f542472` | **−1.69** | 7.59 | 1769 | lifecycle_exempt |
 
 ### What to watch during paper validation
 
@@ -124,27 +158,58 @@ Per-window Sharpe instability is a real concern here. The four windows produced:
 
 ---
 
+## Intraday harness-validation canaries
+
+On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exempt` (promotions ids 24, 25, `approved_by=operator-zack`) as **deliberate harness-validation canaries** — the first intraday strategies to run on the live paper runner:
+
+| strategy_id | promo id | OOS Sharpe | trades | role |
+|---|---|---|---|---|
+| `breakout.orb.intraday.spy.v1` | 25 | −1.06 | 856 | Intraday signal candidate, run as a canary to exercise the intraday runner. |
+| `benchmark.unconditional_intraday_long.spy.v1` | 24 | −1.69 | 1769 | Unconditional-long comparison floor, paired with ORB. |
+
+**Why they are at paper (on purpose):**
+- The intraday backtest engine and now the intraday *paper runner* are new infrastructure. These two strategies validate the runner end-to-end — cadence, fills, and evaluation *during* market hours (intraday strategies, unlike daily ones, evaluate while the market is open). Both are knowingly-losing; the point is mechanics, not return.
+- `lifecycle_exempt` is the documented operator-override path (CLAUDE.md: `--lifecycle-exempt` bypasses the statistical gate for *any* promotion). It was used intentionally to place these negative-Sharpe canaries at paper. This is the override working as designed, not a misapplication.
+
+**Disposition:** Both are **kept at paper intentionally** while the intraday harness is being exercised. The promotion notes record an eventual demotion target of `backtest` (ORB's note adds: unless an unexpected positive paper Sharpe warrants further investigation) once intraday-runner confidence is sufficient — a future operator call, not a pending action. As of 2026-05-28 each canary has completed one paper session (launched 13:01 UTC, cleanly stopped). They remain at paper.
+
+**Note for analytics:** a running knowingly-losing strategy produces losing paper fills. When per-strategy P&L attribution is built (backlog #6), ensure these canaries are attributed to themselves and excluded from any aggregate "edge" performance read.
+
+---
+
+## Idle-stage strategies — demoted from active rotation
+
+Three strategies were demoted to the `idle` stage on 2026-05-19 ("Return to Idle via Bench GUI", promotions ids 14–16). `idle` is distinct from `backtest`: these strategies *were* in rotation and were deliberately parked, not blocked pre-promotion. Their latest completed backtest runs (below) remain on record.
+
+| strategy_id | demoted_at | latest run WF Sharpe | WF MaxDD% | WF Trades |
+|---|---|---|---|---|
+| `momentum.daily.52w_high_proximity.largecap.v1` | 2026-05-19 | 0.16 | 16.44 | 769 |
+| `momentum.daily.xsec_rotation.sector_etfs.v1` | 2026-05-19 | 0.22 | 17.83 | 390 |
+| `seasonality.daily.turn_of_month.spy.v1` | 2026-05-19 | -0.27 | 11.59 | 40 |
+
+All three would also fail the capital-readiness gate on their latest runs (see the prior blocked-table rationale, preserved in git history) — being parked at idle is consistent with that. Re-running or reworking any of them is a future decision.
+
+---
+
 ## Backtest-stage strategies — blocked
 
 Gate codes: `[S]` = Sharpe below the capital-readiness floor, `[D]` = MaxDD above the capital-readiness ceiling, `[N]` = trade count below the strategy's configured `backtest.min_trades_required` floor. Authoritative threshold values are in `src/milodex/promotion/policy.py` / ADR 0052.
 
 Walk-forward methodology and canonical window 2020-01-01 to 2024-12-31 per ADR 0021 and ADR 0030.
 
+Strategies with no promotion event — genuinely pre-promotion. (The three previously-listed `52w_high_proximity`, `xsec_rotation`, and `turn_of_month` rows moved to the Idle section above; ORB moved to the Intraday harness-validation canaries section above.)
+
 | strategy_id | latest run_id | WF Sharpe | WF MaxDD% | WF Trades | gate verdict | what would need to change |
 |---|---|---|---|---|---|---|
 | `breakout.daily.nr7_inside.liquid_largecap.v1` | `01d22eda-a624-4456-92f9-3de20a9af892` | 0.19 | 13.43 | 930 | BLOCK `[S]` | Sharpe needs to reach > 0.5 OOS-aggregate. The signal is showing consistent per-window decay (window 0 Sharpe was -0.83). Would require signal redesign or universe change, not parameter tuning. |
 | `meanrev.daily.ibs_lowclose.index_etfs.v1` | `ef7f6831-97d3-47bb-9c05-4df1b4b5ca89` | -0.12 | 4.89 | 404 | BLOCK `[S]` | Anti-edge: 3 of 4 windows produced negative Sharpe. This is not a marginal fail. Drawdown is low but the signal is working against the strategy OOS. Retire or fundamentally rework the entry logic. |
-| `momentum.daily.52w_high_proximity.largecap.v1` | `92e18152-25b5-4d6e-bccf-f4bd6a4ef825` | 0.16 | 16.44 | 769 | BLOCK `[S][D]` | Sharpe needs > 0.5 and MaxDD needs to come under 15%. Window 1 produced Sharpe -1.51 and nearly all of the drawdown was concentrated there. Both gates fail independently; fixing one would not clear the other at current parameter settings. |
-| `momentum.daily.xsec_rotation.sector_etfs.v1` | `afe46162-d3ad-4737-9420-ce3b69674c11` | 0.22 | 18.54 | 390 | BLOCK `[S][D]` | Sharpe 0.22 and MaxDD 18.54% both fail. 2 of 4 windows were negative (single-window-dependency flag set). Both gates fail independently. |
-| `seasonality.daily.turn_of_month.spy.v1` | `89cbb47e-2eb7-4199-9ce4-681bbd224eb3` | -0.27 | 11.59 | 40 | BLOCK `[S]` | OOS Sharpe is negative (-0.27). Whole-period in-sample showed +0.33, making this a textbook overfitting case — the effect disappears OOS. Per-window Sharpe std is 1.40 (extreme regime sensitivity: 2 positive windows, 2 negative). No path to graduation without a structurally different signal. |
-| `momentum.daily.dual_absolute.gem_weekly.v1` | `41777d12-bc1d-46aa-a256-ce9abc1a31dd` | 0.83 | 17.88 | 20 | BLOCK `[D][N]` | See callout below. |
-| `breakout.orb.intraday.spy.v1` | `1dc31aa7-5a15-4c7d-90d6-2f02281ac701` | -1.53 | 2.61 | 790 | BLOCK `[S]` | See intraday callout below. Window 2022–2025, not 2020–2024 (intraday data depth limit). Lost head-to-head against `benchmark.unconditional_intraday_long.spy.v1` (-1.53 vs -1.27). |
+| `momentum.daily.dual_absolute.gem_weekly.v1` | `f8588224-624d-47a3-b440-5cf1734cf43b` | 0.74 | 15.80 | 20 | BLOCK `[D][N]` | See callout below. |
 
 ### Callout: `momentum.daily.dual_absolute.gem_weekly.v1` — structural gate tension
 
-This strategy is different from the others. Its walk-forward Sharpe (0.83, run `41777d12`) would pass the Sharpe gate comfortably. It fails on two gates:
+This strategy is different from the others. Its walk-forward Sharpe (0.74, run `f8588224`) would pass the Sharpe gate comfortably. It fails on two gates:
 
-- **`[D]` MaxDD 17.88%** — fails the < 15% threshold.
+- **`[D]` MaxDD 15.80%** — fails the < 15% threshold (narrowly; the prior run `41777d12` was 17.88%, so a re-run tightened it but did not clear the gate).
 - **`[N]` trade count 20** — fails this strategy's configured minimum of 30.
 
 The trade-count failure is not a tuning problem. The strategy trades weekly. With 4 walk-forward windows of ~223 test days each, a weekly strategy can only accumulate roughly 4–8 trades per window, yielding approximately 16–32 OOS trades total. The current run produced 20. No parameter change resolves this without changing the strategy's fundamental frequency.
@@ -155,11 +220,15 @@ The MaxDD failure may be addressable with a tighter position-sizing or stop rule
 
 Do not promote. Do not retire. Keep the run record in place.
 
-### Callout: `breakout.orb.intraday.spy.v1` — first intraday candidate, expected null result
+### Callout: `breakout.orb.intraday.spy.v1` — first intraday candidate, null result (now a paper canary)
+
+> **Status update (2026-05-28):** ORB is no longer at backtest — it was promoted to paper via `lifecycle_exempt` on 2026-05-28 alongside the benchmark, as a deliberate intraday-harness validation canary (see **Intraday harness-validation canaries** above). The signal analysis below stands; the original "stays at backtest" verdict was a *signal-merit* call, intentionally overridden so the strategy can exercise the intraday paper runner. It remains a known-null on signal merit.
 
 This is the first strategy to use the intraday backtest engine ([Milodex#164](https://github.com/zackmeach/Milodex/pull/164)). The walk-forward result is a clean negative-Sharpe null exactly as the plan predicted. The harness is now proven to honestly evaluate intraday signals.
 
-| metric | ORB | benchmark (unconditional intraday long SPY) |
+The figures below are the original 2026-05-20 run (ORB `1dc31aa7`, benchmark sibling). Both strategies were **re-run on 2026-05-27** (ORB `6a556eec` → Sharpe **−1.06**; benchmark `ab6b88d7` → Sharpe **−1.69**), the figures carried on their 2026-05-28 promotion records. Notably the re-run *reverses* the head-to-head — ORB now edges the benchmark on Sharpe (−1.06 vs −1.69) where the 05-20 run had it losing — but both remain deeply negative and neither clears any gate.
+
+| metric (2026-05-20 run) | ORB | benchmark (unconditional intraday long SPY) |
 |---|---|---|
 | Trades | 790 | 1581 |
 | Total return | -2.56% | -4.86% |
@@ -167,9 +236,9 @@ This is the first strategy to use the intraday backtest engine ([Milodex#164](ht
 | Max drawdown | 2.61% | 5.14% |
 | Positive windows | 0 / 4 | 0 / 4 |
 
-ORB has *better* total return than the benchmark because lower trade frequency means less cumulative friction (5 bps slippage × ~790 fills vs ~1581 fills). But ORB's risk-adjusted Sharpe is *worse* than the benchmark. The strategy is filtering OK in nominal terms (avoiding some bad trades) but the volatility cost of the breakout filter exceeds the return benefit. Both fail the capital-readiness Sharpe floor.
+ORB has *better* total return than the benchmark because lower trade frequency means less cumulative friction (5 bps slippage × ~790 fills vs ~1581 fills). But ORB's risk-adjusted Sharpe is *worse* than the benchmark in this run. The strategy is filtering OK in nominal terms (avoiding some bad trades) but the volatility cost of the breakout filter exceeds the return benefit. Both fail the capital-readiness Sharpe floor.
 
-Promotion verdict: stays at `stage: backtest`. ORB does not beat its benchmark and neither candidate meets the capital-readiness gate.
+Promotion verdict (analytical): neither candidate meets the capital-readiness gate; on signal merit both belong at backtest. On 2026-05-28 both were intentionally promoted to paper via `lifecycle_exempt` as intraday-runner validation canaries — a mechanics decision, not a signal-merit reversal (see Intraday harness-validation canaries).
 
 This is also the first place in the bank where the canonical walk-forward window diverges from the bank standard (2020–2024). The 2022–2025 window was chosen because Alpaca's free-tier intraday data depth past 2022 is unverified — the 2020–2021 portion would either fail to fetch or fail with partial-history data quality issues. The 4-year window still samples three regimes (2022 rate-shock bear, 2023 AI rally, 2024–2025 bull tape) and produces 800 OOS sessions worth of trades, well above the statistical minimum.
 
@@ -177,7 +246,7 @@ The benchmark sibling (`benchmark.unconditional_intraday_long.spy.v1`) is the co
 
 **Honest framing matches expectations.** ORB on SPY is one of the most heavily competed-away intraday patterns (Crabel 1990 → 30+ years of public discussion), and post-2022 the 0DTE options boom has materially changed SPY intraday microstructure (dealer gamma hedging frequently fades opening-range breakouts). Finding a positive edge here was always implausible. The value of this PR is the harness — it lets the next intraday hypothesis ride on infrastructure that has been validated against a known-null signal.
 
-Do not promote. Do not retire. The negative result is also valuable evidence: future intraday candidates need to beat both the benchmark AND clear the 0.3 Sharpe floor before any paper-stage discussion.
+On signal merit: not a promotion candidate, do not retire. The negative result is valuable evidence — future intraday candidates need to beat both the benchmark AND clear the Sharpe floor before any signal-merit paper-stage discussion. (Its current paper stage is a deliberate harness-validation canary, separate from signal merit; see the canaries section above.)
 
 ---
 
@@ -213,13 +282,16 @@ PR #46 (`chore: remove stale paper-runtime artifacts and harden .gitignore`) del
 
 Update this document whenever any of the following events occur:
 
-- A strategy is promoted to paper (add a row to the paper table, remove from blocked if applicable)
-- A strategy is demoted from paper (move to blocked table, record the reason)
+- A strategy is promoted to paper (add a row to the deserving paper table, or the canaries section if it's a harness-validation promotion; remove from blocked/idle if applicable)
+- A strategy is demoted to `idle` (move to the Idle section) or to `backtest` (move to the blocked table), recording the reason
+- A strategy is promoted via `lifecycle_exempt` for harness validation rather than lifecycle-proof signal (add to / clear from the Intraday harness-validation canaries section), or such a canary is later demoted
 - A walk-forward re-baseline changes the evidence run_id or metrics for a paper-stage strategy
 - A blocked strategy receives a new backtest run with a materially different result
 - A gate verdict changes for any reason
-- The dual_absolute governance question is resolved
+- The dual_absolute governance question is resolved, or a harness-validation canary is demoted
 
-Recommended workflow: run both SQL queries from the "How to refresh" section against `data/milodex.db`, regenerate both tables from the output, update any notes that depend on metrics, then commit. Do not update the table numbers by hand — re-run the queries.
+Note the three stage categories this document now tracks: **paper** (deserving + intraday harness-validation canaries), **idle** (demoted from rotation), and **backtest** (genuinely pre-promotion, no promotion event). `idle` and `backtest` are distinct — do not merge them.
+
+Recommended workflow: run the SQL queries from the "How to refresh" section against `data/milodex.db` (plus the `to_stage='idle'` query for the Idle section), regenerate the tables from the output, update any notes that depend on metrics, then commit. Do not update the table numbers by hand — re-run the queries. When resolving "latest stage per strategy" outside the canned `to_stage`-filtered queries, order by `recorded_at` (not `id`): a backdated `audit_backfill` event sorts ahead of a later real promotion under `id` order (the `pullback_rsi2` case; see `EventStore.get_latest_promotion_for_strategy`).
 
 The walk-forward screen artifact for the 2026-05-07 run batch is at `docs/reviews/screen_2026-05-07.md`.

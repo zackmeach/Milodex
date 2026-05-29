@@ -1,0 +1,74 @@
+# RSI(2) Intraday Mean-Reversion SPY — v1  (BACKTEST-ONLY CANDIDATE)
+#
+# Overnight intraday-expansion candidate (2026-05-28). Long-only, single-name
+# SPY, 5-minute bars, intraday round-trip. The intraday sibling of the daily
+# meanrev.daily.pullback_rsi2 strategy: a short-period Wilder RSI computed over
+# the current session's regular-session closes (resets each session). Buys when
+# the session RSI is oversold; exits on stop, RSI reversion, or the time-stop
+# before the close.
+#
+# Deliberately has NO multi-day trend filter (the daily sibling uses a 200-SMA
+# filter; this oscillator is intraday and self-contained). Honest benchmark:
+# benchmark.unconditional_intraday_long.spy.v1 on identical universe + friction.
+#
+# STAGE = backtest. NOT a paper candidate. Promotion is a manual operator
+# decision after reviewing the AAR (docs/overnight/INTRADAY_STRATEGY_EXPANSION_AAR.md).
+#
+# Rules in code: src/milodex/strategies/meanrev_rsi2_intraday.py
+# Session helpers: src/milodex/strategies/_session_intraday.py
+
+strategy:
+  id: "meanrev.rsi2.intraday.spy.v1"
+  family: "meanrev"
+  template: "rsi2.intraday"
+  variant: "spy"
+  version: 1
+  description: >
+    RSI(2) intraday mean-reversion on SPY, 5-minute bars. Long-only intraday
+    round-trip: buy when the current session's Wilder RSI(rsi_lookback) is at or
+    below rsi_entry_threshold; exit on stop_loss_pct from entry, RSI reverting
+    to/above rsi_exit_threshold, or the time-stop before the close. One entry
+    per session. Half-day sessions skipped.
+  enabled: true
+
+  universe_ref: "universe.spy_only.v1"
+
+  parameters:
+    # Wait for the opening range to form before the RSI oscillator is trusted.
+    opening_range_minutes: 30
+    # Entry window = [30, 330) min after 9:30 ET → [10:00, 15:00) ET.
+    entry_window_minutes: 300
+    # 2-period Wilder RSI on session closes (jumpy, fast — classic RSI2 setup).
+    rsi_lookback: 2
+    # Oversold entry / reverted exit thresholds.
+    rsi_entry_threshold: 10.0
+    rsi_exit_threshold: 60.0
+    # Cut the loser at 0.5% below the fill price.
+    stop_loss_pct: 0.005
+    # Forced exit 5 min before the close.
+    exit_minutes_before_close: 5
+    # 10% of equity into the single SPY position.
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.005
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    # 5 bps — MUST match the intraday benchmark and the other intraday
+    # candidates so all head-to-heads are on identical footing.
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []
