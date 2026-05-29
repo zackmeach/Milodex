@@ -1219,10 +1219,19 @@ class EventStore:
         return [_promotion_from_row(row) for row in rows]
 
     def get_latest_promotion_for_strategy(self, strategy_id: str) -> PromotionEvent | None:
-        """Return the most recent promotion for ``strategy_id``, or None."""
+        """Return the most recent promotion for ``strategy_id`` by wall-clock time
+        (``recorded_at``), with ``id`` as a deterministic tiebreak, or None.
+
+        Ordering by ``recorded_at`` (not insertion ``id``) is required because a
+        backdated event -- e.g. the ADR-0032 ``audit_backfill`` demotion whose
+        ``recorded_at`` precedes a later real promotion -- would otherwise be
+        returned as 'latest', mis-reporting the strategy's stage to the risk
+        layer. ``id DESC`` breaks ties when two events share a ``recorded_at``.
+        """
         with self._connect() as connection:
             row = connection.execute(
-                "SELECT * FROM promotions WHERE strategy_id = ? ORDER BY id DESC LIMIT 1",
+                "SELECT * FROM promotions WHERE strategy_id = ? "
+                "ORDER BY recorded_at DESC, id DESC LIMIT 1",
                 (strategy_id,),
             ).fetchone()
         return None if row is None else _promotion_from_row(row)

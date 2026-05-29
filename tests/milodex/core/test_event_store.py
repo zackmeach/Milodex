@@ -1286,3 +1286,69 @@ def test_append_backtest_equity_snapshot_does_not_touch_portfolio_snapshots(tmp_
     # backtest_equity_snapshots must have 3 rows
     bt_rows = store.list_backtest_equity_snapshots_for_strategy("test.strategy.v1")
     assert len(bt_rows) == 3
+
+
+def test_get_latest_promotion_orders_by_recorded_at_not_id(tmp_path):
+    """A backdated demotion inserted AFTER a newer promotion must not be
+    returned as 'latest'. Mirrors the live pullback_rsi2 / audit_backfill case:
+    id-order says backtest, wall-clock order says paper (correct)."""
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    sid = "meanrev.daily.pullback_rsi2.curated_largecap.v1"
+
+    # id=1 (lower id) but LATER wall-clock: the real paper promotion.
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=sid,
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="statistical",
+            approved_by="operator",
+            recorded_at=datetime(2026, 5, 7, 13, 34, tzinfo=UTC),
+        )
+    )
+    # id=2 (higher id) but EARLIER wall-clock: the backdated audit_backfill demotion.
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=sid,
+            from_stage="micro_live",
+            to_stage="backtest",
+            promotion_type="demotion",
+            approved_by="audit_backfill",
+            recorded_at=datetime(2026, 5, 6, 20, 0, tzinfo=UTC),
+        )
+    )
+
+    latest = store.get_latest_promotion_for_strategy(sid)
+    assert latest is not None
+    assert latest.to_stage == "paper"  # wall-clock latest, NOT the higher-id demotion
+    assert latest.promotion_type == "statistical"
+
+
+def test_get_latest_promotion_tiebreaks_on_id_when_recorded_at_equal(tmp_path):
+    """Equal recorded_at -> higher id wins (deterministic, insertion order)."""
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    sid = "tie.daily.example.v1"
+    ts = datetime(2026, 5, 7, 13, 34, tzinfo=UTC)
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=sid,
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="statistical",
+            approved_by="op",
+            recorded_at=ts,
+        )
+    )
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=sid,
+            from_stage="paper",
+            to_stage="backtest",
+            promotion_type="demotion",
+            approved_by="op",
+            recorded_at=ts,
+        )
+    )
+    latest = store.get_latest_promotion_for_strategy(sid)
+    assert latest is not None
+    assert latest.to_stage == "backtest"  # higher id breaks the tie
