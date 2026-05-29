@@ -855,23 +855,26 @@ class EventStore:
         total = 0
         with self._connect() as connection:
             while True:
-                cursor = connection.execute(
-                    """
-                    DELETE FROM explanations
-                    WHERE id IN (
+                ids = [
+                    row[0]
+                    for row in connection.execute(
+                        """
                         SELECT id FROM explanations
                         WHERE backtest_run_id IS NOT NULL
                           AND id NOT IN (SELECT explanation_id FROM trades)
                         LIMIT ?
+                        """,
+                        (batch_size,),
                     )
-                    """,
-                    (batch_size,),
+                ]
+                if not ids:
+                    break
+                placeholders = ",".join("?" * len(ids))
+                connection.execute(
+                    f"DELETE FROM explanations WHERE id IN ({placeholders})", ids
                 )
                 connection.commit()
-                deleted = int(cursor.rowcount)
-                total += deleted
-                if deleted == 0:
-                    break
+                total += len(ids)
         return total
 
     def vacuum(self) -> None:
