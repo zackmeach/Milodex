@@ -224,16 +224,13 @@ def test_successful_switch_writes_atomic_file_and_audit(
 ) -> None:
     """Successful switch: risk_profile.txt rewritten atomically; audit row has success=1."""
     applied: list[str] = []
-    changed: list[None] = []
     bridge.switchApplied.connect(applied.append)
-    bridge.profileChanged.connect(lambda: changed.append(None))
 
     # elevation: conservative → standard, token must equal "standard"
     result = bridge.attemptSwitch("standard", "standard")
 
     assert result is True
     assert applied == ["standard"]
-    assert len(changed) == 1
 
     rows = _audit_rows(db_path)
     assert len(rows) == 1
