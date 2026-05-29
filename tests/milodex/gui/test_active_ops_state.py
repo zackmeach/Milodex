@@ -1,4 +1,4 @@
-﻿"""Tests for :class:`milodex.gui.active_ops_state.ActiveOpsState`.
+"""Tests for :class:`milodex.gui.active_ops_state.ActiveOpsState`.
 
 Mirrors the PerformanceState test harness:
 
@@ -278,8 +278,12 @@ def test_query_active_ops_latest_run_per_strategy(tmp_path) -> None:
     newer_start = (now - timedelta(hours=2)).isoformat()
 
     _seed_run(
-        db, "strat.a.v1", "sess-old", older_start,
-        ended_at=older_end, exit_reason="controlled_stop",
+        db,
+        "strat.a.v1",
+        "sess-old",
+        older_start,
+        ended_at=older_end,
+        exit_reason="controlled_stop",
     )
     _seed_run(db, "strat.a.v1", "sess-new", newer_start)
 
@@ -381,8 +385,10 @@ def test_query_active_ops_runner_lock_held(tmp_path) -> None:
 
     lock_file = locks_dir / f"{runner_lock_name('strat.a.v1')}.lock"
     lock_data = {
-        "pid": 12345, "hostname": "test",
-        "holder_name": "milodex", "started_at": now.isoformat(),
+        "pid": 12345,
+        "hostname": "test",
+        "holder_name": "milodex",
+        "started_at": now.isoformat(),
     }
     lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
 
@@ -641,8 +647,10 @@ def test_runner_lock_held_in_state(qapp, tmp_path) -> None:
 
     lock_file = locks_dir / f"{runner_lock_name('strat.a.v1')}.lock"
     lock_data = {
-        "pid": 99999, "hostname": "test",
-        "holder_name": "milodex", "started_at": now.isoformat(),
+        "pid": 99999,
+        "hostname": "test",
+        "holder_name": "milodex",
+        "started_at": now.isoformat(),
     }
     lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
 

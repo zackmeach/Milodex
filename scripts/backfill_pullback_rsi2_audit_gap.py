@@ -72,9 +72,7 @@ def run_backfill(db_path: Path) -> dict:
     ]
     if existing:
         backfill_row = existing[0]
-        all_promotions = list(
-            reversed(store.list_promotions_for_strategy(STRATEGY_ID))
-        )
+        all_promotions = list(reversed(store.list_promotions_for_strategy(STRATEGY_ID)))
         return {"inserted": False, "backfill_row": backfill_row, "all_promotions": all_promotions}
 
     # ── Resolve reverses_event_id ────────────────────────────────────────────

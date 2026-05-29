@@ -764,17 +764,13 @@ def test_query_attention_multi_strategy_scenario(tmp_path) -> None:
     )
 
     # --- needsReview(b): paper + enough evidence, no micro_live ---
-    _seed_backtest_run(
-        db, strategy_id="nr.b", sharpe=1.0, max_dd=5.0, trades=35, run_id="run-nrb"
-    )
+    _seed_backtest_run(db, strategy_id="nr.b", sharpe=1.0, max_dd=5.0, trades=35, run_id="run-nrb")
     _seed_promotion(db, strategy_id="nr.b", to_stage="paper", sharpe_ratio=1.0)
     for _ in range(MIN_TRADES):
         _seed_trade(db, strategy_name="nr.b", strategy_stage="paper")
 
     # --- needsReview(c) + underperforming: paper, bad live sharpe, no action ---
-    _seed_backtest_run(
-        db, strategy_id="nr.c", sharpe=1.8, max_dd=5.0, trades=35, run_id="run-nrc"
-    )
+    _seed_backtest_run(db, strategy_id="nr.c", sharpe=1.8, max_dd=5.0, trades=35, run_id="run-nrc")
     _seed_promotion(db, strategy_id="nr.c", to_stage="paper", sharpe_ratio=1.8)
     for _ in range(MIN_TRADES):
         _seed_trade(db, strategy_name="nr.c", strategy_stage="paper")

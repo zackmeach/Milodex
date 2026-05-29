@@ -292,7 +292,7 @@ def test_feed_union_ordering_and_cap(tmp_path) -> None:
     # Strictly descending
     for i in range(len(feed) - 1):
         assert feed[i]["time"] >= feed[i + 1]["time"], (
-            f"Out of order at index {i}: {feed[i]['time']} < {feed[i+1]['time']}"
+            f"Out of order at index {i}: {feed[i]['time']} < {feed[i + 1]['time']}"
         )
 
     # Most-recent rows should be present (the rejection and fill are very recent)
@@ -310,9 +310,7 @@ def test_feed_union_ordering_and_cap(tmp_path) -> None:
     # while missing the most-recent special rows asserted above — the two
     # assertions together prove the cap is applied after sorting.
     oldest_exp_time = (now - timedelta(minutes=159)).isoformat()
-    assert not any(
-        r["strategy"] == "alpha" and r["time"] == oldest_exp_time for r in feed
-    ), (
+    assert not any(r["strategy"] == "alpha" and r["time"] == oldest_exp_time for r in feed), (
         f"Oldest explanation (alpha @ {oldest_exp_time}) should have been dropped by cap "
         "but is present — cap was likely applied before sorting"
     )

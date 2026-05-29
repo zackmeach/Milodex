@@ -15,6 +15,7 @@ from milodex.core.event_store import EventStore
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
+
 def _migrations_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "src" / "milodex" / "core" / "migrations"
 
@@ -26,9 +27,7 @@ def _run_migrations_up_to(conn: sqlite3.Connection, max_version: int) -> None:
     comments and multi-statement files parse correctly. _schema_version is
     set after each migration via a separate execute/commit pair.
     """
-    conn.executescript(
-        "CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)"
-    )
+    conn.executescript("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
     migrations_dir = _migrations_dir()
     for path in sorted(migrations_dir.glob("*.sql")):
         version = int(path.stem.split("_", maxsplit=1)[0])
@@ -95,7 +94,7 @@ def _seed_pre_migration_rows(conn: sqlite3.Connection) -> None:
                 daily_pnl, positions_json)
                VALUES (?, ?, 'test.strategy.v1', ?, 1000.0, ?, 0.0, ?)""",
             (
-                f"2025-12-{i+10:02d}T00:00:00+00:00",
+                f"2025-12-{i + 10:02d}T00:00:00+00:00",
                 f"{bt_run_uuid}:w{i}",
                 1000.0 + i * 100,
                 1000.0 + i * 100,
@@ -143,6 +142,7 @@ def _seed_pre_migration_rows(conn: sqlite3.Connection) -> None:
 
 
 # ─── tests ────────────────────────────────────────────────────────────────────
+
 
 def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
     """Migration 010 invariants:
@@ -194,9 +194,7 @@ def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
         )
 
         # Invariant 4: broker rows still in portfolio_snapshots (2 broker rows)
-        broker_rows = conn.execute(
-            "SELECT COUNT(*) FROM portfolio_snapshots"
-        ).fetchone()[0]
+        broker_rows = conn.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
         assert broker_rows == 2, f"Expected 2 broker rows in portfolio_snapshots, got {broker_rows}"
 
         # Invariant 5: quarantine table exists (empty in this scenario)
@@ -222,9 +220,7 @@ def test_010_migration_idempotent(tmp_path):
     EventStore(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        broker_after_first = conn.execute(
-            "SELECT COUNT(*) FROM portfolio_snapshots"
-        ).fetchone()[0]
+        broker_after_first = conn.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
         backtest_after_first = conn.execute(
             "SELECT COUNT(*) FROM backtest_equity_snapshots"
         ).fetchone()[0]
@@ -233,9 +229,7 @@ def test_010_migration_idempotent(tmp_path):
     EventStore(db_path)
 
     with sqlite3.connect(db_path) as conn:
-        broker_after_second = conn.execute(
-            "SELECT COUNT(*) FROM portfolio_snapshots"
-        ).fetchone()[0]
+        broker_after_second = conn.execute("SELECT COUNT(*) FROM portfolio_snapshots").fetchone()[0]
         backtest_after_second = conn.execute(
             "SELECT COUNT(*) FROM backtest_equity_snapshots"
         ).fetchone()[0]

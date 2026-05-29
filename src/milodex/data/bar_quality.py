@@ -84,9 +84,7 @@ class DataQualityError(ValueError):
         ]
         shown = ", ".join(f"{issue.symbol}:{issue.code}" for issue in blockers[:10])
         suffix = "..." if len(blockers) > 10 else ""
-        super().__init__(
-            f"Data quality failed with {len(blockers)} blocker(s): {shown}{suffix}"
-        )
+        super().__init__(f"Data quality failed with {len(blockers)} blocker(s): {shown}{suffix}")
 
 
 def scan_backtest_bars(
@@ -133,9 +131,7 @@ def scan_backtest_bars(
                         code="requested_window_coverage_below_98pct",
                         severity=DataQualitySeverity.WARNING,
                         symbol=symbol,
-                        message=(
-                            f"{symbol} has {coverage:.1%} requested-window bar coverage."
-                        ),
+                        message=(f"{symbol} has {coverage:.1%} requested-window bar coverage."),
                         context={
                             "coverage_pct": round(coverage * 100, 1),
                             "observed_sessions": len(observed),

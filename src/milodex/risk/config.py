@@ -42,11 +42,13 @@ logger = logging.getLogger(__name__)
 # - daily_limits.max_daily_loss_pct = 0.08: above Aggressive's 0.05; single-
 #   session loss never exceeds 8% even under elevated posture.
 # ---------------------------------------------------------------------------
-_ABSOLUTE_CEILINGS: Mapping[str, float] = MappingProxyType({
-    "kill_switch.max_drawdown_pct": 0.20,
-    "portfolio.max_total_exposure_pct": 0.85,
-    "daily_limits.max_daily_loss_pct": 0.08,
-})
+_ABSOLUTE_CEILINGS: Mapping[str, float] = MappingProxyType(
+    {
+        "kill_switch.max_drawdown_pct": 0.20,
+        "portfolio.max_total_exposure_pct": 0.85,
+        "daily_limits.max_daily_loss_pct": 0.08,
+    }
+)
 
 # Permitted profile names. Explicit allowlist — not a file-system scan.
 _KNOWN_PROFILES: frozenset[str] = frozenset({"conservative", "standard", "aggressive"})
@@ -185,8 +187,7 @@ def _load_overlay(profile_name: str, configs_dir: Path | None = None) -> dict[st
             data = yaml.safe_load(fh)
         if not isinstance(data, dict):
             msg = (
-                f"Risk profile overlay at {path} is not a YAML mapping; "
-                f"got {type(data).__name__}."
+                f"Risk profile overlay at {path} is not a YAML mapping; got {type(data).__name__}."
             )
             raise RiskProfileOverlayError(msg)
         return data
@@ -313,8 +314,7 @@ def load_active_risk_profile(
             msg = "Conservative risk profile overlay is malformed; refusing startup."
             raise RuntimeError(msg) from exc
         logger.warning(
-            "Risk profile overlay for %r is malformed: %s. "
-            "Falling back to conservative.",
+            "Risk profile overlay for %r is malformed: %s. Falling back to conservative.",
             active,
             exc,
         )

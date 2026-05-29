@@ -159,8 +159,7 @@ def _parse_as_of(raw: str | None) -> datetime:
         parsed = datetime.fromisoformat(raw)
     except ValueError as exc:
         raise ValueError(
-            f"Invalid --as-of value '{raw}'. Use an ISO-8601 timestamp "
-            "(e.g. 2026-04-22T14:30:00Z)."
+            f"Invalid --as-of value '{raw}'. Use an ISO-8601 timestamp (e.g. 2026-04-22T14:30:00Z)."
         ) from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)

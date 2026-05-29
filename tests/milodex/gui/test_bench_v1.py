@@ -246,9 +246,7 @@ class TestCanReturnToIdle:
     """Return to Idle is the to-shelf affordance — available from any
     active stage, no freshness check. Not available from IDLE itself."""
 
-    @pytest.mark.parametrize(
-        "stage", [Stage.BACKTEST, Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE]
-    )
+    @pytest.mark.parametrize("stage", [Stage.BACKTEST, Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE])
     def test_return_to_idle_from_active_stage_is_allowed(self, stage: Stage) -> None:
         state = BenchStrategyState(current_stage=stage)
         assert can_return_to(state, Stage.IDLE) is True
@@ -280,9 +278,7 @@ class TestCanReturnToActiveStage:
             assert can_return_to(state, target) is False
 
     @pytest.mark.parametrize("target", [Stage.PAPER, Stage.MICRO_LIVE])
-    def test_idle_with_fresh_pass_target_evidence_returns_to_target(
-        self, target: Stage
-    ) -> None:
+    def test_idle_with_fresh_pass_target_evidence_returns_to_target(self, target: Stage) -> None:
         state = BenchStrategyState(
             current_stage=Stage.IDLE,
             evidence_by_stage={
@@ -292,9 +288,7 @@ class TestCanReturnToActiveStage:
         assert can_return_to(state, target) is True
 
     @pytest.mark.parametrize("target", [Stage.PAPER, Stage.MICRO_LIVE])
-    def test_idle_with_aging_pass_target_evidence_returns_to_target(
-        self, target: Stage
-    ) -> None:
+    def test_idle_with_aging_pass_target_evidence_returns_to_target(self, target: Stage) -> None:
         state = BenchStrategyState(
             current_stage=Stage.IDLE,
             evidence_by_stage={
@@ -349,17 +343,13 @@ class TestCanReturnToActiveStage:
         assert can_return_to(state, Stage.LIVE) is True
 
     @pytest.mark.parametrize("non_live_target", [Stage.PAPER, Stage.MICRO_LIVE])
-    def test_not_applicable_does_not_unlock_non_live_returns(
-        self, non_live_target: Stage
-    ) -> None:
+    def test_not_applicable_does_not_unlock_non_live_returns(self, non_live_target: Stage) -> None:
         # NotApplicable is a LIVE-only wildcard. For non-LIVE targets,
         # only Pass satisfies the gate check.
         state = BenchStrategyState(
             current_stage=Stage.IDLE,
             evidence_by_stage={
-                non_live_target: EvidenceRecord(
-                    Freshness.FRESH, GateResult.NOT_APPLICABLE
-                ),
+                non_live_target: EvidenceRecord(Freshness.FRESH, GateResult.NOT_APPLICABLE),
             },
         )
         assert can_return_to(state, non_live_target) is False
@@ -407,12 +397,8 @@ class TestReRunVerb:
         evidence = EvidenceRecord(freshness=Freshness.MISSING, gate_result=GateResult.PENDING)
         assert re_run_verb(evidence, is_run_in_flight=False) == LABEL_INITIATE_BACKTEST
 
-    @pytest.mark.parametrize(
-        "gate_result", [GateResult.PASS, GateResult.FAIL, GateResult.PENDING]
-    )
-    def test_invalidated_yields_initiate_regardless_of_gate(
-        self, gate_result: GateResult
-    ) -> None:
+    @pytest.mark.parametrize("gate_result", [GateResult.PASS, GateResult.FAIL, GateResult.PENDING])
+    def test_invalidated_yields_initiate_regardless_of_gate(self, gate_result: GateResult) -> None:
         evidence = EvidenceRecord(freshness=Freshness.INVALIDATED, gate_result=gate_result)
         assert re_run_verb(evidence, is_run_in_flight=False) == LABEL_INITIATE_BACKTEST
 
@@ -431,9 +417,7 @@ class TestReRunVerb:
         assert re_run_verb(evidence, is_run_in_flight=False) is None
 
     @pytest.mark.parametrize("freshness", [Freshness.AGING, Freshness.STALE])
-    def test_pending_on_aging_or_stale_evidence_yields_no_verb(
-        self, freshness: Freshness
-    ) -> None:
+    def test_pending_on_aging_or_stale_evidence_yields_no_verb(self, freshness: Freshness) -> None:
         # Aging+Pending and Stale+Pending mean a run is producing new
         # evidence on top of prior aged evidence (a refresh-in-flight
         # case). Open Evidence carries the monitoring affordance; no
@@ -752,9 +736,7 @@ class TestEmptyMenuFloor:
     @pytest.mark.parametrize(
         "stage", [Stage.IDLE, Stage.BACKTEST, Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE]
     )
-    def test_open_evidence_present_at_every_stage_with_no_evidence(
-        self, stage: Stage
-    ) -> None:
+    def test_open_evidence_present_at_every_stage_with_no_evidence(self, stage: Stage) -> None:
         state = BenchStrategyState(current_stage=stage)
         items = compute_menu_items(state)
         assert items[-1].label == LABEL_OPEN_EVIDENCE

@@ -248,7 +248,8 @@ def power_aware_gate(ev: StrategyEvidence, *, min_sharpe: float, max_dd_pct: flo
         failures.append(f"Max DD {ev.oos_max_dd_pct}% must be < {max_dd_pct}%")
     if ev.trades is None or ev.trades < floor_fills:
         failures.append(
-            f"Trades {ev.trades} must be >= {floor_fills} ({floor_rt} round-trips, cadence={ev.cadence})"
+            f"Trades {ev.trades} must be >= {floor_fills} "
+            f"({floor_rt} round-trips, cadence={ev.cadence})"
         )
     return GateOutcome(
         allowed=not failures,
@@ -263,7 +264,9 @@ def power_aware_gate(ev: StrategyEvidence, *, min_sharpe: float, max_dd_pct: flo
 VARIANTS: dict[str, dict] = {
     # Replays prod gate. Used for the verification step.
     "production": {
-        "label": f"Production (Sharpe>{PROD_MIN_SHARPE}, DD<{PROD_MAX_DD}%, >={PROD_MIN_TRADES} trades)",
+        "label": (
+            f"Production (Sharpe>{PROD_MIN_SHARPE}, DD<{PROD_MAX_DD}%, >={PROD_MIN_TRADES} trades)"
+        ),
         "fn": lambda ev: custom_gate(
             ev, min_sharpe=PROD_MIN_SHARPE, max_dd_pct=PROD_MAX_DD, min_trades=PROD_MIN_TRADES
         ),
@@ -275,7 +278,9 @@ VARIANTS: dict[str, dict] = {
     },
     # Same Sharpe/DD as production, but trade-count scales with cadence.
     "power-aware": {
-        "label": f"Power-aware (Sharpe>{PROD_MIN_SHARPE}, DD<{PROD_MAX_DD}%, cadence-scaled trades)",
+        "label": (
+            f"Power-aware (Sharpe>{PROD_MIN_SHARPE}, DD<{PROD_MAX_DD}%, cadence-scaled trades)"
+        ),
         "fn": lambda ev: power_aware_gate(ev, min_sharpe=PROD_MIN_SHARPE, max_dd_pct=PROD_MAX_DD),
     },
     # Combine paper-readiness Sharpe/DD with cadence-scaled trade count.
@@ -321,7 +326,8 @@ def render_table(
             gate_label = "PASS (exempt)"
         fails = "; ".join(outcome.failures) if outcome.failures else "-"
         lines.append(
-            f"| `{ev.strategy_id}` | {ev.cadence} | {ev.trades if ev.trades is not None else 'n/a'} | "
+            f"| `{ev.strategy_id}` | {ev.cadence} | "
+            f"{ev.trades if ev.trades is not None else 'n/a'} | "
             f"{_fmt(ev.oos_sharpe)} | {_fmt(ev.oos_max_dd_pct, '%')} | "
             f"{gate_label} | {fails} | {ev.source} |"
         )
@@ -330,8 +336,7 @@ def render_table(
     rejection_rate = 1.0 - pass_count / total if total else 0
     lines.append("")
     lines.append(
-        f"**Summary:** {pass_count}/{total} pass "
-        f"({rejection_rate * 100:.1f}% rejection rate)."
+        f"**Summary:** {pass_count}/{total} pass ({rejection_rate * 100:.1f}% rejection rate)."
     )
     return "\n".join(lines)
 
@@ -345,9 +350,7 @@ def verify_against_artifact(evidence: dict[str, StrategyEvidence]) -> str:
     function reports both the parity check and the divergent rows.
     """
     lines: list[str] = ["## Verification: production-gate replay vs. artifact\n"]
-    artifact_only = {
-        sid: ev for sid, ev in evidence.items() if ev.source.startswith("artifact")
-    }
+    artifact_only = {sid: ev for sid, ev in evidence.items() if ev.source.startswith("artifact")}
     db_resident = {sid: ev for sid, ev in evidence.items() if ev.source == "db"}
     lines.append(
         f"- Total strategies: {len(evidence)} ({len(db_resident)} DB-authoritative, "

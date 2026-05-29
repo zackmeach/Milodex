@@ -94,21 +94,13 @@ class TestFixtureRowInvariants:
 
 
 class TestOpenEvidenceFloorOnFixtures:
-    @pytest.mark.parametrize(
-        "row", bench_v1_demo_rows(), ids=lambda r: r.strategy_id
-    )
-    def test_open_evidence_is_last_item_on_every_fixture(
-        self, row: BenchFixtureRow
-    ) -> None:
+    @pytest.mark.parametrize("row", bench_v1_demo_rows(), ids=lambda r: r.strategy_id)
+    def test_open_evidence_is_last_item_on_every_fixture(self, row: BenchFixtureRow) -> None:
         labels = _labels_for(row)
         assert labels[-1] == LABEL_OPEN_EVIDENCE, row.strategy_id
 
-    @pytest.mark.parametrize(
-        "row", bench_v1_demo_rows(), ids=lambda r: r.strategy_id
-    )
-    def test_compute_menu_items_returns_at_least_one_item(
-        self, row: BenchFixtureRow
-    ) -> None:
+    @pytest.mark.parametrize("row", bench_v1_demo_rows(), ids=lambda r: r.strategy_id)
+    def test_compute_menu_items_returns_at_least_one_item(self, row: BenchFixtureRow) -> None:
         items = compute_menu_items(row.state)
         assert len(items) >= 1, row.strategy_id
 
@@ -162,17 +154,13 @@ class TestMenuStateSpaceCoverage:
 
     def test_every_promotion_stage_has_at_least_one_fixture(self) -> None:
         stages = {row.state.current_stage for row in bench_v1_demo_rows()}
-        assert stages == set(Stage), (
-            f"missing fixtures for stages: {set(Stage) - stages}"
-        )
+        assert stages == set(Stage), f"missing fixtures for stages: {set(Stage) - stages}"
 
     def test_in_flight_run_state_is_exercised(self) -> None:
         # At least one fixture sets runs_in_flight[BACKTEST] = True so
         # the in-flight suppression branch of re_run_verb is covered.
         rows = bench_v1_demo_rows()
-        assert any(
-            row.state.runs_in_flight.get(Stage.BACKTEST, False) for row in rows
-        )
+        assert any(row.state.runs_in_flight.get(Stage.BACKTEST, False) for row in rows)
 
     def test_session_running_state_is_exercised(self) -> None:
         rows = bench_v1_demo_rows()
@@ -384,8 +372,7 @@ class TestDisplayMetadataConsistency:
 
         for row in bench_v1_demo_rows():
             has_completed_evidence = any(
-                ev.freshness != Freshness.MISSING
-                for ev in row.state.evidence_by_stage.values()
+                ev.freshness != Freshness.MISSING for ev in row.state.evidence_by_stage.values()
             )
             if row.sharpe is not None:
                 assert has_completed_evidence, (

@@ -162,9 +162,7 @@ def prepare_and_record_promotion(
         )
 
     try:
-        sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(
-            request.run_id, event_store
-        )
+        sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(request.run_id, event_store)
     except ValueError as exc:
         return PromoteBlocked(
             reason_code=REASON_MISSING_BACKTEST_RUN,

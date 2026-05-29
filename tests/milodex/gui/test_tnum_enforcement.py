@@ -129,6 +129,5 @@ def test_allowlist_covers_every_numeric_consumer() -> None:
         "QML files reference `Theme.typography.data.*` but are not in "
         "NUMERIC_QML_FILES. Add them to the allowlist in this test module "
         "(and confirm each `data.*.family` consumer also binds "
-        "`data.*.features`):\n  "
-        + "\n  ".join(sorted(str(p) for p in missing))
+        "`data.*.features`):\n  " + "\n  ".join(sorted(str(p) for p in missing))
     )

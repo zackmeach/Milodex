@@ -81,9 +81,7 @@ def _read_tape(cache_dir: Path) -> list[dict[str, Any]]:
 
     version = _latest_cache_version(cache_dir)
     if version is None:
-        logger.warning(
-            "MarketTapeState: no vN version directory found in cache: %s", cache_dir
-        )
+        logger.warning("MarketTapeState: no vN version directory found in cache: %s", cache_dir)
         raise RuntimeError("Market data unavailable — no versioned cache found")
 
     cache = ParquetCache(cache_dir, version=version)

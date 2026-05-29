@@ -67,11 +67,7 @@ def fetch_vix_history(start: date, end: date) -> pd.DataFrame:
         # We add 1 day to `end` because yfinance treats the end as exclusive.
         raw = ticker.history(
             start=start.isoformat(),
-            end=(
-                date(end.year, end.month, end.day)
-                .__add__(timedelta(days=1))
-                .isoformat()
-            ),
+            end=(date(end.year, end.month, end.day).__add__(timedelta(days=1)).isoformat()),
             interval="1d",
             auto_adjust=False,
         )
@@ -160,9 +156,7 @@ def _reshape(raw: pd.DataFrame) -> pd.DataFrame:
             "high": pd.to_numeric(df["high"], errors="coerce").astype("float64"),
             "low": pd.to_numeric(df["low"], errors="coerce").astype("float64"),
             "close": pd.to_numeric(df["close"], errors="coerce").astype("float64"),
-            "volume": pd.to_numeric(df.get("volume", 0), errors="coerce")
-            .fillna(0)
-            .astype("int64"),
+            "volume": pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0).astype("int64"),
             "vwap": float("nan"),
         }
     )

@@ -216,7 +216,7 @@ class BacktestEquitySnapshotEvent:
     equity: float
     cash: float
     portfolio_value: float
-    daily_pnl: float | None          # nullable — backtests don't track this
+    daily_pnl: float | None  # nullable — backtests don't track this
     positions: list[dict[str, Any]]
     backtest_run_id: int | None = None  # FK to backtest_runs.id; None for legacy rows
     id: int | None = None

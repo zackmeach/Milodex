@@ -158,7 +158,7 @@ def _run_format_test(iso_string: str, fmt: str, label: str) -> str:
         )
     for line in result.stdout.splitlines():
         if line.startswith("RESULT:"):
-            return line[len("RESULT:"):]
+            return line[len("RESULT:") :]
     pytest.fail(f"No RESULT line in output for {label}\nstdout:\n{result.stdout}")
 
 

@@ -508,6 +508,7 @@ def _window_to_dict(window: WalkForwardWindow) -> dict:
         "max_drawdown_pct": window.max_drawdown_pct,
     }
 
+
 __all__ = [
     "WalkForwardWindow",
     "WalkForwardStability",

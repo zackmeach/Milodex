@@ -904,11 +904,11 @@ def test_bench_pr_m_evidence_packet_keys_are_stable(tmp_path: Path) -> None:
         "metrics",
         "evidence",
         "gate",
-            "status",
-            "session",
-            "paperEvidence",
-            "job",
-        }
+        "status",
+        "session",
+        "paperEvidence",
+        "job",
+    }
     assert set(packet["source"].keys()) == {"kind", "authoritative", "note"}
     assert set(packet["metrics"].keys()) == {"sharpe", "maxDrawdownPct", "tradeCount"}
     assert set(packet["evidence"].keys()) == {
@@ -1058,17 +1058,18 @@ def test_bench_pr_n_action_preview_present_on_every_action(tmp_path: Path) -> No
         )
         preview = action["actionIntentPreview"]
         assert preview["schemaVersion"] == 1
-        submit_capable = preview["actionKind"] in {
-            "demote",
-            "freeze_manifest",
-            "initiate_backtest",
-            "refresh_backtest",
-            "start_trading",
-            "stop_trading",
-        } or (
-            preview["actionKind"] == "promote" and preview["targetStage"] == "paper"
-        ) or (
-            preview["actionKind"] == "return" and preview["targetStage"] == "idle"
+        submit_capable = (
+            preview["actionKind"]
+            in {
+                "demote",
+                "freeze_manifest",
+                "initiate_backtest",
+                "refresh_backtest",
+                "start_trading",
+                "stop_trading",
+            }
+            or (preview["actionKind"] == "promote" and preview["targetStage"] == "paper")
+            or (preview["actionKind"] == "return" and preview["targetStage"] == "idle")
         )
         if submit_capable:
             assert preview["executable"] is True
@@ -1614,12 +1615,12 @@ def test_kill_switch_orders_above_session_stop_when_simultaneous(tmp_path: Path)
     # The kill-switch row sorts before (or at the same position as) the session-start row.
     fired_idx = next(i for i, e in enumerate(entries) if e.get("outcomeKind") == "fired")
     started_entries = [
-        e for e in entries
-        if e.get("outcomeKind") == "started" and e.get("strategyId") == sid
+        e for e in entries if e.get("outcomeKind") == "started" and e.get("strategyId") == sid
     ]
     if started_entries:
         started_idx = next(
-            i for i, e in enumerate(entries)
+            i
+            for i, e in enumerate(entries)
             if e.get("outcomeKind") == "started" and e.get("strategyId") == sid
         )
         assert fired_idx < started_idx, (

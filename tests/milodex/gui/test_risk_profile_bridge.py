@@ -93,9 +93,7 @@ def test_refuse_when_current_profile_unknown_still_audits(
     assert rows[0]["to_profile"] == "standard"
 
 
-def test_refuse_when_runners_active(
-    bridge: RiskProfileBridge, db_path: Path
-) -> None:
+def test_refuse_when_runners_active(bridge: RiskProfileBridge, db_path: Path) -> None:
     """Mid-flight switch is refused per ADR 0054 §5."""
     # Insert an open strategy_run (ended_at IS NULL)
     store = EventStore(db_path)
