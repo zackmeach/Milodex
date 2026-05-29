@@ -1384,3 +1384,67 @@ def test_get_latest_promotion_tiebreaks_on_id_when_recorded_at_equal(tmp_path):
     latest = store.get_latest_promotion_for_strategy(sid)
     assert latest is not None
     assert latest.to_stage == "backtest"  # higher id breaks the tie
+
+
+def _seed_trade(store: EventStore, *, symbol: str = "SPY", side: str = "buy") -> int:
+    """Append an explanation + a paper trade; return the trade id."""
+    explanation_id = store.append_explanation(
+        ExplanationEvent(**_explanation_kwargs(submitted_by="operator", symbol=symbol, side=side))
+    )
+    return store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+            status="filled",
+            source="paper",
+            symbol=symbol,
+            side=side,
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=400.0,
+            estimated_order_value=400.0,
+            strategy_name="regime.daily.sma200_rotation.spy_shy.v1",
+            strategy_stage="paper",
+            strategy_config_path="configs/regime.yaml",
+            submitted_by="operator",
+            broker_order_id=None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
+def test_iter_trades_matches_list_trades_in_order(tmp_path):
+    """iter_trades yields the same trades, in the same id-ASC order, as list_trades."""
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_trade(store, symbol="SPY", side="buy")
+    _seed_trade(store, symbol="QQQ", side="sell")
+    _seed_trade(store, symbol="IWM", side="buy")
+
+    streamed = list(store.iter_trades())
+    listed = store.list_trades()
+
+    assert [t.id for t in streamed] == [t.id for t in listed]
+    assert [(t.symbol, t.side) for t in streamed] == [
+        ("SPY", "buy"),
+        ("QQQ", "sell"),
+        ("IWM", "buy"),
+    ]
+
+
+def test_iter_trades_empty_yields_nothing(tmp_path):
+    """No trades -> iter_trades yields an empty sequence (not an error)."""
+    store = EventStore(tmp_path / "milodex.db")
+    assert list(store.iter_trades()) == []
+
+
+def test_iter_trades_returns_lazy_generator(tmp_path):
+    """iter_trades must stream (generator), not materialize the full table like
+    list_trades — this is the property that fixes the unbounded-load OOM
+    (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md)."""
+    import inspect
+
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_trade(store)
+    assert inspect.isgenerator(store.iter_trades())

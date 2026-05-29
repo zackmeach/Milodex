@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -638,6 +639,24 @@ class EventStore:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
         return [_trade_from_row(row) for row in rows]
+
+    def iter_trades(self) -> Iterator[TradeEvent]:
+        """Stream trades in id-ASC order, one row at a time.
+
+        Unlike :meth:`list_trades`, which materializes the entire ``trades``
+        table into a list, this yields one ``TradeEvent`` at a time from a
+        lazy cursor so memory stays flat regardless of table size. Startup
+        reconciliation's full-history position and open-order folds consume
+        this to avoid the unbounded ``SELECT *`` load that OOM-froze the
+        workstation when the runner fleet launched concurrently
+        (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
+        """
+        connection = self._connect()
+        try:
+            for row in connection.execute("SELECT * FROM trades ORDER BY id ASC"):
+                yield _trade_from_row(row)
+        finally:
+            connection.close()
 
     def append_reconciliation_run(self, event: ReconciliationRunEvent) -> int:
         with self._connect() as connection:

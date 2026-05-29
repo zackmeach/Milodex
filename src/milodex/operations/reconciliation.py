@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -189,12 +190,18 @@ def run_reconciliation(
     fold_as_of = _aware(as_of or datetime.now(tz=UTC))
     recorded_at = _aware(now or datetime.now(tz=UTC))
     broker_snapshot = snapshot_broker(broker)
+    # Stream trades (iter_trades) rather than loading the whole table twice
+    # (list_trades): the unbounded full-table load OOM-froze the workstation
+    # when the runner fleet launched concurrently
+    # (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md). The folds below
+    # are single-pass over id-ASC order, so a one-row-at-a-time generator is a
+    # drop-in with identical semantics and flat memory.
     local_positions = fold_positions(
-        event_store.list_trades(),
+        event_store.iter_trades(),
         event_store.list_reconciliation_adjustments(),
         as_of=fold_as_of,
     )
-    local_open_orders = local_open_orders_from_trades(event_store.list_trades(), as_of=fold_as_of)
+    local_open_orders = local_open_orders_from_trades(event_store.iter_trades(), as_of=fold_as_of)
 
     position_rows = compare_positions(
         local=local_positions,
@@ -434,7 +441,7 @@ def snapshot_broker(broker: Any) -> BrokerSnapshot:
 
 
 def fold_positions(
-    trades: list[TradeEvent],
+    trades: Iterable[TradeEvent],
     adjustments: list[ReconciliationAdjustmentEvent],
     *,
     as_of: datetime,
@@ -463,7 +470,7 @@ def fold_positions(
 
 
 def local_open_orders_from_trades(
-    trades: list[TradeEvent],
+    trades: Iterable[TradeEvent],
     *,
     as_of: datetime,
 ) -> dict[str, LocalOpenOrder]:
