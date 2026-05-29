@@ -327,8 +327,8 @@ Trade log with decision reasoning, daily portfolio snapshots, running SPY benchm
 ### Phase 1.4 — Promotion Pipeline *(complete)*
 Formal state machine for `backtest → paper → micro_live → live`. Stage transitions require evidence: backtest-to-paper uses the paper-readiness gate, later capital stages use the stricter capital-readiness gate — authoritative thresholds for both tiers are in `src/milodex/promotion/policy.py` (ADR 0052). Trade-count evidence comes from each strategy's configured `backtest.min_trades_required`. `micro_live` and above additionally require explicit operator approval. Stage is enforced at the risk layer: a strategy whose config declares `stage: paper` cannot submit live orders even if the operator edits code by accident.
 
-### Phase 2+ *(Phases 2 and 3 closed; Phase 4 in planning)*
-Phase 2 closed the Phase 1 carry list and locked the honest-signal property (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Phase 4 planning is underway. Longer-horizon items still deferred: Crypto universe, ML-driven signals, sentiment / alternative data, additional brokers, desktop GUI. See `docs/SRS.md` Phase 2+ appendix and [`docs/PHASE4_PLANNING.md`](PHASE4_PLANNING.md) for details.
+### Phase 2+ *(Phases 2–5 closed; Phase 6 in progress)*
+Phase 2 closed the Phase 1 carry list and locked the honest-signal property (ADR 0025). Phase 3 closed momentum family research and the concurrent multi-strategy runner (ADR 0027). Phase 4 closed as cleanup and attribution (ADR 0028 scope, ADR 0031 closure). Phase 5 ordered observability ahead of features and delivered the GUI runtime and design system (ADR 0034 scope, ADR 0038 closure). Phase 6 — operator surfaces / the Bench — is the current phase; active planning lives in [`docs/PHASE6_BENCH_PREP.md`](PHASE6_BENCH_PREP.md) and the [documentation map](README.md) routes the current living set. Longer-horizon items still deferred: crypto universe, ML-driven signals, sentiment / alternative data, additional brokers. See `docs/SRS.md` Phase 2+ appendix for details.
 
 ---
 
