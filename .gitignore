@@ -81,3 +81,7 @@ artifacts/
 
 # Git worktrees (subagent-driven development)
 .worktrees/
+
+# Local scratch — ad-hoc diagnostic scripts, captures, and tool-generated reports
+tmp/
+reports/
