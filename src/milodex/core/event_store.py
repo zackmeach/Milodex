@@ -815,6 +815,70 @@ class EventStore:
                 count += 1
         return count
 
+    # ------------------------------------------------------------------
+    # Maintenance / compaction (operator-run; see operations/maintenance.py)
+    # ------------------------------------------------------------------
+
+    @property
+    def path(self) -> Path:
+        """Filesystem path to the SQLite event store (read-only)."""
+        return self._path
+
+    def count_prunable_backtest_explanations(self) -> int:
+        """Count cascade-safe backtest explanations: rows with a backtest_run_id
+        and NO linked trade. Deleting these can never cascade-delete a trade and
+        never touches live (NULL backtest_run_id) rows.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*) FROM explanations
+                WHERE backtest_run_id IS NOT NULL
+                  AND id NOT IN (SELECT explanation_id FROM trades)
+                """
+            ).fetchone()
+        return int(row[0]) if row else 0
+
+    def prune_backtest_explanations_without_trades(self) -> int:
+        """Delete cascade-safe backtest explanations; return rows deleted.
+
+        Safety is structural: ``backtest_run_id IS NOT NULL`` excludes every live
+        (NULL) row, and ``id NOT IN (SELECT explanation_id FROM trades)`` means the
+        ``trades.explanation_id ON DELETE CASCADE`` can never remove a trade.
+        ``trades.explanation_id`` is NOT NULL, so the subquery never contains NULL
+        (no NOT-IN-with-NULL pitfall).
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                DELETE FROM explanations
+                WHERE backtest_run_id IS NOT NULL
+                  AND id NOT IN (SELECT explanation_id FROM trades)
+                """
+            )
+            connection.commit()
+            return int(cursor.rowcount)
+
+    def vacuum(self) -> None:
+        """Rewrite the DB file to reclaim freed pages.
+
+        VACUUM cannot run inside a transaction, so use a dedicated autocommit
+        connection (``isolation_level=None``) rather than ``_connect`` (whose
+        context manager opens a transaction around DML).
+        """
+        connection = sqlite3.connect(self._path)
+        try:
+            connection.isolation_level = None  # autocommit; VACUUM/checkpoint can't run in a txn
+            # In WAL mode freed pages live in the -wal sidecar; checkpoint+truncate
+            # flushes them into the main file and truncates the WAL, then VACUUM
+            # rebuilds the main file compactly. The trailing checkpoint flushes
+            # VACUUM's own WAL writes so the on-disk footprint actually shrinks.
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            connection.execute("VACUUM")
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            connection.close()
+
     def get_last_paper_buy_date_by_symbol(self) -> dict[str, str]:
         """Return the most-recent ``recorded_at`` ISO string per symbol for paper BUY trades.
 
