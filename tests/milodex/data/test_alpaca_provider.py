@@ -4,7 +4,7 @@
 All tests mock the Alpaca SDK -- no real API calls.
 """
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -391,6 +391,58 @@ class TestGetBarsCaching:
         request = provider._client.get_stock_bars.call_args.args[0]
         assert request.start.date() <= request.end.date()
         assert provider._client.get_stock_bars.call_count == first_count + 1
+
+    def test_stale_cache_behind_today_fetches_full_tail(self, provider):
+        """A daily cache that has fallen days behind today must re-fetch the
+        whole gap (cache_end+1 .. today), not just (today, today).
+
+        The today-only range returns empty from the live feed, so the cache
+        would otherwise stay pinned at its last-warmed bar -- the 2026-05-28
+        silent per-universe staleness bug (largecap stuck at 05-18 while ETFs
+        were current). The discriminating assertion is the requested START:
+        buggy code requests start == today; the fix requests start == cache_end+1.
+        """
+        today = datetime.now(tz=UTC).date()
+        cache_end = today - timedelta(days=10)
+
+        # 1) Seed the cache so its last bar is `cache_end` (end < today -> cached).
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={
+                "AAPL": [
+                    _make_bar(
+                        datetime(cache_end.year, cache_end.month, cache_end.day, 5, 0, tzinfo=UTC)
+                    )
+                ]
+            }
+        )
+        provider.get_bars(
+            symbols=["AAPL"], timeframe=Timeframe.DAY_1, start=cache_end, end=cache_end
+        )
+
+        # 2) Request through today. Mock a fresh tail (a today-dated bar).
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={
+                "AAPL": [
+                    _make_bar(
+                        datetime(today.year, today.month, today.day, 5, 0, tzinfo=UTC), close=160.0
+                    )
+                ]
+            }
+        )
+        result = provider.get_bars(
+            symbols=["AAPL"], timeframe=Timeframe.DAY_1, start=cache_end, end=today
+        )
+
+        request = provider._client.get_stock_bars.call_args.args[0]
+        # Discriminator: the fetch must START at cache_end+1 to fill the gap,
+        # not at `today` (which returns empty live and never heals the cache).
+        assert request.start.date() == cache_end + timedelta(days=1), (
+            f"expected gap-fill starting {cache_end + timedelta(days=1)}, "
+            f"got {request.start.date()}"
+        )
+        assert request.end.date() == today
+        # Corroborating: the cache heals -- latest bar is now today.
+        assert result["AAPL"].latest().timestamp.date() == today
 
 
 class TestGetTradeableAssets:

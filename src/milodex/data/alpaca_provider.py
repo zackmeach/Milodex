@@ -131,9 +131,15 @@ class AlpacaDataProvider(DataProvider):
                 # Before cache start
                 if start < cache_start:
                     ranges_to_fetch.append((start, min(end, cache_start)))
-                # After cache end (or today needs re-fetch)
+                # After cache end (or today needs re-fetch). Fetch from the day
+                # after the cache ends through `end` so a cache that has fallen
+                # behind today fills its whole stale tail -- not just (today,
+                # today), which returns empty from the live daily feed and would
+                # leave the cache pinned (2026-05-28 silent-staleness bug). The
+                # min(..., today) preserves the always-refetch-today intent when
+                # the cache already reaches today (cache_end + 1 > today).
                 if end >= today:
-                    fetch_from = max(start, today)
+                    fetch_from = max(start, min(cache_end + timedelta(days=1), today))
                     if fetch_from <= end:
                         ranges_to_fetch.append((fetch_from, end))
                 elif end > cache_end:
