@@ -11,11 +11,11 @@ Six statistically- or lifecycle-justified strategies are at paper stage and are 
 - `momentum.daily.tsmom.curated_largecap.v1`
 - `breakout.daily.donchian_20_10.sector_etfs.v1`
 
-> ⚠️ **Two additional strategies are at paper stage in the event store but are FLAGGED for operator review — they should arguably not be running:**
+> 🧪 **Two additional strategies are at paper stage as deliberate intraday-harness validation canaries — running on purpose, not for alpha:**
 > - `breakout.orb.intraday.spy.v1` — promoted to paper 2026-05-28 via `lifecycle_exempt`, OOS Sharpe **−1.06**.
 > - `benchmark.unconditional_intraday_long.spy.v1` — promoted to paper 2026-05-28 via `lifecycle_exempt`, OOS Sharpe **−1.69**.
 >
-> Both promotions contradict this bank's prior verdict ("Do not promote") and the `lifecycle_exempt` mechanism is documented as being for the *regime* strategy, not negative-Sharpe edge/benchmark candidates. The benchmark is explicitly *not a promotion candidate*. See the **Flagged paper promotions** callout below. This document reports the DB truth; the disposition (likely demotion) is an operator decision.
+> These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. Both are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
 
 Three strategies are at the **idle** stage (demoted out of active rotation 2026-05-19). Three remain genuinely at **backtest** stage (never promoted) and are blocked — see the blocked table and the new Idle section below.
 
@@ -26,17 +26,17 @@ Three strategies are at the **idle** stage (demoted out of active rotation 2026-
 This document reflects the event-store state as of 2026-05-28 (branch `fix/promotion-ordering-and-bank-refresh`).
 
 Changes since the 2026-05-20 (`feat/intraday-orb-spy-v1`) update:
-- **ORB and the intraday benchmark were promoted to paper on 2026-05-28 via `lifecycle_exempt`** (promotions ids 25 and 24) despite negative OOS Sharpe. Flagged for operator review — see callout. Both were re-run on 2026-05-27 (ORB evid `6a556eec` Sharpe −1.06; benchmark evid `ab6b88d7` Sharpe −1.69), figures that differ from the 2026-05-20 blocked-table numbers because those were earlier runs.
+- **ORB and the intraday benchmark were promoted to paper on 2026-05-28 via `lifecycle_exempt`** (promotions ids 25 and 24) as deliberate intraday-harness validation canaries (`approved_by=operator-zack`) — knowingly-losing strategies kept at paper to exercise the intraday runner. Both were re-run on 2026-05-27 (ORB evid `6a556eec` Sharpe −1.06; benchmark evid `ab6b88d7` Sharpe −1.69), figures that differ from the 2026-05-20 blocked-table numbers because those were earlier runs. See the Intraday harness-validation canaries section.
 - **Three strategies were demoted to the new `idle` stage on 2026-05-19** ("Return to Idle via Bench GUI"): `momentum.daily.52w_high_proximity.largecap.v1`, `momentum.daily.xsec_rotation.sector_etfs.v1`, `seasonality.daily.turn_of_month.spy.v1`. They are no longer in the blocked-at-backtest table.
 - `breakout.daily.atr_channel.sector_etfs.v1` and `breakout.daily.donchian_20_10.sector_etfs.v1` went through idle→backtest→paper recycles on 2026-05-19 (promotions ids 17–21); both are back at paper with their original evidence runs and metrics unchanged.
 - `regime.daily.sma200_rotation.spy_shy.v1` was re-promoted to paper on 2026-05-15 (lifecycle_exempt, promotion id 12); its promotion-record evidence run is now `0733d4d1` (which carries no WF stats — a lifecycle-exempt regime can't accumulate gate-able trades). The last full WF re-baseline remains `f7e0730c` (Sharpe 1.19 / MaxDD 0.95 / 27 trades).
 - `momentum.daily.dual_absolute.gem_weekly.v1` was re-run (run `f8588224`): MaxDD 17.88→**15.80**, trade count still 20 — gate verdict unchanged (`[D][N]`).
 
-Roster now: **6 deserving paper + 2 flagged paper = 8 at paper stage**, 3 at idle, 3 genuinely blocked at backtest.
+Roster now: **6 deserving paper + 2 intraday-harness canaries = 8 at paper stage**, 3 at idle, 3 genuinely blocked at backtest.
 
 The authoritative data source is `data/milodex.db`. The tables that drive this document are `promotions` and `backtest_runs`. The promotion records are the binding source for stage; backtest run metadata is the source for all Sharpe, drawdown, and trade-count figures.
 
-Statistical paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052. Note that a `lifecycle_exempt` promotion **bypasses this gate entirely** — which is how the two negative-Sharpe flagged strategies reached paper (see Flagged paper promotions).
+Statistical paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052. Note that a `lifecycle_exempt` promotion **bypasses this gate entirely** — which is how the two negative-Sharpe intraday canaries were intentionally placed at paper (see Intraday harness-validation canaries).
 
 ### How to refresh
 
@@ -129,7 +129,7 @@ Walk-forward evidence sourced from `docs/reviews/screen_2026-05-07.md`. Metrics 
 
 \* The regime row's *promotion-record* evidence run is now `0733d4d1` (re-promotion 2026-05-15, id=12), which carries no WF stats — a lifecycle-exempt regime trades too infrequently to produce gate-able metrics. The metrics shown (1.19 / 0.95 / 27) are sourced from the last full walk-forward re-baseline `f7e0730c` (2026-05-07), which remains the authoritative WF evidence for this strategy. The original 2026-04-23 exemption (id=4) predated the backtest infra and carried no `backtest_run_id`.
 
-**Flagged paper roster (lifecycle_exempt, negative Sharpe — pending operator review, see callout):**
+**Intraday harness-validation canaries (lifecycle_exempt, knowingly-losing — intentionally at paper, see section below):**
 
 | strategy_id | promoted_at | evidence run_id | WF Sharpe | WF MaxDD% | WF Trades | promotion_type |
 |---|---|---|---|---|---|---|
@@ -158,21 +158,22 @@ Per-window Sharpe instability is a real concern here. The four windows produced:
 
 ---
 
-## ⚠️ Flagged paper promotions — pending operator review
+## Intraday harness-validation canaries
 
-On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exempt` (promotions ids 24, 25):
+On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exempt` (promotions ids 24, 25, `approved_by=operator-zack`) as **deliberate harness-validation canaries** — the first intraday strategies to run on the live paper runner:
 
-| strategy_id | promo id | OOS Sharpe | promotion_type | why this is flagged |
+| strategy_id | promo id | OOS Sharpe | trades | role |
 |---|---|---|---|---|
-| `breakout.orb.intraday.spy.v1` | 25 | −1.06 | lifecycle_exempt | Negative Sharpe; this bank's standing verdict is "Do not promote." Not a lifecycle-proof regime strategy. |
-| `benchmark.unconditional_intraday_long.spy.v1` | 24 | −1.69 | lifecycle_exempt | Negative Sharpe; **explicitly not a promotion candidate** — it exists only as a comparison floor. |
+| `breakout.orb.intraday.spy.v1` | 25 | −1.06 | 856 | Intraday signal candidate, run as a canary to exercise the intraday runner. |
+| `benchmark.unconditional_intraday_long.spy.v1` | 24 | −1.69 | 1769 | Unconditional-long comparison floor, paired with ORB. |
 
-**Why this is a concern:**
-- The `lifecycle_exempt` mechanism is documented (ADR 0009/0020/0052, policy R-PRM-004) as being for the **regime strategy** — one that trades too infrequently by design to accumulate gate-able statistics. Neither ORB (856 trades) nor the benchmark (1769 trades) fits that justification; both have ample trades and simply fail the Sharpe gate.
-- The benchmark is, by design, not a strategy to run — promoting it to paper has no defensible rationale.
-- This is exactly the operator-override surface noted in CLAUDE.md: `--lifecycle-exempt` bypasses the statistical gate for *any* promotion. Used here, it placed two negative-Sharpe candidates at paper.
+**Why they are at paper (on purpose):**
+- The intraday backtest engine and now the intraday *paper runner* are new infrastructure. These two strategies validate the runner end-to-end — cadence, fills, and evaluation *during* market hours (intraday strategies, unlike daily ones, evaluate while the market is open). Both are knowingly-losing; the point is mechanics, not return.
+- `lifecycle_exempt` is the documented operator-override path (CLAUDE.md: `--lifecycle-exempt` bypasses the statistical gate for *any* promotion). It was used intentionally to place these negative-Sharpe canaries at paper. This is the override working as designed, not a misapplication.
 
-**Disposition:** This document reports the event-store truth (both are at paper). It does **not** rewrite the promotion decision. The likely correct action is `milodex promotion demote` for both back to backtest (ORB) / idle (benchmark), but that is an operator call. Until then, treat both as **not authorized to run** despite their paper stage.
+**Disposition:** Both are **kept at paper intentionally** while the intraday harness is being exercised. The promotion notes record an eventual demotion target of `backtest` (ORB's note adds: unless an unexpected positive paper Sharpe warrants further investigation) once intraday-runner confidence is sufficient — a future operator call, not a pending action. As of 2026-05-28 each canary has completed one paper session (launched 13:01 UTC, cleanly stopped). They remain at paper.
+
+**Note for analytics:** a running knowingly-losing strategy produces losing paper fills. When per-strategy P&L attribution is built (backlog #6), ensure these canaries are attributed to themselves and excluded from any aggregate "edge" performance read.
 
 ---
 
@@ -196,7 +197,7 @@ Gate codes: `[S]` = Sharpe below the capital-readiness floor, `[D]` = MaxDD abov
 
 Walk-forward methodology and canonical window 2020-01-01 to 2024-12-31 per ADR 0021 and ADR 0030.
 
-Strategies with no promotion event — genuinely pre-promotion. (The three previously-listed `52w_high_proximity`, `xsec_rotation`, and `turn_of_month` rows moved to the Idle section above; ORB moved to the Flagged paper section above.)
+Strategies with no promotion event — genuinely pre-promotion. (The three previously-listed `52w_high_proximity`, `xsec_rotation`, and `turn_of_month` rows moved to the Idle section above; ORB moved to the Intraday harness-validation canaries section above.)
 
 | strategy_id | latest run_id | WF Sharpe | WF MaxDD% | WF Trades | gate verdict | what would need to change |
 |---|---|---|---|---|---|---|
@@ -219,9 +220,9 @@ The MaxDD failure may be addressable with a tighter position-sizing or stop rule
 
 Do not promote. Do not retire. Keep the run record in place.
 
-### Callout: `breakout.orb.intraday.spy.v1` — first intraday candidate, null result (now flagged at paper)
+### Callout: `breakout.orb.intraday.spy.v1` — first intraday candidate, null result (now a paper canary)
 
-> **Status correction (2026-05-28):** ORB is no longer at backtest — it was promoted to paper via `lifecycle_exempt` on 2026-05-28 alongside the benchmark. See the **Flagged paper promotions** section above. The analysis below remains the correct read of the signal; the "stays at backtest" verdict it originally drew has been overridden by an operator action this document flags as questionable.
+> **Status update (2026-05-28):** ORB is no longer at backtest — it was promoted to paper via `lifecycle_exempt` on 2026-05-28 alongside the benchmark, as a deliberate intraday-harness validation canary (see **Intraday harness-validation canaries** above). The signal analysis below stands; the original "stays at backtest" verdict was a *signal-merit* call, intentionally overridden so the strategy can exercise the intraday paper runner. It remains a known-null on signal merit.
 
 This is the first strategy to use the intraday backtest engine ([Milodex#164](https://github.com/zackmeach/Milodex/pull/164)). The walk-forward result is a clean negative-Sharpe null exactly as the plan predicted. The harness is now proven to honestly evaluate intraday signals.
 
@@ -237,7 +238,7 @@ The figures below are the original 2026-05-20 run (ORB `1dc31aa7`, benchmark sib
 
 ORB has *better* total return than the benchmark because lower trade frequency means less cumulative friction (5 bps slippage × ~790 fills vs ~1581 fills). But ORB's risk-adjusted Sharpe is *worse* than the benchmark in this run. The strategy is filtering OK in nominal terms (avoiding some bad trades) but the volatility cost of the breakout filter exceeds the return benefit. Both fail the capital-readiness Sharpe floor.
 
-Promotion verdict (analytical): neither candidate meets the capital-readiness gate; on signal merit both belong at backtest. This verdict was **overridden operationally** on 2026-05-28 by a `lifecycle_exempt` paper promotion of both — an action this document flags for review (see Flagged paper promotions).
+Promotion verdict (analytical): neither candidate meets the capital-readiness gate; on signal merit both belong at backtest. On 2026-05-28 both were intentionally promoted to paper via `lifecycle_exempt` as intraday-runner validation canaries — a mechanics decision, not a signal-merit reversal (see Intraday harness-validation canaries).
 
 This is also the first place in the bank where the canonical walk-forward window diverges from the bank standard (2020–2024). The 2022–2025 window was chosen because Alpaca's free-tier intraday data depth past 2022 is unverified — the 2020–2021 portion would either fail to fetch or fail with partial-history data quality issues. The 4-year window still samples three regimes (2022 rate-shock bear, 2023 AI rally, 2024–2025 bull tape) and produces 800 OOS sessions worth of trades, well above the statistical minimum.
 
@@ -245,7 +246,7 @@ The benchmark sibling (`benchmark.unconditional_intraday_long.spy.v1`) is the co
 
 **Honest framing matches expectations.** ORB on SPY is one of the most heavily competed-away intraday patterns (Crabel 1990 → 30+ years of public discussion), and post-2022 the 0DTE options boom has materially changed SPY intraday microstructure (dealer gamma hedging frequently fades opening-range breakouts). Finding a positive edge here was always implausible. The value of this PR is the harness — it lets the next intraday hypothesis ride on infrastructure that has been validated against a known-null signal.
 
-On merit: do not promote, do not retire. The negative result is valuable evidence — future intraday candidates need to beat both the benchmark AND clear the Sharpe floor before any paper-stage discussion. (As of 2026-05-28 the event store nonetheless places ORB at paper via lifecycle exemption; see the flag above.)
+On signal merit: not a promotion candidate, do not retire. The negative result is valuable evidence — future intraday candidates need to beat both the benchmark AND clear the Sharpe floor before any signal-merit paper-stage discussion. (Its current paper stage is a deliberate harness-validation canary, separate from signal merit; see the canaries section above.)
 
 ---
 
@@ -281,15 +282,15 @@ PR #46 (`chore: remove stale paper-runtime artifacts and harden .gitignore`) del
 
 Update this document whenever any of the following events occur:
 
-- A strategy is promoted to paper (add a row to the deserving or flagged paper table; remove from blocked/idle if applicable)
+- A strategy is promoted to paper (add a row to the deserving paper table, or the canaries section if it's a harness-validation promotion; remove from blocked/idle if applicable)
 - A strategy is demoted to `idle` (move to the Idle section) or to `backtest` (move to the blocked table), recording the reason
-- A strategy is promoted via `lifecycle_exempt` without a lifecycle-proof justification (add to / clear from the Flagged paper promotions section)
+- A strategy is promoted via `lifecycle_exempt` for harness validation rather than lifecycle-proof signal (add to / clear from the Intraday harness-validation canaries section), or such a canary is later demoted
 - A walk-forward re-baseline changes the evidence run_id or metrics for a paper-stage strategy
 - A blocked strategy receives a new backtest run with a materially different result
 - A gate verdict changes for any reason
-- The dual_absolute governance question, or a flagged paper promotion, is resolved
+- The dual_absolute governance question is resolved, or a harness-validation canary is demoted
 
-Note the three stage categories this document now tracks: **paper** (deserving + flagged), **idle** (demoted from rotation), and **backtest** (genuinely pre-promotion, no promotion event). `idle` and `backtest` are distinct — do not merge them.
+Note the three stage categories this document now tracks: **paper** (deserving + intraday harness-validation canaries), **idle** (demoted from rotation), and **backtest** (genuinely pre-promotion, no promotion event). `idle` and `backtest` are distinct — do not merge them.
 
 Recommended workflow: run the SQL queries from the "How to refresh" section against `data/milodex.db` (plus the `to_stage='idle'` query for the Idle section), regenerate the tables from the output, update any notes that depend on metrics, then commit. Do not update the table numbers by hand — re-run the queries. When resolving "latest stage per strategy" outside the canned `to_stage`-filtered queries, order by `recorded_at` (not `id`): a backdated `audit_backfill` event sorts ahead of a later real promotion under `id` order (the `pullback_rsi2` case; see `EventStore.get_latest_promotion_for_strategy`).
 
