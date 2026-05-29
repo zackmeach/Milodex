@@ -330,10 +330,17 @@ def build_default_registry() -> StrategyRegistry:
     from milodex.strategies.breakout_orb_intraday import BreakoutOrbIntradayStrategy
     from milodex.strategies.meanrev_bbands_lowerband import MeanrevBbandsLowerbandStrategy
     from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
+    from milodex.strategies.meanrev_rsi2_intraday import MeanrevRsi2IntradayStrategy
     from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
+    from milodex.strategies.meanrev_vwap_reversion_intraday import (
+        MeanrevVwapReversionIntradayStrategy,
+    )
     from milodex.strategies.momentum_52w_high_proximity import Momentum52wHighProximityStrategy
     from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
     from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
+    from milodex.strategies.momentum_vwap_trend_intraday import (
+        MomentumVwapTrendIntradayStrategy,
+    )
     from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
     from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
     from milodex.strategies.seasonality_turn_of_month import SeasonalityTurnOfMonthStrategy
@@ -344,6 +351,8 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(MeanrevBbandsLowerbandStrategy)
     registry.register(MeanrevRsi2PullbackStrategy)
     registry.register(MeanrevIbsLowcloseStrategy)
+    registry.register(MeanrevVwapReversionIntradayStrategy)
+    registry.register(MeanrevRsi2IntradayStrategy)
     registry.register(Momentum52wHighProximityStrategy)
     registry.register(MomentumDailyTsmomStrategy)
     registry.register(BreakoutAtrChannelStrategy)
@@ -352,6 +361,7 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(BreakoutOrbIntradayStrategy)
     registry.register(MomentumDualAbsoluteGemStrategy)
     registry.register(MomentumXsecRotationStrategy)
+    registry.register(MomentumVwapTrendIntradayStrategy)
     registry.register(BenchUnconditionalIntradayLongStrategy)
     return registry
 

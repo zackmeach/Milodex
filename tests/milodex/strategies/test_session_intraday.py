@@ -19,7 +19,10 @@ from milodex.strategies._session_intraday import (
     latest_session_date_et,
     opening_range_bars,
     session_bars_et,
+    session_close_offset_minutes,
     session_date_et,
+    session_vwap,
+    session_vwap_series,
     to_eastern,
 )
 
@@ -223,7 +226,12 @@ def test_opening_range_bars_empty_before_session() -> None:
 
 
 def _build_intraday_df(rows: list[tuple[str, float]]) -> pd.DataFrame:
-    """Build a minimal intraday DataFrame from (utc_iso_timestamp, close) rows."""
+    """Build a minimal intraday DataFrame from (utc_iso_timestamp, close) rows.
+
+    ``high = close + 0.5`` and ``low = close - 0.5`` so the VWAP typical price
+    ``(high + low + close) / 3`` equals ``close`` exactly — convenient for VWAP
+    assertions.
+    """
     timestamps = pd.to_datetime([r[0] for r in rows], utc=True)
     closes = [r[1] for r in rows]
     return pd.DataFrame(
@@ -237,3 +245,102 @@ def _build_intraday_df(rows: list[tuple[str, float]]) -> pd.DataFrame:
             "vwap": closes,
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# Session VWAP helpers
+# ---------------------------------------------------------------------------
+
+
+def test_session_close_offset_minutes_full_and_half_day() -> None:
+    """Full session spans 390 minutes (9:30->16:00); half-day 210 (9:30->13:00)."""
+    assert session_close_offset_minutes(date(2024, 1, 15)) == 390
+    assert session_close_offset_minutes(date(2024, 11, 29)) == 210  # known half-day
+
+
+def test_session_vwap_single_bar_equals_typical_price() -> None:
+    """With one bar, VWAP equals that bar's typical price (= close in this fixture)."""
+    df = _build_intraday_df([("2024-01-15 14:30:00+00:00", 500.0)])
+    assert session_vwap(df, date(2024, 1, 15)) == 500.0
+
+
+def test_session_vwap_equal_volume_is_mean_of_typical_prices() -> None:
+    """Equal volume across bars -> VWAP is the simple mean of typical prices."""
+    df = _build_intraday_df(
+        [
+            ("2024-01-15 14:30:00+00:00", 500.0),
+            ("2024-01-15 14:35:00+00:00", 502.0),
+        ]
+    )
+    # typical prices 500 and 502, equal volume -> 501.0
+    assert session_vwap(df, date(2024, 1, 15)) == 501.0
+
+
+def test_session_vwap_is_volume_weighted() -> None:
+    """Unequal volume pulls VWAP toward the heavier-volume bar's typical price."""
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(
+                ["2024-01-15 14:30:00+00:00", "2024-01-15 14:35:00+00:00"], utc=True
+            ),
+            "open": [500.0, 510.0],
+            "high": [500.0, 510.0],
+            "low": [500.0, 510.0],
+            "close": [500.0, 510.0],
+            "volume": [1_000_000.0, 3_000_000.0],  # 3x weight on the 510 bar
+            "vwap": [500.0, 510.0],
+        }
+    )
+    # (500*1 + 510*3) / 4 = 507.5
+    assert session_vwap(df, date(2024, 1, 15)) == 507.5
+
+
+def test_session_vwap_series_last_value_matches_session_vwap() -> None:
+    """The final ``vwap_cum`` of the series equals the scalar ``session_vwap``."""
+    rows = [
+        ("2024-01-15 14:30:00+00:00", 500.0),
+        ("2024-01-15 14:35:00+00:00", 502.0),
+        ("2024-01-15 14:40:00+00:00", 498.0),
+    ]
+    df = _build_intraday_df(rows)
+    series = session_vwap_series(df, date(2024, 1, 15))
+    assert len(series) == 3
+    assert "vwap_cum" in series.columns
+    assert float(series["vwap_cum"].iloc[-1]) == session_vwap(df, date(2024, 1, 15))
+    # First cumulative VWAP is just the first bar's typical price.
+    assert float(series["vwap_cum"].iloc[0]) == 500.0
+
+
+def test_session_vwap_excludes_pre_market_bars() -> None:
+    """Pre-market bars (before 9:30 ET) do not contribute to the regular-session VWAP."""
+    df = _build_intraday_df(
+        [
+            ("2024-01-15 14:00:00+00:00", 400.0),  # 9:00 EST pre-market — excluded
+            ("2024-01-15 14:30:00+00:00", 500.0),  # 9:30 EST — included
+        ]
+    )
+    # Only the 9:30 bar counts; the 9:00 pre-market 400 is excluded.
+    assert session_vwap(df, date(2024, 1, 15)) == 500.0
+    # With regular_session_only=False both bars count -> mean 450.
+    assert session_vwap(df, date(2024, 1, 15), regular_session_only=False) == 450.0
+
+
+def test_session_vwap_returns_none_for_absent_session() -> None:
+    df = _build_intraday_df([("2024-01-15 14:30:00+00:00", 500.0)])
+    assert session_vwap(df, date(2024, 1, 16)) is None
+
+
+def test_session_vwap_returns_none_on_zero_volume() -> None:
+    """Zero cumulative volume -> VWAP undefined -> None."""
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(["2024-01-15 14:30:00+00:00"], utc=True),
+            "open": [500.0],
+            "high": [500.0],
+            "low": [500.0],
+            "close": [500.0],
+            "volume": [0.0],
+            "vwap": [500.0],
+        }
+    )
+    assert session_vwap(df, date(2024, 1, 15)) is None
