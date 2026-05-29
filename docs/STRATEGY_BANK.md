@@ -11,11 +11,14 @@ Six statistically- or lifecycle-justified strategies are at paper stage and are 
 - `momentum.daily.tsmom.curated_largecap.v1`
 - `breakout.daily.donchian_20_10.sector_etfs.v1`
 
-> 🧪 **Two additional strategies are at paper stage as deliberate intraday-harness validation canaries — running on purpose, not for alpha:**
+> 🧪 **Five additional strategies are at paper stage as deliberate intraday-harness validation canaries — running on purpose, not for alpha:**
 > - `breakout.orb.intraday.spy.v1` — promoted to paper 2026-05-28 via `lifecycle_exempt`, OOS Sharpe **−1.06**.
 > - `benchmark.unconditional_intraday_long.spy.v1` — promoted to paper 2026-05-28 via `lifecycle_exempt`, OOS Sharpe **−1.69**.
+> - `meanrev.rsi2.intraday.spy.v1` — promoted to paper 2026-05-29 via `lifecycle_exempt`, OOS Sharpe **−7.96**.
+> - `meanrev.vwap_reversion.intraday.spy.v1` — promoted to paper 2026-05-29 via `lifecycle_exempt`, OOS Sharpe **−1.89**.
+> - `momentum.vwap_trend.intraday.spy.v1` — promoted to paper 2026-05-29 via `lifecycle_exempt`, OOS Sharpe **−1.79**.
 >
-> These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. Both are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
+> These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. All are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours, and concurrent-fleet behavior), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
 
 Three strategies are at the **idle** stage (demoted out of active rotation 2026-05-19). Three remain genuinely at **backtest** stage (never promoted) and are blocked — see the blocked table and the new Idle section below.
 
@@ -23,20 +26,23 @@ Three strategies are at the **idle** stage (demoted out of active rotation 2026-
 
 ## As of date and source of truth
 
-This document reflects the event-store state as of 2026-05-28 (branch `fix/promotion-ordering-and-bank-refresh`).
+This document reflects the event-store state as of 2026-05-29 (intraday fleet soak test).
 
-Changes since the 2026-05-20 (`feat/intraday-orb-spy-v1`) update:
+Changes since the 2026-05-28 update:
+- **Three more intraday strategies were promoted to paper on 2026-05-29 via `lifecycle_exempt`** (`approved_by=operator-zack`) as additional intraday-harness validation canaries for a concurrent-fleet soak test: `meanrev.rsi2.intraday.spy.v1` (evid `0312e734`, Sharpe −7.96), `meanrev.vwap_reversion.intraday.spy.v1` (evid `f0eb3b25`, Sharpe −1.89), `momentum.vwap_trend.intraday.spy.v1` (evid `c34868c5`, Sharpe −1.79). All three are knowingly-losing nulls from overnight backtests; they were promoted to exercise the runner under concurrent load, not for signal merit. The soak test exposed an unbounded-query OOM bug in startup reconciliation — see `docs/incidents/2026-05-29-runner-fleet-oom-freeze.md` (root-cause fix landed).
+
+Prior changes (2026-05-28):
 - **ORB and the intraday benchmark were promoted to paper on 2026-05-28 via `lifecycle_exempt`** (promotions ids 25 and 24) as deliberate intraday-harness validation canaries (`approved_by=operator-zack`) — knowingly-losing strategies kept at paper to exercise the intraday runner. Both were re-run on 2026-05-27 (ORB evid `6a556eec` Sharpe −1.06; benchmark evid `ab6b88d7` Sharpe −1.69), figures that differ from the 2026-05-20 blocked-table numbers because those were earlier runs. See the Intraday harness-validation canaries section.
 - **Three strategies were demoted to the new `idle` stage on 2026-05-19** ("Return to Idle via Bench GUI"): `momentum.daily.52w_high_proximity.largecap.v1`, `momentum.daily.xsec_rotation.sector_etfs.v1`, `seasonality.daily.turn_of_month.spy.v1`. They are no longer in the blocked-at-backtest table.
 - `breakout.daily.atr_channel.sector_etfs.v1` and `breakout.daily.donchian_20_10.sector_etfs.v1` went through idle→backtest→paper recycles on 2026-05-19 (promotions ids 17–21); both are back at paper with their original evidence runs and metrics unchanged.
 - `regime.daily.sma200_rotation.spy_shy.v1` was re-promoted to paper on 2026-05-15 (lifecycle_exempt, promotion id 12); its promotion-record evidence run is now `0733d4d1` (which carries no WF stats — a lifecycle-exempt regime can't accumulate gate-able trades). The last full WF re-baseline remains `f7e0730c` (Sharpe 1.19 / MaxDD 0.95 / 27 trades).
 - `momentum.daily.dual_absolute.gem_weekly.v1` was re-run (run `f8588224`): MaxDD 17.88→**15.80**, trade count still 20 — gate verdict unchanged (`[D][N]`).
 
-Roster now: **6 deserving paper + 2 intraday-harness canaries = 8 at paper stage**, 3 at idle, 3 genuinely blocked at backtest.
+Roster now: **6 deserving paper + 5 intraday-harness canaries = 11 at paper stage**, 3 at idle, 3 genuinely blocked at backtest.
 
 The authoritative data source is `data/milodex.db`. The tables that drive this document are `promotions` and `backtest_runs`. The promotion records are the binding source for stage; backtest run metadata is the source for all Sharpe, drawdown, and trade-count figures.
 
-Statistical paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052. Note that a `lifecycle_exempt` promotion **bypasses this gate entirely** — which is how the two negative-Sharpe intraday canaries were intentionally placed at paper (see Intraday harness-validation canaries).
+Statistical paper-stage entry reflects the **paper-readiness tier** (permissive gate: Sharpe > 0.0, max DD < 25%, configured trade floor), not the stricter capital-readiness tier required to advance beyond paper; authoritative gate definitions are in `src/milodex/promotion/policy.py` / ADR 0052. Note that a `lifecycle_exempt` promotion **bypasses this gate entirely** — which is how the five negative-Sharpe intraday canaries were intentionally placed at paper (see Intraday harness-validation canaries).
 
 ### How to refresh
 
@@ -135,6 +141,9 @@ Walk-forward evidence sourced from `docs/reviews/screen_2026-05-07.md`. Metrics 
 |---|---|---|---|---|---|---|
 | `breakout.orb.intraday.spy.v1` | 2026-05-28 | `6a556eec-1ed2-4cc7-a808-3473b8380e00` | **−1.06** | 2.58 | 856 | lifecycle_exempt |
 | `benchmark.unconditional_intraday_long.spy.v1` | 2026-05-28 | `ab6b88d7-0e49-4482-847a-71865f542472` | **−1.69** | 7.59 | 1769 | lifecycle_exempt |
+| `meanrev.rsi2.intraday.spy.v1` | 2026-05-29 | `0312e734-153e-42a8-87dc-692dd1f91e28` | **−7.96** | 6.54 | 1542 | lifecycle_exempt |
+| `meanrev.vwap_reversion.intraday.spy.v1` | 2026-05-29 | `f0eb3b25-d18f-4b0a-8b3c-37582de5560a` | **−1.89** | 2.69 | 484 | lifecycle_exempt |
+| `momentum.vwap_trend.intraday.spy.v1` | 2026-05-29 | `c34868c5-0f68-4baa-9d4c-ac4161f43419` | **−1.79** | 1.49 | 274 | lifecycle_exempt |
 
 ### What to watch during paper validation
 
@@ -160,18 +169,23 @@ Per-window Sharpe instability is a real concern here. The four windows produced:
 
 ## Intraday harness-validation canaries
 
-On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exempt` (promotions ids 24, 25, `approved_by=operator-zack`) as **deliberate harness-validation canaries** — the first intraday strategies to run on the live paper runner:
+On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exempt` (promotions ids 24, 25, `approved_by=operator-zack`) as **deliberate harness-validation canaries** — the first intraday strategies to run on the live paper runner. On **2026-05-29** three more were added via `lifecycle_exempt` for a concurrent-fleet soak test, bringing the canary set to five:
 
-| strategy_id | promo id | OOS Sharpe | trades | role |
+| strategy_id | promoted | OOS Sharpe | trades | role |
 |---|---|---|---|---|
-| `breakout.orb.intraday.spy.v1` | 25 | −1.06 | 856 | Intraday signal candidate, run as a canary to exercise the intraday runner. |
-| `benchmark.unconditional_intraday_long.spy.v1` | 24 | −1.69 | 1769 | Unconditional-long comparison floor, paired with ORB. |
+| `breakout.orb.intraday.spy.v1` | 2026-05-28 | −1.06 | 856 | Intraday signal candidate, run as a canary to exercise the intraday runner. |
+| `benchmark.unconditional_intraday_long.spy.v1` | 2026-05-28 | −1.69 | 1769 | Unconditional-long comparison floor, paired with ORB. |
+| `meanrev.rsi2.intraday.spy.v1` | 2026-05-29 | −7.96 | 1542 | RSI(2) intraday mean-reversion null; high trade count — friction-dominated. Added for fleet soak test. |
+| `meanrev.vwap_reversion.intraday.spy.v1` | 2026-05-29 | −1.89 | 484 | VWAP-reversion intraday null. Added for fleet soak test. |
+| `momentum.vwap_trend.intraday.spy.v1` | 2026-05-29 | −1.79 | 274 | VWAP-trend intraday null. Added for fleet soak test. |
 
 **Why they are at paper (on purpose):**
-- The intraday backtest engine and now the intraday *paper runner* are new infrastructure. These two strategies validate the runner end-to-end — cadence, fills, and evaluation *during* market hours (intraday strategies, unlike daily ones, evaluate while the market is open). Both are knowingly-losing; the point is mechanics, not return.
+- The intraday backtest engine and the intraday *paper runner* are new infrastructure. These strategies validate the runner end-to-end — cadence, fills, evaluation *during* market hours (intraday strategies, unlike daily ones, evaluate while the market is open), and **concurrent-fleet behavior** under simultaneous launch. All are knowingly-losing; the point is mechanics, not return.
 - `lifecycle_exempt` is the documented operator-override path (CLAUDE.md: `--lifecycle-exempt` bypasses the statistical gate for *any* promotion). It was used intentionally to place these negative-Sharpe canaries at paper. This is the override working as designed, not a misapplication.
 
-**Disposition:** Both are **kept at paper intentionally** while the intraday harness is being exercised. The promotion notes record an eventual demotion target of `backtest` (ORB's note adds: unless an unexpected positive paper Sharpe warrants further investigation) once intraday-runner confidence is sufficient — a future operator call, not a pending action. As of 2026-05-28 each canary has completed one paper session (launched 13:01 UTC, cleanly stopped). They remain at paper.
+**2026-05-29 fleet soak test outcome:** Launching all 11 paper strategies (6 daily + 5 intraday canaries) concurrently exposed a latent OOM bug — startup reconciliation's `incident_already_logged()` loaded the entire ~1M-row `explanations` table per runner, spiking memory and killing two runners with `MemoryError` (it also froze the workstation). Root cause fixed (targeted single-row query); see `docs/incidents/2026-05-29-runner-fleet-oom-freeze.md`. Steady-state per-runner footprint is light (~30–165 MB); the cold-start transient is the constraint, and the harness has no launch throttle (tracked follow-up).
+
+**Disposition:** All five are **kept at paper intentionally** while the intraday harness is being exercised. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — a future operator call, not a pending action.
 
 **Note for analytics:** a running knowingly-losing strategy produces losing paper fills. When per-strategy P&L attribution is built (backlog #6), ensure these canaries are attributed to themselves and excluded from any aggregate "edge" performance read.
 

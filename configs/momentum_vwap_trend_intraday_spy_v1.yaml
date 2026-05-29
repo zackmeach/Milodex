@@ -65,7 +65,7 @@ strategy:
     daily_loss_cap_pct: 0.02
     stop_loss_pct: 0.005
 
-  stage: "backtest"
+  stage: "paper"
 
   backtest:
     commission_per_trade: 0.00
