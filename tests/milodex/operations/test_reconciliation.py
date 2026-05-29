@@ -285,3 +285,249 @@ def test_local_open_orders_terminal_after_as_of_keeps_point_in_time_open():
     # as_of between the two rows: only the submitted row is in-window.
     result = local_open_orders_from_trades(trades, as_of=_ORDER_BASE + timedelta(seconds=100))
     assert "ord-1" in result
+
+
+# ---------------------------------------------------------------------------
+# sync_local_only_orders: record the broker's terminal status for local-only
+# open orders so the next fold closes them. Implements the deferred
+# canceled_since_last_sync / filled_since_last_sync (R-OPS-004). Mirrors
+# resolve_position. See docs/incidents/2026-05-29-runner-fleet-oom-freeze.md.
+# ---------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+from milodex.broker import BrokerError  # noqa: E402
+from milodex.broker.models import (  # noqa: E402
+    AccountInfo,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    TimeInForce,
+)
+from milodex.core.event_store import ReconciliationAdjustmentEvent  # noqa: E402
+from milodex.operations.reconciliation import (  # noqa: E402
+    SyncOrdersError,
+    sync_local_only_orders,
+)
+
+_SYNC_NOW = datetime(2026, 5, 29, 18, 0, tzinfo=UTC)
+
+
+class _OrderSyncBroker:
+    """Connected broker with NO open orders/positions; get_order scripted per id."""
+
+    def __init__(self, order_status=None, raise_ids=()):
+        self._order_status = order_status or {}
+        self._raise_ids = set(raise_ids)
+
+    def get_account(self):
+        return AccountInfo(
+            equity=100_000.0,
+            cash=100_000.0,
+            buying_power=200_000.0,
+            portfolio_value=100_000.0,
+            daily_pnl=0.0,
+        )
+
+    def get_positions(self):
+        return []
+
+    def get_orders(self, status=None, limit=None):
+        return []
+
+    def is_market_open(self):
+        return True
+
+    def get_order(self, order_id):
+        if order_id in self._raise_ids:
+            raise BrokerError(f"order {order_id} not found")
+        status = self._order_status.get(order_id, OrderStatus.CANCELLED)
+        return Order(
+            id=order_id,
+            symbol="SPY",
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=10.0,
+            time_in_force=TimeInForce.DAY,
+            status=status,
+            submitted_at=_SYNC_NOW,
+        )
+
+
+def _seed_open_paper_order(store, *, broker_order_id, symbol="SPY", side="sell", quantity=10.0):
+    """Append an explanation + a paper trade left in 'submitted' (locally open)."""
+    recorded_at = datetime(2026, 5, 28, 19, 0, tzinfo=UTC)
+    eid = store.append_explanation(
+        ExplanationEvent(
+            **_incident_kwargs(
+                decision_type="submit",
+                status="submitted",
+                strategy_name="s",
+                strategy_stage="paper",
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                order_type="market",
+                submitted_by="operator",
+            )
+        )
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=eid,
+            recorded_at=recorded_at,
+            status="submitted",
+            source="paper",
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=400.0,
+            estimated_order_value=400.0 * quantity,
+            strategy_name="s",
+            strategy_stage="paper",
+            strategy_config_path="c.yaml",
+            submitted_by="operator",
+            broker_order_id=broker_order_id,
+            broker_status="pending",
+            message=None,
+        )
+    )
+
+
+def _local_open_count(store):
+    res = run_reconciliation(
+        event_store=store, broker=_OrderSyncBroker(), persist=False, now=_SYNC_NOW
+    )
+    return sum(1 for r in res.order_rows if r.kind == "local_only")
+
+
+def test_sync_records_cancelled_for_order_broker_no_longer_has(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1")
+    assert _local_open_count(store) == 1
+    broker = _OrderSyncBroker(order_status={"ord-1": OrderStatus.CANCELLED})
+    result = sync_local_only_orders(
+        event_store=store, broker=broker, reason="close stale", now=_SYNC_NOW
+    )
+    assert len(result.synced) == 1
+    assert result.synced[0].recorded_status == "cancelled"
+    assert _local_open_count(store) == 0
+
+
+def test_sync_records_filled_updates_position(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1", side="buy", quantity=5.0)
+    broker = _OrderSyncBroker(order_status={"ord-1": OrderStatus.FILLED})
+    result = sync_local_only_orders(
+        event_store=store, broker=broker, reason="sync fills", now=_SYNC_NOW
+    )
+    assert result.synced[0].recorded_status == "filled"
+    assert result.synced[0].position_affecting is True
+    res = run_reconciliation(
+        event_store=store, broker=_OrderSyncBroker(), persist=False, now=_SYNC_NOW
+    )
+    assert any(r.symbol == "SPY" and r.local_qty == 5.0 for r in res.position_rows)
+
+
+def test_sync_not_found_records_cancelled(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1")
+    broker = _OrderSyncBroker(raise_ids={"ord-1"})
+    result = sync_local_only_orders(
+        event_store=store, broker=broker, reason="purged", now=_SYNC_NOW
+    )
+    assert result.synced[0].recorded_status == "cancelled"
+    assert result.synced[0].broker_status == "not_found"
+    assert _local_open_count(store) == 0
+
+
+def test_sync_skips_partially_filled_and_pending(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-pf")
+    _seed_open_paper_order(store, broker_order_id="ord-pend")
+    broker = _OrderSyncBroker(
+        order_status={"ord-pf": OrderStatus.PARTIALLY_FILLED, "ord-pend": OrderStatus.PENDING}
+    )
+    result = sync_local_only_orders(event_store=store, broker=broker, reason="r", now=_SYNC_NOW)
+    assert len(result.synced) == 0
+    assert len(result.skipped) == 2
+    assert _local_open_count(store) == 2
+
+
+def test_sync_is_idempotent(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1")
+    broker = _OrderSyncBroker(order_status={"ord-1": OrderStatus.CANCELLED})
+    sync_local_only_orders(event_store=store, broker=broker, reason="r", now=_SYNC_NOW)
+    again = sync_local_only_orders(event_store=store, broker=broker, reason="r", now=_SYNC_NOW)
+    assert len(again.synced) == 0
+
+
+def test_sync_blocks_filled_when_offsetting_adjustment_exists(tmp_path):
+    """A live offsetting adjustment + recording a fill would create a fresh
+    qty_mismatch. The fill must be blocked, NOT recorded, and post-sync
+    reconcile must stay clean."""
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1", side="buy", quantity=10.0)
+    store.append_reconciliation_adjustment(
+        ReconciliationAdjustmentEvent(
+            adjustment_id="adj-1",
+            recorded_at=_SYNC_NOW,
+            effective_at=_SYNC_NOW,
+            approved_by="operator",
+            symbol="SPY",
+            local_qty_before=10.0,
+            broker_qty=0.0,
+            delta_qty=-10.0,
+            reason="prior offset",
+            source_incident_hash="h",
+            context={},
+        )
+    )
+    broker = _OrderSyncBroker(order_status={"ord-1": OrderStatus.FILLED})
+    result = sync_local_only_orders(event_store=store, broker=broker, reason="r", now=_SYNC_NOW)
+    assert all(s.recorded_status != "filled" for s in result.synced)
+    assert result.adjustment_warnings
+    res = run_reconciliation(
+        event_store=store, broker=_OrderSyncBroker(), persist=False, now=_SYNC_NOW
+    )
+    assert not any(r.symbol == "SPY" and r.kind == "qty_mismatch" for r in res.position_rows)
+
+
+def test_sync_requires_reason(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1")
+    with pytest.raises(SyncOrdersError):
+        sync_local_only_orders(
+            event_store=store, broker=_OrderSyncBroker(), reason="  ", now=_SYNC_NOW
+        )
+
+
+def test_sync_raises_when_broker_disconnected(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1")
+
+    class _DownBroker(_OrderSyncBroker):
+        def get_account(self):
+            raise BrokerError("down")
+
+    with pytest.raises(SyncOrdersError):
+        sync_local_only_orders(event_store=store, broker=_DownBroker(), reason="r", now=_SYNC_NOW)
+
+
+def test_sync_single_order_by_id(tmp_path):
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-1")
+    _seed_open_paper_order(store, broker_order_id="ord-2")
+    broker = _OrderSyncBroker(
+        order_status={"ord-1": OrderStatus.CANCELLED, "ord-2": OrderStatus.CANCELLED}
+    )
+    result = sync_local_only_orders(
+        event_store=store, broker=broker, reason="r", broker_order_id="ord-1", now=_SYNC_NOW
+    )
+    assert len(result.synced) == 1
+    assert result.synced[0].broker_order_id == "ord-1"
+    assert _local_open_count(store) == 1

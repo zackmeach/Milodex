@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
@@ -12,10 +13,12 @@ from milodex.cli.rich_views import build_reconcile_view
 from milodex.core.advisory_lock import AdvisoryLock
 from milodex.operations.reconciliation import (
     ResolvePositionError,
+    SyncOrdersError,
     build_warnings,
     human_lines,
     resolve_position,
     run_reconciliation,
+    sync_local_only_orders,
 )
 
 
@@ -34,10 +37,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "reconcile_action",
         nargs="?",
-        choices=("resolve-position",),
+        choices=("resolve-position", "sync-orders"),
         help="Optional audited correction action.",
     )
     parser.add_argument("symbol", nargs="?", help="Symbol for resolve-position.")
+    parser.add_argument(
+        "--broker-order-id",
+        dest="reconcile_broker_order_id",
+        help="Optional single order id for sync-orders (default: all local-only orders).",
+    )
     parser.add_argument(
         "--reason",
         dest="reconcile_reason",
@@ -69,8 +77,11 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         locks_dir=ctx.locks_dir,
         holder_name="milodex reconcile",
     ):
-        if getattr(args, "reconcile_action", None) == "resolve-position":
+        action = getattr(args, "reconcile_action", None)
+        if action == "resolve-position":
             return _run_resolve_position(event_store, broker, args, as_of=as_of)
+        if action == "sync-orders":
+            return _run_sync_orders(event_store, broker, args, as_of=as_of)
         return _run_reconcile(event_store, broker, as_of=as_of)
 
 
@@ -150,6 +161,50 @@ def _run_resolve_position(
         ),
     ]
     return CommandResult(command="reconcile.resolve-position", data=data, human_lines=human)
+
+
+def _run_sync_orders(
+    event_store,
+    broker,
+    args: argparse.Namespace,
+    *,
+    as_of: datetime,
+) -> CommandResult:
+    try:
+        result = sync_local_only_orders(
+            event_store=event_store,
+            broker=broker,
+            reason=getattr(args, "reconcile_reason", None) or "",
+            approved_by=getattr(args, "reconcile_approved_by", "operator"),
+            broker_order_id=getattr(args, "reconcile_broker_order_id", None),
+            as_of=as_of,
+        )
+    except SyncOrdersError as exc:
+        raise ValueError(str(exc)) from exc
+
+    filled = sum(1 for s in result.synced if s.recorded_status == "filled")
+    cancelled = sum(1 for s in result.synced if s.recorded_status == "cancelled")
+    rejected = sum(1 for s in result.synced if s.recorded_status == "rejected")
+    data: dict[str, Any] = {
+        "explanation_id": result.explanation_id,
+        "synced": [asdict(s) for s in result.synced],
+        "skipped": [asdict(s) for s in result.skipped],
+        "adjustment_warnings": result.adjustment_warnings,
+    }
+    human = [
+        (
+            f"Synced {len(result.synced)} order(s): {filled} filled, {cancelled} cancelled, "
+            f"{rejected} rejected; {len(result.skipped)} skipped."
+        ),
+        *result.adjustment_warnings,
+        "Run `milodex reconcile` again to persist the clean verdict and clear the readiness veto.",
+    ]
+    return CommandResult(
+        command="reconcile.sync-orders",
+        data=data,
+        human_lines=human,
+        warnings=result.adjustment_warnings,
+    )
 
 
 def _parse_as_of(raw: str | None) -> datetime:

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from io import StringIO
 from pathlib import Path
 
-from milodex.broker.exceptions import BrokerAuthError
+from milodex.broker.exceptions import BrokerAuthError, BrokerError
 from milodex.broker.models import (
     AccountInfo,
     Order,
@@ -520,3 +520,109 @@ def test_reconcile_invalid_as_of_returns_structured_error(tmp_path: Path) -> Non
     payload = json.loads(err.getvalue())
     assert payload["status"] == "error"
     assert "Invalid --as-of" in payload["errors"][0]["message"]
+
+
+# ---------------------------------------------------------------------------
+# reconcile sync-orders (broker order terminal-status sync)
+# ---------------------------------------------------------------------------
+
+
+class _SyncStubBroker(_StubBroker):
+    """_StubBroker + scripted get_order (terminal status per id, or raises)."""
+
+    def __init__(self, *, order_status=None, raise_ids=(), **kwargs):
+        super().__init__(**kwargs)
+        self._order_status = order_status or {}
+        self._raise_ids = set(raise_ids)
+
+    def get_order(self, order_id: str) -> Order:
+        if self._error:
+            raise self._error
+        if order_id in self._raise_ids:
+            raise BrokerError(f"order {order_id} not found")
+        return _broker_order(
+            order_id,
+            status=self._order_status.get(order_id, OrderStatus.CANCELLED),
+        )
+
+
+def test_sync_orders_cli_closes_local_only_and_clears_veto(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _append_local_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=13.0,
+        status="submitted",
+        broker_order_id="ord-x",
+        when=datetime.now(tz=UTC),
+    )
+    broker = _SyncStubBroker(orders=[], order_status={"ord-x": OrderStatus.CANCELLED})
+
+    code, out, _ = _run(["reconcile", "--json"], tmp_path, broker=broker)
+    assert code == 0
+    assert json.loads(out.getvalue())["data"]["reconciliation_clean"] is False
+
+    code, out, _ = _run(
+        ["reconcile", "sync-orders", "--reason", "close stale", "--json"], tmp_path, broker=broker
+    )
+    assert code == 0
+    assert len(json.loads(out.getvalue())["data"]["synced"]) == 1
+
+    code, out, _ = _run(["reconcile", "--json"], tmp_path, broker=broker)
+    assert json.loads(out.getvalue())["data"]["reconciliation_clean"] is True
+
+
+def test_sync_orders_cli_requires_reason(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _append_local_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=1.0,
+        status="submitted",
+        broker_order_id="ord-x",
+        when=datetime.now(tz=UTC),
+    )
+    code, _, err = _run(["reconcile", "sync-orders", "--json"], tmp_path, broker=_SyncStubBroker())
+    assert code == 1
+    assert json.loads(err.getvalue())["status"] == "error"
+
+
+def test_sync_orders_json_contract(tmp_path: Path) -> None:
+    store = EventStore(tmp_path / "milodex.db")
+    _append_local_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=1.0,
+        status="submitted",
+        broker_order_id="ord-x",
+        when=datetime.now(tz=UTC),
+    )
+    broker = _SyncStubBroker(orders=[], order_status={"ord-x": OrderStatus.CANCELLED})
+    code, out, _ = _run(
+        ["reconcile", "sync-orders", "--reason", "r", "--json"], tmp_path, broker=broker
+    )
+    assert code == 0
+    payload = json.loads(out.getvalue())
+    assert payload["schema_version"] == JSON_SCHEMA_VERSION
+    assert payload["command"] == "reconcile.sync-orders"
+    for key in ("synced", "skipped", "adjustment_warnings"):
+        assert key in payload["data"]
+
+
+def test_sync_orders_refuses_under_advisory_lock(tmp_path: Path) -> None:
+    locks_dir = tmp_path / "locks"
+    holder = AdvisoryLock("milodex.runtime", locks_dir=locks_dir, holder_name="other_process")
+    holder.acquire()
+    try:
+        code, _, err = _run(
+            ["reconcile", "sync-orders", "--reason", "r", "--json"],
+            tmp_path,
+            broker=_SyncStubBroker(),
+        )
+        assert code == 1
+        assert json.loads(err.getvalue())["errors"][0]["code"] == "advisory_lock_held"
+    finally:
+        holder.release()

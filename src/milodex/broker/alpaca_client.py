@@ -26,6 +26,7 @@ from milodex.broker.client import BrokerClient
 from milodex.broker.exceptions import (
     BrokerAuthError,
     BrokerConnectionError,
+    BrokerError,
     InsufficientFundsError,
     OrderRejectedError,
 )
@@ -200,8 +201,16 @@ class AlpacaBrokerClient(BrokerClient):
             raise
 
     def get_order(self, order_id: str) -> Order:
-        """Get order status from Alpaca."""
-        alpaca_order = call_with_retry_on_429(lambda: self._client.get_order_by_id(order_id))
+        """Get order status from Alpaca.
+
+        Translates Alpaca ``APIError`` (e.g. a purged/unknown order id) into a
+        broker-agnostic ``BrokerError`` so callers (e.g. reconciliation order
+        sync) never see vendor exceptions — the broker boundary contract.
+        """
+        try:
+            alpaca_order = call_with_retry_on_429(lambda: self._client.get_order_by_id(order_id))
+        except APIError as exc:
+            raise BrokerError(f"get_order({order_id}) failed: {exc}") from exc
         return self._translate_order(alpaca_order)
 
     def cancel_order(self, order_id: str) -> bool:
