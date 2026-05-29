@@ -588,11 +588,13 @@ def incident_content_hash(
 
 
 def incident_already_logged(event_store: EventStore, content_hash: str) -> bool:
-    explanations = event_store.list_explanations()
-    for exp in reversed(explanations):
-        if exp.decision_type == "reconcile_incident":
-            return exp.config_hash == content_hash
-    return False
+    # Compare against the most recent reconcile_incident only (matching the prior
+    # reversed-scan semantics). A targeted single-row query is used instead of
+    # loading every explanation: the full-table load OOM-froze the workstation
+    # when the runner fleet launched concurrently
+    # (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
+    latest_hash = event_store.latest_reconcile_incident_hash()
+    return latest_hash is not None and latest_hash == content_hash
 
 
 def incident_summary(

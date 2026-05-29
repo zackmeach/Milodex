@@ -611,6 +611,29 @@ class EventStore:
             rows = connection.execute("SELECT * FROM explanations ORDER BY id ASC").fetchall()
         return [_explanation_from_row(row) for row in rows]
 
+    def latest_reconcile_incident_hash(self) -> str | None:
+        """Return the ``config_hash`` of the most recently recorded
+        ``reconcile_incident`` explanation, or ``None`` if none exists.
+
+        Used by the startup-reconciliation idempotency check, which every runner
+        runs on launch. Reads a single row (``ORDER BY id DESC LIMIT 1``) so memory
+        stays flat regardless of how large the ``explanations`` table grows — unlike
+        :meth:`list_explanations`, whose unbounded full-table load OOM-froze the
+        workstation when the fleet launched concurrently (see
+        ``docs/incidents/2026-05-29-runner-fleet-oom-freeze.md``).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT config_hash
+                FROM explanations
+                WHERE decision_type = 'reconcile_incident'
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        return None if row is None else row["config_hash"]
+
     def list_trades(self) -> list[TradeEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()
