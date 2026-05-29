@@ -720,8 +720,7 @@ def human_lines(result: ReconciliationResult) -> list[str]:
     lines.append("")
     order_mismatch_count = sum(1 for r in result.order_rows if r.kind != "ok")
     lines.append(
-        f"Open orders ({order_mismatch_count} mismatch(es) of "
-        f"{len(result.order_rows)} order(s))"
+        f"Open orders ({order_mismatch_count} mismatch(es) of {len(result.order_rows)} order(s))"
     )
     if not result.order_rows:
         lines.append("  (none)")
@@ -729,8 +728,7 @@ def human_lines(result: ReconciliationResult) -> list[str]:
         for row in result.order_rows:
             marker = "ok" if row.kind == "ok" else ("**" if row.incident else "~ ")
             lines.append(
-                f"  {marker}  {row.broker_order_id}  symbol: {row.symbol or '-'}   "
-                f"kind: {row.kind}"
+                f"  {marker}  {row.broker_order_id}  symbol: {row.symbol or '-'}   kind: {row.kind}"
             )
     lines.append("")
     lines.append("Deferred checks (R-OPS-004 v1.1): " + ", ".join(DEFERRED_CHECKS))
@@ -738,8 +736,7 @@ def human_lines(result: ReconciliationResult) -> list[str]:
     if result.incident_reason_codes:
         if result.incident_recorded:
             lines.append(
-                f"Result: DRIFT DETECTED - incident recorded "
-                f"(hash {result.incident_hash[:12]})."
+                f"Result: DRIFT DETECTED - incident recorded (hash {result.incident_hash[:12]})."
             )
         elif result.incident_deduplicated:
             lines.append(

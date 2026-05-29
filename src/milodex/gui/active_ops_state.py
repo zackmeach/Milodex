@@ -1,4 +1,4 @@
-﻿"""Live active-operations model exposed to QML.
+"""Live active-operations model exposed to QML.
 
 Owns runner state for each strategy: session status, cadence label, last
 evaluation time, heartbeat health, advisory-lock hold status, controlled-stop
@@ -28,6 +28,7 @@ Cadence seconds: ``60`` -- runner poll interval for 1D bars per
                  Limitation: this is the poll period, not the bar period (86400s).
                  Heartbeat reflects check-in within 90s, not bar arrival.
 """
+
 from __future__ import annotations
 
 import logging
@@ -200,9 +201,7 @@ def _query_active_ops(
             try:
                 stop_requested = sentinel_path.exists()
             except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "ActiveOpsState: sentinel check failed for %s: %s", strategy_id, exc
-                )
+                logger.warning("ActiveOpsState: sentinel check failed for %s: %s", strategy_id, exc)
 
         result.append(
             {
@@ -244,10 +243,7 @@ def _load_config(strategy_id: str, configs_dir: Path | None) -> dict[str, Any] |
             try:
                 with yaml_path.open(encoding="utf-8") as fh:
                     data = yaml.safe_load(fh)
-                if (
-                    isinstance(data, dict)
-                    and data.get("strategy", {}).get("id") == strategy_id
-                ):
+                if isinstance(data, dict) and data.get("strategy", {}).get("id") == strategy_id:
                     return data
             except Exception:  # noqa: BLE001
                 continue

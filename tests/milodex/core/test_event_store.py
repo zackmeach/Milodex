@@ -81,15 +81,9 @@ def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
 
     assert store.schema_version == 12
     with sqlite3.connect(db_path) as con:
-        batch_columns = {
-            row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")
-        }
-        job_columns = {
-            row[1] for row in con.execute("PRAGMA table_info(orchestration_jobs)")
-        }
-        index_names = {
-            row[1] for row in con.execute("PRAGMA index_list(orchestration_jobs)")
-        } | {
+        batch_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")}
+        job_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_jobs)")}
+        index_names = {row[1] for row in con.execute("PRAGMA index_list(orchestration_jobs)")} | {
             row[1] for row in con.execute("PRAGMA index_list(orchestration_batches)")
         }
 

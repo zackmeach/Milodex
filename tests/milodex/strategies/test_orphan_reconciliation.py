@@ -219,14 +219,12 @@ def test_mixed_cohort_post_host_reset(tmp_path: Path) -> None:
 
         # Their lock files are gone.
         for sid in [*dead_ids, *recycled_ids]:
-            assert not (
-                locks_dir / f"{runner_lock_name(sid)}.lock"
-            ).exists(), f"stale lock for {sid} should be unlinked"
+            assert not (locks_dir / f"{runner_lock_name(sid)}.lock").exists(), (
+                f"stale lock for {sid} should be unlinked"
+            )
 
         # The live strategy's row is untouched and its lock is still on disk.
-        live_run = next(
-            r for r in store.list_strategy_runs() if r.strategy_id == live_id
-        )
+        live_run = next(r for r in store.list_strategy_runs() if r.strategy_id == live_id)
         assert live_run.ended_at is None
         assert (locks_dir / f"{runner_lock_name(live_id)}.lock").exists()
 

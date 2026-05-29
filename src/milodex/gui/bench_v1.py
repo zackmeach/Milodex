@@ -227,9 +227,7 @@ LABEL_OPEN_EVIDENCE = "Open Evidence"
 # Stages at which a strategy YAML can be frozen into the event store as a
 # StrategyManifestEvent. Mirrors ``milodex.promotion.FROZEN_STAGES``;
 # backtest has nothing to snapshot yet. Phase D1 wires the freeze action.
-_FREEZE_MANIFEST_STAGES: frozenset[Stage] = frozenset(
-    {Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE}
-)
+_FREEZE_MANIFEST_STAGES: frozenset[Stage] = frozenset({Stage.PAPER, Stage.MICRO_LIVE, Stage.LIVE})
 
 
 # ---------------------------------------------------------------------------
@@ -243,17 +241,13 @@ _FREEZE_MANIFEST_STAGES: frozenset[Stage] = frozenset(
 # ADR 0004 paper-only lock: forward promotion into capital stages is
 # hidden from the menu in v1. The pure rule (`can_promote_to_next`)
 # may still return True; the composer applies this filter.
-ADR_0004_HIDDEN_PROMOTION_TARGETS: frozenset[Stage] = frozenset(
-    {Stage.MICRO_LIVE, Stage.LIVE}
-)
+ADR_0004_HIDDEN_PROMOTION_TARGETS: frozenset[Stage] = frozenset({Stage.MICRO_LIVE, Stage.LIVE})
 
 # ADR 0043 Decision 3 + ADR 0004: capital-affecting demotions remain
 # locked rather than merely confirmed while ADR 0004 is in force. The
 # pure rule (`can_demote`) returns True at PAPER+; the composer hides
 # the verb when ``current_stage`` is in this set.
-ADR_0043_LIVE_LOCKED_DEMOTIONS_FROM: frozenset[Stage] = frozenset(
-    {Stage.MICRO_LIVE, Stage.LIVE}
-)
+ADR_0043_LIVE_LOCKED_DEMOTIONS_FROM: frozenset[Stage] = frozenset({Stage.MICRO_LIVE, Stage.LIVE})
 
 
 # ---------------------------------------------------------------------------
@@ -279,10 +273,7 @@ def can_promote_to_next(state: BenchStrategyState) -> bool:
     ev = state.evidence_by_stage.get(state.current_stage)
     if ev is None:
         return False
-    return (
-        ev.freshness in {Freshness.FRESH, Freshness.AGING}
-        and ev.gate_result == GateResult.PASS
-    )
+    return ev.freshness in {Freshness.FRESH, Freshness.AGING} and ev.gate_result == GateResult.PASS
 
 
 def can_return_to(state: BenchStrategyState, target_stage: Stage) -> bool:

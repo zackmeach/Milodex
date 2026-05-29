@@ -230,9 +230,9 @@ def _append_reconciliation_run(
             run_id=f"test-reconcile-{recorded_at.timestamp()}",
             recorded_at=recorded_at,
             as_of=recorded_at,
-            local_trading_day=recorded_at.astimezone(
-                ZoneInfo("America/New_York")
-            ).date().isoformat(),
+            local_trading_day=recorded_at.astimezone(ZoneInfo("America/New_York"))
+            .date()
+            .isoformat(),
             status=status,
             broker_connected=broker_connected,
             market_open=True,

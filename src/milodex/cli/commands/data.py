@@ -244,9 +244,7 @@ def _build_fetch_universe_result(
             first = warning["first_bar_date"] or "none"
             last = warning["last_bar_date"] or "none"
             lines.append(
-                "    "
-                f"{warning['symbol']}: {warning['issue']} "
-                f"(first={first}, last={last})"
+                f"    {warning['symbol']}: {warning['issue']} (first={first}, last={last})"
             )
         if len(date_range_warnings) > warning_cap:
             lines.append("    ...")
@@ -333,8 +331,10 @@ def _run_warmup_tape(args: argparse.Namespace) -> CommandResult:
             command="data.warmup-tape",
             status="error",
             human_lines=lines,
-            errors=[{
-                "code": "vix_fetch_failed",
-                "message": "Yahoo Finance fetch returned no data",
-            }],
+            errors=[
+                {
+                    "code": "vix_fetch_failed",
+                    "message": "Yahoo Finance fetch returned no data",
+                }
+            ],
         )

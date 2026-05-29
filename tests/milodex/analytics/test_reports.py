@@ -281,9 +281,7 @@ def test_assemble_trust_report_surfaces_backtest_equity_snapshots(tmp_path: Path
         )
     )
 
-    report = assemble_trust_report(
-        metrics=metrics, event_store=store, include_benchmark=False
-    )
+    report = assemble_trust_report(metrics=metrics, event_store=store, include_benchmark=False)
 
     assert report.snapshot_summary.snapshot_count == 2
     assert report.snapshot_summary.first_equity == 1_000.0

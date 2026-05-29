@@ -91,9 +91,7 @@ def warmup_vix_cache(
     df = fetch_vix_history(start=start, end=today)
 
     if df.empty:
-        _logger.warning(
-            "warmup_vix_cache: Yahoo returned no VIX data — cache not updated"
-        )
+        _logger.warning("warmup_vix_cache: Yahoo returned no VIX data — cache not updated")
         return False
 
     try:

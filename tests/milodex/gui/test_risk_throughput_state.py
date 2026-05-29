@@ -345,9 +345,7 @@ def test_backtest_rows_excluded_from_all_stages(tmp_path) -> None:
     # --- rows that MUST be excluded ---
 
     # 1. paper stage but decision_type=backtest_fill → excluded by EXPLANATION_PAPER_SQL
-    _seed_explanation(
-        db, ts, decision_type="backtest_fill", status="submitted", risk_allowed=1
-    )
+    _seed_explanation(db, ts, decision_type="backtest_fill", status="submitted", risk_allowed=1)
 
     # 2. strategy_stage='backtest' → excluded by EXPLANATION_PAPER_SQL stage filter
     backtest_stage_eid = _seed_explanation(
@@ -455,9 +453,7 @@ def test_week_window_excludes_ten_days_ago(tmp_path) -> None:
     db = tmp_path / "rt.db"
     _create_fixture_db(db)
 
-    _seed_explanation(
-        db, _TEN_DAYS_AGO, decision_type="submit", status="submitted", risk_allowed=1
-    )
+    _seed_explanation(db, _TEN_DAYS_AGO, decision_type="submit", status="submitted", risk_allowed=1)
     _seed_explanation(
         db, _THREE_DAYS_AGO, decision_type="submit", status="submitted", risk_allowed=1
     )

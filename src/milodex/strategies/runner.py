@@ -243,11 +243,7 @@ class StrategyRunner:
         if already_seen:
             return []
 
-        if (
-            is_daily_bar
-            and not market_open
-            and not self._is_current_session_bar(latest_bar)
-        ):
+        if is_daily_bar and not market_open and not self._is_current_session_bar(latest_bar):
             # Pre-open / weekend launch: the latest available daily bar is a
             # PRIOR session's close (date < today). Locking it in would poison
             # the watermark and suppress today's real post-close evaluation.

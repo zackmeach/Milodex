@@ -84,8 +84,9 @@ def _find_promotable_row_and_action(bench_state):
         for row in section.get("strategies", []) or []:
             fallback_row = fallback_row or row
             for action in row.get("actions", []) or []:
-                if action.get("verbClass") == "directional" and \
-                   "Promote" in (action.get("label") or ""):
+                if action.get("verbClass") == "directional" and "Promote" in (
+                    action.get("label") or ""
+                ):
                     return row, action
                 if action.get("verbClass") == "directional" and fallback_directional is None:
                     fallback_directional = (row, action)
@@ -160,8 +161,10 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     stack: list[QObject] = list(root.findChildren(QObject))
     for child in stack:
         try:
-            if child.property("evidenceModalOpen") is not None and \
-               child.property("confirmationPreviewOpen") is not None:
+            if (
+                child.property("evidenceModalOpen") is not None
+                and child.property("confirmationPreviewOpen") is not None
+            ):
                 bench = child
                 break
         except Exception:

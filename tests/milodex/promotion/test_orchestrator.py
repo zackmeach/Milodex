@@ -205,8 +205,7 @@ def test_paper_tier_pass_below_capital_sharpe_is_allowed(tmp_path):
     result = prepare_and_record_promotion(_statistical_request(cfg_path), store)
 
     assert isinstance(result, PromoteSuccess), (
-        "paper-tier pass (Sharpe>0.0) should NOT be blocked by capital-tier "
-        "threshold (Sharpe>0.5)."
+        "paper-tier pass (Sharpe>0.0) should NOT be blocked by capital-tier threshold (Sharpe>0.5)."
     )
     assert result.promotion_type == "statistical"
 

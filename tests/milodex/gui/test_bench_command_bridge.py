@@ -433,9 +433,7 @@ def test_submit_demote_blocked_proposal_skips_refresh(
     )
     cfg = config_dir / "strategy.yaml"
     cfg.write_text(
-        cfg.read_text(encoding="utf-8").replace(
-            'stage: "paper"', 'stage: "backtest"'
-        ),
+        cfg.read_text(encoding="utf-8").replace('stage: "paper"', 'stage: "backtest"'),
         encoding="utf-8",
     )
 
@@ -453,10 +451,7 @@ def test_submit_demote_blocked_proposal_skips_refresh(
 
 def test_bridge_exposes_submit_capable_action_family_slots() -> None:
     """The bridge exposes only the action families wired through the facade."""
-    members = {
-        name
-        for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)
-    }
+    members = {name for name, _ in inspect.getmembers(BenchCommandBridge, predicate=callable)}
     # Submit-capable slots present.
     assert "proposeDemote" in members
     assert "submitDemote" in members
@@ -876,9 +871,7 @@ def test_propose_promote_to_paper_returns_dict_and_caches_proposal(
     )
 
     assert payload["action_family"] == ACTION_FAMILY_PROMOTE_TO_PAPER
-    assert payload["inputs"]["recommendation"] == (
-        "Backtest evidence is strong enough for paper."
-    )
+    assert payload["inputs"]["recommendation"] == ("Backtest evidence is strong enough for paper.")
     assert payload["inputs"]["known_risks"] == ["Regime shifts may degrade the signal."]
     assert payload["inputs"]["run_id"] == "bt-gui-promote"
     assert payload["inputs"]["approved_by"] == bridge_module._resolve_operator_identity()
@@ -940,9 +933,7 @@ def test_propose_promote_to_paper_surfaces_missing_inputs(
     payload = bridge.proposePromoteToPaper({"strategy_id": STRATEGY_ID})
 
     codes = {blocker["reason_code"] for blocker in payload["blockers"]}
-    assert {"missing_recommendation", "missing_known_risks", "missing_run_id"}.issubset(
-        codes
-    )
+    assert {"missing_recommendation", "missing_known_risks", "missing_run_id"}.issubset(codes)
 
 
 def test_submit_promote_to_paper_unknown_or_consumed_id_returns_structured_error(
@@ -1016,8 +1007,7 @@ def test_bridge_module_does_not_import_broker_or_runner() -> None:
             if not stripped or stripped.startswith("#"):
                 continue
             assert not stripped.startswith(forbidden), (
-                f"bench_command_bridge.py must not import {forbidden!r} "
-                "(ADR 0051 §4)."
+                f"bench_command_bridge.py must not import {forbidden!r} (ADR 0051 §4)."
             )
 
 
@@ -1308,9 +1298,7 @@ def test_submit_freeze_manifest_blocked_proposal_skips_refresh(
 
     proposal = bridge.proposeFreezeManifest({"strategy_id": STRATEGY_ID})
     config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace(
-            'stage: "paper"', 'stage: "backtest"'
-        ),
+        config_path.read_text(encoding="utf-8").replace('stage: "paper"', 'stage: "backtest"'),
         encoding="utf-8",
     )
     result = bridge.submitFreezeManifest(proposal["proposal_id"])

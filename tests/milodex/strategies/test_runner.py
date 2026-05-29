@@ -1486,9 +1486,9 @@ def test_runner_suppresses_duplicate_same_bar_intents(
     runner._processed_intent_bar_at = stale_ts
     runner._processed_intent_keys = {(stale_ts, "OLD", "buy")}
     runner.run_cycle()
-    assert all(
-        ts != stale_ts for ts, _, _ in runner._processed_intent_keys
-    ), "Dedup set must not retain keys from prior bars."
+    assert all(ts != stale_ts for ts, _, _ in runner._processed_intent_keys), (
+        "Dedup set must not retain keys from prior bars."
+    )
 
 
 # ---------------------------------------------------------------------------

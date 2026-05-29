@@ -77,9 +77,7 @@ def test_default_to_conservative_when_file_absent(tmp_path, monkeypatch, caplog)
     )
 
 
-def test_malformed_profile_falls_back_to_conservative_with_warning(
-    tmp_path, monkeypatch, caplog
-):
+def test_malformed_profile_falls_back_to_conservative_with_warning(tmp_path, monkeypatch, caplog):
     """Unknown profile name → fallback + loud warning."""
     monkeypatch.chdir(tmp_path)
     (tmp_path / "data").mkdir()
@@ -169,11 +167,17 @@ def test_ceiling_violation_refuses_startup(tmp_path, monkeypatch):
 
     bad_merged = {
         "kill_switch": {"max_drawdown_pct": 0.99, "enabled": True, "require_manual_reset": True},
-        "portfolio": {"max_total_exposure_pct": 0.50, "max_single_position_pct": 0.10,
-                      "max_concurrent_positions": 10},
+        "portfolio": {
+            "max_total_exposure_pct": 0.50,
+            "max_single_position_pct": 0.10,
+            "max_concurrent_positions": 10,
+        },
         "daily_limits": {"max_daily_loss_pct": 0.03, "max_trades_per_day": 20},
-        "order_safety": {"max_order_value_pct": 0.15, "duplicate_order_window_seconds": 60,
-                         "max_data_staleness_seconds": 300},
+        "order_safety": {
+            "max_order_value_pct": 0.15,
+            "duplicate_order_window_seconds": 60,
+            "max_data_staleness_seconds": 300,
+        },
     }
     with pytest.raises(CeilingViolationError):
         _validate_against_ceilings(bad_merged)

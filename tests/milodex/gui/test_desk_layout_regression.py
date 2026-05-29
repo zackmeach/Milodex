@@ -232,7 +232,7 @@ print("NO_POLISH_LOOP (" + str(len(_msgs)) + " benign msgs)")
 sys.exit(0)
 '''
 
-_HARNESS_B = r'''
+_HARNESS_B = r"""
 import os, sys, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -377,9 +377,9 @@ if not (h4 > 0 and ph4 > 0):
 
 print("ROWS_NONZERO")
 sys.exit(0)
-'''
+"""
 
-_HARNESS_C = r'''
+_HARNESS_C = r"""
 import os, sys, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -510,7 +510,7 @@ if bad:
 
 print("SECTION_HEADER_PRIMITIVES_OK (" + str(len(headers)) + " headers)")
 sys.exit(0)
-'''
+"""
 
 _HARNESS_D = r'''
 import os, sys
@@ -625,7 +625,7 @@ print("NO_FOREIGN_CHROME (" + str(len(toggles)) + " toggles, "
 sys.exit(0)
 '''
 
-_HARNESS_E = r'''
+_HARNESS_E = r"""
 import os, sys, tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -734,4 +734,4 @@ if view.status() == QQuickView.Error or errs:
     sys.exit(5)
 print("DESK_CLEAN_LOAD")
 sys.exit(0)
-'''
+"""

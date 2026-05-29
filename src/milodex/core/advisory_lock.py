@@ -436,9 +436,7 @@ def _posix_process_start_time(pid: int) -> datetime | None:
         # index 19 in this remaining slice.
         start_ticks = int(fields[19])
         with open("/proc/stat", encoding="utf-8") as f:
-            btime = next(
-                int(line.split()[1]) for line in f if line.startswith("btime ")
-            )
+            btime = next(int(line.split()[1]) for line in f if line.startswith("btime "))
         clk_tck = os.sysconf(os.sysconf_names["SC_CLK_TCK"])
         start_epoch = btime + start_ticks / clk_tck
         return datetime.fromtimestamp(start_epoch, tz=UTC)
