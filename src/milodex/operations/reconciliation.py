@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
@@ -347,6 +347,189 @@ def resolve_position(
     )
 
 
+class SyncOrdersError(ValueError):
+    """Raised when an audited order-status sync cannot be performed."""
+
+
+@dataclass(frozen=True)
+class SyncedOrder:
+    broker_order_id: str
+    symbol: str
+    recorded_status: str
+    broker_status: str
+    position_affecting: bool
+
+
+@dataclass(frozen=True)
+class SyncOrdersResult:
+    explanation_id: int | None
+    synced: list[SyncedOrder]
+    skipped: list[SyncedOrder]
+    adjustment_warnings: list[str]
+
+
+# Broker terminal OrderStatus -> recorded local trades.status. A status absent
+# here (PENDING / PARTIALLY_FILLED) is still live at the broker => skip, do not
+# force-close.
+_BROKER_TERMINAL_TO_LOCAL: dict[OrderStatus, str] = {
+    OrderStatus.FILLED: "filled",  # position-affecting (correctly moves the position)
+    OrderStatus.CANCELLED: "cancelled",
+    OrderStatus.REJECTED: "rejected",
+}
+
+
+def sync_local_only_orders(
+    *,
+    event_store: EventStore,
+    broker: Any,
+    reason: str,
+    approved_by: str = "operator",
+    broker_order_id: str | None = None,
+    as_of: datetime | None = None,
+    now: datetime | None = None,
+) -> SyncOrdersResult:
+    """Record the broker's terminal status for local-only open orders.
+
+    For each paper order that is locally "open" but not open at the broker,
+    query the broker's actual terminal status and append a corrective terminal
+    ``TradeEvent`` so the order fold (``local_open_orders_from_trades``) closes
+    it. Implements the R-OPS-004 deferred ``canceled``/``filled``-since-last-sync
+    dimensions as an explicit, audited operator action.
+
+    This NEVER goes through the risk evaluator — it records observed broker
+    truth, it does not submit a new trade (``append_trade`` sits below
+    ``ExecutionService``). See docs/incidents/2026-05-29-runner-fleet-oom-freeze.md.
+    """
+    if not reason or not reason.strip():
+        raise SyncOrdersError("--reason is required for an audited order-status sync")
+    target = broker_order_id.strip() if broker_order_id else None
+
+    current = run_reconciliation(
+        event_store=event_store, broker=broker, as_of=as_of, persist=False, now=now
+    )
+    if not current.broker.connected:
+        raise SyncOrdersError("broker is unreachable; cannot sync order status")
+
+    candidates = [r for r in current.order_rows if r.kind == "local_only"]
+    if target is not None:
+        candidates = [r for r in candidates if r.broker_order_id == target]
+        if not candidates:
+            raise SyncOrdersError(
+                f"order {target} is not a current local-only order; nothing to sync"
+            )
+
+    def _net_adjustment(symbol: str) -> float:
+        return sum(a.delta_qty for a in event_store.list_reconciliation_adjustments(symbol=symbol))
+
+    recorded_at = _aware(now or datetime.now(tz=UTC))
+    synced: list[SyncedOrder] = []
+    skipped: list[SyncedOrder] = []
+    adjustment_warnings: list[str] = []
+    to_append: list[tuple[OrderRow, str, str]] = []  # (row, recorded_status, broker_status)
+
+    for row in candidates:
+        oid = row.broker_order_id
+        local = row.local or {}
+        symbol = (row.symbol or local.get("symbol") or "").upper()
+        try:
+            order = broker.get_order(oid)
+            broker_status = order.status.value
+            recorded = _BROKER_TERMINAL_TO_LOCAL.get(order.status)
+        except BrokerError:
+            # Broker has no record of the order (purged) => not open. Best-effort
+            # 'cancelled'; if it had actually filled, the post-sync reconcile
+            # re-flags it as a position_broker_only mismatch (the backstop).
+            broker_status = "not_found"
+            recorded = "cancelled"
+
+        if recorded is None:  # PENDING / PARTIALLY_FILLED: still live at broker
+            skipped.append(SyncedOrder(oid, symbol, "skipped", broker_status, False))
+            continue
+
+        position_affecting = recorded in POSITION_AFFECTING_STATUSES
+        if position_affecting and _net_adjustment(symbol) != 0.0:
+            adjustment_warnings.append(
+                f"{symbol} order {oid}: broker reports FILLED, but a live reconciliation "
+                f"adjustment still offsets {symbol}. Recording the fill now would create a "
+                "fresh position mismatch. Retire the adjustment "
+                "(`milodex reconcile resolve-position`) first, then re-run sync-orders. Skipped."
+            )
+            skipped.append(SyncedOrder(oid, symbol, "blocked_adjustment", broker_status, True))
+            continue
+
+        synced.append(SyncedOrder(oid, symbol, recorded, broker_status, position_affecting))
+        to_append.append((row, recorded, broker_status))
+
+    explanation_id: int | None = None
+    if to_append:
+        account = current.broker.account
+        explanation_id = event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=recorded_at,
+                decision_type="reconcile_order_sync",
+                status="sync",
+                strategy_name=None,
+                strategy_stage=None,
+                strategy_config_path=None,
+                config_hash=None,
+                symbol="SYSTEM",
+                side="hold",
+                quantity=0.0,
+                order_type="none",
+                time_in_force="day",
+                submitted_by="reconcile",
+                market_open=current.broker.market_open or False,
+                latest_bar_timestamp=None,
+                latest_bar_close=None,
+                account_equity=0.0 if account is None else account.equity,
+                account_cash=0.0 if account is None else account.cash,
+                account_portfolio_value=0.0 if account is None else account.portfolio_value,
+                account_daily_pnl=0.0 if account is None else account.daily_pnl,
+                risk_allowed=False,
+                risk_summary=f"Order-status sync: {len(synced)} order(s) closed from broker truth.",
+                reason_codes=[],
+                risk_checks=[],
+                context={
+                    "reason": reason.strip(),
+                    "approved_by": approved_by,
+                    "as_of": current.as_of.isoformat(),
+                    "synced": [asdict(s) for s in synced],
+                },
+            )
+        )
+        for row, recorded, broker_status in to_append:
+            local = row.local or {}
+            event_store.append_trade(
+                TradeEvent(
+                    explanation_id=explanation_id,
+                    recorded_at=recorded_at,
+                    status=recorded,
+                    source="paper",
+                    symbol=(row.symbol or local.get("symbol") or "").upper(),
+                    side=str(local.get("side", "buy")),
+                    quantity=float(local.get("quantity", 0.0)),
+                    order_type="market",
+                    time_in_force="day",
+                    estimated_unit_price=0.0,
+                    estimated_order_value=0.0,
+                    strategy_name=None,
+                    strategy_stage="paper",
+                    strategy_config_path=None,
+                    submitted_by="reconcile",
+                    broker_order_id=row.broker_order_id,
+                    broker_status=broker_status,
+                    message=f"order-status sync: {reason.strip()}",
+                )
+            )
+
+    return SyncOrdersResult(
+        explanation_id=explanation_id,
+        synced=synced,
+        skipped=skipped,
+        adjustment_warnings=adjustment_warnings,
+    )
+
+
 def latest_readiness(
     event_store: EventStore,
     *,
@@ -447,16 +630,33 @@ def fold_positions(
     as_of: datetime,
 ) -> dict[str, LocalPosition]:
     running: dict[str, float] = {}
-    for trade in trades:
-        if trade.source != "paper":
-            continue
+    # Latest in-window status per broker_order_id wins (trades are id-ASC) — the
+    # position twin of local_open_orders_from_trades. A later terminal row
+    # reverses an order's optimistic 'submitted' contribution: submitted->filled
+    # counts once, submitted->cancelled counts zero. Without this, the order-sync
+    # (sync_local_only_orders) appending a terminal row would double-count against
+    # the original submitted row. Rows without a broker_order_id (legacy / non-order
+    # rows) are counted individually as before.
+    latest_by_order: dict[str, TradeEvent] = {}
+
+    def _add(trade: TradeEvent) -> None:
         if trade.status not in POSITION_AFFECTING_STATUSES:
-            continue
-        if _aware(trade.recorded_at) > as_of:
-            continue
+            return
         sign = 1.0 if trade.side.lower() == "buy" else -1.0
         symbol = trade.symbol.upper()
         running[symbol] = running.get(symbol, 0.0) + sign * trade.quantity
+
+    for trade in trades:
+        if trade.source != "paper":
+            continue
+        if _aware(trade.recorded_at) > as_of:
+            continue
+        if trade.broker_order_id is None:
+            _add(trade)
+        else:
+            latest_by_order[trade.broker_order_id] = trade
+    for trade in latest_by_order.values():
+        _add(trade)
     for adjustment in adjustments:
         if _aware(adjustment.effective_at) > as_of:
             continue
