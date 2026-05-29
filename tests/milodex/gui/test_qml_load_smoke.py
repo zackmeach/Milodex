@@ -847,6 +847,32 @@ def test_bench_pr_k_modal_wording_contract() -> None:
         "BenchConfirmationModal.qml must contain 'visual shell only' scope statement"
     )
 
+
+def test_bench_modal_surfaces_all_blockers() -> None:
+    """A blocked proposal must surface EVERY blocker, not just the first.
+
+    Regression for the 2026-05-29 "nothing happened" report: start_paper_runner
+    was refused with two blockers (broker_unreachable + reconciliation_drift) but
+    the modal showed only blockers[0].message. The fix routes all blocker text
+    through _blockerSummary(); the single-blocker surfacing path must be gone.
+    """
+    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "_blockerSummary" in modal_src, (
+        "BenchConfirmationModal.qml must format blocked proposals via _blockerSummary "
+        "(surfaces all blockers, not just the first)"
+    )
+    assert "blockers[0].message" not in modal_src, (
+        "BenchConfirmationModal.qml must not surface only blockers[0]; route blocker "
+        "text through _blockerSummary so every blocker reason is shown"
+    )
+    # The refusal must read as a hard refusal, not a soft hint.
+    assert "Blocked — not submitted:" in modal_src, (
+        "BenchConfirmationModal.qml blocker summary must frame the state as a refusal"
+    )
+
     # Forbidden phrases — would imply live command dispatch.
     for forbidden in (
         "will promote",
