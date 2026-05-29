@@ -1617,7 +1617,7 @@ def test_bench_pr_o_command_draft_preview_no_submit_handler() -> None:
         encoding="utf-8"
     )
     forbidden_handlers = (
-        "onSubmit(",      # narrowed: onSubmitCompleted is a bridge listener, not a draft dispatch
+        "onSubmit(",  # narrowed: onSubmitCompleted is a bridge listener, not a draft dispatch
         "submitDraft",
         "submit(",
         "dispatch(",
