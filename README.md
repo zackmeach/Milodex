@@ -6,7 +6,7 @@ Milodex runs locally, connects to a brokerage via official APIs, and takes strat
 
 The name is a nod to Milo — a golden retriever — and the word "Index." Loyal, tireless, and always fetching returns.
 
-> **Status:** Phases 1–3 closed; Phase 4 in planning. All six Phase 1 success criteria closed 2026-05-04 (ADR 0023). Phase 2 closed carry-list items CI-1/CI-2/CS-1/P-1 (ADR 0025). Phase 3 closed momentum family research and concurrent multi-strategy runner (ADR 0027). Live capital remains gated behind an ADR, not a feature flag. See [docs/VISION.md](docs/VISION.md) and [docs/ROADMAP_PHASE1.md](docs/ROADMAP_PHASE1.md).
+> **Status:** Phases 1–5 closed; Phase 6 (operator surfaces / the Bench) in progress. Phase 1 closed 2026-05-04 (ADR 0023); Phases 2–5 closed via ADR 0025 / 0027 / 0031 / 0038. Live capital remains gated behind an ADR, not a feature flag. **For current state and the full doc map, start at [docs/README.md](docs/README.md);** active planning lives in [docs/PHASE6_BENCH_PREP.md](docs/PHASE6_BENCH_PREP.md), and the phase model is in [docs/VISION.md](docs/VISION.md).
 
 ---
 
@@ -17,12 +17,12 @@ Most personal trading projects are a strategy script plus a broker SDK call. Mil
 - **Research integrity over cleverness.** The bar is not "can this system trade automatically?" — it's "can this system avoid convincing its operator that noise is skill?" That constraint shapes every design decision, including the trust report that *flags* a strategy as fragile when its OOS aggregate depends on a single lucky window.
 - **A risk layer with veto power.** Strategies propose, risk disposes. No code path reaches the broker without passing through a single execution chokepoint that invokes risk checks, records an explanation record, and stamps the decision into an append-only event store. ([ADR 0008](docs/adr/0008-risk-layer-veto-architecture.md))
 - **Frozen, hashable config manifests.** Every backtest, paper run, and promotion decision references an immutable SHA-256-hashed manifest of the exact config that produced the evidence — not the mutable YAML on disk. The runtime drift check refuses execution when the live YAML's hash doesn't match the frozen manifest's hash. Config drift becomes detectable and blocking instead of silent. ([ADR 0015](docs/adr/0015-strategy-identifier-and-frozen-manifest.md))
-- **A governed promotion pipeline.** `backtest → paper → micro_live → live`. No skipping stages. Thresholds (Sharpe, drawdown, minimum trade count) are enforced in code, not by operator memory. Live is hard-blocked in Phase 1 and requires a future ADR to unlock. ([ADR 0009](docs/adr/0009-promotion-pipeline-stage-model.md), [ADR 0020](docs/adr/0020-promotion-thresholds-are-code-invariants.md))
+- **A governed promotion pipeline.** `backtest → paper → micro_live → live`. No skipping stages. Thresholds (Sharpe, drawdown, minimum trade count) are enforced in code, not by operator memory. Live is hard-blocked and requires a future ADR to unlock. ([ADR 0009](docs/adr/0009-promotion-pipeline-stage-model.md), [ADR 0020](docs/adr/0020-promotion-thresholds-are-code-invariants.md))
 - **Walk-forward backtesting that is honest about fragility.** Walk-forward runs report OOS-aggregate metrics labeled as such, surface single-window dependency, and refuse to silently pass the promotion gate when the aggregate signal leans on one good year. ([ADR 0021](docs/adr/0021-walk-forward-metrics-are-oos-aggregate.md))
 - **Kill switch with manual reset.** When tripped, trading halts. There is no auto-resume path. ([ADR 0005](docs/adr/0005-kill-switch-manual-reset.md))
 - **An event-sourced SQLite store as the source of truth** for trades, explanations, promotion-log entries, strategy runs, kill-switch events, and frozen manifests. Append-only, content-hash-keyed where idempotency matters. ([ADR 0011](docs/adr/0011-sqlite-event-store.md))
 - **A rich-terminal CLI that's the daily operator surface.** Color-coded by exposure (live red, paper yellow, backtest cyan), threshold-coded by promotion gate (Sharpe ≥ 0.5 green / 0–0.5 yellow / negative red, drawdown thresholded at 7.5% and 15%), with kill-switch banners that override everything else on screen. The `--json` machine contract sits next to it untouched, so the same command output drives operators or scripts. The CLI is what the GUI gate ([ENGINEERING_STANDARDS.md §"GUI Readiness Gate"](docs/ENGINEERING_STANDARDS.md)) requires before any GUI work begins.
-- **ADR-driven design.** 28 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
+- **ADR-driven design.** 54 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
 
 ---
 
@@ -56,8 +56,8 @@ Ten modules in `src/milodex/`: `broker`, `strategies`, `risk`, `execution`, `bac
 
 ## By the Numbers
 
-- **28 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0028)
-- **77 source modules / 70 test modules** in a `src/`-layout Python 3.11 package
+- **54 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0054)
+- A **`src/`-layout Python 3.11 package** with a test suite mirroring the `src/` tree
 - **90%+ test coverage** with a one-way ratchet (CI fails on regression below the floor)
 - Ruff-linted, formatted, and clean
 
@@ -69,17 +69,18 @@ The `docs/` tree is deliberate, not decorative — the documentation *is* part o
 
 | Doc | What it's for |
 |---|---|
-| [VISION.md](docs/VISION.md) | Project vision, principles, Phase 1 scope, autonomy boundary |
+| [docs/README.md](docs/README.md) | **The documentation map — start here.** Classifies every doc as living / frozen / closed-history and routes to the current set. |
+| [VISION.md](docs/VISION.md) | Project vision, principles, phase model, autonomy boundary |
 | [FOUNDER_INTENT.md](docs/FOUNDER_INTENT.md) | Why the project exists and the spirit it's built in |
 | [SRS.md](docs/SRS.md) | Software Requirements Spec: every R-*-### requirement the system must meet |
-| [ROADMAP_PHASE1.md](docs/ROADMAP_PHASE1.md) | Phase 1 delivery plan, success-criteria checklist with inline forensic evidence |
+| [ROADMAP_PHASE1.md](docs/ROADMAP_PHASE1.md) | Phase 1 delivery plan + success-criteria evidence — **closed/historical** (Phase 1 closed 2026-05-04, ADR 0023) |
 | [RISK_POLICY.md](docs/RISK_POLICY.md) | Risk limits, kill-switch policy, loss caps |
 | [PROMOTION_GOVERNANCE.md](docs/PROMOTION_GOVERNANCE.md) | What it takes to move a strategy from one stage to the next |
 | [OPERATIONS.md](docs/OPERATIONS.md) | Daily schedule, startup/shutdown, degraded modes, concurrency model |
 | [ENGINEERING_STANDARDS.md](docs/ENGINEERING_STANDARDS.md) | Code style, testing, scaffolded-vs-implemented discipline, coverage ratchet |
 | [CLI_UX.md](docs/CLI_UX.md) | CLI design principles and command surface |
 | [REPORTING.md](docs/REPORTING.md) | Trust report contract, confidence labels, uncertainty surfacing |
-| [adr/](docs/adr/) | 28 Architecture Decision Records (0001–0028) |
+| [adr/](docs/adr/) | Architecture Decision Records — the decision backbone and binding Document Authority Order (indexed in [adr/README.md](docs/adr/README.md)) |
 
 ---
 
@@ -140,7 +141,7 @@ Every command supports `--json` for machine-readable output. The `--json` contra
 ### Run the test suite
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest                                 # 701 tests, ~70s
+.\.venv\Scripts\python.exe -m pytest                                 # full test suite
 .\.venv\Scripts\python.exe -m pytest --cov=src/milodex --cov-report=term-missing
 .\.venv\Scripts\python.exe -m ruff check src tests
 .\.venv\Scripts\python.exe -m ruff format --check src tests
@@ -161,10 +162,10 @@ src/milodex/
     analytics/     Performance metrics, reporting, benchmark (vs SPY), portfolio snapshots
     promotion/     Stage transitions, gates, drift detection, evidence packages, frozen manifests
     core/          SQLite event store, advisory locks, schema migrations
-    cli/           Command-line interface (Phase 1 primary surface) + rich-terminal views
+    cli/           Command-line interface (primary operator surface) + rich-terminal views
 configs/           Strategy + risk YAML (parameters live here, not in code)
 docs/              Vision, SRS, ADRs, operations, governance, reporting contract
-tests/             Mirrors src/ structure — 70 test modules, 701 tests
+tests/             Mirrors src/ structure
 ```
 
 ---

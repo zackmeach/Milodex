@@ -79,7 +79,7 @@ goes here.
 
 | Dir | Contents |
 |---|---|
-| [adr/](adr/README.md) | 52 Architecture Decision Records + the binding Document Authority Order. The decision backbone. |
+| [adr/](adr/README.md) | 54 Architecture Decision Records + the binding Document Authority Order. The decision backbone. |
 | reviews/ | Point-in-time analyses, screens, and forensic write-ups. Each is dated/frozen. |
 | mockups/, prototypes/ | Bench/GUI design exploration — non-binding visual material. |
 | bench/ | Bench surface notes. |
