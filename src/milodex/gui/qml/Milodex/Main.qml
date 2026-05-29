@@ -161,29 +161,13 @@ Window {
         }
     }
 
-    // Task 33: propagate sessionBag.timeFormat changes to the loaded surface
-    // so timestamps reformat immediately when the toggle fires.
-    Connections {
-        target: sessionBag
-        function onTimeFormatChanged() {
-            if (surfaceLoader.item && surfaceLoader.item.timeFormat !== undefined) {
-                surfaceLoader.item.timeFormat = sessionBag.timeFormat
-            }
-            // Also keep the drawer in sync if Main.qml changed sessionBag directly
-            if (riskDrawer.timeFormat !== sessionBag.timeFormat) {
-                riskDrawer.timeFormat = sessionBag.timeFormat
-            }
-        }
-    }
-
-    // Task 37: propagate drawer time-format toggle back to sessionBag
+    // sessionBag.timeFormat is the single source of truth. Surfaces and the
+    // drawer bind to it one-way; the drawer requests changes via
+    // timeFormatRequested, which we translate into a sessionBag write here.
     Connections {
         target: riskDrawer
-        ignoreUnknownSignals: true
-        function onTimeFormatChanged() {
-            if (sessionBag.timeFormat !== riskDrawer.timeFormat) {
-                sessionBag.timeFormat = riskDrawer.timeFormat
-            }
+        function onTimeFormatRequested(format) {
+            sessionBag.timeFormat = format
         }
     }
     onDropdownDismissedSignal: {
@@ -355,15 +339,16 @@ Window {
         // Issue 12: seed slice selections from sessionBag when a new surface
         // loads. The undefined-guard means non-Desk surfaces (which lack these
         // properties) are silently skipped — same safety pattern as the
-        // Connections write-back handlers above.
-        // Task 33: also seed timeFormat to any surface that declares it.
+        // Pass sessionBag into the loaded surface so it can bind one-way to
+        // sessionBag.timeFormat (and any future session-scoped state).
+        // perfSlice/throughputSlice remain seeded directly per existing pattern.
         onLoaded: {
             if (surfaceLoader.item && surfaceLoader.item.perfSlice !== undefined) {
                 surfaceLoader.item.perfSlice = sessionBag.perfSlice
                 surfaceLoader.item.throughputSlice = sessionBag.throughputSlice
             }
-            if (surfaceLoader.item && surfaceLoader.item.timeFormat !== undefined) {
-                surfaceLoader.item.timeFormat = sessionBag.timeFormat
+            if (surfaceLoader.item && surfaceLoader.item.sessionBag !== undefined) {
+                surfaceLoader.item.sessionBag = sessionBag
             }
         }
 
@@ -420,6 +405,7 @@ Window {
         anchors.right:  parent.right
         z: 10000
         activeProfile: root._activeProfile
+        sessionBag: sessionBag
 
         // Relay switchRequested up to the bridge (RiskProfileBridge QML singleton)
         onSwitchRequested: function(target, token) {
@@ -450,7 +436,7 @@ Window {
         )
         // PR-7c: seed active profile from bridge
         root._activeProfile = RiskProfileBridge.activeProfileName()
-        // Task 37: seed drawer timeFormat from sessionBag
-        riskDrawer.timeFormat = sessionBag.timeFormat
+        // Drawer's timeFormat is a readonly mirror of sessionBag.timeFormat;
+        // no seed required.
     }
 }

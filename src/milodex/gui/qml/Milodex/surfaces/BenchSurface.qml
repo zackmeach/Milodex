@@ -57,23 +57,27 @@ Item {
     // Force-reset it whenever the data reference changes.
     onBenchDataChanged: anyDragging = false
 
-    // PR J: Evidence modal state.
-    // One BenchEvidenceModal instance is rendered as an overlay below; rows
-    // request it via the BenchRow.evidenceRequested signal. Surface owns the
-    // modal so we don't pay for N instances on N rows and so focus / Escape /
-    // outside-click can be reasoned about in one place.
-    property bool evidenceModalOpen: false
-    property var  evidenceModalRow:  ({})
+    // Modal state. Single-valued enum makes mutual exclusion structural — the
+    // surface can only display one overlay at a time. Payload properties
+    // (evidenceModalRow, confirmationPreviewRow/Action) carry per-modal data
+    // and are set together with the activeModal transition via the helpers
+    // below. External writers (capture_bench_interactive.py) set activeModal
+    // directly via setProperty.
+    property string activeModal: "none"   // "none" | "evidence" | "confirmation"
+    property var    evidenceModalRow:        ({})
+    property var    confirmationPreviewRow:    ({})
+    property var    confirmationPreviewAction: ({})
 
-    // PR K: Confirmation preview modal state.
-    // One BenchConfirmationModal instance is rendered alongside the Evidence
-    // modal. Rows emit BenchRow.actionPreviewRequested for every menu item
-    // EXCEPT the informational Open Evidence floor; the surface routes that
-    // signal here. Strictly visual — the modal's primary action is disabled
-    // and labelled "Not wired in v1". ADR 0049 Decision 2 holds.
-    property bool confirmationPreviewOpen: false
-    property var  confirmationPreviewRow:    ({})
-    property var  confirmationPreviewAction: ({})
+    function openEvidenceModal(row) {
+        evidenceModalRow = row
+        activeModal = "evidence"
+    }
+    function openConfirmationModal(row, action) {
+        confirmationPreviewRow = row
+        confirmationPreviewAction = action
+        activeModal = "confirmation"
+    }
+    function closeAllModals() { activeModal = "none" }
 
     // -----------------------------------------------------------------------
     // Formatting helpers
@@ -176,7 +180,7 @@ Item {
             // arrow / Page / Home / End must not bleed through to scroll the
             // ledger underneath. Eat them here so they neither scroll nor
             // re-route. Escape is handled by the modal itself.
-            if (root.evidenceModalOpen || root.confirmationPreviewOpen) {
+            if (root.activeModal !== "none") {
                 event.accepted = true
                 return
             }
@@ -207,7 +211,7 @@ Item {
             onWheel: (event) => {
                 // PR J / PR K: don't scroll the ledger while either modal is
                 // open; each modal owns its own wheel handler/overlay.
-                if (root.evidenceModalOpen || root.confirmationPreviewOpen) {
+                if (root.activeModal !== "none") {
                     event.accepted = true
                     return
                 }
@@ -563,12 +567,10 @@ Item {
                                     rowData: modelData
 
                                     onEvidenceRequested: (row) => {
-                                        // PR K mutual exclusion: opening
-                                        // Evidence closes the confirmation
-                                        // preview if it was open.
-                                        root.confirmationPreviewOpen = false
-                                        root.evidenceModalRow  = row
-                                        root.evidenceModalOpen = true
+                                        // Mutual exclusion is structural via
+                                        // the activeModal enum — the helper
+                                        // simply transitions state.
+                                        root.openEvidenceModal(row)
                                     }
 
                                     // PR K: every menu item except Open
@@ -576,10 +578,7 @@ Item {
                                     // confirmation preview shell. No backend
                                     // dispatch ever happens on this path.
                                     onActionPreviewRequested: (row, action) => {
-                                        root.evidenceModalOpen        = false
-                                        root.confirmationPreviewRow     = row
-                                        root.confirmationPreviewAction  = action
-                                        root.confirmationPreviewOpen    = true
+                                        root.openConfirmationModal(row, action)
                                     }
 
                                     // Stable coordinate frame for drag-delta math.
@@ -669,15 +668,15 @@ Item {
     // -----------------------------------------------------------------------
     // PR J: Evidence modal overlay — single instance shared across all rows.
     // Renders above the Flickable so it covers the ledger when open. Visible
-    // is gated on `evidenceModalOpen`; the modal itself handles its own
-    // Escape/outside-click/✕ close semantics.
+    // is gated on `activeModal === "evidence"`; the modal itself handles its
+    // own Escape/outside-click/✕ close semantics.
     // -----------------------------------------------------------------------
     BenchEvidenceModal {
         id: evidenceModal
         anchors.fill: parent
-        open:    root.evidenceModalOpen
+        open:    root.activeModal === "evidence"
         rowData: root.evidenceModalRow
-        onCloseRequested: root.evidenceModalOpen = false
+        onCloseRequested: root.closeAllModals()
     }
 
     // -----------------------------------------------------------------------
@@ -688,17 +687,17 @@ Item {
     BenchConfirmationModal {
         id: confirmationPreview
         anchors.fill: parent
-        open:       root.confirmationPreviewOpen
+        open:       root.activeModal === "confirmation"
         rowData:    root.confirmationPreviewRow
         actionData: root.confirmationPreviewAction
-        onCloseRequested: root.confirmationPreviewOpen = false
+        onCloseRequested: root.closeAllModals()
 
         // ADR 0051 Phase C2: the modal now emits `submitted` after a
         // successful demotion. The bridge already refreshes the BenchState
         // read model on the Python side; this handler just dismisses the
         // preview state so the next operator click sees a clean modal.
         onSubmitted: (result) => {
-            root.confirmationPreviewOpen = false
+            root.closeAllModals()
         }
     }
 

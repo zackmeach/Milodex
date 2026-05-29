@@ -46,9 +46,13 @@ Item {
 
     readonly property var entries: LedgerState.entries
 
-    // timeFormat: seeded from Main.qml sessionBag on load and synced on
-    // toggle (Task 33). Same pattern as DeskSurface.timeFormat.
-    property string timeFormat: "24h"
+    // sessionBag is parameterized in by Main.qml on surface load. The surface
+    // binds one-way to its timeFormat; the operator-facing writer is the Risk
+    // Office drawer, which emits timeFormatRequested → Main.qml writes back.
+    property var sessionBag: null
+
+    // timeFormat: read-only mirror of sessionBag.timeFormat. Drives formatTs().
+    readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
 
     // formatTs: formats a raw ISO 8601 string per root.timeFormat.
     // Returns "" for empty/null. Handles 24h and 12h.

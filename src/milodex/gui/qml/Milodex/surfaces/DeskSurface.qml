@@ -118,9 +118,13 @@ Item {
         return "muted"
     }
 
-    // timeFormat: seeded from Main.qml sessionBag on load and synced on
-    // toggle (Task 33). Drives shortTime() below. Same pattern as perfSlice.
-    property string timeFormat: "24h"
+    // sessionBag is parameterized in by Main.qml on surface load. The surface
+    // binds one-way to its timeFormat; the operator-facing writer is the Risk
+    // Office drawer, which emits timeFormatRequested → Main.qml writes back.
+    property var sessionBag: null
+
+    // timeFormat: read-only mirror of sessionBag.timeFormat. Drives shortTime().
+    readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
 
     // shortTime: formats an ISO 8601 string per root.timeFormat.
     // Returns "—" for empty/null. Handles 24h and 12h.

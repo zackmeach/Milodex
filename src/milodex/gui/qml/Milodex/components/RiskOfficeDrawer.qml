@@ -37,6 +37,8 @@ Item {
     // Signals relayed up to Main.qml (which calls RiskProfileBridge.attemptSwitch).
     signal switchRequested(string targetProfile, string confirmationToken)
     signal quitRequested()
+    // Operator-driven mutation request — Main.qml writes sessionBag.timeFormat in response.
+    signal timeFormatRequested(string format)
 
     // ------------------------------------------------------------------
     // Geometry — slides in from the right
@@ -68,11 +70,14 @@ Item {
         border.width: 1
     }
 
-    // timeFormat: two-way synced with sessionBag.timeFormat via Main.qml.
-    // Seeded by Main.qml on drawer instantiation. Toggle in TIME FORMAT
-    // section writes here; Main.qml Connections observes onTimeFormatChanged
-    // and propagates to sessionBag.timeFormat.
-    property string timeFormat: "24h"
+    // sessionBag is bound by Main.qml. Standalone test harnesses leave it
+    // null, in which case timeFormat falls back to the "24h" default.
+    property var sessionBag: null
+
+    // timeFormat: read-only mirror of sessionBag.timeFormat. sessionBag is the
+    // sole writer; the drawer requests changes via timeFormatRequested above,
+    // which Main.qml translates into a sessionBag write.
+    readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
 
     // ------------------------------------------------------------------
     // Internal state — which profile card is expanded for confirmation
@@ -225,6 +230,7 @@ Item {
 
                         // Inline confirmation panel (visible when pending)
                         ColumnLayout {
+                            id: confirmPanel
                             visible: isPending
                             Layout.fillWidth: true
                             spacing: Theme.space[2]
@@ -238,7 +244,7 @@ Item {
                             // Typed-confirmation input (elevation only)
                             Rectangle {
                                 id: typedInputBox
-                                visible: parent.isElevation
+                                visible: confirmPanel.isElevation
                                 Layout.fillWidth: true
                                 implicitHeight: Theme.typography.body.md.size + Theme.space[2] * 2 + 4
                                 color: Theme.color.surface.canvas
@@ -317,7 +323,7 @@ Item {
                                     onClicked: {
                                         var target = profileName
                                         var token
-                                        if (parent.parent.isElevation) {
+                                        if (confirmPanel.isElevation) {
                                             token = root._typedToken
                                         } else {
                                             token = "confirm_reduction"
@@ -369,8 +375,9 @@ Item {
                 }
 
                 // Two radio-like buttons: 24-HOUR / 12-HOUR.
-                // Toggle writes to root.timeFormat; Main.qml observes
-                // onTimeFormatChanged and propagates to sessionBag.timeFormat.
+                // Toggle emits root.timeFormatRequested; Main.qml writes
+                // sessionBag.timeFormat in response. Drawer's timeFormat is a
+                // readonly mirror.
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: Theme.space[2]
@@ -418,7 +425,7 @@ Item {
                                 cursorShape: isSelected ? Qt.ArrowCursor : Qt.PointingHandCursor
                                 onClicked: {
                                     if (!isSelected) {
-                                        root.timeFormat = modelData.value
+                                        root.timeFormatRequested(modelData.value)
                                     }
                                 }
                             }

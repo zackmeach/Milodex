@@ -476,8 +476,8 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
     assert surface_src.count("BenchEvidenceModal {") == 1, (
         "BenchSurface.qml must contain exactly one BenchEvidenceModal instantiation"
     )
-    assert "evidenceModalOpen" in surface_src, (
-        "BenchSurface.qml must declare property evidenceModalOpen"
+    assert "activeModal" in surface_src, (
+        "BenchSurface.qml must declare property activeModal (the modal state enum)"
     )
     assert "evidenceModalRow" in surface_src, (
         "BenchSurface.qml must declare property evidenceModalRow"
@@ -485,8 +485,10 @@ def test_bench_pr_j_evidence_modal_wiring() -> None:
     assert "onEvidenceRequested:" in surface_src, (
         "BenchSurface.qml must handle onEvidenceRequested: on the BenchRow delegate"
     )
-    assert "onCloseRequested: root.evidenceModalOpen = false" in surface_src, (
-        "BenchSurface.qml must wire onCloseRequested to clear evidenceModalOpen"
+    # Both modals' onCloseRequested handlers route through closeAllModals().
+    assert surface_src.count("onCloseRequested: root.closeAllModals()") >= 2, (
+        "BenchSurface.qml must wire onCloseRequested through root.closeAllModals() "
+        "in at least 2 places (BenchEvidenceModal and BenchConfirmationModal)"
     )
 
 
@@ -798,8 +800,8 @@ def test_bench_pr_k_confirmation_modal_wiring() -> None:
     assert surface_src.count("BenchConfirmationModal {") == 1, (
         "BenchSurface.qml must contain exactly one BenchConfirmationModal instantiation"
     )
-    assert "confirmationPreviewOpen" in surface_src, (
-        "BenchSurface.qml must declare property confirmationPreviewOpen"
+    assert 'activeModal === "confirmation"' in surface_src, (
+        'BenchSurface.qml must gate BenchConfirmationModal.open on activeModal === "confirmation"'
     )
     assert "confirmationPreviewRow" in surface_src, (
         "BenchSurface.qml must declare property confirmationPreviewRow"
@@ -810,20 +812,9 @@ def test_bench_pr_k_confirmation_modal_wiring() -> None:
     assert "onActionPreviewRequested:" in surface_src, (
         "BenchSurface.qml must handle onActionPreviewRequested: on the BenchRow delegate"
     )
-    assert "onCloseRequested: root.confirmationPreviewOpen = false" in surface_src, (
-        "BenchSurface.qml must wire onCloseRequested to clear confirmationPreviewOpen"
-    )
-    # Mutual exclusion: each handler clears the other modal.
-    # confirmationPreviewOpen = false appears in onEvidenceRequested AND onCloseRequested.
-    assert surface_src.count("confirmationPreviewOpen = false") >= 2, (
-        "BenchSurface.qml must clear confirmationPreviewOpen in at least 2 places "
-        "(onEvidenceRequested mutual-exclusion + onCloseRequested)"
-    )
-    # evidenceModalOpen referenced in onActionPreviewRequested AND onCloseRequested.
-    assert surface_src.count("evidenceModalOpen") >= 2, (
-        "BenchSurface.qml must reference evidenceModalOpen in at least 2 clearing contexts "
-        "(onActionPreviewRequested mutual-exclusion + onCloseRequested)"
-    )
+    # Mutual exclusion is now structural: activeModal is single-valued, so the
+    # legacy count-based guards (`confirmationPreviewOpen = false` count >= 2,
+    # `evidenceModalOpen` count >= 2) are redundant and have been removed.
 
 
 def test_bench_pr_k_modal_wording_contract() -> None:
@@ -882,7 +873,7 @@ def test_bench_pr_k_bleed_through_guards() -> None:
     """
     surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
 
-    guard = "root.evidenceModalOpen || root.confirmationPreviewOpen"
+    guard = 'root.activeModal !== "none"'
     assert surface_src.count(guard) >= 2, (
         f"BenchSurface.qml must contain the bleed-through guard "
         f'"{guard}" in at least 2 places (Keys.onPressed and WheelHandler.onWheel)'
