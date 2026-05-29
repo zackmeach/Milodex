@@ -658,3 +658,43 @@ def test_refresh_populates_by_slice(qapp, tmp_path) -> None:
 # Lifecycle scaffold tests (missing-DB error, error-after-success preservation,
 # in-flight drop, stop-drains-worker) were removed in PR C of RM-007 — those
 # contracts are now covered ONCE in tests/milodex/gui/test_polling_lifecycle.py.
+
+
+def test_evaluations_excludes_paper_staged_backtest_explanations(tmp_path) -> None:
+    """A backtest explanation (backtest_run_id set) for a PAPER-staged strategy
+    must not count as live throughput.
+
+    Regression for the 2026-05-29 benchmark leak: the benchmark strategy is
+    paper-staged, so EXPLANATION_PAPER_SQL's stage filter alone let its overnight
+    backtest evaluation rows (decision_type='no_trade'/'submit', NOT 'backtest_fill')
+    into the live funnel — 69,251 counted vs 358 actual live. backtest_run_id IS NULL
+    is the only reliable live/backtest discriminator.
+    """
+    from milodex.gui.risk_throughput_state import _query_throughput
+
+    db = tmp_path / "rt.db"
+    _create_fixture_db(db)
+    ts = _NOW.replace(hour=12).isoformat()  # within Today window
+
+    # Live paper evaluation — counts.
+    _seed_explanation(
+        db,
+        ts,
+        strategy_stage="paper",
+        decision_type="no_trade",
+        status="no_signal",
+        backtest_run_id=None,
+    )
+    # Paper-staged BACKTEST evaluation — must be excluded (the benchmark leak).
+    _seed_explanation(
+        db,
+        ts,
+        strategy_stage="paper",
+        decision_type="no_trade",
+        status="no_signal",
+        backtest_run_id=1,
+    )
+
+    today = _query_throughput(db, _NOW)["bySlice"]["Today"]
+    evaluations = next(s for s in today if s["key"] == "evaluations")["value"]
+    assert evaluations == 1  # only the live row; the paper-staged backtest row excluded
