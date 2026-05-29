@@ -13,10 +13,14 @@ Both fixes carry a regression guard that fails if the unbounded load returns.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
-from milodex.operations.reconciliation import incident_already_logged, run_reconciliation
+from milodex.operations.reconciliation import (
+    incident_already_logged,
+    local_open_orders_from_trades,
+    run_reconciliation,
+)
 
 
 def _incident_kwargs(**overrides) -> dict:
@@ -194,3 +198,90 @@ def test_run_reconciliation_folds_paper_trade_into_local_position(tmp_path):
     assert spy_rows[0].kind == "local_only"
     assert spy_rows[0].local_qty == 5.0
     assert spy_rows[0].broker_qty is None
+
+
+# ---------------------------------------------------------------------------
+# local_open_orders_from_trades: an order is open iff its LATEST status is open.
+# A later terminal row (filled/canceled/...) must close it. Regression for the
+# 2026-05-29 stale-order drift: the fold only ever added open orders and never
+# removed them on terminal rows, so every submitted order stayed "locally open"
+# forever (64 stale orders accumulated, arming the runner-start readiness veto).
+# ---------------------------------------------------------------------------
+
+_ORDER_BASE = datetime(2026, 5, 29, 14, 0, tzinfo=UTC)
+
+
+def _order_trade(*, status: str, broker_order_id: str, seq: int) -> TradeEvent:
+    """Build a paper order TradeEvent at a monotonic id/time (id-ASC == time-ASC)."""
+    return TradeEvent(
+        explanation_id=1,
+        recorded_at=_ORDER_BASE + timedelta(seconds=seq),
+        status=status,
+        source="paper",
+        symbol="SPY",
+        side="buy",
+        quantity=10.0,
+        order_type="market",
+        time_in_force="day",
+        estimated_unit_price=400.0,
+        estimated_order_value=4000.0,
+        strategy_name="s",
+        strategy_stage="paper",
+        strategy_config_path="c.yaml",
+        submitted_by="operator",
+        broker_order_id=broker_order_id,
+        broker_status=None,
+        message=None,
+        id=seq,
+    )
+
+
+_AS_OF = _ORDER_BASE + timedelta(hours=1)
+
+
+def test_local_open_orders_submitted_only_stays_open():
+    """A genuinely-open order (latest status submitted) is local-open."""
+    trades = [_order_trade(status="submitted", broker_order_id="ord-1", seq=1)]
+    result = local_open_orders_from_trades(trades, as_of=_AS_OF)
+    assert "ord-1" in result
+
+
+def test_local_open_orders_filled_closes_order():
+    """submitted -> filled: the order is NOT local-open (latest status terminal)."""
+    trades = [
+        _order_trade(status="submitted", broker_order_id="ord-1", seq=1),
+        _order_trade(status="filled", broker_order_id="ord-1", seq=2),
+    ]
+    result = local_open_orders_from_trades(trades, as_of=_AS_OF)
+    assert "ord-1" not in result
+
+
+def test_local_open_orders_canceled_closes_order():
+    """submitted -> canceled: the order is NOT local-open."""
+    trades = [
+        _order_trade(status="submitted", broker_order_id="ord-1", seq=1),
+        _order_trade(status="canceled", broker_order_id="ord-1", seq=2),
+    ]
+    result = local_open_orders_from_trades(trades, as_of=_AS_OF)
+    assert "ord-1" not in result
+
+
+def test_local_open_orders_accepted_stays_open():
+    """submitted -> accepted: still open (accepted is an open status)."""
+    trades = [
+        _order_trade(status="submitted", broker_order_id="ord-1", seq=1),
+        _order_trade(status="accepted", broker_order_id="ord-1", seq=2),
+    ]
+    result = local_open_orders_from_trades(trades, as_of=_AS_OF)
+    assert "ord-1" in result
+
+
+def test_local_open_orders_terminal_after_as_of_keeps_point_in_time_open():
+    """A terminal row recorded AFTER as_of must not close the order at as_of."""
+    trades = [
+        _order_trade(status="submitted", broker_order_id="ord-1", seq=1),
+        _order_trade(status="filled", broker_order_id="ord-1", seq=9999),
+    ]
+    # as_of between the two rows: only the submitted row is in-window.
+    result = local_open_orders_from_trades(trades, as_of=_ORDER_BASE + timedelta(seconds=100))
+    assert "ord-1" in result

@@ -480,15 +480,23 @@ def local_open_orders_from_trades(
             continue
         if _aware(trade.recorded_at) > as_of:
             continue
-        if trade.status not in OPEN_ORDER_STATUSES:
-            continue
-        result[trade.broker_order_id] = LocalOpenOrder(
-            broker_order_id=trade.broker_order_id,
-            symbol=trade.symbol.upper(),
-            side=trade.side,
-            quantity=trade.quantity,
-            recorded_at=_aware(trade.recorded_at),
-        )
+        # Latest in-window status per broker_order_id wins (trades are id-ASC).
+        # An order is locally open only if its most-recent status is still open;
+        # a later terminal row (filled/canceled/expired/rejected) closes it. The
+        # prior code only ever added open orders and skipped terminal rows, so it
+        # never removed a closed order — every submitted order stayed "locally
+        # open" forever, accumulating drift that armed the runner-start readiness
+        # veto (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md follow-up).
+        if trade.status in OPEN_ORDER_STATUSES:
+            result[trade.broker_order_id] = LocalOpenOrder(
+                broker_order_id=trade.broker_order_id,
+                symbol=trade.symbol.upper(),
+                side=trade.side,
+                quantity=trade.quantity,
+                recorded_at=_aware(trade.recorded_at),
+            )
+        else:
+            result.pop(trade.broker_order_id, None)
     return result
 
 
