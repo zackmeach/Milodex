@@ -128,6 +128,8 @@ SELECT
     risk_allowed                              AS risk_allowed
 FROM explanations
 WHERE {EXPLANATION_PAPER_SQL}
+ORDER BY recorded_at DESC
+LIMIT {_FEED_CAP}
 """
 
 _SQL_TRADES = f"""
@@ -146,9 +148,11 @@ SELECT
 FROM trades
 WHERE {TRADE_PAPER_SQL}
   AND (status = 'submitted' OR broker_status = 'filled')
+ORDER BY recorded_at DESC
+LIMIT {_FEED_CAP}
 """
 
-_SQL_BACKTESTS = """
+_SQL_BACKTESTS = f"""
 SELECT
     ended_at                                                        AS time,
     strategy_id                                                     AS strategy,
@@ -159,6 +163,8 @@ SELECT
 FROM backtest_runs
 WHERE status = 'completed'
   AND ended_at IS NOT NULL
+ORDER BY ended_at DESC
+LIMIT {_FEED_CAP}
 """
 
 
@@ -192,6 +198,14 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
 
     Returns a list of normalized dicts (see module docstring), ordered by
     timestamp DESC, capped at :const:`_FEED_CAP` entries.
+
+    Bounded reads: each source SELECT carries ``ORDER BY <time> DESC LIMIT
+    _FEED_CAP`` so at most ``_FEED_CAP`` rows per source cross into Python —
+    not the entire paper history (the re-appearing OOM anti-pattern). The
+    per-source bound is sufficient for a correct global cap: any row in the
+    global newest-_FEED_CAP set ranks within the newest-_FEED_CAP of its own
+    source, so the merge below (union of ≤3·_FEED_CAP rows, re-sorted, re-
+    capped) yields output identical to bounding only at the end.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row

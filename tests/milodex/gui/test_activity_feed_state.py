@@ -908,3 +908,67 @@ def test_activity_feed_excludes_incomplete_backtests(tmp_path: Path) -> None:
     assert not any(r["kind"] == "backtest" for r in feed), (
         "Running/incomplete backtest should not appear in feed"
     )
+
+
+# ---------------------------------------------------------------------------
+# SQL-bounded reads (hardening-4)
+#
+# The feed must bound each source SELECT in SQL (ORDER BY ... LIMIT), not fetch
+# the entire paper history and slice in Python — the re-appearing OOM anti-
+# pattern. Output must stay byte-identical (newest-first, capped).
+# ---------------------------------------------------------------------------
+
+
+def test_each_source_select_is_sql_bounded(tmp_path: Path) -> None:
+    """Executing each raw module SQL constant against a table with > _FEED_CAP
+    matching rows must return at most _FEED_CAP rows.
+
+    Fails against the prior fetch-all implementation (no LIMIT → every matching
+    row materialized, then sliced in Python) — that materialization is the OOM
+    anti-pattern the SQL bound removes.
+    """
+    from milodex.gui.activity_feed_state import (
+        _FEED_CAP,
+        _SQL_EXPLANATIONS,
+        _SQL_TRADES,
+    )
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db(db)
+    base = datetime(2026, 5, 20, tzinfo=UTC)
+    for i in range(_FEED_CAP * 2):
+        ts = (base + timedelta(minutes=i)).isoformat()
+        _seed_explanation(db, recorded_at=ts)
+        _seed_trade(db, recorded_at=ts, broker_status="filled")
+
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    try:
+        exp_n = len(conn.execute(_SQL_EXPLANATIONS).fetchall())
+        trade_n = len(conn.execute(_SQL_TRADES).fetchall())
+    finally:
+        conn.close()
+
+    assert exp_n <= _FEED_CAP, f"explanations SELECT returned {exp_n} > cap {_FEED_CAP}"
+    assert trade_n <= _FEED_CAP, f"trades SELECT returned {trade_n} > cap {_FEED_CAP}"
+
+
+def test_bounded_feed_preserves_newest_first_across_cap(tmp_path: Path) -> None:
+    """With > _FEED_CAP rows the feed still returns exactly the newest
+    _FEED_CAP in descending time order — output parity with the prior
+    fetch-all-then-slice behavior."""
+    from milodex.gui.activity_feed_state import _FEED_CAP, _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db(db)
+    base = datetime(2026, 5, 20, tzinfo=UTC)
+    for i in range(_FEED_CAP + 50):
+        _seed_explanation(db, recorded_at=(base + timedelta(minutes=i)).isoformat())
+
+    rows = _query_feed(db)
+
+    assert len(rows) == _FEED_CAP
+    times = [r["time"] for r in rows]
+    assert times == sorted(times, reverse=True)
+    newest = (base + timedelta(minutes=_FEED_CAP + 49)).isoformat()
+    assert rows[0]["time"] == newest
