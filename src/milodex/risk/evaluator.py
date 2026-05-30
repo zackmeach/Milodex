@@ -425,6 +425,34 @@ class RiskEvaluator:
 
     def _check_total_exposure(self, context: EvaluationContext) -> RiskCheckResult:
         current_exposure = sum(position.market_value for position in context.positions)
+        # In-flight (unfilled) BUY orders are real economic exposure before they
+        # fill — count them too, so a burst of BUYs before any fill cannot
+        # overshoot the cap (ADR 0024: caps bound real exposure, not only filled
+        # positions). Add each open BUY's ``remaining_notional`` (the *unfilled*
+        # portion): the already-filled portion of a partial fill is a broker
+        # position already in ``positions.market_value``, so the remainder is
+        # exactly the exposure not yet reflected there — no double-count, and no
+        # held-symbol special case is needed.
+        #
+        # Known gaps (acceptable in Phase 1 paper; live-capital-gate items):
+        #   - Unpriced pending *market* orders have no fill price yet, so
+        #     ``remaining_notional`` is None and they are omitted from exposure
+        #     (they still consume a concurrent-position slot in
+        #     ``_check_concurrent_positions``). Phase 1 is market-only (ADR 0013).
+        #   - ``context.recent_orders`` is the broker's ``get_orders(limit=100)``
+        #     snapshot. Unlike ``_check_duplicate_order``, this cap check has no
+        #     durable event-store backstop, so >100 in-window orders could drop a
+        #     pending BUY (undercount). Bounded in Phase 1; tighten at the live gate.
+        #   - The per-strategy cap (``_check_strategy_concurrent_positions``) does
+        #     not yet count in-flight orders (broker orders carry no strategy
+        #     attribution); see RISK_POLICY.md "Known limitations".
+        current_exposure += sum(
+            order.remaining_notional
+            for order in context.recent_orders
+            if order.is_open
+            and order.side == OrderSide.BUY
+            and order.remaining_notional is not None
+        )
         delta = context.request.estimated_order_value
         if context.intent.side == OrderSide.BUY:
             projected_exposure = current_exposure + delta
@@ -446,13 +474,28 @@ class RiskEvaluator:
         return RiskCheckResult("total_exposure", True, "Projected total exposure is within limits.")
 
     def _check_concurrent_positions(self, context: EvaluationContext) -> RiskCheckResult:
-        existing = {position.symbol for position in context.positions if position.quantity > 0}
-        projected_count = len(existing)
+        existing = {
+            position.symbol.upper() for position in context.positions if position.quantity > 0
+        }
+        # In-flight (unfilled) BUY orders occupy a concurrent-position slot too:
+        # a burst of distinct-symbol BUYs before any fill must not exceed the
+        # cap. Data is already in ``context.recent_orders`` (no new broker call).
+        pending = {
+            order.symbol.upper()
+            for order in context.recent_orders
+            if order.is_open and order.side == OrderSide.BUY
+        }
+        occupied = existing | pending
+        projected_count = len(occupied)
         symbol = context.intent.normalized_symbol()
-        if context.intent.side == OrderSide.BUY and symbol not in existing:
+        if context.intent.side == OrderSide.BUY and symbol not in occupied:
             projected_count += 1
-        if context.intent.side == OrderSide.SELL and symbol in existing:
-            position = next(position for position in context.positions if position.symbol == symbol)
+        # A full SELL frees a held slot only when no in-flight BUY for the same
+        # symbol will re-open it (conservative: keep the slot if one is pending).
+        if context.intent.side == OrderSide.SELL and symbol in existing and symbol not in pending:
+            position = next(
+                position for position in context.positions if position.symbol.upper() == symbol
+            )
             if context.intent.quantity >= position.quantity:
                 projected_count -= 1
 

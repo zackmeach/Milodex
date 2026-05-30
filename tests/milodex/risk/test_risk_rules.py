@@ -23,6 +23,7 @@ from milodex.broker.models import (
     AccountInfo,
     Order,
     OrderSide,
+    OrderStatus,
     OrderType,
     Position,
     TimeInForce,
@@ -1720,3 +1721,263 @@ def test_unexpected_exception_in_check_fails_closed(monkeypatch):
     result = check_result(decision, "order_value")
     assert result.passed is False
     assert result.reason_code == "risk_check_error"
+
+
+# --------------------------------------------------------------------------- #
+# Pending / in-flight orders consume risk slots (hardening-3)
+#
+# Caps must bound real economic exposure, including in-flight (unfilled) BUY
+# orders — not only already-filled broker positions. A single-process burst of
+# distinct-symbol BUYs before any fill must not over-submit. Data comes from
+# context.recent_orders (already fetched); no new broker call.
+# --------------------------------------------------------------------------- #
+
+
+def _open_buy(
+    symbol: str,
+    *,
+    status: OrderStatus = OrderStatus.PENDING,
+    quantity: float = 10.0,
+    filled_avg_price: float | None = None,
+    filled_quantity: float | None = None,
+) -> Order:
+    """Build an in-flight (open) BUY order. PENDING with no price models a
+    market order the broker has not yet filled; PARTIALLY_FILLED with a
+    filled_avg_price models a mid-fill order whose notional is knowable."""
+    return Order(
+        id=f"ord-{symbol}",
+        symbol=symbol,
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=quantity,
+        time_in_force=TimeInForce.DAY,
+        status=status,
+        submitted_at=datetime.now(tz=UTC),
+        filled_quantity=filled_quantity,
+        filled_avg_price=filled_avg_price,
+    )
+
+
+def test_pending_buy_order_counts_toward_concurrent_positions():
+    """An in-flight (unfilled) BUY occupies a concurrent-position slot: held
+    MSFT + in-flight GOOG + intent AAPL = 3 > cap 2."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="AAPL",
+            positions=[_position("MSFT", 10.0)],
+            recent_orders=[_open_buy("GOOG", status=OrderStatus.PENDING)],
+            risk_defaults=_with_overrides(max_concurrent_positions=2),
+        )
+    )
+
+    result = check_result(decision, "concurrent_positions")
+    assert result.passed is False
+    assert result.reason_code == "max_concurrent_positions_exceeded"
+
+
+def test_concurrent_positions_pass_without_pending_order():
+    """Contrast: with no in-flight order, held + intent == cap is allowed —
+    proving the pending order is what tips the burst over the cap."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="AAPL",
+            positions=[_position("MSFT", 10.0)],
+            recent_orders=[],
+            risk_defaults=_with_overrides(max_concurrent_positions=2),
+        )
+    )
+
+    assert check_result(decision, "concurrent_positions").passed is True
+
+
+def test_in_flight_buy_order_counts_toward_total_exposure():
+    """A priced in-flight BUY (partially filled, has an avg price) adds to
+    projected total exposure: 9_000 in-flight alone tops the 8_000 cap."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="AAPL",
+            positions=[],
+            recent_orders=[
+                _open_buy(
+                    "GOOG",
+                    status=OrderStatus.PARTIALLY_FILLED,
+                    quantity=90.0,
+                    filled_quantity=10.0,
+                    filled_avg_price=100.0,
+                )
+            ],  # remaining_notional = (90 - 10) * 100 = 8_000; + 1_000 intent = 9_000 > 8_000 cap
+        )
+    )
+
+    result = check_result(decision, "total_exposure")
+    assert result.passed is False
+    assert result.reason_code == "max_total_exposure_exceeded"
+
+
+def test_held_symbol_partial_fill_counts_unfilled_remainder():
+    """A partially-filled BUY on a HELD symbol must contribute its *unfilled
+    remainder* to the exposure cap — the filled portion is already in the
+    position's market_value, but the in-flight remainder is real committed
+    exposure that must not be dropped.
+
+    MSFT position = the 10 filled shares (market_value 1_000); open MSFT order
+    qty 60 / filled 10 @ 100 -> remaining (60-10)*100 = 5_000. Intent AAPL BUY
+    2_500. Correct projected = 1_000 + 5_000 + 2_500 = 8_500 > 8_000 cap -> BLOCK.
+    The old all-or-nothing held-symbol skip dropped the 5_000 remainder, giving
+    1_000 + 2_500 = 3_500 < 8_000 -> wrongly allowed. So this BLOCK fails against
+    the old code (non-vacuous)."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="AAPL",
+            quantity=25.0,  # estimated_order_value = 25 * 100 = 2_500
+            positions=[_position("MSFT", 10.0, 100.0)],  # filled portion, market_value 1_000
+            recent_orders=[
+                _open_buy(
+                    "MSFT",
+                    status=OrderStatus.PARTIALLY_FILLED,
+                    quantity=60.0,
+                    filled_quantity=10.0,
+                    filled_avg_price=100.0,
+                )
+            ],  # remaining_notional = (60 - 10) * 100 = 5_000
+        )
+    )
+
+    result = check_result(decision, "total_exposure")
+    assert result.passed is False
+    assert result.reason_code == "max_total_exposure_exceeded"
+
+
+def test_held_symbol_partial_fill_remainder_not_double_counted():
+    """The filled portion of a held-symbol partial fill must not be counted
+    twice: once in the position's market_value and again via the order. Only the
+    unfilled remainder is added on top.
+
+    MSFT position = 10 filled shares (market_value 1_000); open MSFT order qty 60
+    / filled 10 @ 100 -> remainder 5_000. Intent AAPL BUY 1_500. Correct
+    projected = 1_000 + 5_000 + 1_500 = 7_500 <= 8_000 cap -> PASS. A naive fix
+    that counted the order's *full* 6_000 notional on top of the position would
+    give 1_000 + 6_000 + 1_500 = 8_500 > 8_000 -> wrongly blocked. Guards against
+    that double-count regression."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="AAPL",
+            quantity=15.0,  # estimated_order_value = 15 * 100 = 1_500
+            positions=[_position("MSFT", 10.0, 100.0)],  # filled portion, market_value 1_000
+            recent_orders=[
+                _open_buy(
+                    "MSFT",
+                    status=OrderStatus.PARTIALLY_FILLED,
+                    quantity=60.0,
+                    filled_quantity=10.0,
+                    filled_avg_price=100.0,
+                )
+            ],  # remaining_notional = 5_000 (NOT the full 6_000)
+        )
+    )
+
+    assert check_result(decision, "total_exposure").passed is True
+
+
+def test_full_sell_keeps_slot_when_pending_buy_for_same_symbol():
+    """A full SELL does not free its concurrent-position slot while an in-flight
+    BUY for the same symbol could re-open it (conservative). Held MSFT + GOOG (2
+    slots) with a pending MSFT BUY, cap 1: the SELL is held at 2 occupied slots
+    (not decremented to 1) -> BLOCK. Regression guard for the pending-aware SELL
+    branch; non-vacuous only against master (which freed the slot)."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            symbol="MSFT",
+            quantity=10.0,  # full sell (>= held quantity)
+            positions=[_position("MSFT", 10.0), _position("GOOG", 10.0)],
+            recent_orders=[_open_buy("MSFT", status=OrderStatus.PENDING)],
+            risk_defaults=_with_overrides(max_concurrent_positions=1),
+        )
+    )
+
+    result = check_result(decision, "concurrent_positions")
+    assert result.passed is False
+    assert result.reason_code == "max_concurrent_positions_exceeded"
+
+
+def test_full_sell_frees_slot_when_no_pending_buy():
+    """Contrast: with no in-flight BUY for the symbol, a full SELL frees its
+    slot. Held MSFT + GOOG (2) with no pending order, cap 1: SELL MSFT
+    decrements to 1 <= cap -> PASS. Proves the pending guard is what keeps the
+    slot in the test above."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            symbol="MSFT",
+            quantity=10.0,
+            positions=[_position("MSFT", 10.0), _position("GOOG", 10.0)],
+            recent_orders=[],
+            risk_defaults=_with_overrides(max_concurrent_positions=1),
+        )
+    )
+
+    assert check_result(decision, "concurrent_positions").passed is True
+
+
+# --------------------------------------------------------------------------- #
+# Order.remaining_notional — the still-unfilled economic value used by the
+# exposure cap (the filled portion lives in positions.market_value).
+# --------------------------------------------------------------------------- #
+
+
+def _bare_order(**overrides) -> Order:
+    """Minimal Order for property unit tests; override individual fields."""
+    base = {
+        "id": "o",
+        "symbol": "X",
+        "side": OrderSide.BUY,
+        "order_type": OrderType.MARKET,
+        "quantity": 10.0,
+        "time_in_force": TimeInForce.DAY,
+        "status": OrderStatus.PENDING,
+        "submitted_at": datetime.now(tz=UTC),
+    }
+    base.update(overrides)
+    return Order(**base)
+
+
+def test_remaining_notional_unfilled_equals_full():
+    # Fully-unfilled (filled_quantity None) -> remainder is the full quantity.
+    order = _bare_order(quantity=10.0, limit_price=100.0, filled_quantity=None)
+    assert order.remaining_notional == 1_000.0
+
+
+def test_remaining_notional_partial_fill_counts_only_remainder():
+    order = _bare_order(
+        status=OrderStatus.PARTIALLY_FILLED,
+        quantity=60.0,
+        filled_quantity=10.0,
+        filled_avg_price=100.0,
+    )
+    assert order.remaining_notional == 5_000.0  # (60 - 10) * 100
+
+
+def test_remaining_notional_unpriced_market_is_none():
+    # Pending market order: no filled_avg_price and no limit_price -> unknowable.
+    order = _bare_order(quantity=10.0, limit_price=None, filled_avg_price=None)
+    assert order.remaining_notional is None
+
+
+def test_remaining_notional_overfill_clamps_to_zero():
+    # Defensive: filled_quantity > quantity must not yield negative exposure.
+    order = _bare_order(quantity=10.0, filled_quantity=15.0, limit_price=100.0)
+    assert order.remaining_notional == 0.0
+
+
+def test_checks_registry_is_account_complete():
+    """Guard against doc/code drift: the enforced-check registry stays at 14 and
+    never silently lists a sector/correlation cap that the code does not
+    implement (RISK_POLICY.md / SRS.md advertise those as planned only)."""
+    assert len(RiskEvaluator._CHECKS) == 14
+    assert not any("sector" in name or "correlat" in name for name in RiskEvaluator._CHECKS)
