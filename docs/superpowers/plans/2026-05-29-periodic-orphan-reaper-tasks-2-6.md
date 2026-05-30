@@ -154,6 +154,12 @@ the spawn race. Update the module docstring's one-line summary to mention `reap-
 Add:
 - `test_reap_orphans_apply_closes_and_reports` — `_run(["maintenance","reap-orphans","--json"], tmp_path)`; assert `payload["data"]["applied"] is True`, `"strat.x.v1" in payload["data"]["reaped"]`, and the row is now closed (`ended_at is not None`).
 - `test_reap_orphans_dry_run_empty` — no seed; `candidates == []`.
+- `test_reap_orphans_skips_live_lock` — seed the open run AND hold a real lock for it:
+  `lock = AdvisoryLock(runner_lock_name("strat.x.v1"), locks_dir=tmp_path/"locks"); lock.acquire()`
+  (the current process is the live holder), then `try:` run `reap-orphans` (apply) and assert
+  `payload["data"]["reaped"] == []` and the row stays open; `finally: lock.release()`. This
+  re-asserts the liveness gate at the CLI seam — the feature's safety reason for existing
+  (reviewer-recommended). Import `AdvisoryLock` and `runner_lock_name`.
 
 Run: `python -m pytest tests/milodex/cli/test_maintenance.py -q`
 Expected: PASS (new + existing compact tests).
@@ -476,7 +482,8 @@ Test `tests/milodex/gui/test_qml_load_smoke.py`.
 
 - After `app = QGuiApplication(...)` (`:201-203`): `app.setOrganizationName("Milodex")`
   and `app.setApplicationName("Milodex")`.
-- After the bootstrap reconcile block (`:281`):
+- After the bootstrap reconcile `try/except` ends (`:280`), before the read-model block
+  at `:282` (`db_path` `:271` and `locks_dir` `:256` are in scope):
 ```python
     from milodex.gui.orphan_reaper_controller import OrphanReaperController
     from milodex.gui.runner_health_settings import read_reap_interval_seconds
