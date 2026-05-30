@@ -36,6 +36,15 @@ def qapp():
     return app
 
 
+@pytest.fixture
+def tmp_settings(tmp_path, monkeypatch):
+    from PySide6.QtCore import QSettings
+
+    QSettings.setPath(QSettings.IniFormat, QSettings.UserScope, str(tmp_path))
+    monkeypatch.setattr("milodex.gui.runner_health_settings._FORMAT", QSettings.IniFormat)
+    yield
+
+
 @_skip_no_qt
 def test_interval_clamps_and_restarts_timer(qapp):
     from milodex.gui.orphan_reaper_controller import OrphanReaperController
@@ -85,3 +94,14 @@ def test_reap_swallows_reaper_exception(qapp, monkeypatch):
     )
     c = OrphanReaperController(event_store=object(), locks_dir=Path("x"), interval_seconds=60)
     c._reap()  # must not raise
+
+
+@_skip_no_qt
+def test_persist_interval_writes_and_updates(qapp, tmp_settings):
+    from milodex.gui.orphan_reaper_controller import OrphanReaperController
+    from milodex.gui.runner_health_settings import read_reap_interval_seconds
+
+    c = OrphanReaperController(event_store=object(), locks_dir=Path("x"), interval_seconds=60)
+    c.persistInterval(300)
+    assert c.intervalSeconds == 300
+    assert read_reap_interval_seconds() == 300
