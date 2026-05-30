@@ -264,6 +264,19 @@ On signal merit: not a promotion candidate, do not retire. The negative result i
 
 ---
 
+## Crypto archetype proof slice — backtest-only (not in the durable bank)
+
+Two BTC/USD canaries were added on 2026-05-30 to prove Milodex can represent, load, and backtest a **crypto-spot archetype** through the existing research path (the first non-equity asset class). They are **config + code only, at `stage: backtest`, and have NO rows in `data/milodex.db`** — they have never been run against the durable event store, so they are intentionally absent from the SQL-derived tables above.
+
+| strategy_id | bar size | thesis | status |
+|---|---|---|---|
+| `momentum.crypto.ema_cross.btc_usd_1h.v1` | 1H | EMA(12/48)-cross trend, long-only, fractional, 24/7 | backtest-only canary |
+| `meanrev.crypto.rsi2.btc_usd_30m.v1` | 30Min | RSI(2) oversold mean-reversion, long-only, fractional, 24/7 | backtest-only canary |
+
+These are an **architecture/harness proof, not alpha candidates** — no paper, live, GUI, broker, or orchestration involvement. They are proven through deterministic-fixture backtests run through the real engine (unit tests per rule + an end-to-end backtest smoke test); **full historical crypto backtesting is blocked** by the absence of local BTC/USD bars and the no-network policy (`AlpacaDataProvider` is stock-only and the Parquet cache cannot key a `/`-symbol). Promoting either requires the deferred crypto data-ingestion task. Full audit, design decisions, and the blocked-data disclosure: `docs/reviews/2026-05-30-crypto-archetype-proof-slice.md`.
+
+---
+
 ## Methodology notes
 
 Walk-forward validation splits the canonical evaluation window (2020-01-01 to 2024-12-31) into 4 approximately equal out-of-sample test segments, each preceded by a training segment of similar length. The "OOS aggregate" Sharpe and drawdown figures reported in this document are computed across all test segments concatenated — not from any single window. This is the correct figure for gate evaluation per ADR 0021.

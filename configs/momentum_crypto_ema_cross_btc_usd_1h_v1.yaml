@@ -1,0 +1,77 @@
+# EMA-cross momentum BTC/USD — 1H — v1  (BACKTEST-ONLY CRYPTO CANARY)
+#
+# Crypto Archetype Proof Slice (2026-05-30). Long-only, single-name BTC/USD,
+# 1-hour bars, 24/7. The first non-equity asset archetype to flow through the
+# Milodex backtest/research path. Buys when the fast EMA is above the slow EMA
+# after warmup; exits on stop-loss or the fast EMA falling back below the slow.
+# Indicators are computed over the CONTINUOUS close history (no session reset);
+# the strategy deliberately does NOT use the equity session helper.
+#
+# Honest comparator would be an unconditional buy-and-hold of BTC/USD on
+# identical friction — that benchmark strategy is deferred with the crypto
+# data-ingestion task. This canary is a harness/architecture proof, NOT an
+# alpha claim. Defaults are boring, not tuned.
+#
+# Fee/slippage: slippage_pct below is a CONSERVATIVE PLACEHOLDER, not a
+# calibrated crypto fee model. Real spot-crypto spreads/fees exceed equities;
+# this canary trades less often than its 30Min RSI sibling, so per-trade drag
+# compounds less here.
+#
+# STAGE = backtest. NOT a paper/live/micro_live candidate. Inert until an
+# operator explicitly promotes (which this slice does not do).
+#
+# CLI (runnable once crypto data ingestion lands — blocked today by missing
+# local BTC/USD bars + the no-network policy; see
+# docs/reviews/2026-05-30-crypto-archetype-proof-slice.md):
+#   python -m milodex.cli.main backtest \
+#     momentum.crypto.ema_cross.btc_usd_1h.v1 --start YYYY-MM-DD --end YYYY-MM-DD --walk-forward --json
+#
+# Rules in code: src/milodex/strategies/momentum_crypto_ema_cross.py
+# Shared indicators: src/milodex/strategies/_indicators.py
+
+strategy:
+  id: "momentum.crypto.ema_cross.btc_usd_1h.v1"
+  family: "momentum"
+  template: "crypto.ema_cross"
+  variant: "btc_usd_1h"
+  version: 1
+  description: >
+    EMA-cross momentum on BTC/USD, 1-hour bars (24/7, spot, long-only). Buy
+    when the fast EMA is above the slow EMA after warmup; exit on stop_loss_pct
+    below the entry price or the fast EMA falling below the slow EMA. One
+    position max, no pyramiding, fractional sizing. Backtest-only crypto canary.
+  enabled: true
+
+  universe:
+    - "BTC/USD"
+
+  parameters:
+    # Boring trend-following defaults, not tuned.
+    fast_ema_period: 12
+    slow_ema_period: 48
+    # Wider than an equity stop — crypto is more volatile. Conservative.
+    stop_loss_pct: 0.08
+    # 10% of equity into the single fractional BTC position.
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "1H"
+    min_hold_days: 0
+    max_hold_days: 5
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.05
+    stop_loss_pct: 0.08
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    # CONSERVATIVE PLACEHOLDER (10 bps), not a calibrated crypto fee model.
+    slippage_pct: 0.0010
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []

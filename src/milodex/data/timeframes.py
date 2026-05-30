@@ -11,6 +11,7 @@ from milodex.data.models import Timeframe
 _BAR_SIZE_TO_TIMEFRAME: dict[str, Timeframe] = {
     "1D": Timeframe.DAY_1,
     "1H": Timeframe.HOUR_1,
+    "30Min": Timeframe.MINUTE_30,
     "15Min": Timeframe.MINUTE_15,
     "5Min": Timeframe.MINUTE_5,
     "1Min": Timeframe.MINUTE_1,
@@ -21,6 +22,7 @@ _TIMEFRAME_TO_MINUTES: dict[Timeframe, int] = {
     Timeframe.MINUTE_1: 1,
     Timeframe.MINUTE_5: 5,
     Timeframe.MINUTE_15: 15,
+    Timeframe.MINUTE_30: 30,
     Timeframe.HOUR_1: 60,
 }
 
