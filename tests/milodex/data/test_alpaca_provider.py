@@ -588,3 +588,15 @@ class TestRetryOn429:
         # No retry -- should propagate immediately on attempt 0.
         assert exc_info.value is err
         assert provider._client.get_stock_bars.call_count == 1
+
+
+def test_timeframe_map_covers_every_timeframe_member() -> None:
+    """Every Timeframe enum member must have an Alpaca TimeFrame mapping.
+
+    A partial map is a latent KeyError: adding a Timeframe member without a
+    mapping entry breaks any get_bars call for that timeframe.
+    """
+    from milodex.data.alpaca_provider import _TIMEFRAME_MAP
+
+    missing = [tf for tf in Timeframe if tf not in _TIMEFRAME_MAP]
+    assert not missing, f"Timeframe members missing from _TIMEFRAME_MAP: {missing}"

@@ -43,6 +43,7 @@ _TIMEFRAME_MAP: dict[Timeframe, TimeFrame] = {
     Timeframe.MINUTE_1: TimeFrame(1, TimeFrameUnit.Minute),
     Timeframe.MINUTE_5: TimeFrame(5, TimeFrameUnit.Minute),
     Timeframe.MINUTE_15: TimeFrame(15, TimeFrameUnit.Minute),
+    Timeframe.MINUTE_30: TimeFrame(30, TimeFrameUnit.Minute),
     Timeframe.HOUR_1: TimeFrame(1, TimeFrameUnit.Hour),
     Timeframe.DAY_1: TimeFrame(1, TimeFrameUnit.Day),
 }

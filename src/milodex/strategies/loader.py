@@ -14,7 +14,7 @@ import yaml
 from milodex.strategies.base import Strategy, StrategyContext, StrategyParameterSpec
 
 _VALID_STAGES = {"idle", "backtest", "paper", "micro_live", "live"}
-_VALID_BAR_SIZES = {"1D", "1H", "15Min", "5Min", "1Min"}
+_VALID_BAR_SIZES = {"1D", "1H", "30Min", "15Min", "5Min", "1Min"}
 
 
 @dataclass(frozen=True)
