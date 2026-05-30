@@ -1,7 +1,7 @@
 # Periodic Orphan Reconciliation — Design
 
 **Date:** 2026-05-29
-**Status:** Approved (brainstorming) — pending spec review + implementation plan
+**Status:** Approved (brainstorming) — spec-review iteration 2
 **Scope:** PR1 of the post-soak-test robustness sequence (PR1 → PR2 soak-test net)
 
 ## Problem
@@ -14,31 +14,43 @@ as a live "phantom" runner — a confidently-wrong status.
 A liveness-gated reaper already exists —
 `reconcile_orphaned_runs_on_bootstrap` (`src/milodex/strategies/orphan_reconciliation.py:93`) —
 but it fires only at **two event-triggered moments**: GUI bootstrap
-(`src/milodex/gui/app.py:270`) and same-strategy runner start
-(`src/milodex/strategies/runner.py:111`). A runner killed at 11:00 whose
-strategy is never restarted and whose GUI is never relaunched stays phantom
-until one of those triggers happens to fire. The gap is **"no periodic
-trigger,"** not "no reaper."
+(`src/milodex/gui/app.py:270`, the liveness-gated module reaper) and
+same-strategy runner start (`src/milodex/strategies/runner.py:111`, which calls
+the *lower-level* `event_store.reconcile_orphan_strategy_runs` directly, not the
+liveness-gated bootstrap function). A runner killed at 11:00 whose strategy is
+never restarted and whose GUI is never relaunched stays phantom until one of
+those triggers happens to fire. The gap is **"no periodic trigger,"** not
+"no reaper."
 
-This was surfaced by the 2026-05-29 concurrent-fleet soak test and confirmed by
-an independent Opus 4.8 review, which corrected an earlier (richer) proposal —
-a new `last_heartbeat` column + bespoke reaper — as partly redundant with
-infrastructure that already exists (the advisory-lock file already carries a
-PID + start-time + per-cycle mtime heartbeat). The right fix is **"run the
-existing reaper on a timer,"** with no schema change.
+Surfaced by the 2026-05-29 concurrent-fleet soak test; scope corrected across
+two independent Opus 4.8 reviews. The first review rejected a richer proposal (a
+new `last_heartbeat` column + bespoke reaper) as redundant with existing
+advisory-lock liveness. The second (spec) review caught a **false safety claim**
+in the first draft of this spec — see "Concurrency safety" below — which forces a
+small, justified expansion of scope into the reaper's core.
 
 ## Non-goals
 
 - **No schema change.** No `strategy_runs.last_heartbeat` column; liveness comes
   from the existing advisory-lock holder record (PID + start-time, see
   `orphan_reconciliation._has_live_runner`, lines 44–90).
-- **No change to the reaper's core logic.** `reconcile_orphaned_runs_on_bootstrap`
-  is reused verbatim.
 - **No auto-restart of strategies.** This automates recovery of the *bookkeeping*
-  (closing the stale row) only. ADR 0026's core non-goal — the system does not
-  resurrect a crashed strategy — stands. See "ADR addendum" below.
+  (closing the stale row) only. ADR 0026's core posture — the system does not
+  resurrect a crashed strategy; the operator is the supervisor — stands. See
+  "ADR addendum."
 - **No launch-managing control plane / supervisor process.** Deferred; revisit
   only if intraday concurrency becomes routine.
+- **No event-driven badge refresh.** The phantom badge clears on the active-ops
+  read model's existing 30s poll, not via a push from the reaper (see
+  "Concurrency safety" and "Read-model staleness").
+
+## In scope, and why it grew
+
+The first draft claimed "no change to the reaper's core logic." That is no longer
+true: this PR **lands residual-1's deferred TOCTOU fix** inside the reaper. This
+is not optional polish — it is the prerequisite that makes periodic reaping safe
+(see "Concurrency safety"). The reaper's *liveness classification* is unchanged;
+what's added is a re-check guard immediately before the mutating close+unlink.
 
 ## Decisions (operator-confirmed during brainstorming)
 
@@ -51,36 +63,73 @@ existing reaper on a timer,"** with no schema change.
 | Persistence | **Durable via QSettings** (survives restart, unlike `sessionBag.timeFormat`) |
 | ADR | Addendum to ADR 0026 recording the bookkeeping-recovery automation |
 
+## Concurrency safety (the load-bearing section)
+
+**The first draft's central claim was false and is removed.** It asserted that
+running the reaper in a main-thread `QTimer` slot serializes it against
+start-runner actions on the Qt event loop, preserving residual-1's bound. It does
+not. The GUI's primary start path runs on a **worker thread**, not the main
+thread: `BenchCommandBridge` dispatches `_SubmitRunnable(QRunnable)`
+(`src/milodex/gui/bench_command_bridge.py:58`) onto a `QThreadPool`
+(`bench_command_bridge.py:141`, started at `:244`), and the submit calls
+`subprocess.Popen` (`src/milodex/strategies/paper_runner_control.py:254`) on that
+worker thread. The spawned subprocess writes its advisory lock. A main-thread
+reaper tick therefore runs **concurrently** with a spawn — it does not serialize
+against it.
+
+Residual-1 (`docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md:156`)
+is precisely this race: the reaper reads `current_holder()` non-locking, decides
+"dead," closes the row, then unlinks the lock; a runner that writes its lock in
+that window has it wiped → two runners on one logical lock. Today it is bounded to
+"microseconds, unusual CLI-during-bootstrap workflow" *only because* reap and
+spawn route through the same surface serially (review line 160). **A 60s periodic
+reaper running concurrently with the worker-thread spawn destroys that bound** —
+every operator "Start paper runner" click now overlaps possible reaper ticks.
+
+**Fix (residual-1's deferred remedy, review line 162):** make the close+unlink
+conditional on a final re-check. In the reaper loop, after `_has_live_runner`
+returns `False`, capture the holder snapshot it saw (the dead holder, or `None`).
+Immediately before mutating, re-read `current_holder()`:
+
+- If a holder now exists that was **not** there before, or whose `started_at`
+  differs from the snapshot (a fresh runner wrote its lock in the window), **skip
+  the strategy entirely** — do not close the row, do not unlink. The next tick
+  re-evaluates.
+- Otherwise proceed with close + unlink as today.
+
+This does not eliminate the window (a sub-instruction gap remains between re-check
+and unlink) but shrinks it to "a fresh lock with an identical `started_at`
+appeared in the gap," which is negligible. It is the bound the review already
+specified; this PR simply pays the cost now that periodic + worker-thread spawn
+makes the workflow first-class.
+
 ## Architecture
 
 ### Component 1 — `OrphanReaperController` (QObject, Python/PySide)
 
-A small `QObject` registered to the QML engine, holding:
+A small `QObject` registered to the QML engine (following the existing
+bridge-registration house style used for `RiskProfileBridge` / `BenchCommandBridge`
+in `app.py`), holding:
 
-- `db_path` and `locks_dir` (same inputs `app.py:270` passes the bootstrap call).
-- An `intervalSeconds` property (int), default 60.
-- An internal `QTimer` running on the **Qt main thread**.
+- A single long-lived `EventStore` instance (constructed once in `__init__`) and
+  `locks_dir`. `EventStore` holds no persistent connection between calls
+  (open-op-close, `event_store.py:_connect`), so one instance is reused across
+  ticks. This deliberately avoids re-running `EventStore.__init__`'s idempotent
+  migration fast-path (`event_store.py:328-338`) every tick, and makes the
+  controller trivially injectable in tests.
+- An `intervalSeconds` property (int), default 60, clamped to `[5, 3600]`.
+- An internal `QTimer` on the Qt main thread.
 
-On each `QTimer` timeout it constructs `EventStore(db_path)` (matching the
-bootstrap call's per-invocation construction — connections are open-op-close,
-so this is cheap and holds nothing), calls
-`reconcile_orphaned_runs_on_bootstrap(store, locks_dir, now=datetime.now(tz=UTC))`,
-and emits `reaped(list[str])` with the reaped strategy ids. The active-ops read
-model listens to `reaped` and refreshes so the phantom badge clears.
+On each timeout it calls
+`reconcile_orphaned_runs_on_bootstrap(self._store, self._locks_dir, now=datetime.now(tz=UTC))`
+and emits `reaped(list[str])` with the reaped ids **for logging/telemetry only**
+(not wired to a read-model refresh — see below). Setting `intervalSeconds`
+restarts the `QTimer`.
 
-Setting `intervalSeconds` restarts the `QTimer` with the new interval. Bounds:
-clamp to `[5, 3600]` seconds defensively, though the preset UI only offers
-30/60/300.
-
-**Main-thread execution is load-bearing.** `docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md:156`
-documents a residual TOCTOU: the reaper reads the lock holder non-locking,
-decides "dead," then closes the row and unlinks the lock; a runner that writes
-its lock in that window has it wiped. Today that race is bounded to
-"microseconds, during an unusual manual race" *because both reap and spawn
-route through the GUI surface*. Running the reaper in the controller's
-main-thread `QTimer` slot keeps it serialized on the Qt event loop against
-start-runner actions — preserving that bound. The controller MUST NOT run the
-reaper on a worker thread.
+The controller runs the reaper on the main thread because that is simplest and
+the reaper is cheap — **not** because it provides a serialization guarantee (it
+does not; see Concurrency safety). The TOCTOU is handled inside the reaper, not
+by thread placement.
 
 ### Component 2 — Setting UI (`RiskOfficeDrawer.qml`)
 
@@ -91,63 +140,91 @@ following the identical signal-up pattern:
   24-HOUR/12-HOUR toggle at lines 387–428.
 - Emits a new `reapIntervalRequested(int seconds)` signal (sibling to
   `timeFormatRequested`, line 41).
-- A `readonly property int reapIntervalSeconds` mirror reflecting the current
-  value (sibling to the `timeFormat` mirror at line 80), sourced from the
-  persisted value so the active preset highlights correctly on open.
+- A `readonly property int reapIntervalSeconds` mirror (sibling to the
+  `timeFormat` mirror at line 80), sourced from the persisted value so the active
+  preset highlights correctly on open.
 
 `Main.qml` handles `reapIntervalRequested` (sibling to the `timeFormatRequested`
-handler at lines 166–170): writes the value through the QSettings-backed store
-**and** pushes it into `OrphanReaperController.intervalSeconds`.
+handler at lines 166–172): writes through the QSettings-backed store **and**
+pushes the value into `OrphanReaperController.intervalSeconds`.
 
 ### Component 3 — QSettings persistence
 
 The GUI has no durable settings store today (`sessionBag` is explicitly
-non-persistent, `Main.qml:77`). Introduce a minimal `QSettings`-backed
-read/write for the reap interval:
+non-persistent, `Main.qml:77-85`; grep confirms no `QSettings` /
+`setOrganizationName` anywhere under `src/milodex`). Introduce a minimal
+`QSettings`-backed read/write for the one key:
 
-- Requires `QCoreApplication` org/app name to be set (e.g. `"Milodex"`), or an
-  explicit `QSettings` file path. Implementation must verify/establish this in
-  the GUI bootstrap (`app.py`) before any `QSettings` read.
+- **Prerequisite:** set `QCoreApplication.setOrganizationName("Milodex")` and
+  `setApplicationName("Milodex")` in `app.py` immediately after the
+  `QGuiApplication` is constructed (`app.py:201-203`) and **before** any
+  `QSettings` read. There is no earlier `QSettings` read today, so ordering risk
+  is low — verify none is introduced ahead of it.
 - Key: `runner_health/reap_interval_seconds`, default 60.
-- Read at bootstrap to seed `OrphanReaperController.intervalSeconds` and the
+- Read at bootstrap to seed both `OrphanReaperController.intervalSeconds` and the
   drawer's active-preset highlight; written on `reapIntervalRequested`.
 
-This store is intentionally scoped to the one key for v1. It is the seam a
-future durable GUI preference would extend, not a general settings framework.
+Scoped to the one key for v1 — the seam a future durable GUI preference extends,
+not a general settings framework.
 
 ### Component 4 — CLI primitive `milodex maintenance reap-orphans`
 
-Mirrors the shape of `maintenance compact`
-(`src/milodex/cli/commands/maintenance.py`). Behavior:
+Mirrors `maintenance compact` (`src/milodex/cli/commands/maintenance.py:20-104`).
+`maintenance` is already registered in both `_COMMAND_MODULES` and `_DISPATCH`
+(`src/milodex/cli/main.py:70,89`), so extending the existing module needs no
+`main.py` change. Behavior:
 
 - Extend `maintenance_action` choices to include `"reap-orphans"`.
-- Resolve `EventStore(get_data_dir()/"milodex.db")` and `locks_dir`
-  (`get_locks_dir()`), call the reaper, report reaped strategy ids.
-- `--dry-run`: report what *would* be reaped without mutating. Implemented by a
-  read-only pass that lists open runs whose strategy has no live runner (reuse
-  `_has_live_runner`), since the reaper itself mutates. (A read-only counterpart
-  helper may be extracted alongside, kept in `orphan_reconciliation.py`.)
-- **No runtime advisory lock.** Unlike `compact`, the reaper is liveness-gated
-  and *intended* to run while other runners are alive (it skips live ones). The
-  CLI-vs-concurrent-spawn race is the same narrow bound today's manual
-  `milodex strategy run` carries during a bootstrap reconcile; documented,
-  accepted for v1.
-- Register in BOTH `_COMMAND_MODULES` and `_DISPATCH` if a new module — but
-  `maintenance` is already registered in both (`src/milodex/cli/main.py:70,89`),
-  so extending the existing module needs no `main.py` change.
+- Resolve `EventStore(get_data_dir()/"milodex.db")` and `get_locks_dir()`, call
+  the reaper, report reaped strategy ids.
+- `--dry-run`: print the candidates without mutating.
+- **No runtime advisory lock** (unlike `compact`, `maintenance.py:61`). The reaper
+  is liveness-gated and *intended* to run alongside live runners (it skips them).
+  The residual-1 re-check guard (above) now covers the CLI-vs-spawn race that this
+  lock-free design would otherwise expose.
+
+### Shared candidate helper (eliminates dry-run drift)
+
+`reconcile_orphaned_runs_on_bootstrap` already owns the authoritative
+candidate logic (`orphan_reconciliation.py:104-122`) and returns the reaped ids.
+To give `--dry-run` the *same* selection without a parallel implementation,
+extract one helper:
+
+```
+_orphan_candidates(event_store, locks_dir) -> list[str]
+    # open runs whose strategy has no live runner; sorted; pure/read-only
+```
+
+The reaper loops `_orphan_candidates(...)`, applies the re-check guard, then
+mutates. `--dry-run` calls `_orphan_candidates(...)` and prints. One source of
+truth, zero drift.
+
+## Read-model staleness (replaces the dropped event-refresh)
+
+`ActiveOpsState` is a `PollingReadModel` (`src/milodex/gui/.../active_ops_state.py`)
+with an internal 30s `QTimer` and no public force-refresh slot. The first draft's
+"read model listens to `reaped` and refreshes" had no attachment point and is
+**dropped**. Instead the two timers compose: the reaper closes the orphaned row on
+its interval; the active-ops poll reflects the closed row on its next cycle.
+
+Worst-case badge staleness = reap_interval + poll_interval (≈ 60s + 30s = ~90s
+with defaults) — acceptable for a display-correctness badge, and documented. If a
+snappier clear is ever wanted, the clean follow-up is a `@Slot() forceRefresh()`
+on `ActiveOpsState` wired to `controller.reaped`; explicitly out of scope for v1.
 
 ## Data flow
 
 ```
 GUI bootstrap (app.py)
-  ├─ set QCoreApplication org/app name (enables QSettings)
+  ├─ setOrganizationName/setApplicationName  (enables QSettings)
   ├─ read QSettings runner_health/reap_interval_seconds (default 60)
-  ├─ existing one-shot reconcile_orphaned_runs_on_bootstrap (unchanged)
-  └─ construct OrphanReaperController(db_path, locks_dir, interval) → start QTimer
+  ├─ existing one-shot reconcile_orphaned_runs_on_bootstrap (now with re-check guard)
+  └─ construct OrphanReaperController(store, locks_dir, interval) → start QTimer
 
 QTimer.timeout (main thread, every interval)
-  └─ reconcile_orphaned_runs_on_bootstrap(...) → emit reaped(ids)
-       └─ active-ops read model refreshes → phantom badge clears
+  └─ reconcile_orphaned_runs_on_bootstrap(...) → close+unlink guarded by re-check
+       └─ emit reaped(ids)  [log/telemetry only]
+   (active-ops 30s poll independently reflects the closed row → badge clears)
 
 RiskOfficeDrawer preset click
   └─ reapIntervalRequested(seconds) → Main.qml
@@ -155,55 +232,67 @@ RiskOfficeDrawer preset click
        └─ OrphanReaperController.intervalSeconds = seconds → QTimer restart
 
 CLI: milodex maintenance reap-orphans [--dry-run]
-  └─ reconcile_orphaned_runs_on_bootstrap(...) (or read-only preview) → print ids
+  └─ --dry-run: _orphan_candidates(...) → print
+     apply:     reconcile_orphaned_runs_on_bootstrap(...) → print reaped ids
 ```
 
 ## ADR addendum (ADR 0026)
 
-ADR 0026 ("Concurrent Multi-Strategy Uses Per-Process Supervisor") states the
-operator is the supervisor and explicitly makes crash recovery a non-goal:
-*"This ADR does not address what happens when one process crashes mid-cycle —
-recovery is operator-driven."* This PR automates a narrow slice of that:
-**closing the orphaned `strategy_runs` bookkeeping row on a timer.** It does NOT
-restart the strategy. The addendum records:
+ADR 0026 ("Concurrent Multi-Strategy Uses Per-Process Supervisor") keeps the
+runner unchanged and makes the operator the supervisor; crash recovery is
+operator-driven (it does not auto-restart a crashed strategy). This PR automates
+a narrow slice — **closing the orphaned `strategy_runs` bookkeeping row on a
+timer and on demand** — without restarting the strategy. The addendum records
+(paraphrasing 0026, not quoting verbatim — the implementer must confirm any
+quoted sentence exists before citing it):
 
-- The read-model bookkeeping (`ended_at IS NULL` → live) is now auto-reconciled
-  on a timer and on demand via CLI, in addition to the existing event triggers.
-- The strategy process itself is still never auto-restarted — 0026's core
-  per-process, operator-driven model is unchanged.
-- The reaper remains liveness-gated; a genuinely-running runner is never reaped.
+- The read-model bookkeeping (`ended_at IS NULL` → live) is now auto-reconciled on
+  a timer and via `maintenance reap-orphans`, in addition to the existing event
+  triggers.
+- The strategy process is still never auto-restarted — 0026's per-process,
+  operator-driven model is unchanged.
+- The reaper remains liveness-gated and now re-checks the lock holder before the
+  close+unlink, closing residual-1 (which 0026-era code deferred) because periodic
+  reaping + the worker-thread async spawn makes that race first-class.
 
 ## Testing
 
-Core reaper logic is already covered by
-`tests/milodex/strategies/test_orphan_reconciliation.py`. New tests:
+Core reaper liveness logic is covered by
+`tests/milodex/strategies/test_orphan_reconciliation.py`. New / changed tests:
 
+- **Residual-1 re-check guard** (in `test_orphan_reconciliation.py`): simulate a
+  fresh lock appearing between the liveness read and the unlink (holder absent at
+  classify time, then a holder with a *newer* `started_at` present at re-check) →
+  assert the strategy is **skipped**: row stays open, lock not unlinked. This is
+  the regression guard for the whole safety argument.
+- **`_orphan_candidates` helper**: returns the same set the reaper acts on; pure
+  (no mutation).
 - **`OrphanReaperController`** (`tests/milodex/gui/...`): setting `intervalSeconds`
-  restarts the timer with the new interval; a timer tick invokes the reaper and
-  emits `reaped` with the reaped ids (inject a fake/seeded store + locks_dir);
-  interval clamps to `[5, 3600]`.
-- **QSettings persistence**: write → read round-trips the interval; default is 60
-  when unset.
+  restarts the timer and clamps to `[5, 3600]`; a tick invokes the reaper and
+  emits `reaped` (inject a seeded store + locks_dir); reuses one `EventStore`.
+- **QSettings persistence**: write → read round-trips; default 60 when unset.
 - **CLI `reap-orphans`**: dry-run lists candidates without mutating; apply closes
-  orphans and prints ids; JSON contract; dry-run + apply on a seeded store.
+  orphans + prints ids; JSON contract.
 - **Drawer QML smoke** (`tests/milodex/gui/test_qml_load_smoke.py`): the new
-  RUNNER HEALTH section loads; `reapIntervalRequested` is emitted on preset
-  click; the active preset reflects the seeded value. (Note: this smoke test
-  substring-asserts QML source — any literal added must match the asserted
-  strings.)
+  RUNNER HEALTH section loads; `reapIntervalRequested` emitted on preset click;
+  active preset reflects the seeded value. **Trap:** this smoke test
+  substring-asserts QML source (`test_qml_load_smoke.py:378-394` etc.) — any new
+  literal must match the asserted strings, and new asserted strings must be added
+  in lockstep.
 
-The main-thread serialization constraint is enforced by construction (reaper
-runs only in the controller's main-thread `QTimer` slot) and documented in the
-controller; it is not separately unit-tested (a true concurrency assertion
-belongs to PR2's soak test).
+The concurrency *interleaving* itself (worker-thread spawn vs main-thread reaper)
+is not unit-tested here — a true concurrency assertion belongs to PR2's soak test.
+What PR1 tests is the **guard's logic** (skip-on-holder-change), which is the
+deterministic core of the safety fix.
 
 ## Files touched
 
-- `src/milodex/strategies/orphan_reconciliation.py` — (maybe) extract a read-only
-  candidate-listing helper for `--dry-run`. Core reaper unchanged.
+- `src/milodex/strategies/orphan_reconciliation.py` — extract `_orphan_candidates`;
+  add the residual-1 re-check guard before close+unlink in
+  `reconcile_orphaned_runs_on_bootstrap`. **(core logic change, justified above)**
 - `src/milodex/gui/orphan_reaper_controller.py` — NEW `OrphanReaperController`.
-- `src/milodex/gui/app.py` — set org/app name; seed QSettings; construct +
-  start controller; wire `reaped` to the read-model refresh.
+- `src/milodex/gui/app.py` — set org/app name; seed QSettings; construct + start
+  controller. (No `reaped`→read-model wiring in v1.)
 - `src/milodex/gui/qml/Milodex/Main.qml` — `reapIntervalRequested` handler;
   QSettings write; push to controller.
 - `src/milodex/gui/qml/Milodex/components/RiskOfficeDrawer.qml` — RUNNER HEALTH
@@ -214,5 +303,6 @@ belongs to PR2's soak test).
 
 ## Sizing
 
-Tiny-to-small. The reaper exists and is tested; this is trigger plumbing + a
-setting + a CLI verb + an ADR addendum.
+Small. The reaper exists; this is the residual-1 guard + trigger plumbing + a
+setting + a CLI verb + an ADR addendum. The residual-1 guard is the only part
+touching genuinely delicate logic and gets the most adversarial test.
