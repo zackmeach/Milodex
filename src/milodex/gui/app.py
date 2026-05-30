@@ -202,6 +202,12 @@ def run_app() -> int:
     if app is None:
         app = QGuiApplication(sys.argv)
 
+    # Identify the application so QSettings (RUNNER HEALTH reap interval) resolves
+    # a stable per-user store. The settings helper also passes org/app explicitly,
+    # so this is belt-and-suspenders for any future default-constructed QSettings.
+    app.setOrganizationName("Milodex")
+    app.setApplicationName("Milodex")
+
     logger.info("run_app: Milodex GUI starting")
 
     # --- 2. Fonts -------------------------------------------------------------
@@ -279,6 +285,19 @@ def run_app() -> int:
     except Exception:
         logger.exception("Bootstrap orphan reconciliation failed; continuing")
 
+    # PR1: periodic orphan reaper — closes phantom strategy_runs rows on a timer
+    # (in addition to the one-shot bootstrap reconcile above), so a runner killed
+    # mid-session stops showing as "running" without a GUI relaunch. Main-thread
+    # QTimer; liveness-gated reaper with the residual-1 re-check guard.
+    from milodex.gui.orphan_reaper_controller import OrphanReaperController
+    from milodex.gui.runner_health_settings import read_reap_interval_seconds
+
+    orphan_reaper_controller = OrphanReaperController(
+        event_store=EventStore(db_path),
+        locks_dir=locks_dir,
+        interval_seconds=read_reap_interval_seconds(),
+    )
+
     strategy_bank_state = StrategyBankState(db_path=db_path)
     front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
     bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
@@ -352,6 +371,7 @@ def run_app() -> int:
         activity_feed_state=activity_feed_state,
         bench_command_bridge=bench_command_bridge,
         risk_profile_bridge=risk_profile_bridge,
+        orphan_reaper_controller=orphan_reaper_controller,
     )
     logger.info("run_app: active theme = %r", theme_manager.theme)
 
@@ -370,6 +390,7 @@ def run_app() -> int:
 
     market_tape_state.start()
     activity_feed_state.start()
+    orphan_reaper_controller.start()
 
     # Run AFTER market_tape_state.start() so the GUI begins rendering the
     # already-cached symbols immediately. VIX renders as "—" until the
@@ -400,6 +421,7 @@ def run_app() -> int:
             attention_state,
             market_tape_state,
             activity_feed_state,
+            orphan_reaper_controller,
         ]
     )
     engine.rootContext().setContextProperty("AppController", app_controller)
@@ -430,6 +452,7 @@ def run_app() -> int:
         attention_state.stop()
         market_tape_state.stop()
         activity_feed_state.stop()
+        orphan_reaper_controller.stop()
         return 1
 
     logger.info(
@@ -451,6 +474,7 @@ def run_app() -> int:
     app.aboutToQuit.connect(attention_state.stop)
     app.aboutToQuit.connect(market_tape_state.stop)
     app.aboutToQuit.connect(activity_feed_state.stop)
+    app.aboutToQuit.connect(orphan_reaper_controller.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()

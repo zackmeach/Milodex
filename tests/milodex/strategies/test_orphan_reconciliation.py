@@ -7,7 +7,7 @@ import os
 from datetime import UTC, datetime
 from pathlib import Path
 
-from milodex.core.advisory_lock import AdvisoryLock
+from milodex.core.advisory_lock import AdvisoryLock, LockHolder
 from milodex.core.event_store import EventStore, StrategyRunEvent
 from milodex.strategies.orphan_reconciliation import reconcile_orphaned_runs_on_bootstrap
 from milodex.strategies.paper_runner_control import runner_lock_name
@@ -235,3 +235,51 @@ def test_mixed_cohort_post_host_reset(tmp_path: Path) -> None:
             assert row.exit_reason == "orphaned_no_live_runner"
     finally:
         live_lock.release()
+
+
+def test_recheck_guard_skips_when_fresh_holder_appears(tmp_path: Path, monkeypatch) -> None:
+    """A runner that writes its lock between classify and unlink must be spared:
+    the row stays open and the (new) lock is not unlinked (residual-1 TOCTOU)."""
+    store = EventStore(tmp_path / "milodex.db")
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    _open_run(store, session_id="s-1", strategy_id="strat.x.v1")
+
+    fresh = LockHolder(
+        pid=os.getpid(),
+        hostname="test-host",
+        holder_name="fresh runner",
+        started_at=datetime(2026, 5, 18, 12, 0, tzinfo=UTC),
+        path=locks_dir / f"{runner_lock_name('strat.x.v1')}.lock",
+    )
+    # The [None, fresh] sequence maps to exactly two current_holder() calls: one in
+    # _has_live_runner during classify (returns None -> early return *before* any
+    # _process_exists probe), one in the guard re-check. This depends on the
+    # `holder is None` early-return short-circuit; reordering _has_live_runner to
+    # probe the process before the None check would desync this iterator.
+    calls = iter([None, fresh])
+
+    def fake_current_holder(self):
+        try:
+            return next(calls)
+        except StopIteration:
+            return fresh
+
+    monkeypatch.setattr(AdvisoryLock, "current_holder", fake_current_holder)
+
+    now = datetime(2026, 5, 18, 20, 0, tzinfo=UTC)
+    closed = reconcile_orphaned_runs_on_bootstrap(store, locks_dir, now=now)
+
+    assert closed == []  # skipped, not reaped
+    assert [r for r in store.list_strategy_runs() if r.ended_at is None]  # still open
+
+
+def test_orphan_candidates_lists_dead_open_strategies(tmp_path: Path) -> None:
+    from milodex.strategies.orphan_reconciliation import _orphan_candidates
+
+    store = EventStore(tmp_path / "milodex.db")
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    _open_run(store, session_id="s-1", strategy_id="strat.x.v1")  # dead (no lock)
+    candidates = _orphan_candidates(store, locks_dir)
+    assert [sid for sid, _ in candidates] == ["strat.x.v1"]

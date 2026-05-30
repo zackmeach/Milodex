@@ -4,6 +4,11 @@
 with no linked trade) and VACUUMs to reclaim space. Dry-run by default; ``--apply``
 mutates after writing a backup. Acquires the runtime advisory lock so it refuses
 to run while a runner/GUI is live. See operations/maintenance.py for safety.
+
+``reap-orphans`` closes phantom ``strategy_runs`` rows left by hard-killed runners
+(the on-demand twin of the GUI's periodic reaper). Liveness-gated and lock-free —
+it skips strategies with a live runner — so it does NOT take the runtime lock.
+``--dry-run`` lists candidates without closing anything.
 """
 
 from __future__ import annotations
@@ -32,7 +37,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument(
         "maintenance_action",
         nargs="?",
-        choices=("compact",),
+        choices=("compact", "reap-orphans"),
         default="compact",
         help="Maintenance action (default: compact).",
     )
@@ -41,6 +46,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         action="store_true",
         dest="maintenance_apply",
         help="Apply the prune + VACUUM. Without it, runs a read-only dry-run (counts only).",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        dest="maintenance_dry_run",
+        help="(reap-orphans) List orphan candidates without closing any run.",
     )
     parser.add_argument(
         "--no-backup",
@@ -57,6 +68,9 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    if getattr(args, "maintenance_action", "compact") == "reap-orphans":
+        return _run_reap_orphans(args, ctx)
+
     event_store = ctx.get_event_store()
     with AdvisoryLock(
         "milodex.runtime",
@@ -102,6 +116,42 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
                 "  VACUUM skipped (--no-vacuum); file size unchanged until a later VACUUM."
             )
         return CommandResult(command="maintenance.compact", data=data, human_lines=human)
+
+
+def _run_reap_orphans(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    """Close (or, with --dry-run, list) orphaned strategy_runs rows.
+
+    No runtime advisory lock: the reaper is liveness-gated and re-checks the lock
+    holder before mutating, so it is safe to run alongside live runners (it skips
+    them). Mirrors the GUI's periodic reaper as an on-demand operator command.
+    """
+    from datetime import UTC, datetime
+
+    from milodex.strategies.orphan_reconciliation import (
+        _orphan_candidates,
+        reconcile_orphaned_runs_on_bootstrap,
+    )
+
+    event_store = ctx.get_event_store()
+    if getattr(args, "maintenance_dry_run", False):
+        candidates = [sid for sid, _ in _orphan_candidates(event_store, ctx.locks_dir)]
+        human = ["Reap-orphans dry-run (no changes):"]
+        human += [f"  would close: {sid}" for sid in candidates] or ["  no orphan runs."]
+        human.append(f"  {len(candidates)} orphan run(s) would be closed.")
+        return CommandResult(
+            command="maintenance.reap-orphans",
+            data={"applied": False, "candidates": candidates},
+            human_lines=human,
+        )
+
+    reaped = reconcile_orphaned_runs_on_bootstrap(
+        event_store, ctx.locks_dir, now=datetime.now(tz=UTC)
+    )
+    return CommandResult(
+        command="maintenance.reap-orphans",
+        data={"applied": True, "reaped": reaped},
+        human_lines=[f"Reaped {len(reaped)} orphan run(s): {', '.join(reaped) or '(none)'}."],
+    )
 
 
 def _mb(num_bytes: int) -> str:

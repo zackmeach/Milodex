@@ -169,6 +169,12 @@ Window {
         function onTimeFormatRequested(format) {
             sessionBag.timeFormat = format
         }
+        // RUNNER HEALTH reap-interval change → persist + apply via the controller.
+        // Guarded: standalone harnesses (load-smoke) don't register the singleton.
+        function onReapIntervalRequested(seconds) {
+            if (typeof OrphanReaperController !== "undefined")
+                OrphanReaperController.persistInterval(seconds)
+        }
     }
     onDropdownDismissedSignal: {
         if (surfaceLoader.item && typeof surfaceLoader.item.closeRunnerDropdown === "function") {

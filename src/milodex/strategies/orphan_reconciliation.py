@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
+    from milodex.core.advisory_lock import LockHolder
     from milodex.core.event_store import EventStore
 
 _logger = logging.getLogger(__name__)
@@ -41,8 +42,13 @@ _ORPHAN_EXIT_REASON = "orphaned_no_live_runner"
 _PID_REUSE_GRACE = timedelta(seconds=1)
 
 
-def _has_live_runner(strategy_id: str, locks_dir: Path) -> bool:
-    """Return ``True`` if a live process holds the runner lock for ``strategy_id``.
+def _has_live_runner(strategy_id: str, locks_dir: Path) -> tuple[bool, LockHolder | None]:
+    """Return ``(is_live, holder_snapshot)`` for ``strategy_id``'s runner lock.
+
+    ``holder_snapshot`` is the ``LockHolder`` this liveness decision was made
+    against (or ``None`` if no lock was on disk), so a caller can re-check the
+    lock against the *exact* snapshot before mutating — without a second,
+    desynchronised ``current_holder()`` read.
 
     Two-stage liveness check:
     1. The lock's recorded PID resolves to an existing process.
@@ -68,7 +74,7 @@ def _has_live_runner(strategy_id: str, locks_dir: Path) -> bool:
     lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
     holder = lock.current_holder()
     if holder is None or not _process_exists(holder.pid):
-        return False
+        return False, holder
     proc_start = _process_start_time(holder.pid)
     if proc_start is None:
         # Introspection unavailable — trust bare PID-existence (legacy).
@@ -86,8 +92,29 @@ def _has_live_runner(strategy_id: str, locks_dir: Path) -> bool:
             holder.pid,
             strategy_id,
         )
-        return True
-    return proc_start <= holder.started_at + _PID_REUSE_GRACE
+        return True, holder
+    return proc_start <= holder.started_at + _PID_REUSE_GRACE, holder
+
+
+def _orphan_candidates(
+    event_store: EventStore, locks_dir: Path
+) -> list[tuple[str, LockHolder | None]]:
+    """Open-run strategies with no live runner, each paired with the holder
+    snapshot the liveness decision saw. Pure / read-only. Sorted by strategy id.
+
+    Shared by the reaper (which re-checks the snapshot before mutating) and the
+    CLI ``maintenance reap-orphans --dry-run`` preview, so both agree on exactly
+    which strategies are orphan candidates.
+    """
+    open_strategy_ids = sorted(
+        {run.strategy_id for run in event_store.list_strategy_runs() if run.ended_at is None}
+    )
+    candidates: list[tuple[str, LockHolder | None]] = []
+    for strategy_id in open_strategy_ids:
+        is_live, snapshot = _has_live_runner(strategy_id, locks_dir)
+        if not is_live:
+            candidates.append((strategy_id, snapshot))
+    return candidates
 
 
 def reconcile_orphaned_runs_on_bootstrap(
@@ -100,13 +127,36 @@ def reconcile_orphaned_runs_on_bootstrap(
 
     Returns the sorted list of strategy ids that were reconciled. Safe to
     call repeatedly (idempotent: a closed run is no longer open).
+
+    Before the mutating close+unlink, re-reads the advisory-lock holder and
+    skips the strategy if a holder appeared, or its ``started_at`` changed,
+    since classification — a runner that wrote its lock in the window (the
+    residual-1 TOCTOU). This makes periodic reaping safe against the GUI's
+    worker-thread async spawn, which is *not* serialized against the reaper.
+    The single skip guards both the row-close and the unlink — sound only
+    because the spawning subprocess acquires its lock *before* it appends its
+    open ``strategy_runs`` row (``strategy.py`` enters ``with runner_lock:``
+    before ``StrategyRunner.__init__`` appends the row). Do not reorder that
+    sequence. See docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md.
     """
-    open_strategy_ids = sorted(
-        {run.strategy_id for run in event_store.list_strategy_runs() if run.ended_at is None}
-    )
+    from milodex.core.advisory_lock import AdvisoryLock
+
     closed: list[str] = []
-    for strategy_id in open_strategy_ids:
-        if _has_live_runner(strategy_id, locks_dir):
+    for strategy_id, snapshot in _orphan_candidates(event_store, locks_dir):
+        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
+        current = lock.current_holder()
+        snapshot_started = snapshot.started_at if snapshot else None
+        current_started = current.started_at if current else None
+        if current_started != snapshot_started:
+            # A fresh lock appeared (or the holder changed) between classify and
+            # mutate — leave both the row and the lock alone. Next tick re-checks.
+            _logger.info(
+                "Orphan reconcile: skipping %r — lock holder changed during the "
+                "re-check window (snapshot=%s, current=%s).",
+                strategy_id,
+                snapshot_started,
+                current_started,
+            )
             continue
         event_store.reconcile_orphan_strategy_runs(
             strategy_id=strategy_id,

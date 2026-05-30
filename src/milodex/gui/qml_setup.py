@@ -31,6 +31,7 @@ from milodex.gui.attention_state import AttentionState
 from milodex.gui.bench_command_bridge import BenchCommandBridge
 from milodex.gui.market_tape_state import MarketTapeState
 from milodex.gui.operational_state import OperationalState
+from milodex.gui.orphan_reaper_controller import OrphanReaperController
 from milodex.gui.performance_state import PerformanceState
 from milodex.gui.read_models import (
     BenchState,
@@ -68,6 +69,7 @@ _market_tape_state_instance: MarketTapeState | None = None
 _activity_feed_state_instance: ActivityFeedState | None = None
 _bench_command_bridge_instance: BenchCommandBridge | None = None
 _risk_profile_bridge_instance: RiskProfileBridge | None = None
+_orphan_reaper_controller_instance: OrphanReaperController | None = None
 
 
 def register_qml_types(
@@ -86,6 +88,7 @@ def register_qml_types(
     activity_feed_state: ActivityFeedState | None = None,
     bench_command_bridge: BenchCommandBridge | None = None,
     risk_profile_bridge: RiskProfileBridge | None = None,
+    orphan_reaper_controller: OrphanReaperController | None = None,
 ) -> ThemeManager:
     """Register Python QML types and return the :class:`ThemeManager` singleton.
 
@@ -133,7 +136,7 @@ def register_qml_types(
     global _ledger_state_instance, _performance_state_instance, _risk_throughput_state_instance
     global _active_ops_state_instance, _attention_state_instance, _market_tape_state_instance
     global _activity_feed_state_instance, _bench_command_bridge_instance
-    global _risk_profile_bridge_instance
+    global _risk_profile_bridge_instance, _orphan_reaper_controller_instance
 
     instance = theme_manager if theme_manager is not None else ThemeManager()
     qmlRegisterSingletonInstance(
@@ -306,5 +309,18 @@ def register_qml_types(
             risk_profile_bridge,
         )
         _risk_profile_bridge_instance = risk_profile_bridge
+
+    if orphan_reaper_controller is not None:
+        # PR1: register the periodic orphan-reaper controller so QML can read
+        # intervalSeconds and call persistInterval() from the RUNNER HEALTH setting.
+        qmlRegisterSingletonInstance(
+            OrphanReaperController,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "OrphanReaperController",
+            orphan_reaper_controller,
+        )
+        _orphan_reaper_controller_instance = orphan_reaper_controller
 
     return instance

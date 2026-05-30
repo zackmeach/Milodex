@@ -93,3 +93,16 @@ The fix:
 3. **Docs.** [SRS R-EXE-013](../SRS.md) was rewritten to codify the per-strategy lock invariant and preserve the Phase 1 history. [OPERATIONS.md §Concurrency Model](../OPERATIONS.md) was updated to describe the two disjoint namespaces.
 
 This addendum is appended rather than the §Consequences claim being silently corrected, so the original mistake (an architectural decision that didn't verify its enforcement-layer assumption) stays visible in the ADR record. The intent of the original decision — per-process supervisor, runner unchanged in shape, dual-stop dialog preserved, broker-as-arbiter — is unchanged. What was missed was a single-line lock-name change and the doc cleanup that accompanies it.
+
+## Addendum (2026-05-29) — Automated orphan bookkeeping recovery
+
+§Non-goals stated this ADR "does not address what happens when one process crashes mid-cycle — recovery is operator-driven." That posture is **narrowed, not reversed**: the operator is still the supervisor, and a crashed strategy is still **never auto-restarted**. What is now automated is only the *bookkeeping* — closing the orphaned `strategy_runs` row a hard-killed runner leaves behind (`ended_at IS NULL`), which the active-ops read model would otherwise render as a confidently-wrong "live" phantom runner.
+
+Driven by the 2026-05-29 concurrent-fleet soak test, which exposed phantom rows accumulating across an intraday fleet, the existing liveness-gated reaper (`reconcile_orphaned_runs_on_bootstrap`) — previously fired only at GUI bootstrap and same-strategy runner start — is now also triggered:
+
+1. **Periodically** by a main-thread `QTimer` in the GUI (`OrphanReaperController`), at a default 60s interval, configurable via the RUNNER HEALTH preset in the Risk Office drawer and persisted durably via QSettings.
+2. **On demand** via `milodex maintenance reap-orphans` (`--dry-run` to preview). Lock-free by design — the reaper is liveness-gated and skips strategies with a live runner — so it does not take the `milodex.runtime` lock and is safe to run alongside live runners.
+
+Critically, the reaper now **re-checks the advisory-lock holder immediately before the close+unlink** and skips the strategy if a holder appeared, or its `started_at` changed, since classification. This closes residual-1 (the bootstrap-reconcile-vs-concurrent-spawn TOCTOU deferred in `docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md`), which periodic reaping plus the GUI's worker-thread async spawn (`bench_command_bridge.py` `QThreadPool` → `subprocess.Popen`) makes first-class rather than the rare CLI-during-bootstrap case the original deferral assumed. The single skip guards both the row-close and the unlink, sound because the spawning subprocess acquires its lock before appending its open row (`strategy.py` enters `with runner_lock:` before `StrategyRunner.__init__` appends the row) — an ordering invariant that must not be reversed.
+
+Design: `docs/superpowers/specs/2026-05-29-periodic-orphan-reconciliation-design.md`. The per-process supervisor model and the operator-owns-recovery posture of this ADR are otherwise unchanged.

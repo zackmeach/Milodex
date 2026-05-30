@@ -10,7 +10,13 @@ from pathlib import Path
 from milodex.cli.formatter import JSON_SCHEMA_VERSION
 from milodex.cli.main import main as cli_entrypoint
 from milodex.core.advisory_lock import AdvisoryLock
-from milodex.core.event_store import BacktestRunEvent, EventStore, ExplanationEvent
+from milodex.core.event_store import (
+    BacktestRunEvent,
+    EventStore,
+    ExplanationEvent,
+    StrategyRunEvent,
+)
+from milodex.strategies.paper_runner_control import runner_lock_name
 
 _TS = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
 
@@ -134,3 +140,61 @@ def test_compact_json_contract(tmp_path: Path) -> None:
     assert payload["schema_version"] == JSON_SCHEMA_VERSION
     assert payload["command"] == "maintenance.compact"
     assert "prunable_explanations" in payload["data"]
+
+
+def _seed_open_orphan(tmp_path: Path, strategy_id: str = "strat.x.v1") -> EventStore:
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="s-1",
+            strategy_id=strategy_id,
+            started_at=_TS,
+            ended_at=None,
+            exit_reason=None,
+            metadata={"mode": "paper"},
+        )
+    )
+    return store
+
+
+def _open_runs(store: EventStore) -> list:
+    return [r for r in store.list_strategy_runs() if r.ended_at is None]
+
+
+def test_reap_orphans_dry_run_lists_without_closing(tmp_path: Path) -> None:
+    store = _seed_open_orphan(tmp_path)
+    code, out, _ = _run(["maintenance", "reap-orphans", "--dry-run", "--json"], tmp_path)
+    assert code == 0
+    data = json.loads(out.getvalue())["data"]
+    assert data["candidates"] == ["strat.x.v1"]
+    assert data["applied"] is False
+    assert _open_runs(store)  # still open
+
+
+def test_reap_orphans_apply_closes_and_reports(tmp_path: Path) -> None:
+    store = _seed_open_orphan(tmp_path)
+    code, out, _ = _run(["maintenance", "reap-orphans", "--json"], tmp_path)
+    assert code == 0
+    data = json.loads(out.getvalue())["data"]
+    assert data["applied"] is True
+    assert "strat.x.v1" in data["reaped"]
+    assert not _open_runs(store)  # closed
+
+
+def test_reap_orphans_dry_run_empty(tmp_path: Path) -> None:
+    code, out, _ = _run(["maintenance", "reap-orphans", "--dry-run", "--json"], tmp_path)
+    assert code == 0
+    assert json.loads(out.getvalue())["data"]["candidates"] == []
+
+
+def test_reap_orphans_skips_live_lock(tmp_path: Path) -> None:
+    store = _seed_open_orphan(tmp_path)
+    lock = AdvisoryLock(runner_lock_name("strat.x.v1"), locks_dir=tmp_path / "locks")
+    lock.acquire()  # current process is the live holder
+    try:
+        code, out, _ = _run(["maintenance", "reap-orphans", "--json"], tmp_path)
+        assert code == 0
+        assert json.loads(out.getvalue())["data"]["reaped"] == []
+        assert _open_runs(store)  # live runner's row spared
+    finally:
+        lock.release()
