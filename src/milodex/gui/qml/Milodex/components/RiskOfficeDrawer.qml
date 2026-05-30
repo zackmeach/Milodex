@@ -39,6 +39,8 @@ Item {
     signal quitRequested()
     // Operator-driven mutation request — Main.qml writes sessionBag.timeFormat in response.
     signal timeFormatRequested(string format)
+    // Operator-driven reap-interval change — Main.qml calls OrphanReaperController.persistInterval.
+    signal reapIntervalRequested(int seconds)
 
     // ------------------------------------------------------------------
     // Geometry — slides in from the right
@@ -78,6 +80,12 @@ Item {
     // sole writer; the drawer requests changes via timeFormatRequested above,
     // which Main.qml translates into a sessionBag write.
     readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
+
+    // reapIntervalSeconds: read-only mirror of the periodic-reaper interval. Guarded
+    // because standalone QML harnesses (the load-smoke test) do not register the
+    // OrphanReaperController singleton — in that case it falls back to the 60s default.
+    readonly property int reapIntervalSeconds:
+        (typeof OrphanReaperController !== "undefined") ? OrphanReaperController.intervalSeconds : 60
 
     // ------------------------------------------------------------------
     // Internal state — which profile card is expanded for confirmation
@@ -426,6 +434,93 @@ Item {
                                 onClicked: {
                                     if (!isSelected) {
                                         root.timeFormatRequested(modelData.value)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Section divider
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.color.border.regular
+            }
+
+            // ==============================================================
+            // RUNNER HEALTH section
+            // ==============================================================
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: Theme.space[2]
+
+                Text {
+                    text: "RUNNER HEALTH"
+                    color: Theme.color.brand.primary
+                    font.family:        Theme.typography.label.xs.family
+                    font.pixelSize:     Theme.typography.label.xs.size
+                    font.weight:        Font.DemiBold
+                    font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.6
+                    font.capitalization: Font.AllUppercase
+                }
+
+                // Three presets: 30s / 60s / 5 MIN — how often phantom runner rows
+                // self-clear. Emits root.reapIntervalRequested; Main.qml calls
+                // OrphanReaperController.persistInterval. The delegate binds only
+                // root.reapIntervalSeconds (a guarded mirror), never the singleton
+                // directly, so the load-smoke harness (no controller) stays clean.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: Theme.space[2]
+
+                    Repeater {
+                        model: [
+                            { label: "30s",   value: 30 },
+                            { label: "60s",   value: 60 },
+                            { label: "5 MIN", value: 300 }
+                        ]
+
+                        delegate: Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: reapBtnLabel.implicitHeight + Theme.space[2] * 2
+                            readonly property bool isSelected: root.reapIntervalSeconds === modelData.value
+                            color: isSelected ? Theme.color.brand.accent
+                                              : (reapBtnMouse.containsMouse ? Theme.color.surface.raised
+                                                                            : Theme.color.surface.canvas)
+                            border.color: isSelected ? Theme.color.brand.accent : Theme.color.border.regular
+                            border.width: 1
+                            radius: Theme.radius.sm
+
+                            Behavior on color {
+                                ColorAnimation { duration: Theme.motion.fast }
+                            }
+
+                            Text {
+                                id: reapBtnLabel
+                                anchors.centerIn: parent
+                                text: modelData.label
+                                color: isSelected ? Theme.color.text.onBrand : Theme.color.text.primary
+                                font.family:        Theme.typography.label.xs.family
+                                font.pixelSize:     Theme.typography.label.xs.size
+                                font.weight:        Font.DemiBold
+                                font.letterSpacing: 0.4
+                                font.capitalization: Font.AllUppercase
+                                Behavior on color {
+                                    ColorAnimation { duration: Theme.motion.fast }
+                                }
+                            }
+
+                            MouseArea {
+                                id: reapBtnMouse
+                                anchors.fill: parent
+                                hoverEnabled: !isSelected
+                                cursorShape: isSelected ? Qt.ArrowCursor : Qt.PointingHandCursor
+                                onClicked: {
+                                    if (!isSelected) {
+                                        root.reapIntervalRequested(modelData.value)
                                     }
                                 }
                             }
