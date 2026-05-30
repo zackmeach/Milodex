@@ -329,6 +329,7 @@ def build_default_registry() -> StrategyRegistry:
     from milodex.strategies.breakout_nr7_inside import BreakoutNr7InsideStrategy
     from milodex.strategies.breakout_orb_intraday import BreakoutOrbIntradayStrategy
     from milodex.strategies.meanrev_bbands_lowerband import MeanrevBbandsLowerbandStrategy
+    from milodex.strategies.meanrev_crypto_rsi2 import MeanrevCryptoRsi2Strategy
     from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
     from milodex.strategies.meanrev_rsi2_intraday import MeanrevRsi2IntradayStrategy
     from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
@@ -336,6 +337,7 @@ def build_default_registry() -> StrategyRegistry:
         MeanrevVwapReversionIntradayStrategy,
     )
     from milodex.strategies.momentum_52w_high_proximity import Momentum52wHighProximityStrategy
+    from milodex.strategies.momentum_crypto_ema_cross import MomentumCryptoEmaCrossStrategy
     from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
     from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
     from milodex.strategies.momentum_vwap_trend_intraday import (
@@ -363,6 +365,8 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(MomentumXsecRotationStrategy)
     registry.register(MomentumVwapTrendIntradayStrategy)
     registry.register(BenchUnconditionalIntradayLongStrategy)
+    registry.register(MomentumCryptoEmaCrossStrategy)
+    registry.register(MeanrevCryptoRsi2Strategy)
     return registry
 
 

@@ -1,0 +1,85 @@
+# RSI(2) mean-reversion BTC/USD — 30Min — v1  (BACKTEST-ONLY CRYPTO CANARY)
+#
+# Crypto Archetype Proof Slice (2026-05-30). Long-only, single-name BTC/USD,
+# 30-minute bars, 24/7. The more active of the two crypto canaries — exercises
+# the new 30Min bar size, faster cadence, and fee/slippage sensitivity. Buys
+# when the Wilder RSI(rsi_lookback) is deeply oversold; exits on stop-loss, RSI
+# reversion, or a day-granular max-hold. Indicators are computed over the
+# CONTINUOUS close history (no session reset); deliberately does NOT use the
+# equity session helper.
+#
+# Max-hold is DAY-GRANULAR: the backtest engine's held-days accounting ticks
+# once per outer trading day by design, so a sub-day bar-count max-hold is not
+# expressible without threading entry timestamps through the shared simulation
+# kernel (out of scope). In practice the RSI-reversion exit dominates.
+#
+# Honest comparator would be an unconditional buy-and-hold of BTC/USD on
+# identical friction (deferred with crypto data ingestion). Harness/architecture
+# proof, NOT an alpha claim. Defaults are boring, not tuned.
+#
+# Fee/slippage: slippage_pct below is a CONSERVATIVE PLACEHOLDER, not a
+# calibrated crypto fee model. At 30-minute cadence this canary takes roughly
+# twice the round-trips of the 1H EMA sibling, so the SAME per-trade slippage
+# compounds into materially more drag here — the cadence is the point.
+#
+# STAGE = backtest. NOT a paper/live/micro_live candidate. Inert until an
+# operator explicitly promotes (which this slice does not do).
+#
+# CLI (runnable once crypto data ingestion lands — blocked today; see
+# docs/reviews/2026-05-30-crypto-archetype-proof-slice.md):
+#   python -m milodex.cli.main backtest \
+#     meanrev.crypto.rsi2.btc_usd_30m.v1 --start YYYY-MM-DD --end YYYY-MM-DD --walk-forward --json
+#
+# Rules in code: src/milodex/strategies/meanrev_crypto_rsi2.py
+# Shared indicators: src/milodex/strategies/_indicators.py
+
+strategy:
+  id: "meanrev.crypto.rsi2.btc_usd_30m.v1"
+  family: "meanrev"
+  template: "crypto.rsi2"
+  variant: "btc_usd_30m"
+  version: 1
+  description: >
+    RSI(2) mean-reversion on BTC/USD, 30-minute bars (24/7, spot, long-only).
+    Buy when the Wilder RSI(rsi_lookback) is at/below rsi_entry_threshold; exit
+    on stop_loss_pct below entry, RSI reverting to/above rsi_exit_threshold, or
+    held_days >= max_hold_days. One position max, no pyramiding, fractional
+    sizing. Backtest-only crypto canary.
+  enabled: true
+
+  universe:
+    - "BTC/USD"
+
+  parameters:
+    # Classic fast RSI(2) mean-reversion defaults, not tuned.
+    rsi_lookback: 2
+    rsi_entry_threshold: 10.0
+    rsi_exit_threshold: 60.0
+    # Conservative stop, wider than equities given crypto volatility.
+    stop_loss_pct: 0.05
+    # Day-granular backstop (see header). 2 outer days.
+    max_hold_days: 2
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "30Min"
+    min_hold_days: 0
+    max_hold_days: 2
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.05
+    stop_loss_pct: 0.05
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    # CONSERVATIVE PLACEHOLDER (10 bps), not a calibrated crypto fee model.
+    # Identical to the 1H sibling so the cadence difference drives the drag.
+    slippage_pct: 0.0010
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []
