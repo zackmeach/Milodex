@@ -21,8 +21,10 @@ All percentages are of **current account equity** unless explicitly stated as st
 | Per-position target size | **10% of equity** | Simple fixed-percent sizing. One-sentence explainable. |
 | Max single-position exposure | **10% of equity** | Matches sizing target; prevents any one name from dominating. |
 | Max total portfolio exposure | **50% of equity** | Milodex never deploys more than half the portfolio into active positions under default rules. The remainder stays unallocated. |
-| Max single-sector exposure | **20% of equity** | Prevents obvious over-concentration in one sector. |
-| Max correlated positions per trade idea | **2** | Blocks stacking near-identical exposures (e.g., multiple semis expressing the same view) even when the sector cap is not yet breached. |
+| Max single-sector exposure | **20% of equity** *(planned — not yet enforced)* | Prevents obvious over-concentration in one sector. |
+| Max correlated positions per trade idea | **2** *(planned — not yet enforced)* | Blocks stacking near-identical exposures (e.g., multiple semis expressing the same view) even when the sector cap is not yet breached. |
+
+> **Implementation status (2026-05-30).** The sector-exposure and correlated-positions caps above are **design targets, not live enforcement** — there is no `sector`/`correlation` check in `src/milodex/risk/`. The enforced check set is `RiskEvaluator._CHECKS`. These two caps are tracked in "Known limitations" below and gated to the live-capital readiness work; do not cite them as enforced invariants today.
 
 **Sizing is simple fixed-percent** for Phase 1, not volatility-aware. Clarity, explainability, and low implementation ambiguity win over sophistication. Volatility-aware sizing may be explored later; it is not a Phase 1 requirement.
 
@@ -62,7 +64,9 @@ The kill switch trips on **any** of the following conditions. The list is delibe
 
 ## Kill-Switch Scope: Strategy-Level vs Account-Level
 
-Milodex supports **both** strategy-level and account-level kill switches.
+Milodex's **design** provides for both strategy-level and account-level kill switches.
+
+> **Implementation status (2026-05-30).** Today **only the account-level kill switch is implemented** — `KillSwitchStateStore` (`src/milodex/execution/state.py`) is account-scoped and carries no `strategy_id`. The strategy-level switch described below is **planned**, consistent with [ADR 0005](adr/0005-kill-switch-manual-reset.md) (account-scoped) and [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (the shared cross-process kill switch is account-scoped by design). Do not rely on per-strategy isolation until it ships.
 
 - **Strategy-level kill switch** isolates problems to a single strategy when the issue is bounded to that strategy's signals, execution, or state. One failing strategy should not unnecessarily shut down everything.
 - **Account-level kill switch** halts all trading when the condition threatens the integrity or safety of the entire system (e.g., broker-state mismatch, connectivity loss, account-exposure breach, operator emergency stop).
@@ -148,7 +152,7 @@ The rule is simple: **if the condition makes execution untrustworthy or policy-i
 - duplicate-order uncertainty
 - max single-position exposure breach
 - max portfolio exposure breach
-- sector / correlation cap breach
+- sector / correlation cap breach *(planned — not yet enforced; see "Sizing & Exposure" status note and "Known limitations")*
 - missing required approval for a gated action
 - critical reconciliation mismatch between local and broker state
 
@@ -219,6 +223,18 @@ A subtler bias: Alpaca's free IEX feed can silently truncate requests for dates 
 Date-range diagnostics record first/last returned bar dates per symbol and warn when a symbol starts more than 7 calendar days after the requested `--start` or ends more than 7 calendar days before the requested `--end`. JSON output includes `requested_start`, `requested_end`, `date_range_warnings`, `symbols_with_full_date_range`, and `date_range_coverage_pct`; human output prints a compact warning list capped at 10 symbols.
 
 This is warning-only. It diagnoses fetch completeness without changing provider cache semantics or backtest execution. A future hard-error mode can be added if the warning signal proves useful and not noisy.
+
+---
+
+## Known limitations (live-capital-gate checklist)
+
+These are deliberate Phase-1 gaps. Each is **acceptable for paper** but a **hard gate before micro_live / live capital**. Tracked here so they are not mistaken for enforced invariants.
+
+1. **Sector & correlated-position caps are not enforced.** Advertised in "Sizing & Exposure" and R-EXE-004 but absent from `src/milodex/risk/`. Planned; not a live-readiness guarantee today.
+2. **Strategy-level kill switch is not implemented.** Only the account-scoped `KillSwitchStateStore` exists (see "Kill-Switch Scope"). Per-strategy isolation is planned.
+3. **In-flight order accounting is same-process and account-scoped only.** `_check_total_exposure` / `_check_concurrent_positions` now count open BUYs from `context.recent_orders` (ADR 0024), which closes the same-process burst-before-fill overshoot. It does **not** close the **cross-process** evaluate→submit race (two runners' intents both passing against a stale position snapshot and both filling) — that needs per-account read→submit serialization, a micro_live hard gate (see [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md) addendum 2026-05-30). Paper stays lock-free.
+4. **`recent_orders` is broker-truncated (`get_orders(limit=100)`) with no durable backstop for the cap checks.** Unlike `_check_duplicate_order` (which falls back to the event store), the exposure/slot checks consume only the truncated list, so >100 in-window orders could drop a pending BUY (undercount). Bounded in Phase 1; add an event-store-backed open-order query at the live gate.
+5. **The per-strategy concurrent cap does not count in-flight orders.** `_check_strategy_concurrent_positions` attributes positions via `attribute_position(...)`, which reconstructs ownership from the durable *trades* history; a pending (unfilled) order has no trade record and broker orders carry no strategy attribution, so in-flight orders are invisible to the per-strategy cap. A single strategy can briefly overshoot its own `max_positions` via in-flight orders. Closing this needs an event-store "open-orders-by-strategy" query — deferred to the live gate.
 
 ---
 

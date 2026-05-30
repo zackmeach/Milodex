@@ -18,6 +18,12 @@
 // verbatim so the operator never mistakes this snapshot for an
 // authoritative gate result.
 //
+// SUPERSESSION (ADR 0051, 2026-05-30): ADR 0051 supersedes ADR 0049's
+// "visual prototype" framing for the wired Bench command families
+// (Promote / Demote / Start / Stop / Backtest). This Evidence surface itself
+// remains read-only by design — it stays a display snapshot, not a command
+// path. See ADR 0051 for the wired command paths.
+//
 // Public API (unchanged from the v0.1 modal — host call sites need no edit):
 //   property bool open                — show/hide the dossier
 //   property var  rowData             — as_qml() dict from _StrategyRow

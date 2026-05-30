@@ -7,6 +7,11 @@
 // but its primary action is disabled and labelled "Not wired in v1".
 // No backend command is dispatched along this path. No state is mutated.
 //
+// SUPERSESSION (ADR 0051, 2026-05-30): ADR 0051 narrowly supersedes ADR 0049
+// for the wired Bench command families. See ADR 0051 for the authoritative
+// current behavior; the ADR-0049 prototype description above is retained as
+// historical context for this shell.
+//
 // Layered on top of BenchModal.qml (the shared modal chrome) — this file
 // adds the four things BenchModal does not provide:
 //   - `open: bool` toggle with focus grab on open

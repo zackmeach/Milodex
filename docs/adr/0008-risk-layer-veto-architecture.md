@@ -18,7 +18,7 @@ Risk enforcement lives in a dedicated `RiskEvaluator` that sits inside `Executio
 3. If any check fails, no order is submitted and the caller receives a structured result naming the failed check(s).
 4. There is no "skip risk" flag. Risk parameters are tunable via config; enforcement is not.
 
-The eleven enforced checks are the ones already listed in R-EXE-004. Additional checks are added by extending the evaluator, not by bypassing it.
+The enforced check set is the `RiskEvaluator._CHECKS` tuple in `src/milodex/risk/evaluator.py` — that tuple is the single live source of truth (14 checks at time of writing; it grows as checks are added, so this prose deliberately does not restate a count). R-EXE-004 in the SRS lists the *intended* set, which includes a sector exposure cap and a correlated-idea cap that are **planned but not yet enforced in code** (see `docs/RISK_POLICY.md`). Additional checks are added by extending the evaluator, not by bypassing it.
 
 ## Rationale
 

@@ -1,5 +1,10 @@
 // BenchSurface.qml — full-width vertical strategy ledger.
 //
+// SUPERSESSION (ADR 0051, 2026-05-30): the "no backend mutation (ADR 0049)"
+// and "visual-prototype no-op" PR-scope notes below are historical markers from
+// PR F / PR G; ADR 0051 narrowly supersedes ADR 0049 for the wired Bench
+// command families. See ADR 0051 for the authoritative current behavior.
+//
 // Visual model (bench-brief §2): five promotion stages rendered as vertical
 // sections stacked top-to-bottom. Section height is determined by strategy
 // count — the funnel shape (many strategies early, few at live) is the design.
