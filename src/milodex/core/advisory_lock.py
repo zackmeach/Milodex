@@ -26,7 +26,7 @@ import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 _logger = logging.getLogger(__name__)
@@ -58,6 +58,18 @@ GC pause, or slow broker call, so an actively-heartbeating runner is
 dead-but-PID-recycled lock self-heals within half a day instead of
 never. Do not lower this toward a small multiple of the poll interval —
 a brief stall on a live holder must not surface a steal window.
+"""
+
+_PID_REUSE_GRACE = timedelta(seconds=1)
+"""Slack between a process's recorded start time and the moment its lock file
+is written, used by :func:`holder_is_live`.
+
+On a host running a real Milodex runner the observed gap is well under a second
+(the process writes its own lock inside :meth:`AdvisoryLock.acquire`), but
+clocks, filesystem timestamps, and the time to construct the holder record can
+introduce sub-second drift. One second is generous enough to absorb that
+without being wide enough to let a recycled PID slip through — a host reboot
+guarantees a multi-minute gap, so the recycled-PID signature stays detectable.
 """
 
 
@@ -299,6 +311,68 @@ def advisory_lock(
         yield holder
     finally:
         lock.release()
+
+
+def holder_is_live(holder: LockHolder | None) -> bool:
+    """Return ``True`` iff ``holder`` resolves to a genuinely-live process.
+
+    The single shared, identity-verified answer to "is this advisory-lock
+    holder actually a live process?" — consolidated from three prior, weaker
+    implementations (orphan reconcile, paper-runner control, bench peek) so the
+    operator-trust surfaces ride the strongest check, not the weakest.
+
+    Two-stage liveness:
+
+    1. The recorded PID resolves to an existing process.
+    2. That process's start time is not *later* than the lock's ``started_at``
+       (plus :data:`_PID_REUSE_GRACE`). A later start time means the OS
+       reassigned the PID after the original holder died, so the live process
+       is unrelated to the lock — classify as dead (recycled PID).
+
+    Stage 2 catches the post-reboot PID-reuse case that
+    :meth:`AdvisoryLock.acquire`'s :data:`_STALE_LOCK_MAX_AGE_SECONDS`
+    fallback cannot: when the lock is only hours old, age is uninformative;
+    process-start-time is the cleaner discriminator. See
+    docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md.
+
+    If the platform cannot report a process start time, falls back to stage 1
+    (bare PID-existence) and logs a loud WARNING — in that regime a recycled
+    PID *can* be mis-classified as live, and a silently-degraded safety net is
+    worse than a noisy one. No regression versus the pre-consolidation
+    behavior.
+    """
+    if holder is None or not _process_exists(holder.pid):
+        return False
+    proc_start = _process_start_time(holder.pid)
+    if proc_start is None:
+        _logger.warning(
+            "Liveness check: process-start-time introspection unavailable for "
+            "pid %d (holder %r of lock %s). Falling back to bare PID-existence "
+            "— a recycled PID in this regime would be mis-classified as a live "
+            "runner. See docs/reviews/"
+            "2026-05-19-orphan-reconcile-pid-reuse-defect.md.",
+            holder.pid,
+            holder.holder_name,
+            holder.path.name,
+        )
+        return True
+    return proc_start <= holder.started_at + _PID_REUSE_GRACE
+
+
+def live_lock_holder(lock: AdvisoryLock) -> LockHolder | None:
+    """Return ``lock``'s current holder iff it is identity-verified live.
+
+    Read-only: never acquires, refreshes, or releases. The single shared
+    "is a live runner holding this lock?" surface for observers — the GUI
+    active-ops badge, the bench stop/duplicate-start paths, and the orphan
+    reaper. Returns ``None`` when the lock is free *or* held only by a stale /
+    recycled-PID lock file (so a dead-but-lock-present runner is reported
+    honestly as absent). Callers needing the exact snapshot the decision was
+    made against (e.g. the reaper's recheck→unlink guard) should read
+    :meth:`current_holder` themselves and pass it to :func:`holder_is_live`.
+    """
+    holder = lock.current_holder()
+    return holder if holder_is_live(holder) else None
 
 
 def _process_exists(pid: int) -> bool:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import time
+from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
 
@@ -12,7 +14,10 @@ from milodex.core.advisory_lock import (
     _STALE_LOCK_MAX_AGE_SECONDS,
     AdvisoryLock,
     AdvisoryLockError,
+    LockHolder,
     advisory_lock,
+    holder_is_live,
+    live_lock_holder,
 )
 
 
@@ -248,3 +253,108 @@ def _pick_stale_pid() -> int:
         except (ProcessLookupError, OSError):
             return candidate
     return 987654
+
+
+# ---------------------------------------------------------------------------
+# Shared identity-verified liveness helper — holder_is_live / live_lock_holder
+#
+# This is the single shared answer to "is this advisory-lock holder a genuinely
+# live process?" consolidated from three prior implementations (orphan
+# reconcile, paper-runner control, bench peek). It must preserve the strongest
+# pre-consolidation semantics: PID-existence AND process-start-time identity,
+# with a loud degrade when start-time introspection is unavailable.
+# ---------------------------------------------------------------------------
+
+
+def _holder(pid: int, started_at: datetime) -> LockHolder:
+    """Build a LockHolder with an arbitrary pid/started_at for liveness tests."""
+    return LockHolder(
+        pid=pid,
+        hostname="test-host",
+        holder_name="milodex test",
+        started_at=started_at,
+        path=Path("milodex.runtime.strategy.x.lock"),
+    )
+
+
+def test_holder_is_live_false_for_none() -> None:
+    assert holder_is_live(None) is False
+
+
+def test_holder_is_live_false_for_dead_pid() -> None:
+    # pid=0 short-circuits _process_exists to False; no start-time probe needed.
+    assert holder_is_live(_holder(0, datetime(2026, 1, 1, tzinfo=UTC))) is False
+
+
+def test_holder_is_live_true_for_current_process() -> None:
+    # This live process started before "now", so a lock recorded "now" passes
+    # the start-time identity check (proc_start <= started_at + grace).
+    assert holder_is_live(_holder(os.getpid(), datetime.now(tz=UTC))) is True
+
+
+def test_holder_is_live_false_for_recycled_pid() -> None:
+    # Live PID but a started_at anchored to the Unix epoch: the owning process
+    # necessarily started *after* the lock was written — the recycled-PID
+    # signature — so identity-verified liveness must classify it dead even
+    # though bare PID-existence returns True.
+    recycled = _holder(os.getpid(), datetime.fromtimestamp(0, tz=UTC))
+    assert holder_is_live(recycled) is False
+
+
+def test_holder_is_live_falls_back_to_pid_existence_without_start_time(
+    monkeypatch, caplog
+) -> None:
+    """When the platform cannot report a process start time, degrade to bare
+    PID-existence — loudly. Matches the strongest pre-consolidation behavior."""
+    import logging
+    import sys
+
+    # core/__init__ re-exports the ``advisory_lock`` context manager, which
+    # shadows the submodule under attribute access — so BOTH ``import ... as``
+    # and monkeypatch's dotted-path string form resolve to the *function*, not
+    # the module. Patch the real module object from sys.modules, which is the
+    # namespace ``holder_is_live`` looks ``_process_start_time`` up in at call time.
+    monkeypatch.setattr(
+        sys.modules["milodex.core.advisory_lock"], "_process_start_time", lambda pid: None
+    )
+    recycled = _holder(os.getpid(), datetime.fromtimestamp(0, tz=UTC))
+    with caplog.at_level(logging.WARNING, logger="milodex.core.advisory_lock"):
+        assert holder_is_live(recycled) is True
+    assert any(
+        "introspection unavailable" in r.message for r in caplog.records
+    ), f"expected a degraded-liveness WARNING, got {caplog.records!r}"
+
+
+def test_live_lock_holder_returns_none_when_no_lock(tmp_path) -> None:
+    lock = AdvisoryLock("milodex.runtime.strategy.x", locks_dir=tmp_path)
+    assert live_lock_holder(lock) is None
+
+
+def test_live_lock_holder_returns_holder_when_live(tmp_path) -> None:
+    lock = AdvisoryLock("milodex.runtime.strategy.x", locks_dir=tmp_path)
+    lock.acquire()
+    try:
+        holder = live_lock_holder(lock)
+        assert holder is not None
+        assert holder.pid == os.getpid()
+    finally:
+        lock.release()
+
+
+def test_live_lock_holder_returns_none_for_recycled_pid(tmp_path) -> None:
+    # Plant a lock whose recorded started_at predates the live PID that owns it
+    # (recycled-PID signature) and assert the shared helper reports it dead.
+    lock_path = tmp_path / "milodex.runtime.strategy.x.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "hostname": "ghost",
+                "holder_name": "milodex",
+                "started_at": datetime.fromtimestamp(0, tz=UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    lock = AdvisoryLock("milodex.runtime.strategy.x", locks_dir=tmp_path)
+    assert live_lock_holder(lock) is None

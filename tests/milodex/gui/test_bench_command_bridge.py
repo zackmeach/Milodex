@@ -20,6 +20,8 @@ including QML. QML-level tests live in ``test_qml_load_smoke.py``.
 from __future__ import annotations
 
 import inspect
+import json
+import os
 import textwrap
 import threading
 from datetime import datetime
@@ -275,10 +277,21 @@ class _FakePaperRunnerControl:
 
 
 def _seed_runner_lock(locks_dir: Path) -> None:
+    # Seed a *live* lock: identity-verified liveness (hardening-2) classifies a
+    # holder live only when the recorded PID resolves to a running process whose
+    # start time precedes the lock. Record this test process's own PID with a
+    # ``started_at`` of "now" so the bench facade's _peek_runner_lock sees a live
+    # runner. The old fixed ``pid=1`` lock now reads dead (no such process on
+    # Windows), which would turn submit-stop into an honest no_active_runner block.
+    started_at = datetime.now().astimezone().isoformat()
     (locks_dir / f"milodex.runtime.strategy.{STRATEGY_ID}.lock").write_text(
-        (
-            '{"pid":1,"hostname":"test-host","holder_name":"milodex strategy run",'
-            '"started_at":"2026-05-15T11:00:00+00:00"}'
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "hostname": "test-host",
+                "holder_name": "milodex strategy run",
+                "started_at": started_at,
+            }
         ),
         encoding="utf-8",
     )

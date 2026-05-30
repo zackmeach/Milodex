@@ -198,18 +198,18 @@ class PaperRunnerControl:
     def _existing_live_runner(self, strategy_id: str) -> LockHolder | None:
         """Return the live advisory-lock holder for ``strategy_id``, if any.
 
-        Read-only: never acquires, refreshes, or releases the lock. A stale
-        lock whose recorded PID is no longer alive is treated as absent so a
-        crashed runner does not permanently block relaunch. Mirrors the
-        liveness semantics ``AdvisoryLock.acquire`` itself uses.
+        Read-only: never acquires, refreshes, or releases the lock. Routes
+        through the shared identity-verified liveness helper
+        (:func:`milodex.core.advisory_lock.live_lock_holder`): a stale lock
+        whose recorded PID is dead — or a recycled PID whose process started
+        after the lock was written — is treated as absent, so a crashed runner
+        does not block a legitimate relaunch. The child's ``O_EXCL`` acquire in
+        :meth:`start` remains the final single-runner correctness backstop.
         """
-        from milodex.core.advisory_lock import AdvisoryLock, _process_exists
+        from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
 
         lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=self._locks_dir)
-        holder = lock.current_holder()
-        if holder is not None and _process_exists(holder.pid):
-            return holder
-        return None
+        return live_lock_holder(lock)
 
     def start(self, strategy_id: str) -> PaperRunnerStartResult:
         """Launch ``milodex strategy run`` for ``strategy_id`` asynchronously."""

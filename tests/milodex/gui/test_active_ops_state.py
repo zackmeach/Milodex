@@ -370,7 +370,13 @@ def test_query_active_ops_missing_db_raises(tmp_path) -> None:
 
 
 def test_query_active_ops_runner_lock_held(tmp_path) -> None:
-    """runnerLock='held' when lock file present with valid JSON."""
+    """runnerLock='held' when a genuinely-live process holds the lock.
+
+    Identity-verified liveness (hardening-2): the badge reflects a live holder,
+    not merely a lock file on disk, so the lock is taken through the real
+    acquire path (this live PID) rather than planted with an arbitrary PID.
+    """
+    from milodex.core.advisory_lock import AdvisoryLock
     from milodex.gui.active_ops_state import _query_active_ops
     from milodex.strategies.paper_runner_control import runner_lock_name
 
@@ -383,17 +389,47 @@ def test_query_active_ops_runner_lock_held(tmp_path) -> None:
     started = (now - timedelta(hours=1)).isoformat()
     _seed_run(db, "strat.a.v1", "sess-001", started)
 
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        result = _query_active_ops(db, now, locks_dir=locks_dir)
+        assert result[0]["runnerLock"] == "held"
+    finally:
+        lock.release()
+
+
+def test_query_active_ops_runner_lock_released_for_dead_pid(tmp_path) -> None:
+    """A stale lock whose recorded PID is not a live process reports 'released'
+    (identity-verified liveness), not a phantom 'held'."""
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    started = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+
+    # pid=0 short-circuits liveness to dead; the lock file exists but no live
+    # process owns it (hard-killed-runner signature).
     lock_file = locks_dir / f"{runner_lock_name('strat.a.v1')}.lock"
-    lock_data = {
-        "pid": 12345,
-        "hostname": "test",
-        "holder_name": "milodex",
-        "started_at": now.isoformat(),
-    }
-    lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
+    lock_file.write_text(
+        json.dumps(
+            {
+                "pid": 0,
+                "hostname": "ghost",
+                "holder_name": "milodex",
+                "started_at": now.isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
 
     result = _query_active_ops(db, now, locks_dir=locks_dir)
-    assert result[0]["runnerLock"] == "held"
+    assert result[0]["runnerLock"] == "released"
 
 
 def test_query_active_ops_runner_lock_released(tmp_path) -> None:
@@ -634,7 +670,12 @@ def test_no_explanations_heartbeat_no_activity(qapp, tmp_path) -> None:
 
 @_skip_no_qt
 def test_runner_lock_held_in_state(qapp, tmp_path) -> None:
-    """runnerLock='held' propagates through the full refresh path."""
+    """runnerLock='held' propagates through the full refresh path.
+
+    Identity-verified liveness (hardening-2): hold the lock via the real
+    acquire path (this live PID) so the badge reflects a genuinely-live holder.
+    """
+    from milodex.core.advisory_lock import AdvisoryLock
     from milodex.strategies.paper_runner_control import runner_lock_name
 
     db = tmp_path / "ops.db"
@@ -645,21 +686,17 @@ def test_runner_lock_held_in_state(qapp, tmp_path) -> None:
     now = datetime.now(tz=UTC)
     _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(hours=1)).isoformat())
 
-    lock_file = locks_dir / f"{runner_lock_name('strat.a.v1')}.lock"
-    lock_data = {
-        "pid": 99999,
-        "hostname": "test",
-        "holder_name": "milodex",
-        "started_at": now.isoformat(),
-    }
-    lock_file.write_text(json.dumps(lock_data), encoding="utf-8")
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        state = _make_state(db, locks_dir=locks_dir)
+        state._kick_refresh()  # noqa: SLF001
+        _drain_pool(state)
 
-    state = _make_state(db, locks_dir=locks_dir)
-    state._kick_refresh()  # noqa: SLF001
-    _drain_pool(state)
-
-    assert state.runners[0]["runnerLock"] == "held"
-    state.stop()
+        assert state.runners[0]["runnerLock"] == "held"
+        state.stop()
+    finally:
+        lock.release()
 
 
 @_skip_no_qt

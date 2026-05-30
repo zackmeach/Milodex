@@ -171,6 +171,33 @@ def test_existing_live_runner_detects_held_lock(tmp_path: Path) -> None:
         lock.release()
 
 
+def test_existing_live_runner_is_none_for_recycled_pid(tmp_path: Path) -> None:
+    """A stale lock whose PID resolves to a live process but whose started_at
+    predates that process (recycled-PID signature, e.g. post-reboot) is not a
+    live runner — duplicate-start must not refuse a legitimate relaunch."""
+    import os
+    from datetime import UTC, datetime
+
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    strategy_id = "sample.daily.example.curated.v1"
+    lock_path = tmp_path / f"{runner_lock_name(strategy_id)}.lock"
+    lock_path.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "hostname": "ghost",
+                "holder_name": "milodex",
+                "started_at": datetime.fromtimestamp(0, tz=UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    control = PaperRunnerControl(locks_dir=tmp_path)
+
+    assert control._existing_live_runner(strategy_id) is None  # noqa: SLF001
+
+
 def test_start_refuses_when_live_runner_already_holds_lock(tmp_path: Path) -> None:
     from milodex.core.advisory_lock import AdvisoryLock
     from milodex.strategies.paper_runner_control import runner_lock_name

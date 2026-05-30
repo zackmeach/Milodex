@@ -17,6 +17,7 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import os
 import re
 import sys
 import textwrap
@@ -110,18 +111,44 @@ def _write_strategy(config_dir: Path, *, stage: str, min_trades_required: int = 
 
 
 def _seed_runner_lock(locks_dir: Path) -> Path:
-    """Write a holder file mimicking an active runner.
+    """Write a holder file mimicking a *live* active runner.
 
-    PID=1 exists on every test platform (Windows ``System Idle Process``,
-    Linux ``init``/``systemd``), so the holder is treated as live by
-    ``AdvisoryLock.current_holder`` + ``_process_exists``.
+    Records this test process's own PID with a ``started_at`` of "now" so the
+    shared identity-verified liveness helper (``advisory_lock.holder_is_live``,
+    which ``_peek_runner_lock`` now routes through) classifies it as genuinely
+    live: the process exists and its start time precedes the lock. A fixed
+    arbitrary PID (the old ``pid=1``) is no longer sufficient — identity-
+    verified liveness rejects a PID it cannot confirm is the original holder.
     """
     holder_path = locks_dir / f"milodex.runtime.strategy.{STRATEGY_ID}.lock"
     holder_path.write_text(
         json.dumps(
             {
-                "pid": 1,
+                "pid": os.getpid(),
                 "hostname": "test-host",
+                "holder_name": f"milodex strategy run {STRATEGY_ID}",
+                "started_at": datetime.now(tz=UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return holder_path
+
+
+def _seed_dead_runner_lock(locks_dir: Path) -> Path:
+    """Write a stale holder file whose recorded PID is not a live process.
+
+    ``pid=0`` short-circuits ``_process_exists`` to False, so identity-verified
+    liveness classifies it dead — the hard-killed-runner-left-a-stale-lock
+    signature. Routing ``_peek_runner_lock`` through ``holder_is_live`` must
+    report this as no active runner, not a phantom live/stoppable one.
+    """
+    holder_path = locks_dir / f"milodex.runtime.strategy.{STRATEGY_ID}.lock"
+    holder_path.write_text(
+        json.dumps(
+            {
+                "pid": 0,
+                "hostname": "ghost",
                 "holder_name": f"milodex strategy run {STRATEGY_ID}",
                 "started_at": "2026-05-14T10:00:00+00:00",
             }
@@ -766,7 +793,7 @@ def test_propose_start_paper_runner_blocks_when_advisory_lock_held(
     codes = {b.reason_code for b in proposal.blockers}
     assert "advisory_lock_held" in codes
     holder_blocker = next(b for b in proposal.blockers if b.reason_code == "advisory_lock_held")
-    assert holder_blocker.context["holder"]["pid"] == 1
+    assert holder_blocker.context["holder"]["pid"] == os.getpid()
 
 
 @pytest.mark.parametrize(
@@ -1028,6 +1055,42 @@ def test_submit_stop_paper_runner_blocks_without_audit_linkage(
     assert control.stops == []
     assert result.audit_event_id is None
     assert result.blockers[0].reason_code == "runner_audit_link_missing"
+
+
+def test_propose_stop_paper_runner_blocks_dead_but_lock_present_runner(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    """A hard-killed runner that left a stale lock on disk must not look
+    stoppable: identity-verified liveness (hardening-2) reports it absent."""
+    _write_strategy(config_dir, stage="paper")
+    _seed_dead_runner_lock(locks_dir)
+    facade = make_facade()
+
+    proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
+
+    assert not proposal.admissible
+    assert proposal.blockers[0].reason_code == "no_active_runner"
+
+
+def test_submit_stop_paper_runner_blocks_dead_but_lock_present_runner(
+    make_facade, config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """Controlled stop against a dead-but-lock-present runner is honestly
+    blocked, never a false 'submitted'. A phantom open strategy_runs row is
+    present (the hard-kill signature) and must not change the verdict; no
+    controlled-stop request reaches the runner control."""
+    _write_strategy(config_dir, stage="paper")
+    _seed_dead_runner_lock(locks_dir)
+    _append_open_strategy_run(event_store, session_id="sess-phantom-1")
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = make_facade(paper_runner_control=control)
+
+    proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
+    result = facade.submit_stop_paper_runner(proposal)
+
+    assert result.status == "blocked", result
+    assert any(b.reason_code == "no_active_runner" for b in result.blockers)
+    assert control.stops == [], "no controlled-stop should be requested for a dead runner"
 
 
 def test_submit_stop_paper_runner_blocks_without_active_runner(

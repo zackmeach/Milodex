@@ -15,7 +15,6 @@ live advisory lock** — so a genuinely-running runner is never reaped.
 from __future__ import annotations
 
 import logging
-from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from milodex.strategies.paper_runner_control import runner_lock_name
@@ -31,69 +30,28 @@ _logger = logging.getLogger(__name__)
 
 _ORPHAN_EXIT_REASON = "orphaned_no_live_runner"
 
-# Small slack between a process's recorded start time and the moment the
-# lock file is written. On a host running a real Milodex runner the
-# observed gap is well under a second (the process writes its own lock
-# inside `AdvisoryLock.acquire`), but clocks, filesystem timestamps, and
-# the time it takes to construct the holder record can introduce sub-
-# second drift. One second is generous enough to absorb that without
-# being wide enough to let a recycled PID slip through — a host reboot
-# guarantees a multi-minute gap.
-_PID_REUSE_GRACE = timedelta(seconds=1)
-
 
 def _has_live_runner(strategy_id: str, locks_dir: Path) -> tuple[bool, LockHolder | None]:
     """Return ``(is_live, holder_snapshot)`` for ``strategy_id``'s runner lock.
 
-    ``holder_snapshot`` is the ``LockHolder`` this liveness decision was made
-    against (or ``None`` if no lock was on disk), so a caller can re-check the
-    lock against the *exact* snapshot before mutating — without a second,
-    desynchronised ``current_holder()`` read.
+    Thin wrapper over the shared, identity-verified
+    :func:`milodex.core.advisory_lock.holder_is_live` (PID-existence +
+    process-start-time identity; loud degrade when start-time introspection is
+    unavailable). ``holder_snapshot`` is the ``LockHolder`` this liveness
+    decision was made against (or ``None`` if no lock was on disk), so a caller
+    can re-check the lock against the *exact* snapshot before mutating — without
+    a second, desynchronised ``current_holder()`` read.
 
-    Two-stage liveness check:
-    1. The lock's recorded PID resolves to an existing process.
-    2. That process's start time is not *later* than the lock's
-       ``started_at`` (plus a small grace). If it is, the OS has
-       reassigned the PID since the original holder died and the
-       "live" process is unrelated to the lock — classify as dead.
-
-    Stage 2 catches the post-reboot PID-reuse case that `AdvisoryLock.acquire`'s
-    `_STALE_LOCK_MAX_AGE_SECONDS` fallback cannot: when the lock is only
-    hours old, age is uninformative; process-start-time is the cleaner
-    discriminator. See docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md.
-
-    If the platform cannot report a process start time, falls back to
-    stage 1 only — no regression versus the pre-fix behavior.
+    Reads ``current_holder()`` exactly once here, before delegating;
+    ``holder_is_live`` never re-reads the lock. The reaper's recheck→unlink
+    guard relies on that single-read contract: a ``None`` holder during
+    classification consumes exactly one ``current_holder()`` call.
     """
-    from milodex.core.advisory_lock import (
-        AdvisoryLock,
-        _process_exists,
-        _process_start_time,
-    )
+    from milodex.core.advisory_lock import AdvisoryLock, holder_is_live
 
     lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
     holder = lock.current_holder()
-    if holder is None or not _process_exists(holder.pid):
-        return False, holder
-    proc_start = _process_start_time(holder.pid)
-    if proc_start is None:
-        # Introspection unavailable — trust bare PID-existence (legacy).
-        # Surface this loudly: in this regime the recycled-PID safeguard
-        # is degraded, so a post-reboot phantom *can* slip through. The
-        # only thing worse than a silent recovery is a silently-degraded
-        # safety net. Operator sees the warning; reconcile still proceeds
-        # so a system without ctypes / /proc isn't permanently wedged.
-        _logger.warning(
-            "Orphan reconcile: process-start-time introspection unavailable "
-            "for pid %d (holder of strategy %r). Falling back to bare PID-"
-            "existence check — a recycled PID in this regime would be mis-"
-            "classified as a live runner. See docs/reviews/"
-            "2026-05-19-orphan-reconcile-pid-reuse-defect.md.",
-            holder.pid,
-            strategy_id,
-        )
-        return True, holder
-    return proc_start <= holder.started_at + _PID_REUSE_GRACE, holder
+    return holder_is_live(holder), holder
 
 
 def _orphan_candidates(
@@ -128,34 +86,48 @@ def reconcile_orphaned_runs_on_bootstrap(
     Returns the sorted list of strategy ids that were reconciled. Safe to
     call repeatedly (idempotent: a closed run is no longer open).
 
-    Before the mutating close+unlink, re-reads the advisory-lock holder and
-    skips the strategy if a holder appeared, or its ``started_at`` changed,
-    since classification — a runner that wrote its lock in the window (the
-    residual-1 TOCTOU). This makes periodic reaping safe against the GUI's
-    worker-thread async spawn, which is *not* serialized against the reaper.
-    The single skip guards both the row-close and the unlink — sound only
-    because the spawning subprocess acquires its lock *before* it appends its
-    open ``strategy_runs`` row (``strategy.py`` enters ``with runner_lock:``
-    before ``StrategyRunner.__init__`` appends the row). Do not reorder that
-    sequence. See docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md.
+    The close and the unlink are each guarded by a fresh holder re-check
+    against the classification snapshot (residual-1 TOCTOU): a runner that
+    wrote its lock in the window is left alone. This makes periodic reaping
+    safe against the GUI's worker-thread async spawn, which is *not* serialized
+    against the reaper.
+
+    Two guards, not one:
+
+    - **Guard 1 (before row-close).** Sound because the spawning subprocess
+      acquires its lock *before* it appends its open ``strategy_runs`` row
+      (``strategy.py`` enters ``with runner_lock:`` before
+      ``StrategyRunner.__init__`` appends the row — do not reorder). So an
+      unchanged-dead holder here means no fresh row exists yet, and the
+      strategy-id-scoped close touches only the old orphan row.
+    - **Guard 2 (immediately before unlink).** A runner can acquire the lock
+      in the window *after* guard 1 but *before* the unlink; it writes its lock
+      before appending its row, so guard 1's close did not touch it — but
+      unlinking its freshly-written lock would orphan a live runner. Re-confirm
+      the holder is still the same dead snapshot right before the unlink; if a
+      fresh holder appeared, skip the unlink (the already-closed old-orphan row
+      stays correct and the next tick re-checks).
+
+    See docs/reviews/2026-05-19-orphan-reconcile-pid-reuse-defect.md.
     """
     from milodex.core.advisory_lock import AdvisoryLock
+
+    def _holder_started(lock: AdvisoryLock) -> datetime | None:
+        holder = lock.current_holder()
+        return holder.started_at if holder else None
 
     closed: list[str] = []
     for strategy_id, snapshot in _orphan_candidates(event_store, locks_dir):
         lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
-        current = lock.current_holder()
         snapshot_started = snapshot.started_at if snapshot else None
-        current_started = current.started_at if current else None
-        if current_started != snapshot_started:
-            # A fresh lock appeared (or the holder changed) between classify and
-            # mutate — leave both the row and the lock alone. Next tick re-checks.
+
+        # Guard 1 — re-confirm the holder before closing the row.
+        if _holder_started(lock) != snapshot_started:
             _logger.info(
-                "Orphan reconcile: skipping %r — lock holder changed during the "
-                "re-check window (snapshot=%s, current=%s).",
+                "Orphan reconcile: skipping %r — lock holder changed before the "
+                "row-close (snapshot=%s).",
                 strategy_id,
                 snapshot_started,
-                current_started,
             )
             continue
         event_store.reconcile_orphan_strategy_runs(
@@ -163,12 +135,25 @@ def reconcile_orphaned_runs_on_bootstrap(
             ended_at=now,
             exit_reason=_ORPHAN_EXIT_REASON,
         )
+        closed.append(strategy_id)
+
+        # Guard 2 — re-confirm IMMEDIATELY before the unlink. If a runner
+        # acquired the lock in the window since guard 1, leave its fresh lock
+        # intact. The check and the unlink are adjacent, so the residual window
+        # is a single filesystem call.
+        if _holder_started(lock) != snapshot_started:
+            _logger.info(
+                "Orphan reconcile: closed orphan row for %r but skipping unlink "
+                "— a fresh lock holder appeared before the unlink (snapshot=%s).",
+                strategy_id,
+                snapshot_started,
+            )
+            continue
         # Unlink the stale lock so the strategy-runs row and the lock-file
         # surface stay in sync. Idempotent: missing_ok=True absorbs the
         # "no lock was on disk to begin with" case (e.g. a row left open
         # by a process that died before writing its lock).
         _stale_lock_path(strategy_id, locks_dir).unlink(missing_ok=True)
-        closed.append(strategy_id)
     return closed
 
 

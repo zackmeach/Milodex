@@ -39,7 +39,7 @@ from typing import TYPE_CHECKING, Any
 import yaml
 
 from milodex.backtesting.walk_forward_runner import derive_walk_forward_spans, run_walk_forward
-from milodex.core.advisory_lock import AdvisoryLock
+from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
 from milodex.core.event_store import (
     OrchestrationBatchEvent,
     OrchestrationJobEvent,
@@ -2350,16 +2350,25 @@ class BenchCommandFacade:
     def _peek_runner_lock(self, strategy_id: str) -> dict[str, Any] | None:
         """Peek the per-strategy runner advisory lock without acquiring it.
 
-        Uses ``AdvisoryLock``'s read-holder protocol (the same one
-        ``acquire()`` consults before raising ``AdvisoryLockError``). Returns
-        the holder dict if held, ``None`` if free.
+        Routes through the shared identity-verified liveness helper
+        (:func:`milodex.core.advisory_lock.live_lock_holder`): returns the
+        holder dict only when a *genuinely-live* process holds the lock, and
+        ``None`` when the lock is free **or** held by a stale / recycled-PID
+        lock file. This keeps every operator-facing surface that consults it
+        honest — controlled stop (``submit_stop_paper_runner``), duplicate-start
+        (``propose_start``/``submit_start_paper_runner``), and stop
+        admissibility (``propose_stop``) — so a hard-killed-but-lock-present
+        runner is reported as absent (``no_active_runner``), not stoppable, and
+        a stale lock no longer blocks a legitimate relaunch. The child's
+        ``O_EXCL`` acquire in ``PaperRunnerControl.start`` remains the final
+        single-runner correctness backstop.
         """
         lock = AdvisoryLock(
             runner_lock_name(strategy_id),
             locks_dir=self._locks_dir,
             holder_name="bench.facade.peek",
         )
-        holder = lock.current_holder()
+        holder = live_lock_holder(lock)
         if holder is None:
             return None
         return {

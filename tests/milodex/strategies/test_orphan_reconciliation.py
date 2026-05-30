@@ -283,3 +283,75 @@ def test_orphan_candidates_lists_dead_open_strategies(tmp_path: Path) -> None:
     _open_run(store, session_id="s-1", strategy_id="strat.x.v1")  # dead (no lock)
     candidates = _orphan_candidates(store, locks_dir)
     assert [sid for sid, _ in candidates] == ["strat.x.v1"]
+
+
+def test_recheck_guard_skips_unlink_when_holder_appears_before_unlink(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A runner that acquires the lock AFTER the pre-close recheck but BEFORE
+    the unlink must not have its freshly-written lock deleted (residual-1
+    *unlink* window, distinct from the pre-close window).
+
+    The genuine orphan row is still closed (it was dead at classify and at the
+    pre-close recheck), but the freshly-acquired lock is preserved so the new
+    runner is not orphaned.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    _open_run(store, session_id="s-1", strategy_id="strat.x.v1")
+
+    lock_path = locks_dir / f"{runner_lock_name('strat.x.v1')}.lock"
+    fresh = LockHolder(
+        pid=os.getpid(),
+        hostname="test-host",
+        holder_name="fresh runner",
+        started_at=datetime(2026, 5, 18, 12, 0, tzinfo=UTC),
+        path=lock_path,
+    )
+    # current_holder() call sequence:
+    #  1) classify (_has_live_runner)       -> None  (candidate, snapshot=None)
+    #  2) pre-close recheck (guard 1)       -> None  (None==None -> close row)
+    #  3) pre-unlink recheck (guard 2, new) -> fresh (None!=fresh -> skip unlink)
+    calls = iter([None, None, fresh])
+
+    def fake_current_holder(self):
+        try:
+            return next(calls)
+        except StopIteration:
+            return fresh
+
+    monkeypatch.setattr(AdvisoryLock, "current_holder", fake_current_holder)
+    # The fresh runner has written its lock on disk in the window; it must survive.
+    _write_lock(
+        locks_dir,
+        strategy_id="strat.x.v1",
+        pid=os.getpid(),
+        started_at=datetime(2026, 5, 18, 12, 0, tzinfo=UTC),
+    )
+
+    now = datetime(2026, 5, 18, 20, 0, tzinfo=UTC)
+    closed = reconcile_orphaned_runs_on_bootstrap(store, locks_dir, now=now)
+
+    # Old orphan row reaped...
+    assert closed == ["strat.x.v1"]
+    assert store.list_strategy_runs()[0].ended_at is not None
+    # ...but the freshly-acquired lock is NOT unlinked.
+    assert lock_path.exists(), "fresh lock acquired in the unlink window must survive"
+
+
+def test_double_reap_is_idempotent(tmp_path: Path) -> None:
+    """Running the reaper twice over the same store closes the orphan once and
+    is a no-op the second time (GUI reaper x CLI reaper interaction)."""
+    store = EventStore(tmp_path / "milodex.db")
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    _open_run(store, session_id="s-1", strategy_id="strat.x.v1")
+    now = datetime(2026, 5, 18, 20, 0, tzinfo=UTC)
+
+    first = reconcile_orphaned_runs_on_bootstrap(store, locks_dir, now=now)
+    second = reconcile_orphaned_runs_on_bootstrap(store, locks_dir, now=now)
+
+    assert first == ["strat.x.v1"]
+    assert second == []
+    assert store.list_strategy_runs()[0].ended_at is not None

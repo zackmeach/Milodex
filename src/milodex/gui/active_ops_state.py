@@ -39,7 +39,7 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
-from milodex.core.advisory_lock import AdvisoryLock
+from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
 from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.strategies.paper_runner_control import (
     controlled_stop_request_path,
@@ -189,8 +189,12 @@ def _query_active_ops(
         if locks_dir is not None:
             lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
             try:
-                holder = lock.current_holder()
-                if holder is not None:
+                # Identity-verified liveness (shared helper): "held" means a
+                # genuinely-live process owns the lock, not merely that a lock
+                # file exists. A hard-killed runner's stale lock reads as
+                # "released", surfacing the phantom (running row + released
+                # lock) instead of a false "held" badge.
+                if live_lock_holder(lock) is not None:
                     runner_lock = "held"
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ActiveOpsState: lock read failed for %s: %s", strategy_id, exc)
