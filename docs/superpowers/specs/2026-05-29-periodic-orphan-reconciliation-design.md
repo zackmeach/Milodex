@@ -1,7 +1,7 @@
 # Periodic Orphan Reconciliation — Design
 
 **Date:** 2026-05-29
-**Status:** Approved (brainstorming) — spec-review iteration 2
+**Status:** Spec-review converged (iter 2 conditional-approve; iter-3 fixes applied) — pending operator review
 **Scope:** PR1 of the post-soak-test robustness sequence (PR1 → PR2 soak-test net)
 
 ## Problem
@@ -87,21 +87,42 @@ reaper running concurrently with the worker-thread spawn destroys that bound** �
 every operator "Start paper runner" click now overlaps possible reaper ticks.
 
 **Fix (residual-1's deferred remedy, review line 162):** make the close+unlink
-conditional on a final re-check. In the reaper loop, after `_has_live_runner`
-returns `False`, capture the holder snapshot it saw (the dead holder, or `None`).
-Immediately before mutating, re-read `current_holder()`:
+conditional on a final re-check.
 
-- If a holder now exists that was **not** there before, or whose `started_at`
-  differs from the snapshot (a fresh runner wrote its lock in the window), **skip
-  the strategy entirely** — do not close the row, do not unlink. The next tick
-  re-evaluates.
+First, **refactor `_has_live_runner` to return `(is_live: bool, holder:
+LockHolder | None)`** — today it returns a bare `bool` (`orphan_reconciliation.py:44,90`)
+and discards the holder it read at `:69`. The reaper needs the *exact* holder
+snapshot the liveness decision was made against; it must come from that single
+read, **not** a second independent `current_holder()` call (a second read would
+reintroduce a TOCTOU inside the classify step). `_has_live_runner` is local to
+this module — the only call site is the reaper loop.
+
+Then, in the reaper loop, after the `(False, snapshot)` classification, and
+immediately before mutating, re-read `current_holder()`:
+
+- If a holder now exists that was **not** there before (snapshot was `None`), or
+  whose `started_at` differs from the snapshot (a fresh runner wrote its lock in
+  the window), **skip the strategy entirely** — do not close the row, do not
+  unlink. The next tick re-evaluates.
 - Otherwise proceed with close + unlink as today.
 
-This does not eliminate the window (a sub-instruction gap remains between re-check
-and unlink) but shrinks it to "a fresh lock with an identical `started_at`
-appeared in the gap," which is negligible. It is the bound the review already
-specified; this PR simply pays the cost now that periodic + worker-thread spawn
-makes the workflow first-class.
+The residual window is negligible because it is **a few instructions wide** —
+the gap between the re-check read and the `unlink` (`orphan_reconciliation.py:120`)
+— *not* because of any `started_at` collision (a fresh runner stamps
+`started_at = now()` at its own `acquire()`, `advisory_lock.py:166`, so it will
+never match the dead holder's value; the comparison is what detects the fresh
+lock). This is the bound the review already specified; this PR pays the cost now
+that periodic + worker-thread spawn makes the workflow first-class.
+
+**Load-bearing ordering invariant.** The single skip guards *both* the row-close
+and the unlink, and that is sound **only because the spawning subprocess acquires
+its lock before it appends its open row**: `strategy.py` enters `with
+runner_lock:` (`:126`) before constructing `StrategyRunner`, whose `__init__`
+appends the open `strategy_runs` row (`runner.py:116`). Lock-precedes-row means
+any new open row the reaper could see implies its lock is already on disk, so the
+`current_holder()` re-check sees it and skips. If that sequence were ever
+reversed, the guard would silently let a live runner's row be closed. Any future
+reorder of lock-vs-row in `strategy.py` breaks this guard.
 
 ## Architecture
 
@@ -264,7 +285,12 @@ Core reaper liveness logic is covered by
   fresh lock appearing between the liveness read and the unlink (holder absent at
   classify time, then a holder with a *newer* `started_at` present at re-check) →
   assert the strategy is **skipped**: row stays open, lock not unlinked. This is
-  the regression guard for the whole safety argument.
+  the regression guard for the whole safety argument. **Mechanism:** this requires
+  a *sequenced* mock on the holder read (returns `None`/dead-holder on the classify
+  call, then a fresh holder on the re-check call) — a single statically-planted
+  lock can't exercise the gap (that steady state is already covered by
+  `test_leaves_open_run_with_live_lock_holder`). Drive it via a side-effecting
+  stub on `current_holder()` (e.g. a list of return values consumed per call).
 - **`_orphan_candidates` helper**: returns the same set the reaper acts on; pure
   (no mutation).
 - **`OrphanReaperController`** (`tests/milodex/gui/...`): setting `intervalSeconds`
@@ -287,8 +313,9 @@ deterministic core of the safety fix.
 
 ## Files touched
 
-- `src/milodex/strategies/orphan_reconciliation.py` — extract `_orphan_candidates`;
-  add the residual-1 re-check guard before close+unlink in
+- `src/milodex/strategies/orphan_reconciliation.py` — change `_has_live_runner`
+  to return `(is_live, holder)`; extract `_orphan_candidates`; add the residual-1
+  re-check guard (using that holder snapshot) before close+unlink in
   `reconcile_orphaned_runs_on_bootstrap`. **(core logic change, justified above)**
 - `src/milodex/gui/orphan_reaper_controller.py` — NEW `OrphanReaperController`.
 - `src/milodex/gui/app.py` — set org/app name; seed QSettings; construct + start
