@@ -93,6 +93,12 @@ def test_recheck_guard_skips_when_fresh_holder_appears(tmp_path, monkeypatch):
 Add `from milodex.core.advisory_lock import AdvisoryLock, LockHolder` to imports if
 not already present (`AdvisoryLock` is imported; add `LockHolder`).
 
+The `[None, fresh]` sequence maps to exactly two `current_holder()` calls — one in
+`_has_live_runner` during classify (returns `None` → early return before any
+`_process_exists` probe), one in the guard re-check. Add a comment in the test noting
+this depends on the `holder is None` early-return short-circuit, so a future reorder of
+`_has_live_runner` (probing the process before the None check) would desync the iterator.
+
 - [ ] **Step 3: Run it — verify it fails**
 
 Run: `python -m pytest tests/milodex/strategies/test_orphan_reconciliation.py::test_recheck_guard_skips_when_fresh_holder_appears -v`
@@ -262,20 +268,25 @@ advisory lock** (unlike `compact`).
 
 - [ ] **Step 1: Write the failing CLI dry-run test**
 
-Inspect the existing `test_maintenance.py` for the harness/ctx-construction helper and
-reuse it. The dry-run must list candidates and NOT close the row.
+The real harness in `tests/milodex/cli/test_maintenance.py` is a local `_run(argv,
+tmp_path)` returning `(code, out, err)` where `out`/`err` are `StringIO`; JSON tests
+assert via `json.loads(out.getvalue())["data"]`. Use it — do NOT invent `run_cli`/
+`result.stdout`. The dry-run must list candidates and NOT close the row.
 
 ```python
-def test_reap_orphans_dry_run_lists_without_mutating(tmp_path, ...):
-    # seed an open strategy_run with no live lock via the existing helper/EventStore
-    # invoke: maintenance reap-orphans   (no --apply semantics; dry-run is --dry-run)
-    result = run_cli(["maintenance", "reap-orphans", "--dry-run"], ...)
-    assert "strat.x.v1" in result.stdout
-    # row still open
+def test_reap_orphans_dry_run_lists_without_mutating(tmp_path):
+    # seed an open strategy_run with no live lock (mirror how the file seeds state;
+    # likely a get_data_dir/locks_dir patch + EventStore.append_strategy_run)
+    code, out, err = _run(["maintenance", "reap-orphans", "--dry-run", "--json"], tmp_path)
+    assert code == 0
+    payload = json.loads(out.getvalue())
+    assert "strat.x.v1" in payload["data"]["candidates"]
+    # row still open afterwards
     assert [r for r in store.list_strategy_runs() if r.ended_at is None]
 ```
 
-(Match the file's actual CLI-invocation pattern — `main(argv=..., event_store_factory=..., locks_dir=...)` or the local `run_cli` helper. Ground against the existing tests in the file.)
+Ground the seeding + `tmp_path`→`get_data_dir`/`get_locks_dir` wiring against the
+existing compact tests in the same file before writing.
 
 - [ ] **Step 2: Run it — verify it fails**
 
@@ -383,7 +394,6 @@ def test_interval_property_clamps_and_restarts_timer(qapp):
     assert c._timer.interval() == 3600 * 1000
 
 def test_tick_invokes_reaper_and_emits_reaped(qapp, monkeypatch):
-    captured = {}
     monkeypatch.setattr(
         "milodex.gui.orphan_reaper_controller.reconcile_orphaned_runs_on_bootstrap",
         lambda store, locks_dir, *, now: ["strat.x.v1"],
@@ -393,6 +403,21 @@ def test_tick_invokes_reaper_and_emits_reaped(qapp, monkeypatch):
     c.reaped.connect(lambda ids: received.append(ids))
     c._reap()  # invoke the slot directly
     assert received == [["strat.x.v1"]]
+
+def test_clamp_boundaries_inclusive(qapp):
+    c = OrphanReaperController(event_store=object(), locks_dir=Path("x"), interval_seconds=5)
+    assert c.intervalSeconds == 5      # exact floor preserved
+    c.intervalSeconds = 3600
+    assert c.intervalSeconds == 3600   # exact ceiling preserved
+
+def test_reap_swallows_reaper_exception(qapp, monkeypatch):
+    def boom(store, locks_dir, *, now):
+        raise RuntimeError("db gone")
+    monkeypatch.setattr(
+        "milodex.gui.orphan_reaper_controller.reconcile_orphaned_runs_on_bootstrap", boom
+    )
+    c = OrphanReaperController(event_store=object(), locks_dir=Path("x"), interval_seconds=60)
+    c._reap()  # must not raise; logged + survives to next tick
 ```
 
 - [ ] **Step 2: Run — verify failure (module missing)**
@@ -604,15 +629,44 @@ mirror (sibling to `timeFormat` at line 80). `Main.qml`: a `Connections` handler
 - Modify: `src/milodex/gui/app.py`
 - Test: `tests/milodex/gui/test_qml_load_smoke.py`
 
-- [ ] **Step 1: Set org/app name + construct/register/start the controller in `app.py`**
+- [ ] **Step 1a: Register the controller in `qml_setup.py` (house style — NOT setContextProperty)**
+
+`register_qml_types` lives in `src/milodex/gui/qml_setup.py` (NOT app.py) and registers
+every bridge via `qmlRegisterSingletonInstance` with a module-level GC anchor. It has
+**no `engine` parameter** — do not use `setContextProperty` here. Mirror the
+`risk_profile_bridge` block exactly (`qml_setup.py:296-308`):
+
+1. Import `OrphanReaperController` at the top of `qml_setup.py`.
+2. Add a GC anchor beside the others (`qml_setup.py:70`):
+   `_orphan_reaper_controller_instance: OrphanReaperController | None = None`
+3. Add the kwarg to `register_qml_types(...)` (after `risk_profile_bridge`, line 88):
+   `orphan_reaper_controller: OrphanReaperController | None = None,`
+4. Add `_orphan_reaper_controller_instance` to the `global` block (lines 131-136).
+5. Before `return instance` (line 310), add:
+```python
+    if orphan_reaper_controller is not None:
+        qmlRegisterSingletonInstance(
+            OrphanReaperController,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            "OrphanReaperController",
+            orphan_reaper_controller,
+        )
+        _orphan_reaper_controller_instance = orphan_reaper_controller
+```
+After `import Milodex 1.0`, QML references it as the singleton `OrphanReaperController`
+(same access pattern as `RiskProfileBridge`).
+
+- [ ] **Step 1b: Set org/app name + construct/start the controller in `app.py`**
 
 After `app = QGuiApplication(...)` (around line 203), add:
 ```python
 app.setOrganizationName("Milodex")
 app.setApplicationName("Milodex")
 ```
-After the bootstrap reconcile block (after line 281) and once `db_path`/`locks_dir`
-exist, construct the controller seeded from QSettings:
+After the bootstrap reconcile block (after line 281), construct the controller seeded
+from QSettings:
 ```python
 from milodex.gui.orphan_reaper_controller import OrphanReaperController
 from milodex.gui.runner_health_settings import read_reap_interval_seconds
@@ -623,13 +677,14 @@ orphan_reaper_controller = OrphanReaperController(
     interval_seconds=read_reap_interval_seconds(),
 )
 ```
-Add `orphan_reaper_controller=orphan_reaper_controller` to the `register_qml_types(...)`
-call (line 339) and update `register_qml_types`'s signature + body to
-`engine.rootContext().setContextProperty("OrphanReaperController", orphan_reaper_controller)`
-(grep `def register_qml_types` for the file; follow the existing setContextProperty
-pattern used for the other bridges). Start it after registration (near line 360):
-`orphan_reaper_controller.start()`. Add it to the `_make_app_controller([...])` stop
-list and the load-failure `.stop()` cleanup block so shutdown drains it.
+Pass `orphan_reaper_controller=orphan_reaper_controller` to the `register_qml_types(...)`
+call (app.py:339). Start it after registration (near line 360):
+`orphan_reaper_controller.start()`. Wire teardown in **all three** places the other
+read models are wired:
+- the `_make_app_controller([...])` stop-list (app.py:389-404),
+- the load-failure cleanup block (app.py:421-432),
+- **and** `app.aboutToQuit.connect(orphan_reaper_controller.stop)` (app.py:441-453) —
+  the normal-window-close path. Omitting this leaves the QTimer firing during teardown.
 
 - [ ] **Step 2: Add the QML RUNNER HEALTH section + signal + mirror in `RiskOfficeDrawer.qml`**
 
@@ -646,8 +701,18 @@ Add a new section (mirror the TIME FORMAT ColumnLayout at 363-435) below TIME FO
 with a divider, header `"RUNNER HEALTH"`, and a `Repeater` over
 `[{label:"30s",value:30},{label:"60s",value:60},{label:"5 MIN",value:300}]`, each
 delegate's `isSelected: root.reapIntervalSeconds === modelData.value`, `onClicked:
-root.reapIntervalRequested(modelData.value)`. **Smoke-test trap:** the QML smoke test
-substring-asserts source — see Step 4.
+root.reapIntervalRequested(modelData.value)`.
+
+**CRITICAL — guard every `OrphanReaperController` reference with `typeof`.** The smoke
+harness (`test_qml_load_smoke.py`) calls `register_qml_types(...)` WITHOUT the controller,
+so in that subprocess `OrphanReaperController` is an *unregistered* name; any *unguarded*
+reference throws a QML warning and fails the smoke test. The mirror property
+(`typeof OrphanReaperController !== "undefined" ? ... : 60`) is the only place that
+touches the singleton — the delegate binds the local `root.reapIntervalSeconds`, never
+the singleton directly. Keep it that way: the delegate's `isSelected` and `onClicked`
+must reference `root.reapIntervalSeconds` / `root.reapIntervalRequested`, NOT
+`OrphanReaperController.*`. **Smoke-test trap:** the QML smoke test substring-asserts
+source — see Step 4.
 
 - [ ] **Step 3: Handle the signal in `Main.qml`**
 
@@ -677,10 +742,13 @@ def persistInterval(self, seconds: int) -> None:
     write_reap_interval_seconds(int(seconds))
     self._set_interval(seconds)
 ```
-and have the QML handler call only `OrphanReaperController.persistInterval(seconds)`.
+and have the QML handler call only `OrphanReaperController.persistInterval(seconds)`
+(guarded by `typeof OrphanReaperController !== "undefined"`).
 If you take (a), add a controller unit test: `persistInterval` writes QSettings and
 updates `intervalSeconds` (extend Task 3's test file; use Task 4's `tmp_settings`
-fixture).
+fixture). **Note:** option (a) reopens Task 3's controller file — after this edit,
+re-run Task 3's full test module (`tests/milodex/gui/test_orphan_reaper_controller.py`)
+to confirm no regression, then re-commit the controller.
 
 - [ ] **Step 4: Update the QML smoke test**
 
