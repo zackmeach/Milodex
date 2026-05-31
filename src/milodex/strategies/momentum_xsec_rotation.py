@@ -128,7 +128,9 @@ class MomentumXsecRotationStrategy(Strategy):
 
         # Rank exits: held symbols whose rank > exit_outside_top_n leave.
         rank_exit_symbols: list[str] = []
-        for symbol in list(open_positions):
+        # Sorted-symbol iteration so the emitted rank-exit SELL order is
+        # deterministic regardless of the positions-mapping iteration order.
+        for symbol in sorted(open_positions):
             rank = rank_by_symbol.get(symbol)
             if rank is None or rank > parameters["exit_outside_top_n"]:
                 rank_exit_symbols.append(symbol)
@@ -466,7 +468,10 @@ def _stop_intents(
     main evaluate() flow on rebalance bars.
     """
     results: list[tuple[TradeIntent, str]] = []
-    for symbol, quantity in open_positions.items():
+    # Sorted iteration keeps the stop ordering (and thus stop_intents[0], the
+    # reported primary stop) deterministic across positions-mapping orderings.
+    for symbol in sorted(open_positions):
+        quantity = open_positions[symbol]
         barset = bars_by_symbol.get(symbol)
         if barset is None:
             continue
