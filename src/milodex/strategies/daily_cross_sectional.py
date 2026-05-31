@@ -118,6 +118,13 @@ def evaluate_pre_entry_gates(
     returns a ``PreEntryContinue`` carrying the intents-so-far, the
     set of symbols still open after exits, and the remaining capacity.
     """
+    # Deterministic exit ordering. Each strategy's ``_exit_intents`` iterates
+    # ``open_positions`` in mapping order — broker-response order live, kernel
+    # insertion order in backtest — so without this sort the emitted SELL order
+    # and the reported primary exit (``exit_details[0]`` below) would depend on
+    # that nondeterministic order. Sorting by symbol makes both reproducible;
+    # the set of exits is unchanged, only their order and the primary label.
+    exit_details = sorted(exit_details, key=lambda pair: pair[0].symbol)
     intents: list[TradeIntent] = [intent for intent, _rule in exit_details]
     remaining_after_exits = set(norm.open_positions) - {
         intent.symbol for intent in intents if intent.side == OrderSide.SELL

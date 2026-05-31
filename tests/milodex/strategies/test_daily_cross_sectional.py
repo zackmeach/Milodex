@@ -120,6 +120,53 @@ def test_gates_exit_first_short_circuits_with_exit_decision() -> None:
     assert result.reasoning.threshold == {"exit_param": 42}
 
 
+def test_gates_exit_ordering_is_deterministic_across_exit_details_order() -> None:
+    """Exit ordering must not depend on the order ``_exit_intents`` produced.
+
+    Every cross-sectional ``_exit_intents`` iterates ``open_positions`` in
+    mapping order (broker-response order live, kernel insertion order in
+    backtest). The helper sorts ``exit_details`` by symbol so both the emitted
+    SELL order and the reported primary exit (``exit_details[0]``) are
+    reproducible regardless of the input order. Without the sort this fails:
+    the forward and reversed inputs would yield different primaries and orders.
+    """
+    norm = NormalizedInputs(
+        open_positions={"XLK": 5.0, "XLE": 3.0, "XLF": 7.0},
+        bars_by_symbol={"SPY": _bullish_spy()},
+    )
+
+    def _exit(symbol: str, qty: float) -> tuple[TradeIntent, str]:
+        intent = TradeIntent(
+            symbol=symbol, side=OrderSide.SELL, quantity=qty, order_type=OrderType.MARKET
+        )
+        return (intent, f"test.exit_{symbol.lower()}")
+
+    forward = [_exit("XLK", 5.0), _exit("XLE", 3.0), _exit("XLF", 7.0)]
+
+    def _run(exit_details: list[tuple[TradeIntent, str]]) -> StrategyDecision:
+        result = evaluate_pre_entry_gates(
+            norm=norm,
+            parameters=_base_parameters(),
+            exit_details=exit_details,
+            exit_narrative=lambda rule, sym, params: f"exit {sym} via {rule}",
+            exit_threshold=lambda rule, params: {"rule": rule},
+            regime_filter_enabled=True,
+        )
+        assert isinstance(result, StrategyDecision)
+        return result
+
+    a = _run(forward)
+    b = _run(list(reversed(forward)))
+
+    # Same SELLs, in the same symbol-sorted order, regardless of input order.
+    assert [intent.symbol for intent in a.intents] == ["XLE", "XLF", "XLK"]
+    assert [intent.symbol for intent in a.intents] == [intent.symbol for intent in b.intents]
+    # Same reported primary exit (alphabetically first), regardless of input order.
+    assert a.reasoning.rule == b.reasoning.rule == "test.exit_xle"
+    assert a.reasoning.narrative == b.reasoning.narrative
+    assert a.reasoning.triggering_values == b.reasoning.triggering_values == {"symbol": "XLE"}
+
+
 def test_gates_capacity_zero_short_circuits_when_no_exits() -> None:
     """Positions full, no exits — return at-capacity decision before regime check."""
     norm = NormalizedInputs(

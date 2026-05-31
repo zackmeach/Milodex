@@ -176,6 +176,48 @@ def test_xsec_stop_loss_fires_on_non_rebalance_bar() -> None:
     assert sells[0].quantity == 5.0
 
 
+def test_xsec_stop_ordering_is_deterministic_across_positions_order() -> None:
+    """Two positions both stop out on the same non-rebalance bar. The emitted
+    SELL order and the reported primary stop must not depend on the
+    positions-mapping iteration order — ``_stop_intents`` iterates symbols
+    sorted, so the result is identical whether positions arrive XLK-first or
+    XLE-first. Without the sort, the primary and SELL order would flip.
+    """
+    strategy = MomentumXsecRotationStrategy()
+    universe = ("XLK", "XLE")
+    closes = _ramp_then_breakdown(base=100.0, final_close=90.0)  # entry 100 → stop 93, close 90
+    bars = {
+        "XLK": _make_bars(closes, end_weekday=2),  # Wednesday — not a rebalance day
+        "XLE": _make_bars(closes, end_weekday=2),
+    }
+    entry_state = {
+        "XLK": {"entry_price": 100.0, "held_days": 2},
+        "XLE": {"entry_price": 100.0, "held_days": 2},
+    }
+
+    def _decide(positions: dict[str, float]) -> object:
+        return strategy.evaluate(
+            _first_barset(bars),
+            _context(
+                universe=universe,
+                positions=positions,
+                equity=10_000.0,
+                bars_by_symbol=bars,
+                entry_state=entry_state,
+            ),
+        )
+
+    forward = _decide({"XLK": 5.0, "XLE": 3.0})
+    reversed_ = _decide({"XLE": 3.0, "XLK": 5.0})
+
+    sells_fwd = [i.symbol for i in forward.intents if i.side == OrderSide.SELL]
+    sells_rev = [i.symbol for i in reversed_.intents if i.side == OrderSide.SELL]
+    assert sells_fwd == sells_rev == ["XLE", "XLK"]  # symbol-sorted, order-invariant
+    assert forward.reasoning.rule == reversed_.reasoning.rule == "momentum.stop_loss"
+    assert forward.reasoning.triggering_values == reversed_.reasoning.triggering_values
+    assert forward.reasoning.triggering_values["symbol"] == "XLE"  # alphabetically-first primary
+
+
 def test_xsec_max_hold_fires_on_non_rebalance_bar() -> None:
     strategy = MomentumXsecRotationStrategy()
     universe = ("XLK",)
