@@ -9,6 +9,20 @@ tests/milodex/gui/test_app.py::test_design_system_showcase_loads_without_errors_
 tests/milodex/gui/test_app.py::test_anchor_surface_loads_without_errors_via_subprocess
 ```
 
+### Same class, deliberately NOT quarantined
+
+```
+tests/milodex/gui/test_app.py::test_main_qml_loads_without_errors_via_subprocess
+```
+
+This third subprocess-QML-load test exhibits the **identical** pollution flake (passes
+in isolation; an occasional lone failure in a full-suite run, emitting `QFontDatabase:
+Cannot find font directory`). It is **kept active (not skipped)** because it is the
+primary app-QML smoke test — losing that coverage to silence a flake is the wrong
+trade. Treat a single failure of it in a full run as the known pollution class below,
+**not** a regression; confirm by re-running it in isolation by node ID (it passes —
+verified 3/3 on 2026-05-31). Root-cause remediation is the same deferred task.
+
 ### Symptom
 
 Both tests **pass reliably when run in isolation**.  In a full `pytest tests/milodex/gui`

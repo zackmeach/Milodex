@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass, field
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
 from milodex.data.models import BarSet
@@ -86,6 +86,21 @@ class DecisionReasoning:
       first field an operator reads; readability beats greppability.
     - ``extras`` — escape hatch for strategy-specific debugging fields
       that shouldn't bloat the main shape.
+
+    Non-rule decision fields (added when the *second consumer* arrived: the
+    substitutable decision layer — axis 3 of the capability map). All default
+    to ``None`` and are **omitted from the serialized blob when unset**, so a
+    rule strategy that never populates them serializes the identical legacy
+    payload. A non-rule decider populates whichever describe its paradigm:
+
+    - ``kind`` — decision-paradigm tag (e.g. ``"scored"``, ``"tree"``).
+    - ``score`` — the continuous decision score of the selected candidate
+      (linear / ranking deciders). Unlike a boolean threshold comparison this
+      is a real value that *orders* candidates.
+    - ``decision_path`` — ordered tuple of traversed split steps for a tree /
+      bucketed-lookup decider, terminating at a leaf action.
+    - ``feature_contributions`` — per-feature weighted contribution to the
+      selected candidate's ``score`` (linear deciders).
     """
 
     rule: str
@@ -95,10 +110,40 @@ class DecisionReasoning:
     ranking: list[Mapping[str, Any]] | None = None
     rejected_alternatives: list[Mapping[str, Any]] = field(default_factory=list)
     extras: Mapping[str, Any] = field(default_factory=dict)
+    # Non-rule decision fields. Flagged ``omit_if_default`` so they vanish from
+    # the serialized blob unless a non-rule decider sets them — keeping every
+    # rule strategy's payload byte-identical to the pre-generalization shape.
+    kind: str | None = field(default=None, metadata={"omit_if_default": True})
+    score: float | None = field(default=None, metadata={"omit_if_default": True})
+    decision_path: tuple[Mapping[str, Any], ...] | None = field(
+        default=None, metadata={"omit_if_default": True}
+    )
+    feature_contributions: Mapping[str, float] | None = field(
+        default=None, metadata={"omit_if_default": True}
+    )
 
     def asdict(self) -> dict[str, Any]:
-        """Return the JSON-serializable dict shape used in ``context["reasoning"]``."""
-        return asdict(self)
+        """Return the JSON-serializable dict shape used in ``context["reasoning"]``.
+
+        Fields flagged ``omit_if_default`` in their metadata — the non-rule
+        decision fields above — are dropped when left at their default, so a
+        rule strategy that never sets them serializes the identical legacy
+        payload (the existing rule strategies' blobs are byte-unchanged). The
+        omission is driven purely by field metadata and a
+        field-equals-its-own-default test: there is **no branch on decider
+        type, ``kind`` value, template, or class**, so rule strategies and
+        non-rule deciders traverse this one code path identically.
+        """
+        data = asdict(self)
+        for spec in fields(self):
+            if not spec.metadata.get("omit_if_default"):
+                continue
+            default = (
+                spec.default_factory() if spec.default_factory is not MISSING else spec.default
+            )
+            if data[spec.name] == default:
+                del data[spec.name]
+        return data
 
 
 @dataclass(frozen=True)
