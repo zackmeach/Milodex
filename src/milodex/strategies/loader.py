@@ -345,7 +345,9 @@ def build_default_registry() -> StrategyRegistry:
     )
     from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
     from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
+    from milodex.strategies.scored_linear_features import ScoredLinearFeaturesStrategy
     from milodex.strategies.seasonality_turn_of_month import SeasonalityTurnOfMonthStrategy
+    from milodex.strategies.tree_bucketed_lookup import TreeBucketedLookupStrategy
 
     registry = StrategyRegistry()
     registry.register(RegimeSpyShy200DmaStrategy)
@@ -367,6 +369,10 @@ def build_default_registry() -> StrategyRegistry:
     registry.register(BenchUnconditionalIntradayLongStrategy)
     registry.register(MomentumCryptoEmaCrossStrategy)
     registry.register(MeanrevCryptoRsi2Strategy)
+    # Non-rule deciders — decision-layer seam proof (axis 3). Backtest-only,
+    # lifecycle-exempt; they share the contract, not a code path.
+    registry.register(ScoredLinearFeaturesStrategy)
+    registry.register(TreeBucketedLookupStrategy)
     return registry
 
 

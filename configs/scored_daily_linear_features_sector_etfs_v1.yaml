@@ -1,0 +1,64 @@
+# Decider A — Linear Scored / Ranking (decision-layer seam proof, axis 3) — v1
+#
+# CAPABILITY-PROOF ONLY. lifecycle-exempt; stage: backtest. This decider exists
+# to prove the existing `Strategy` decision contract honestly hosts a NON-RULE
+# decision paradigm (a continuous weighted score that orders the cross section),
+# NOT to earn capital. Negative / random backtest performance is the expected,
+# correct result. It is NOT tuned for return and MUST NEVER be promoted to paper.
+# See docs/overnight/DECISION_LAYER_SEAM_PROOF_BRIEF.md and
+# docs/architecture/2026-05-30-harness-capability-axes.md (axis 3).
+#
+# Coefficients live below in `feature_weights` so config_hash covers
+# reproducibility — there is no model artifact. Features are derived from the
+# cached daily OHLCV the rule families already consume (no new data source).
+
+strategy:
+  id: "scored.daily.linear_features.sector_etfs.v1"
+  family: "scored"
+  template: "daily.linear_features"
+  variant: "sector_etfs"
+  version: 1
+  description: >
+    Cross-sectional linear-scored rotation across the eleven SPDR sector ETFs.
+    score(symbol) = Σ weight_f · zscore_f over {momentum, rsi, ma_distance,
+    realized_vol}; rotate into the top-N by score. Capability-proof for the
+    substitutable decision layer (axis 3) — mechanics, not alpha.
+  enabled: true
+
+  universe_ref: "universe.sector_etfs_spdr.v1"
+
+  parameters:
+    momentum_lookback: 63
+    rsi_lookback: 14
+    ma_length: 50
+    vol_lookback: 20
+    feature_weights:
+      momentum: 1.0
+      ma_distance: 0.5
+      rsi: -0.2
+      realized_vol: -0.5
+    target_positions: 2
+    exit_rank_buffer: 1
+    max_concurrent_positions: 3
+    per_position_notional_pct: 0.45
+    stop_loss_pct: 0.10
+    max_hold_days: 10
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 10
+
+  risk:
+    max_position_pct: 0.45
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.10
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    min_trades_required: 30
+
+  disable_conditions_additional: []

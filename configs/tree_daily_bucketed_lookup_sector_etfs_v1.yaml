@@ -1,0 +1,80 @@
+# Decider B — Decision-Tree / Bucketed-Lookup (decision-layer seam proof, axis 3) — v1
+#
+# CAPABILITY-PROOF ONLY. lifecycle-exempt; stage: backtest. This decider exists
+# to prove the existing `Strategy` decision contract honestly hosts a SECOND,
+# STRUCTURALLY DIFFERENT non-rule paradigm (discrete bucketed traversal of a
+# depth-2 tree to a leaf action), NOT to earn capital. Negative / random
+# backtest performance is the expected, correct result. It is NOT tuned for
+# return and MUST NEVER be promoted to paper. See
+# docs/overnight/DECISION_LAYER_SEAM_PROOF_BRIEF.md and
+# docs/architecture/2026-05-30-harness-capability-axes.md (axis 3).
+#
+# The split edges and the leaf->action table live below, so config_hash covers
+# reproducibility — there is no model artifact. The level-2 RSI edge differs by
+# the first (momentum) branch, so the second decision boundary depends on the
+# path: a genuine tree, not two ANDed thresholds.
+#
+# Tree:
+#   root:  momentum >= momentum_split ?
+#     yes (high-momentum):  rsi <= rsi_split_strong ? strong_buy : trend_follow
+#     no  (low-momentum):   rsi <= rsi_split_dip    ? dip_buy    : neutral_skip
+
+strategy:
+  id: "tree.daily.bucketed_lookup.sector_etfs.v1"
+  family: "tree"
+  template: "daily.bucketed_lookup"
+  variant: "sector_etfs"
+  version: 1
+  description: >
+    Cross-sectional decision-tree decider across the eleven SPDR sector ETFs.
+    Discretizes momentum and RSI into a fixed depth-2 binary tree with four
+    leaves; enters the highest-priority enter-leaf names up to capacity.
+    Capability-proof for the substitutable decision layer (axis 3) —
+    mechanics, not alpha.
+  enabled: true
+
+  universe_ref: "universe.sector_etfs_spdr.v1"
+
+  parameters:
+    momentum_lookback: 63
+    rsi_lookback: 14
+    momentum_split: 0.0
+    rsi_split_strong: 70.0
+    rsi_split_dip: 30.0
+    leaf_actions:
+      strong_buy:
+        action: "enter"
+        priority: 3
+      trend_follow:
+        action: "enter"
+        priority: 2
+      dip_buy:
+        action: "enter"
+        priority: 1
+      neutral_skip:
+        action: "skip"
+        priority: 0
+    target_positions: 2
+    max_concurrent_positions: 3
+    per_position_notional_pct: 0.45
+    stop_loss_pct: 0.10
+    max_hold_days: 10
+
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 10
+
+  risk:
+    max_position_pct: 0.45
+    max_positions: 3
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.10
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    min_trades_required: 30
+
+  disable_conditions_additional: []

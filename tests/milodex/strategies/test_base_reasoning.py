@@ -63,3 +63,52 @@ def test_decision_reasoning_asdict_is_json_serializable() -> None:
     decoded = json.loads(encoded)
 
     assert decoded == reasoning.asdict()
+
+
+def test_decision_reasoning_omits_unset_non_rule_fields() -> None:
+    """A rule-shaped reasoning (no non-rule fields set) serializes the legacy
+    seven-key payload — the new optional decision-layer fields are omitted, so
+    every existing rule strategy's blob stays byte-identical to the
+    pre-generalization shape (decision-layer-seam-proof verification #2)."""
+    import dataclasses
+
+    reasoning = DecisionReasoning(rule="no_signal", narrative="No rule fired this bar.")
+    payload = reasoning.asdict()
+
+    legacy_keys = {
+        "rule",
+        "narrative",
+        "triggering_values",
+        "threshold",
+        "ranking",
+        "rejected_alternatives",
+        "extras",
+    }
+    assert set(payload) == legacy_keys
+    # The override emits exactly the legacy projection of the full dataclass —
+    # the non-rule fields are dropped, nothing else changes.
+    full = dataclasses.asdict(reasoning)
+    assert payload == {key: full[key] for key in legacy_keys}
+
+
+def test_decision_reasoning_serializes_populated_non_rule_fields() -> None:
+    """A non-rule decider populates the new fields, which then appear in the
+    serialized blob alongside the legacy keys (and only the populated ones)."""
+    reasoning = DecisionReasoning(
+        rule="scored.linear_features.entry",
+        narrative="weighted score 1.83 ranked XLK first",
+        ranking=[{"symbol": "XLK", "score": 1.83}, {"symbol": "XLE", "score": -0.40}],
+        kind="scored",
+        score=1.83,
+        feature_contributions={"momentum": 0.90, "rsi": 0.50, "ma_distance": 0.43},
+    )
+
+    payload = reasoning.asdict()
+
+    assert payload["kind"] == "scored"
+    assert payload["score"] == 1.83
+    assert payload["feature_contributions"]["momentum"] == 0.90
+    # decision_path was left unset → omitted, not serialized as None.
+    assert "decision_path" not in payload
+    # Still JSON round-trippable with the new fields present.
+    assert json.loads(json.dumps(payload)) == payload
