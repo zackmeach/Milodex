@@ -108,9 +108,11 @@ class TreeBucketedLookupStrategy(Strategy):
         rejected_alternatives: list[dict[str, Any]] = []
 
         # Leaf exits: held names whose current leaf is a "skip" action (or which
-        # can no longer be classified) leave the book.
+        # can no longer be classified) leave the book. Sorted-symbol iteration
+        # keeps the emitted SELL ordering deterministic regardless of the
+        # positions-mapping iteration order.
         leaf_exit_symbols: list[str] = []
-        for symbol in list(open_positions):
+        for symbol in sorted(open_positions):
             row = leaf_by_symbol.get(symbol)
             if row is None or row["action"] != "enter":
                 leaf_exit_symbols.append(symbol)
@@ -312,7 +314,10 @@ def _stop_intents(
 ) -> list[tuple[TradeIntent, str]]:
     """Daily mechanical exits (stop_loss > max_hold), mirroring the rule families."""
     results: list[tuple[TradeIntent, str]] = []
-    for symbol, quantity in open_positions.items():
+    # Sorted iteration keeps the stop ordering (and thus the reported primary
+    # stop in the reasoning) deterministic across positions-mapping orderings.
+    for symbol in sorted(open_positions):
+        quantity = open_positions[symbol]
         barset = bars_by_symbol.get(symbol)
         if barset is None:
             continue

@@ -123,8 +123,11 @@ class ScoredLinearFeaturesStrategy(Strategy):
         rejected_alternatives: list[dict[str, Any]] = []
 
         # Rank exits: held names that fell outside the top (target + buffer).
+        # Iterate in sorted-symbol order so the emitted SELL ordering is
+        # deterministic regardless of the positions-mapping iteration order
+        # (live broker response order vs. backtest insertion order).
         rank_exit_symbols: list[str] = []
-        for symbol in list(open_positions):
+        for symbol in sorted(open_positions):
             rank = rank_by_symbol.get(symbol)
             if rank is None or rank > exit_rank_limit:
                 rank_exit_symbols.append(symbol)
@@ -319,7 +322,10 @@ def _stop_intents(
 ) -> list[tuple[TradeIntent, str]]:
     """Daily mechanical exits (stop_loss > max_hold), mirroring the rule families."""
     results: list[tuple[TradeIntent, str]] = []
-    for symbol, quantity in open_positions.items():
+    # Sorted iteration keeps the stop ordering (and thus the reported primary
+    # stop in the reasoning) deterministic across positions-mapping orderings.
+    for symbol in sorted(open_positions):
+        quantity = open_positions[symbol]
         barset = bars_by_symbol.get(symbol)
         if barset is None:
             continue

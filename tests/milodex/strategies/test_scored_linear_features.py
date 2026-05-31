@@ -107,22 +107,47 @@ def test_scored_reasoning_serialization_carries_only_populated_non_rule_fields()
 
 
 def test_scored_is_deterministic_across_input_ordering() -> None:
-    """Verification #3: identical intents and reasoning regardless of how the
-    universe tuple and bars map are ordered (the decider sorts internally)."""
+    """Verification #3: identical intents (in the same ORDER) and reasoning
+    regardless of how the universe tuple, bars map, AND positions mapping are
+    ordered. The positions axis is the one the original test missed — it leaks
+    into SELL emission order and stop-reasoning primary selection unless the
+    decider sorts its positions iteration."""
     bars = _diverse_universe()
     symbols = list(bars)
+    rev = tuple(reversed(symbols))
+    rev_bars = {sym: bars[sym] for sym in rev}
 
-    first = ScoredLinearFeaturesStrategy().evaluate(
-        _first(bars), _context(tuple(symbols), bars, equity=100_000.0)
-    )
-    reordered_symbols = tuple(reversed(symbols))
-    reordered_bars = {sym: bars[sym] for sym in reordered_symbols}
-    second = ScoredLinearFeaturesStrategy().evaluate(
-        _first(reordered_bars), _context(reordered_symbols, reordered_bars, equity=100_000.0)
-    )
+    def run(universe, bars_map, positions, entry_state):
+        return ScoredLinearFeaturesStrategy().evaluate(
+            _first(bars_map),
+            _context(
+                universe, bars_map, equity=100_000.0, positions=positions, entry_state=entry_state
+            ),
+        )
 
-    assert _intent_signature(first) == _intent_signature(second)
-    assert first.reasoning.asdict() == second.reasoning.asdict()
+    # Entry path (no positions).
+    entry_a = run(tuple(symbols), bars, {}, {})
+    entry_b = run(rev, rev_bars, {}, {})
+    assert _ordered_intents(entry_a) == _ordered_intents(entry_b)
+    assert entry_a.reasoning.asdict() == entry_b.reasoning.asdict()
+
+    # Stop path: hold three names deep underwater so all stop. The reported
+    # primary stop and the SELL ordering must not depend on positions order.
+    held = [symbols[0], symbols[2], symbols[4]]
+    positions = {sym: 5.0 for sym in held}
+    entry_state = {
+        sym: {
+            "entry_price": float(bars[sym].to_dataframe()["close"].iloc[-1]) * 2.0,
+            "held_days": 1,
+        }
+        for sym in held
+    }
+    rev_positions = {sym: positions[sym] for sym in reversed(held)}
+    stop_a = run(tuple(symbols), bars, positions, entry_state)
+    stop_b = run(rev, rev_bars, rev_positions, entry_state)
+    assert stop_a.reasoning.rule == "scored.stop_loss"
+    assert _ordered_intents(stop_a) == _ordered_intents(stop_b)
+    assert stop_a.reasoning.asdict() == stop_b.reasoning.asdict()
 
 
 def test_scored_rank_exit_when_holding_falls_out_of_buffer() -> None:
@@ -266,5 +291,6 @@ def _context(
     )
 
 
-def _intent_signature(decision) -> list[tuple[str, str, float]]:
-    return sorted((i.symbol, i.side.value, i.quantity) for i in decision.intents)
+def _ordered_intents(decision) -> list[tuple[str, str, float]]:
+    """Intents in emission order (order-sensitive) — guards SELL ordering."""
+    return [(intent.symbol, intent.side.value, intent.quantity) for intent in decision.intents]
