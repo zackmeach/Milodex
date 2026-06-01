@@ -635,6 +635,50 @@ class EventStore:
             ).fetchone()
         return None if row is None else row["config_hash"]
 
+    def count_paper_trades(self, strategy_id: str) -> int:
+        """Count paper-source trades for ``strategy_id``.
+
+        A bounded ``COUNT(*)`` replacing a full-table ``list_trades()`` load in
+        promotion-evidence assembly. Predicate matches the comprehension it
+        replaced exactly: ``source = 'paper' AND strategy_name = ?`` (stage is
+        intentionally not filtered). Memory stays flat regardless of table size
+        — unlike the unbounded load that OOM-froze the workstation when the
+        runner fleet launched concurrently
+        (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM trades
+                WHERE source = 'paper' AND strategy_name = ?
+                """,
+                (strategy_id,),
+            ).fetchone()
+        return int(row[0])
+
+    def count_paper_rejections(self, strategy_id: str) -> int:
+        """Count paper-stage risk rejections for ``strategy_id``.
+
+        A bounded ``COUNT(*)`` replacing a full-table ``list_explanations()``
+        load in promotion-evidence assembly. Predicate matches the comprehension
+        it replaced exactly: ``strategy_name = ? AND strategy_stage = 'paper' AND
+        risk_allowed = 0`` (``risk_allowed`` is stored as INTEGER 0/1). See
+        :meth:`count_paper_trades` for the OOM context.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM explanations
+                WHERE strategy_name = ?
+                  AND strategy_stage = 'paper'
+                  AND risk_allowed = 0
+                """,
+                (strategy_id,),
+            ).fetchone()
+        return int(row[0])
+
     def list_trades(self) -> list[TradeEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM trades ORDER BY id ASC").fetchall()

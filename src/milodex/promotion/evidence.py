@@ -134,17 +134,15 @@ def _require_risks(risks: list[str]) -> None:
 
 
 def _derive_paper_counts(event_store: EventStore, strategy_id: str) -> tuple[int, int]:
-    """Count paper-stage trades and rejections for ``strategy_id``."""
-    paper_trade_count = sum(
-        1
-        for trade in event_store.list_trades()
-        if trade.source == "paper" and trade.strategy_name == strategy_id
+    """Count paper-stage trades and rejections for ``strategy_id``.
+
+    Delegates to bounded ``COUNT(*)`` queries rather than materializing the
+    whole ``trades`` and ``explanations`` tables in Python — the unbounded
+    full-table-load pattern that OOM-froze the workstation when the runner
+    fleet launched concurrently
+    (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
+    """
+    return (
+        event_store.count_paper_trades(strategy_id),
+        event_store.count_paper_rejections(strategy_id),
     )
-    paper_rejection_count = sum(
-        1
-        for explanation in event_store.list_explanations()
-        if explanation.strategy_name == strategy_id
-        and explanation.strategy_stage == "paper"
-        and explanation.risk_allowed is False
-    )
-    return paper_trade_count, paper_rejection_count

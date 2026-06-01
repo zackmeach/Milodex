@@ -1448,3 +1448,111 @@ def test_iter_trades_returns_lazy_generator(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     _seed_trade(store)
     assert inspect.isgenerator(store.iter_trades())
+
+
+# ---------------------------------------------------------------------------
+# Bounded paper-count aggregates
+#
+# count_paper_trades / count_paper_rejections replace the full-table
+# list_trades() + list_explanations() loads in promotion-evidence assembly
+# (_derive_paper_counts). They MUST preserve the exact predicates of the
+# comprehensions they replace:
+#   trades:       source = 'paper'  AND strategy_name = ?   (NO stage filter)
+#   explanations: strategy_name = ? AND strategy_stage = 'paper' AND risk_allowed = 0
+# ---------------------------------------------------------------------------
+
+
+def _append_paper_trade(
+    store: EventStore,
+    *,
+    strategy_name: str,
+    source: str = "paper",
+    strategy_stage: str = "paper",
+) -> None:
+    explanation_id = store.append_explanation(
+        ExplanationEvent(**_explanation_kwargs(submitted_by="operator"))
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+            status="filled",
+            source=source,
+            symbol="SPY",
+            side="buy",
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=400.0,
+            estimated_order_value=400.0,
+            strategy_name=strategy_name,
+            strategy_stage=strategy_stage,
+            strategy_config_path="configs/x.yaml",
+            submitted_by="operator",
+            broker_order_id=None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
+def test_count_paper_trades_filters_on_source_and_strategy_not_stage(tmp_path):
+    """Counts trades where source='paper' and strategy matches; source and
+    strategy are filtered, stage is NOT (matching the replaced comprehension)."""
+    store = EventStore(tmp_path / "milodex.db")
+    _append_paper_trade(store, strategy_name="alpha", strategy_stage="paper")
+    _append_paper_trade(
+        store, strategy_name="alpha", strategy_stage="micro_live"
+    )  # stage not filtered
+    _append_paper_trade(store, strategy_name="alpha", source="backtest")  # excluded: source
+    _append_paper_trade(store, strategy_name="beta")  # excluded: strategy
+
+    assert store.count_paper_trades("alpha") == 2
+
+
+def test_count_paper_rejections_filters_strategy_stage_and_risk_allowed(tmp_path):
+    """Counts paper-stage explanations for the strategy where risk_allowed is
+    False; strategy, stage, and risk_allowed are all filtered."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="operator",
+                strategy_name="alpha",
+                strategy_stage="paper",
+                risk_allowed=False,
+            )
+        )
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="operator",
+                strategy_name="alpha",
+                strategy_stage="paper",
+                risk_allowed=True,  # excluded: allowed, not a rejection
+            )
+        )
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="operator",
+                strategy_name="alpha",
+                strategy_stage="backtest",  # excluded: not paper stage
+                risk_allowed=False,
+            )
+        )
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="operator",
+                strategy_name="beta",  # excluded: different strategy
+                strategy_stage="paper",
+                risk_allowed=False,
+            )
+        )
+    )
+
+    assert store.count_paper_rejections("alpha") == 1
