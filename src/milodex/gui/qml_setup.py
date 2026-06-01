@@ -17,8 +17,11 @@ follow the same pattern so multiple surfaces (Anchor, Strategy Bank,
 future Attribution) can bind to the same live state without each
 receiving its own copy.
 
-Subsequent PRs (app shell, components) call :func:`register_qml_types`
-once during application startup *before* loading any QML.
+Production startup (``milodex.gui.app.run_app``) builds an ordered
+:class:`QmlSingleton` registry via ``_build_qml_registry`` and calls
+:func:`register_qml_singletons` directly.  :func:`register_qml_types` is
+retained as a back-compat wrapper so existing test/smoke harnesses that pass
+a keyword-subset are untouched.
 """
 
 from __future__ import annotations

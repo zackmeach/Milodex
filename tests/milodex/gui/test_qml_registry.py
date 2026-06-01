@@ -265,3 +265,60 @@ class _StubKillSwitchStore:
         from types import SimpleNamespace
 
         return SimpleNamespace(active=False, reason=None, last_triggered_at=None)
+
+
+# ---------------------------------------------------------------------------
+# Cross-check: _REGISTRY_SPEC (back-compat wrapper) vs _build_qml_registry
+# (prod path) must not silently diverge.
+# ---------------------------------------------------------------------------
+
+
+def test_registry_spec_and_build_qml_registry_are_in_sync() -> None:
+    """_REGISTRY_SPEC and _build_qml_registry encode the same ordered sequence.
+
+    Both sources encode the canonical QML singleton order and lifecycle flags.
+    This test asserts they are identical so a change in one without the other
+    fails loudly.  No Qt is needed — _build_qml_registry only constructs
+    QmlSingleton descriptors (no Qt calls); _REGISTRY_SPEC is a plain tuple.
+
+    If this test FAILS on a clean run the two sources have already diverged —
+    the discrepancy must be resolved rather than the assertion updated.
+    """
+    from milodex.gui.app import _build_qml_registry
+    from milodex.gui.qml_setup import _REGISTRY_SPEC
+
+    # Build the expected sequence from _REGISTRY_SPEC: ThemeManager first
+    # (lifecycle=False), then each spec entry (kwarg, qml_name, qml_type, lifecycle).
+    spec_sequence = [("ThemeManager", False)] + [
+        (qml_name, lifecycle) for _kwarg, qml_name, _qml_type, lifecycle in _REGISTRY_SPEC
+    ]
+
+    # Build the actual sequence from the prod path using one sentinel per param.
+    sentinel_keys = (
+        "theme_manager",
+        "operational_state",
+        "strategy_bank_state",
+        "front_page_state",
+        "bench_state",
+        "kanban_state",
+        "ledger_state",
+        "performance_state",
+        "risk_throughput_state",
+        "active_ops_state",
+        "attention_state",
+        "market_tape_state",
+        "activity_feed_state",
+        "bench_command_bridge",
+        "risk_profile_bridge",
+        "orphan_reaper_controller",
+    )
+    sentinels = {k: object() for k in sentinel_keys}
+    registry = _build_qml_registry(**sentinels)
+    prod_sequence = [(d.qml_name, d.lifecycle) for d in registry]
+
+    assert prod_sequence == spec_sequence, (
+        "The two registry encodings have diverged.\n"
+        f"  _build_qml_registry (prod): {prod_sequence}\n"
+        f"  _REGISTRY_SPEC (back-compat): {spec_sequence}\n"
+        "Update whichever source is stale so they agree."
+    )

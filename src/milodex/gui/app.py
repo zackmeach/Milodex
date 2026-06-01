@@ -224,11 +224,10 @@ def run_app() -> int:
        Qt Quick only; no Widgets are used per ADR 0033).
     2. Call :func:`~milodex.gui.fonts.load_fonts` to register bundled font
        families (Newsreader, Public Sans, JetBrains Mono) with Qt.
-    3. Construct :class:`~milodex.gui.theme_manager.ThemeManager` and
-       :class:`~milodex.gui.operational_state.OperationalState`, then call
-       :func:`~milodex.gui.qml_setup.register_qml_types` to bind them as
-       the ``Milodex.ThemeManager`` and ``Milodex.OperationalState`` QML
-       singletons.
+    3. Construct all read models, build the ordered registry via
+       ``_build_qml_registry``, then call
+       :func:`~milodex.gui.qml_setup.register_qml_singletons` to bind them
+       as QML singletons under ``Milodex``.
     4. Construct :class:`QQmlApplicationEngine`.
     5. Add :data:`QML_IMPORT_PATH` as a QML import search path so
        ``import Milodex 1.0`` resolves.
@@ -288,6 +287,12 @@ def run_app() -> int:
     from milodex.gui.theme_manager import ThemeManager
     from milodex.strategies.loader import StrategyLoader
     from milodex.strategies.paper_runner_control import PaperRunnerControl
+
+    # NOTE: register_qml_singletons is imported above but intentionally stays
+    # function-local (not hoisted to module scope).  Two tests in test_app.py
+    # patch 'milodex.gui.qml_setup.register_qml_singletons'; that patch works
+    # only because the import resolves at call time.  Hoisting it would make the
+    # patch arrive too late, silently exercising real Qt registration in those tests.
 
     # --- 1. QGuiApplication ---------------------------------------------------
     app = QGuiApplication.instance()
