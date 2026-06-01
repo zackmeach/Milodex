@@ -23,6 +23,9 @@ once during application startup *before* loading any QML.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 from PySide6.QtQml import qmlRegisterSingletonInstance
 
 from milodex.gui.active_ops_state import ActiveOpsState
@@ -51,25 +54,102 @@ from milodex.gui.theme_manager import ThemeManager
 QML_IMPORT_URI: str = "Milodex"
 QML_IMPORT_VERSION: tuple[int, int] = (1, 0)
 
-# Module-level references so registered singletons are not garbage
-# collected after :func:`register_qml_types` returns.  Qt does not take
-# ownership of singleton instances passed to ``qmlRegisterSingletonInstance``.
+
+@dataclass(frozen=True)
+class QmlSingleton:
+    """One QML singleton-instance registration descriptor.
+
+    A registry of these — one ordered list — drives BOTH QML registration
+    order and (filtered by :attr:`lifecycle`) the polling start/stop order.
+    Keeping a single ordered source of truth is the whole point: the
+    Windows-shutdown teardown contract (stop polling → drain QThreadPool →
+    quit) depends on the lifecycle order being exactly the registration order
+    filtered to the lifecycle-bearing entries.
+    """
+
+    qml_name: str
+    """QML type name, e.g. ``"StrategyBankState"`` — the ``import Milodex 1.0``
+    handle QML files reference."""
+
+    qml_type: type
+    """The ``QObject`` subclass registered as the singleton type."""
+
+    instance: object
+    """The live instance handed to ``qmlRegisterSingletonInstance``."""
+
+    lifecycle: bool = False
+    """``True`` when the instance has ``.start()`` / ``.stop()`` polling and
+    participates in the start/stop teardown order."""
+
+
+# Module-level pin list so registered singleton instances are not garbage
+# collected after registration returns.  Qt does NOT take ownership of
+# instances passed to ``qmlRegisterSingletonInstance`` — drop the Python
+# reference and QML sees a dead singleton.  Every registered instance is
+# appended here.
+_PINNED: list[object] = []
+
+#: Back-compat reference to the registered :class:`ThemeManager`.  Some tests
+#: read ``qml_setup._singleton_instance`` directly to reset the active theme
+#: between cases (see ``tests/milodex/gui/test_qml_components.py`` and
+#: ``test_qml_theme_loads.py``).  Kept as a module global for that contract;
+#: production code uses the value returned by :func:`register_qml_types`.
 _singleton_instance: ThemeManager | None = None
-_operational_state_instance: OperationalState | None = None
-_strategy_bank_state_instance: StrategyBankState | None = None
-_front_page_state_instance: FrontPageState | None = None
-_bench_state_instance: BenchState | None = None
-_kanban_state_instance: KanbanState | None = None
-_ledger_state_instance: LedgerState | None = None
-_performance_state_instance: PerformanceState | None = None
-_risk_throughput_state_instance: RiskThroughputState | None = None
-_active_ops_state_instance: ActiveOpsState | None = None
-_attention_state_instance: AttentionState | None = None
-_market_tape_state_instance: MarketTapeState | None = None
-_activity_feed_state_instance: ActivityFeedState | None = None
-_bench_command_bridge_instance: BenchCommandBridge | None = None
-_risk_profile_bridge_instance: RiskProfileBridge | None = None
-_orphan_reaper_controller_instance: OrphanReaperController | None = None
+
+
+def register_qml_singletons(registry: Sequence[QmlSingleton]) -> None:
+    """Register each :class:`QmlSingleton` in order and pin its instance.
+
+    Iterates *registry* in the given order, calling
+    ``qmlRegisterSingletonInstance`` for each descriptor and appending the
+    live instance to the module-level :data:`_PINNED` list so it survives
+    garbage collection.
+
+    Registration ORDER is observable to Qt and is the load-bearing contract
+    (see :class:`QmlSingleton`).  Callers must pass the registry already in
+    canonical order.
+
+    Parameters
+    ----------
+    registry
+        Ordered descriptors to register.  Calling this more than once with a
+        ``qml_name`` already registered in the process is a Qt-level error;
+        the first registration wins.
+    """
+    for descriptor in registry:
+        qmlRegisterSingletonInstance(
+            descriptor.qml_type,
+            QML_IMPORT_URI,
+            QML_IMPORT_VERSION[0],
+            QML_IMPORT_VERSION[1],
+            descriptor.qml_name,
+            descriptor.instance,
+        )
+        _PINNED.append(descriptor.instance)
+
+
+# Static spec mapping each :func:`register_qml_types` keyword argument to its
+# (qml_name, qml_type, lifecycle) in the canonical registration order.  This
+# drives the back-compat wrapper; production (``app.py``) builds its own
+# ordered registry directly.  ``theme_manager`` is handled separately because
+# it defaults to a fresh ``ThemeManager()`` and is the return value.
+_REGISTRY_SPEC: tuple[tuple[str, str, type, bool], ...] = (
+    ("operational_state", "OperationalState", OperationalState, True),
+    ("strategy_bank_state", "StrategyBankState", StrategyBankState, True),
+    ("front_page_state", "FrontPageState", FrontPageState, True),
+    ("bench_state", "BenchState", BenchState, True),
+    ("kanban_state", "KanbanState", KanbanState, True),
+    ("ledger_state", "LedgerState", LedgerState, True),
+    ("performance_state", "PerformanceState", PerformanceState, True),
+    ("risk_throughput_state", "RiskThroughputState", RiskThroughputState, True),
+    ("active_ops_state", "ActiveOpsState", ActiveOpsState, True),
+    ("attention_state", "AttentionState", AttentionState, True),
+    ("market_tape_state", "MarketTapeState", MarketTapeState, True),
+    ("activity_feed_state", "ActivityFeedState", ActivityFeedState, True),
+    ("bench_command_bridge", "BenchCommandBridge", BenchCommandBridge, False),
+    ("risk_profile_bridge", "RiskProfileBridge", RiskProfileBridge, False),
+    ("orphan_reaper_controller", "OrphanReaperController", OrphanReaperController, True),
+)
 
 
 def register_qml_types(
@@ -130,197 +210,58 @@ def register_qml_types(
         The instance now registered as ``Milodex.ThemeManager``.  The
         caller should keep a Python reference; the module also holds
         one to defend against premature garbage collection.
+
+    Notes
+    -----
+    This is a thin back-compat wrapper around
+    :func:`register_qml_singletons`, kept at its original signature so
+    existing callers (and the subprocess smoke harnesses that pass a subset
+    of kwargs) are untouched.  Production startup
+    (``milodex.gui.app.run_app``) builds an ordered :class:`QmlSingleton`
+    registry directly and calls :func:`register_qml_singletons` instead.
+
+    The ``theme_manager`` is always registered first (defaulting to a fresh
+    ``ThemeManager()``); the remaining non-``None`` kwargs are registered in
+    the canonical order defined by :data:`_REGISTRY_SPEC`.  Omitting a kwarg
+    simply leaves that singleton unregistered -- exactly the previous
+    ``if x is not None`` behaviour.
     """
-    global _singleton_instance, _operational_state_instance, _strategy_bank_state_instance
-    global _front_page_state_instance, _bench_state_instance, _kanban_state_instance
-    global _ledger_state_instance, _performance_state_instance, _risk_throughput_state_instance
-    global _active_ops_state_instance, _attention_state_instance, _market_tape_state_instance
-    global _activity_feed_state_instance, _bench_command_bridge_instance
-    global _risk_profile_bridge_instance, _orphan_reaper_controller_instance
+    global _singleton_instance
 
-    instance = theme_manager if theme_manager is not None else ThemeManager()
-    qmlRegisterSingletonInstance(
-        ThemeManager,
-        QML_IMPORT_URI,
-        QML_IMPORT_VERSION[0],
-        QML_IMPORT_VERSION[1],
-        "ThemeManager",
-        instance,
+    theme = theme_manager if theme_manager is not None else ThemeManager()
+
+    provided = {
+        "operational_state": operational_state,
+        "strategy_bank_state": strategy_bank_state,
+        "front_page_state": front_page_state,
+        "bench_state": bench_state,
+        "kanban_state": kanban_state,
+        "ledger_state": ledger_state,
+        "performance_state": performance_state,
+        "risk_throughput_state": risk_throughput_state,
+        "active_ops_state": active_ops_state,
+        "attention_state": attention_state,
+        "market_tape_state": market_tape_state,
+        "activity_feed_state": activity_feed_state,
+        "bench_command_bridge": bench_command_bridge,
+        "risk_profile_bridge": risk_profile_bridge,
+        "orphan_reaper_controller": orphan_reaper_controller,
+    }
+
+    registry: list[QmlSingleton] = [
+        QmlSingleton(qml_name="ThemeManager", qml_type=ThemeManager, instance=theme)
+    ]
+    registry.extend(
+        QmlSingleton(
+            qml_name=qml_name,
+            qml_type=qml_type,
+            instance=provided[kwarg],
+            lifecycle=lifecycle,
+        )
+        for kwarg, qml_name, qml_type, lifecycle in _REGISTRY_SPEC
+        if provided[kwarg] is not None
     )
-    _singleton_instance = instance
 
-    if operational_state is not None:
-        qmlRegisterSingletonInstance(
-            OperationalState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "OperationalState",
-            operational_state,
-        )
-        _operational_state_instance = operational_state
-
-    if strategy_bank_state is not None:
-        qmlRegisterSingletonInstance(
-            StrategyBankState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "StrategyBankState",
-            strategy_bank_state,
-        )
-        _strategy_bank_state_instance = strategy_bank_state
-
-    if front_page_state is not None:
-        qmlRegisterSingletonInstance(
-            FrontPageState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "FrontPageState",
-            front_page_state,
-        )
-        _front_page_state_instance = front_page_state
-
-    if bench_state is not None:
-        qmlRegisterSingletonInstance(
-            BenchState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "BenchState",
-            bench_state,
-        )
-        _bench_state_instance = bench_state
-
-    if kanban_state is not None:
-        qmlRegisterSingletonInstance(
-            KanbanState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "KanbanState",
-            kanban_state,
-        )
-        _kanban_state_instance = kanban_state
-
-    if ledger_state is not None:
-        qmlRegisterSingletonInstance(
-            LedgerState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "LedgerState",
-            ledger_state,
-        )
-        _ledger_state_instance = ledger_state
-
-    if performance_state is not None:
-        qmlRegisterSingletonInstance(
-            PerformanceState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "PerformanceState",
-            performance_state,
-        )
-        _performance_state_instance = performance_state
-
-    if risk_throughput_state is not None:
-        qmlRegisterSingletonInstance(
-            RiskThroughputState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "RiskThroughputState",
-            risk_throughput_state,
-        )
-        _risk_throughput_state_instance = risk_throughput_state
-
-    if active_ops_state is not None:
-        qmlRegisterSingletonInstance(
-            ActiveOpsState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "ActiveOpsState",
-            active_ops_state,
-        )
-        _active_ops_state_instance = active_ops_state
-
-    if attention_state is not None:
-        qmlRegisterSingletonInstance(
-            AttentionState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "AttentionState",
-            attention_state,
-        )
-        _attention_state_instance = attention_state
-
-    if market_tape_state is not None:
-        qmlRegisterSingletonInstance(
-            MarketTapeState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "MarketTapeState",
-            market_tape_state,
-        )
-        _market_tape_state_instance = market_tape_state
-
-    if activity_feed_state is not None:
-        qmlRegisterSingletonInstance(
-            ActivityFeedState,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "ActivityFeedState",
-            activity_feed_state,
-        )
-        _activity_feed_state_instance = activity_feed_state
-
-    if bench_command_bridge is not None:
-        # ADR 0051 Phase C2: register the Bench command bridge as a QML
-        # singleton instance. QML files reach the facade only through this
-        # bridge — see src/milodex/gui/bench_command_bridge.py and the
-        # forbidden-token tests in tests/milodex/gui/test_qml_load_smoke.py.
-        qmlRegisterSingletonInstance(
-            BenchCommandBridge,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "BenchCommandBridge",
-            bench_command_bridge,
-        )
-        _bench_command_bridge_instance = bench_command_bridge
-
-    if risk_profile_bridge is not None:
-        # ADR 0054 / PR-7c: register the risk-profile bridge so QML can call
-        # activeProfileName() and attemptSwitch() and receive switchApplied
-        # and switchRefused signals.
-        qmlRegisterSingletonInstance(
-            RiskProfileBridge,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "RiskProfileBridge",
-            risk_profile_bridge,
-        )
-        _risk_profile_bridge_instance = risk_profile_bridge
-
-    if orphan_reaper_controller is not None:
-        # PR1: register the periodic orphan-reaper controller so QML can read
-        # intervalSeconds and call persistInterval() from the RUNNER HEALTH setting.
-        qmlRegisterSingletonInstance(
-            OrphanReaperController,
-            QML_IMPORT_URI,
-            QML_IMPORT_VERSION[0],
-            QML_IMPORT_VERSION[1],
-            "OrphanReaperController",
-            orphan_reaper_controller,
-        )
-        _orphan_reaper_controller_instance = orphan_reaper_controller
-
-    return instance
+    register_qml_singletons(registry)
+    _singleton_instance = theme
+    return theme

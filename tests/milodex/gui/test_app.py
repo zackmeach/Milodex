@@ -63,7 +63,12 @@ def test_run_app_returns_int():
     with (
         patch("milodex.gui.app.QML_IMPORT_PATH", _QML_IMPORT_ROOT / "Milodex"),
         patch("milodex.gui.fonts.load_fonts", return_value=(3, [])),
-        patch("milodex.gui.qml_setup.register_qml_types"),
+        # run_app builds an ordered QmlSingleton registry and registers it via
+        # register_qml_singletons (imported locally inside run_app), not the
+        # back-compat register_qml_types wrapper. Patch it at its source module
+        # so the mocked read-model instances are never handed to the real
+        # qmlRegisterSingletonInstance.
+        patch("milodex.gui.qml_setup.register_qml_singletons"),
         patch("milodex.gui.theme_manager.ThemeManager") as mock_tm_cls,
     ):
         mock_tm = MagicMock()
@@ -95,7 +100,9 @@ def test_run_app_returns_1_when_no_root_objects():
     with (
         patch("milodex.gui.app.QML_IMPORT_PATH", _QML_IMPORT_ROOT / "Milodex"),
         patch("milodex.gui.fonts.load_fonts", return_value=(3, [])),
-        patch("milodex.gui.qml_setup.register_qml_types"),
+        # See test_run_app_returns_int: run_app registers via
+        # register_qml_singletons, so patch that at its source module.
+        patch("milodex.gui.qml_setup.register_qml_singletons"),
         patch("milodex.gui.theme_manager.ThemeManager") as mock_tm_cls,
     ):
         mock_tm = MagicMock()
