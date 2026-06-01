@@ -71,6 +71,98 @@ def _make_app_controller(read_models: list[object]) -> object:
 
 
 # ---------------------------------------------------------------------------
+# QML singleton registry (single ordered source of truth)
+# ---------------------------------------------------------------------------
+
+
+def _build_qml_registry(
+    *,
+    theme_manager: object,
+    operational_state: object,
+    strategy_bank_state: object,
+    front_page_state: object,
+    bench_state: object,
+    kanban_state: object,
+    ledger_state: object,
+    performance_state: object,
+    risk_throughput_state: object,
+    active_ops_state: object,
+    attention_state: object,
+    market_tape_state: object,
+    activity_feed_state: object,
+    bench_command_bridge: object,
+    risk_profile_bridge: object,
+    orphan_reaper_controller: object,
+) -> list[object]:
+    """Build the ordered list of :class:`QmlSingleton` descriptors.
+
+    This list is the SINGLE ordered source of truth for the GUI wiring.  Its
+    order is the QML registration order; filtered by ``lifecycle`` it is also
+    the polling start/stop order, which is a deliberate Windows-shutdown
+    teardown contract (stop polling -> drain QThreadPool -> quit) and MUST be
+    preserved: ``operational_state`` first through ``activity_feed_state``,
+    with ``orphan_reaper_controller`` LAST among lifecycle entries.  The three
+    register-only entries (ThemeManager, BenchCommandBridge, RiskProfileBridge)
+    carry ``lifecycle=False`` and so are skipped by the lifecycle filter.
+
+    To wire a NEW read model: add ONE ``QmlSingleton(...)`` entry here (plus
+    its import + construction in :func:`run_app`).  The registration, polling
+    start, AppController membership, load-failure stop, and aboutToQuit stop
+    are all derived from this one list.
+
+    Factored out (rather than inlined in :func:`run_app`) so the order-snapshot
+    test can assert the order without launching Qt.
+    """
+    from milodex.gui.active_ops_state import ActiveOpsState
+    from milodex.gui.activity_feed_state import ActivityFeedState
+    from milodex.gui.attention_state import AttentionState
+    from milodex.gui.bench_command_bridge import BenchCommandBridge
+    from milodex.gui.market_tape_state import MarketTapeState
+    from milodex.gui.operational_state import OperationalState
+    from milodex.gui.orphan_reaper_controller import OrphanReaperController
+    from milodex.gui.performance_state import PerformanceState
+    from milodex.gui.qml_setup import QmlSingleton
+    from milodex.gui.read_models import (
+        BenchState,
+        FrontPageState,
+        KanbanState,
+        LedgerState,
+    )
+    from milodex.gui.risk_profile_bridge import RiskProfileBridge
+    from milodex.gui.risk_throughput_state import RiskThroughputState
+    from milodex.gui.strategy_bank_state import StrategyBankState
+    from milodex.gui.theme_manager import ThemeManager
+
+    return [
+        QmlSingleton("ThemeManager", ThemeManager, theme_manager, lifecycle=False),
+        QmlSingleton("OperationalState", OperationalState, operational_state, lifecycle=True),
+        QmlSingleton("StrategyBankState", StrategyBankState, strategy_bank_state, lifecycle=True),
+        QmlSingleton("FrontPageState", FrontPageState, front_page_state, lifecycle=True),
+        QmlSingleton("BenchState", BenchState, bench_state, lifecycle=True),
+        QmlSingleton("KanbanState", KanbanState, kanban_state, lifecycle=True),
+        QmlSingleton("LedgerState", LedgerState, ledger_state, lifecycle=True),
+        QmlSingleton("PerformanceState", PerformanceState, performance_state, lifecycle=True),
+        QmlSingleton(
+            "RiskThroughputState", RiskThroughputState, risk_throughput_state, lifecycle=True
+        ),
+        QmlSingleton("ActiveOpsState", ActiveOpsState, active_ops_state, lifecycle=True),
+        QmlSingleton("AttentionState", AttentionState, attention_state, lifecycle=True),
+        QmlSingleton("MarketTapeState", MarketTapeState, market_tape_state, lifecycle=True),
+        QmlSingleton("ActivityFeedState", ActivityFeedState, activity_feed_state, lifecycle=True),
+        QmlSingleton(
+            "BenchCommandBridge", BenchCommandBridge, bench_command_bridge, lifecycle=False
+        ),
+        QmlSingleton("RiskProfileBridge", RiskProfileBridge, risk_profile_bridge, lifecycle=False),
+        QmlSingleton(
+            "OrphanReaperController",
+            OrphanReaperController,
+            orphan_reaper_controller,
+            lifecycle=True,
+        ),
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Public constant
 # ---------------------------------------------------------------------------
 
@@ -132,11 +224,10 @@ def run_app() -> int:
        Qt Quick only; no Widgets are used per ADR 0033).
     2. Call :func:`~milodex.gui.fonts.load_fonts` to register bundled font
        families (Newsreader, Public Sans, JetBrains Mono) with Qt.
-    3. Construct :class:`~milodex.gui.theme_manager.ThemeManager` and
-       :class:`~milodex.gui.operational_state.OperationalState`, then call
-       :func:`~milodex.gui.qml_setup.register_qml_types` to bind them as
-       the ``Milodex.ThemeManager`` and ``Milodex.OperationalState`` QML
-       singletons.
+    3. Construct all read models, build the ordered registry via
+       ``_build_qml_registry``, then call
+       :func:`~milodex.gui.qml_setup.register_qml_singletons` to bind them
+       as QML singletons under ``Milodex``.
     4. Construct :class:`QQmlApplicationEngine`.
     5. Add :data:`QML_IMPORT_PATH` as a QML import search path so
        ``import Milodex 1.0`` resolves.
@@ -183,7 +274,7 @@ def run_app() -> int:
     from milodex.gui.market_tape_state import MarketTapeState
     from milodex.gui.operational_state import OperationalState
     from milodex.gui.performance_state import PerformanceState
-    from milodex.gui.qml_setup import register_qml_types
+    from milodex.gui.qml_setup import register_qml_singletons
     from milodex.gui.read_models import (
         BenchState,
         FrontPageState,
@@ -196,6 +287,12 @@ def run_app() -> int:
     from milodex.gui.theme_manager import ThemeManager
     from milodex.strategies.loader import StrategyLoader
     from milodex.strategies.paper_runner_control import PaperRunnerControl
+
+    # NOTE: register_qml_singletons is imported above but intentionally stays
+    # function-local (not hoisted to module scope).  Two tests in test_app.py
+    # patch 'milodex.gui.qml_setup.register_qml_singletons'; that patch works
+    # only because the import resolves at call time.  Hoisting it would make the
+    # patch arrive too late, silently exercising real Qt registration in those tests.
 
     # --- 1. QGuiApplication ---------------------------------------------------
     app = QGuiApplication.instance()
@@ -355,7 +452,10 @@ def run_app() -> int:
     except Exception:
         logger.exception("PR-7c: record_startup_default failed; continuing")
 
-    register_qml_types(
+    # Single ordered registry — the one source of truth for QML registration
+    # order AND (filtered by .lifecycle) the polling start/stop order. See
+    # _build_qml_registry for the Windows-shutdown teardown contract.
+    registry = _build_qml_registry(
         theme_manager=theme_manager,
         operational_state=operational_state,
         strategy_bank_state=strategy_bank_state,
@@ -373,24 +473,16 @@ def run_app() -> int:
         risk_profile_bridge=risk_profile_bridge,
         orphan_reaper_controller=orphan_reaper_controller,
     )
+    register_qml_singletons(registry)
+    # All lifecycle-bearing instances, in teardown order (orphan_reaper last).
+    lifecycle_models = [d.instance for d in registry if d.lifecycle]
     logger.info("run_app: active theme = %r", theme_manager.theme)
 
     # Begin polling AFTER registration so the GUI sees a populated state
-    # on the first frame instead of empty defaults.
-    operational_state.start()
-    strategy_bank_state.start()
-    front_page_state.start()
-    bench_state.start()
-    kanban_state.start()
-    ledger_state.start()
-    performance_state.start()
-    risk_throughput_state.start()
-    active_ops_state.start()
-    attention_state.start()
-
-    market_tape_state.start()
-    activity_feed_state.start()
-    orphan_reaper_controller.start()
+    # on the first frame instead of empty defaults. Iterates the registry's
+    # lifecycle order: operational_state first ... orphan_reaper_controller last.
+    for model in lifecycle_models:
+        model.start()
 
     # Run AFTER market_tape_state.start() so the GUI begins rendering the
     # already-cached symbols immediately. VIX renders as "—" until the
@@ -407,23 +499,8 @@ def run_app() -> int:
     # --- 4b. AppController (Task 37 / PR-7c) ----------------------------------
     # Exposes quitRequested() Slot to QML for the Risk Office drawer Quit button.
     # Clean shutdown: stop all polling read models → drain QThreadPool → quit.
-    app_controller = _make_app_controller(
-        [
-            operational_state,
-            strategy_bank_state,
-            front_page_state,
-            bench_state,
-            kanban_state,
-            ledger_state,
-            performance_state,
-            risk_throughput_state,
-            active_ops_state,
-            attention_state,
-            market_tape_state,
-            activity_feed_state,
-            orphan_reaper_controller,
-        ]
-    )
+    # Membership and order both come from the single registry's lifecycle slice.
+    app_controller = _make_app_controller(lifecycle_models)
     engine.rootContext().setContextProperty("AppController", app_controller)
 
     # --- 5. QML import path ---------------------------------------------------
@@ -440,19 +517,10 @@ def run_app() -> int:
             "run_app: QQmlApplicationEngine has no root objects after load -- "
             "Main.qml failed to initialize. Check QML errors above."
         )
-        operational_state.stop()
-        strategy_bank_state.stop()
-        front_page_state.stop()
-        bench_state.stop()
-        kanban_state.stop()
-        ledger_state.stop()
-        performance_state.stop()
-        risk_throughput_state.stop()
-        active_ops_state.stop()
-        attention_state.stop()
-        market_tape_state.stop()
-        activity_feed_state.stop()
-        orphan_reaper_controller.stop()
+        # Same teardown order as the registry's lifecycle slice
+        # (operational_state first ... orphan_reaper_controller last).
+        for model in lifecycle_models:
+            model.stop()
         return 1
 
     logger.info(
@@ -461,20 +529,12 @@ def run_app() -> int:
     )
 
     # --- 8. Wire quit + polling teardown -------------------------------------
+    # aboutToQuit fires each connected slot in connection order, so connecting
+    # in the registry's lifecycle order preserves the teardown contract
+    # (operational_state first ... orphan_reaper_controller last).
     engine.quit.connect(app.quit)
-    app.aboutToQuit.connect(operational_state.stop)
-    app.aboutToQuit.connect(strategy_bank_state.stop)
-    app.aboutToQuit.connect(front_page_state.stop)
-    app.aboutToQuit.connect(bench_state.stop)
-    app.aboutToQuit.connect(kanban_state.stop)
-    app.aboutToQuit.connect(ledger_state.stop)
-    app.aboutToQuit.connect(performance_state.stop)
-    app.aboutToQuit.connect(risk_throughput_state.stop)
-    app.aboutToQuit.connect(active_ops_state.stop)
-    app.aboutToQuit.connect(attention_state.stop)
-    app.aboutToQuit.connect(market_tape_state.stop)
-    app.aboutToQuit.connect(activity_feed_state.stop)
-    app.aboutToQuit.connect(orphan_reaper_controller.stop)
+    for model in lifecycle_models:
+        app.aboutToQuit.connect(model.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()
