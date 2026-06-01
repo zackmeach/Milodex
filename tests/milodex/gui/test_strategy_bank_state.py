@@ -95,9 +95,9 @@ def test_compute_gate_failures_all_fail() -> None:
         (-0.27, 11.59, 40, ["S"]),
         # 52w_high scenario: fails Sharpe and DD
         (0.16, 16.44, 769, ["S", "D"]),
-        # At-threshold values — gate uses sharpe < 0.5 (strict), dd >= 15.0 (strict), trades < 30
-        # sharpe=0.5 is NOT < 0.5, so Sharpe passes; dd=15.0 IS >= 15.0, so DD fails.
-        (0.5, 15.0, 30, ["D"]),
+        # At-threshold values — gate uses sharpe <= 0.5, dd >= 15.0, trades < 30.
+        # sharpe=0.5 IS <= 0.5, so Sharpe FAILS; dd=15.0 IS >= 15.0, so DD fails.
+        (0.5, 15.0, 30, ["S", "D"]),
         (0.51, 14.99, 30, []),  # strictly passing all three
         # None metrics → all fail
         (None, None, None, ["S", "D", "N"]),
@@ -109,6 +109,37 @@ def test_gate_failure_codes_computed_correctly(sharpe, max_dd, trade_count, expe
 
     result = _compute_gate_failures(sharpe, max_dd, trade_count)
     assert result == expected
+
+
+def test_compute_gate_failures_sharpe_at_min_is_failure() -> None:
+    """Sharpe exactly == MIN_SHARPE FAILS the gate (boundary is ``<=``, per policy.py).
+
+    Pinned to the policy-sourced threshold (not a hardcoded 0.5) so the boundary
+    can't silently re-drift away from ``PromotionPolicy.evaluate_research_target``.
+    """
+    from milodex.gui.strategy_bank_state import _compute_gate_failures
+    from milodex.promotion.state_machine import MIN_SHARPE
+
+    result = _compute_gate_failures(sharpe=MIN_SHARPE, max_dd=10.0, trade_count=50)
+    assert "S" in result, "Sharpe == MIN_SHARPE must fail the gate (<= boundary)"
+
+
+def test_compute_gate_failures_sharpe_just_above_min_passes() -> None:
+    """Sharpe just above MIN_SHARPE clears the Sharpe gate (no ``S``)."""
+    from milodex.gui.strategy_bank_state import _compute_gate_failures
+    from milodex.promotion.state_machine import MIN_SHARPE
+
+    result = _compute_gate_failures(sharpe=MIN_SHARPE + 0.01, max_dd=10.0, trade_count=50)
+    assert "S" not in result
+
+
+def test_compute_gate_failures_regime_family_exempt() -> None:
+    """Regime strategies are exempt from statistical gate thresholds (returns [])."""
+    from milodex.gui.strategy_bank_state import _compute_gate_failures
+
+    # Metrics that would trigger all three failures for a non-regime strategy.
+    result = _compute_gate_failures(sharpe=None, max_dd=None, trade_count=None, family="regime")
+    assert result == [], "Regime family must be exempt regardless of metrics"
 
 
 # ---------------------------------------------------------------------------

@@ -55,7 +55,7 @@ Gate codes
 
 For each blocked row, ``gateFailures`` is a list of short codes per ADR 0009:
 
-- ``"S"`` — Sharpe < 0.5 (:data:`~milodex.promotion.state_machine.MIN_SHARPE`)
+- ``"S"`` — Sharpe <= 0.5 (:data:`~milodex.promotion.state_machine.MIN_SHARPE`)
 - ``"D"`` — MaxDD >= 15% (:data:`~milodex.promotion.state_machine.MAX_DRAWDOWN_PCT`)
 - ``"N"`` — trade count < 30 (:data:`~milodex.promotion.state_machine.MIN_TRADES`)
 
@@ -173,16 +173,21 @@ def _compute_gate_failures(
     sharpe: float | None,
     max_dd: float | None,
     trade_count: int | None,
+    family: str = "",
 ) -> list[str]:
     """Derive gate-failure codes from raw backtest metrics.
 
     Returns a list of short strings per ADR 0009:
-    - ``"S"`` — Sharpe < MIN_SHARPE
+    - ``"S"`` — Sharpe <= MIN_SHARPE
     - ``"D"`` — MaxDD >= MAX_DRAWDOWN_PCT
     - ``"N"`` — trade count < MIN_TRADES
     """
+    # Regime strategies are lifecycle-proof and exempt from statistical gate thresholds
+    # (CLAUDE.md "Strategy bank, two roles"; SRS R-PRM-004).
+    if family == "regime":
+        return []
     failures: list[str] = []
-    if sharpe is None or sharpe < MIN_SHARPE:
+    if sharpe is None or sharpe <= MIN_SHARPE:
         failures.append("S")
     if max_dd is None or max_dd >= MAX_DRAWDOWN_PCT:
         failures.append("D")
@@ -262,6 +267,9 @@ def _fetch_blocked(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "sharpeRatio": sharpe,
                 "maxDrawdownPct": max_dd,
                 "tradeCount": trade_count or 0,
+                # family arg intentionally omitted — _SQL_BLOCKED excludes paper-promoted
+                # strategies, and the lifecycle-exempt regime strategy lives at paper, so it
+                # never reaches this blocked-list path.
                 "gateFailures": _compute_gate_failures(sharpe, max_dd, trade_count),
                 "startedAt": row["started_at"] or "",
                 "runId": row["run_id"] or "",

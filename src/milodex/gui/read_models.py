@@ -32,7 +32,7 @@ from milodex.gui.bench_v1 import (
     compute_menu_items,
 )
 from milodex.gui.polling_lifecycle import PollingReadModel
-from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
+from milodex.gui.strategy_bank_state import _compute_gate_failures
 from milodex.strategies.loader import StrategyConfig, load_strategy_config
 
 logger = logging.getLogger(__name__)
@@ -446,7 +446,7 @@ def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
         sharpe = _float_or_none(promotion.get("sharpe_ratio"), metrics.get("sharpe"))
         max_dd = _float_or_none(promotion.get("max_drawdown_pct"), metrics.get("max_drawdown_pct"))
         trade_count = _int_or_none(promotion.get("trade_count"), metrics.get("trade_count"))
-        failures = tuple(_gate_failures(sharpe, max_dd, trade_count, config.family))
+        failures = tuple(_compute_gate_failures(sharpe, max_dd, trade_count, config.family))
         evidence_by_stage = _bench_evidence_by_stage(metrics, config.family)
         runs_in_flight = _bench_runs_in_flight(job)
         status_kind, status_word, status_tail = _status_copy(
@@ -571,7 +571,7 @@ def _bench_evidence_by_stage(
     if not has_completed_backtest:
         return {Stage.BACKTEST: EvidenceRecord(Freshness.MISSING, GateResult.PENDING)}
 
-    failures = _gate_failures(sharpe, max_dd, trade_count, family)
+    failures = _compute_gate_failures(sharpe, max_dd, trade_count, family)
     return {
         Stage.BACKTEST: EvidenceRecord(
             Freshness.FRESH,
@@ -1443,26 +1443,6 @@ def _meta_evidence(promotion: dict[str, Any], metrics: dict[str, Any]) -> tuple[
     if metrics.get("started_at"):
         return "backtest", _compact_timestamp(str(metrics["started_at"]))
     return "awaiting", "first run"
-
-
-def _gate_failures(
-    sharpe: float | None,
-    max_dd: float | None,
-    trade_count: int | None,
-    family: str = "",
-) -> list[str]:
-    # Regime strategies are lifecycle-proof and exempt from statistical gate thresholds
-    # (CLAUDE.md "Strategy bank, two roles"; SRS R-PRM-004).
-    if family == "regime":
-        return []
-    failures: list[str] = []
-    if sharpe is None or sharpe <= MIN_SHARPE:
-        failures.append("S")
-    if max_dd is None or max_dd >= MAX_DRAWDOWN_PCT:
-        failures.append("D")
-    if trade_count is None or trade_count < MIN_TRADES:
-        failures.append("N")
-    return failures
 
 
 def _kanban_lane(row: _StrategyRow) -> str:

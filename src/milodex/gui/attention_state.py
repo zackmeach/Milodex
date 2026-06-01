@@ -288,6 +288,8 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
     for sid, metrics in bt_metrics.items():
         if sid in promoted_to_paper:
             continue  # already promoted
+        # family arg intentionally omitted — the `if sid in promoted_to_paper: continue` guard above
+        # already filters out the lifecycle-exempt regime strategy before this call is reached.
         failures = _compute_gate_failures(metrics["sharpe"], metrics["max_dd"], metrics["trades"])
         if not failures:  # gate-pass = empty failure list
             nr_case_a.add(sid)
