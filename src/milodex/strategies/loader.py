@@ -340,9 +340,11 @@ def build_default_registry() -> StrategyRegistry:
 
     import milodex.strategies as _strategies_pkg
 
+    _pkg_prefix = _strategies_pkg.__name__ + "."
+
     # Import every module in the package in sorted order for a stable scan.
     for module_info in sorted(
-        pkgutil.iter_modules(_strategies_pkg.__path__, prefix="milodex.strategies."),
+        pkgutil.iter_modules(_strategies_pkg.__path__, prefix=_pkg_prefix),
         key=lambda m: m.name,
     ):
         importlib.import_module(module_info.name)  # import errors propagate
@@ -359,16 +361,17 @@ def build_default_registry() -> StrategyRegistry:
         cls
         for cls in _all_subclasses(Strategy)
         if (
-            issubclass(cls, Strategy)
-            and cls is not Strategy
+            cls is not Strategy
             and not inspect.isabstract(cls)
+            and getattr(cls, "__module__", "").startswith(_pkg_prefix)
             and getattr(cls, "family", "") != ""
             and getattr(cls, "template", "") != ""
         )
     ]
 
-    # Sort deterministically by (family, template) before registering.
-    candidates.sort(key=lambda cls: (cls.family, cls.template))
+    # Sort deterministically; include module+qualname so duplicate-key error
+    # messages are order-independent when two classes tie on (family, template).
+    candidates.sort(key=lambda cls: (cls.family, cls.template, cls.__module__, cls.__qualname__))
 
     # Build registry with duplicate-key detection.
     registry = StrategyRegistry()

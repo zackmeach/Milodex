@@ -480,3 +480,46 @@ def test_no_duplicate_family_template_keys_in_scan():
         "Duplicate (family, template) keys found in registry — "
         "this should have been caught by build_default_registry()"
     )
+
+
+def test_registry_excludes_foreign_strategy_subclasses():
+    """build_default_registry() must only register classes from milodex.strategies.
+
+    Defines a concrete Strategy subclass with a unique family/template right
+    here in the test module, calls build_default_registry(), and asserts the
+    foreign class was NOT registered — proving that package-scoping holds even
+    when a foreign subclass is loaded in-process.
+
+    This test FAILS if the ``__module__.startswith(pkg_prefix)`` guard in
+    build_default_registry() is removed or weakened.
+    """
+    import milodex.strategies as _pkg
+
+    class _ForeignStrategy(Strategy):
+        family = "foreign"
+        template = "test.guard"
+        parameter_specs = ()
+
+        def evaluate(self, bars, context):  # type: ignore[override]
+            return []
+
+    # The foreign class is now a live Strategy subclass in this process.
+    assert issubclass(_ForeignStrategy, Strategy)
+    # Its module is this test module — NOT under milodex.strategies.
+    assert not _ForeignStrategy.__module__.startswith(_pkg.__name__ + ".")
+
+    registry = build_default_registry()
+    assert registry.resolve("foreign", "test.guard") is None, (
+        "Foreign Strategy subclass (family='foreign', template='test.guard') "
+        "was registered by build_default_registry() — the __module__ package-"
+        "scoping guard is missing or broken"
+    )
+
+    # Sanity: confirm ALL registered classes are from milodex.strategies.
+    pkg_prefix = _pkg.__name__ + "."
+    for (fam, tpl), cls in registry._strategies.items():
+        assert cls.__module__.startswith(pkg_prefix), (
+            f"Registered class {cls.__qualname__!r} has module "
+            f"{cls.__module__!r} which is outside the milodex.strategies "
+            "package — package-scoping guard is broken"
+        )
