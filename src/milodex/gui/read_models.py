@@ -329,30 +329,65 @@ class LedgerState(PollingReadModel):
     groupFilter = Property(str, _get_group_filter, notify=filtersChanged)  # noqa: N815
 
 
+def _open_ro_conn(db_path: Path) -> sqlite3.Connection:
+    """Open a read-only URI connection with Row factory set.
+
+    Callers MUST verify ``db_path.exists()`` before calling — ``mode=ro``
+    raises ``sqlite3.OperationalError`` when the file is absent.
+    """
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def build_front_page_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
-    rows = _strategy_rows(db_path, configs_dir)
-    stage_counts = _stage_counts(rows)
-    running_count = sum(1 for row in rows if row.stage in {"paper", "micro_live", "live"})
-    feature = _feature_row(rows)
-    summary = _empty_front_summary()
-    summary.update(
-        {
-            "asOf": _today_label(),
-            "totalConfigs": len(rows),
-            "runningCount": running_count,
-            "liveCount": stage_counts["micro_live"] + stage_counts["live"],
-            "stageTally": stage_counts,
-            "feature": feature.as_qml() if feature is not None else {},
-            "market": _market_placeholder(),
-            "pnl": _latest_pnl(db_path),
-            "lastRefreshedAt": _now_iso(),
-        }
-    )
+    _pnl_default = {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
+    if not db_path.exists():
+        rows = _strategy_rows(None, configs_dir)
+        stage_counts = _stage_counts(rows)
+        running_count = sum(1 for row in rows if row.stage in {"paper", "micro_live", "live"})
+        feature = _feature_row(rows)
+        summary = _empty_front_summary()
+        summary.update(
+            {
+                "asOf": _today_label(),
+                "totalConfigs": len(rows),
+                "runningCount": running_count,
+                "liveCount": stage_counts["micro_live"] + stage_counts["live"],
+                "stageTally": stage_counts,
+                "feature": feature.as_qml() if feature is not None else {},
+                "market": _market_placeholder(),
+                "pnl": _pnl_default,
+                "lastRefreshedAt": _now_iso(),
+            }
+        )
+        return {"summary": summary, "lastRefreshedAt": summary["lastRefreshedAt"]}
+    conn = _open_ro_conn(db_path)
+    try:
+        rows = _strategy_rows(conn, configs_dir)
+        stage_counts = _stage_counts(rows)
+        running_count = sum(1 for row in rows if row.stage in {"paper", "micro_live", "live"})
+        feature = _feature_row(rows)
+        summary = _empty_front_summary()
+        summary.update(
+            {
+                "asOf": _today_label(),
+                "totalConfigs": len(rows),
+                "runningCount": running_count,
+                "liveCount": stage_counts["micro_live"] + stage_counts["live"],
+                "stageTally": stage_counts,
+                "feature": feature.as_qml() if feature is not None else {},
+                "market": _market_placeholder(),
+                "pnl": _latest_pnl(conn),
+                "lastRefreshedAt": _now_iso(),
+            }
+        )
+    finally:
+        conn.close()
     return {"summary": summary, "lastRefreshedAt": summary["lastRefreshedAt"]}
 
 
 def build_bench_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
-    rows = _strategy_rows(db_path, configs_dir)
     labels = {
         "idle": ("i.", "Idle", "configured, not yet run"),
         "backtest": ("ii.", "Backtest", "historical evidence and gate verdicts"),
@@ -360,24 +395,29 @@ def build_bench_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
         "micro_live": ("iv.", "Micro live", "locked in Phase 5"),
         "live": ("v.", "Live", "locked in Phase 5"),
     }
-    sections = []
-    for stage in _VISIBLE_STAGES:
-        roman, name, caption = labels[stage]
-        strategies = [row.as_qml() for row in rows if row.stage == stage]
-        sections.append(
-            {
-                "stage": stage,
-                "stageRoman": roman,
-                "stageName": name,
-                "stageCaption": caption,
-                "strategies": strategies,
-            }
-        )
+    conn: sqlite3.Connection | None = _open_ro_conn(db_path) if db_path.exists() else None
+    try:
+        rows = _strategy_rows(conn, configs_dir)
+        sections = []
+        for stage in _VISIBLE_STAGES:
+            roman, name, caption = labels[stage]
+            strategies = [row.as_qml() for row in rows if row.stage == stage]
+            sections.append(
+                {
+                    "stage": stage,
+                    "stageRoman": roman,
+                    "stageName": name,
+                    "stageCaption": caption,
+                    "strategies": strategies,
+                }
+            )
+    finally:
+        if conn is not None:
+            conn.close()
     return {"sections": sections, "lastRefreshedAt": _now_iso()}
 
 
 def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
-    rows = _strategy_rows(db_path, configs_dir)
     labels = {
         "idle": ("i.", "Idle", "configured, no action queued"),
         "backtest": ("ii.", "Backtest", "historical evidence review"),
@@ -385,33 +425,39 @@ def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
         "micro_live": ("iv.", "Micro live", "locked by ADR 0004"),
         "live": ("v.", "Live", "locked by ADR 0004"),
     }
-    lanes: list[dict[str, Any]] = []
-    for lane in _VISIBLE_STAGES:
-        roman, name, caption = labels[lane]
-        cards = []
-        for row in rows:
-            kanban_lane = _kanban_lane(row)
-            if kanban_lane != lane:
-                continue
-            card = row.as_qml()
-            card.update(
+    conn: sqlite3.Connection | None = _open_ro_conn(db_path) if db_path.exists() else None
+    try:
+        rows = _strategy_rows(conn, configs_dir)
+        lanes: list[dict[str, Any]] = []
+        for lane in _VISIBLE_STAGES:
+            roman, name, caption = labels[lane]
+            cards = []
+            for row in rows:
+                kanban_lane = _kanban_lane(row)
+                if kanban_lane != lane:
+                    continue
+                card = row.as_qml()
+                card.update(
+                    {
+                        "promotionStage": row.stage,
+                        "kanbanLane": kanban_lane,
+                        "eligibilityVerdict": _eligibility_verdict(row),
+                        "eligibilityCopy": _eligibility_copy(row),
+                    }
+                )
+                cards.append(card)
+            lanes.append(
                 {
-                    "promotionStage": row.stage,
-                    "kanbanLane": kanban_lane,
-                    "eligibilityVerdict": _eligibility_verdict(row),
-                    "eligibilityCopy": _eligibility_copy(row),
+                    "lane": lane,
+                    "laneRoman": roman,
+                    "laneName": name,
+                    "laneCaption": caption,
+                    "cards": cards,
                 }
             )
-            cards.append(card)
-        lanes.append(
-            {
-                "lane": lane,
-                "laneRoman": roman,
-                "laneName": name,
-                "laneCaption": caption,
-                "cards": cards,
-            }
-        )
+    finally:
+        if conn is not None:
+            conn.close()
     return {
         "lanes": lanes,
         "summary": {
@@ -427,15 +473,28 @@ def build_ledger_snapshot(db_path: Path, configs_dir: Path | None = None) -> dic
     # When configs_dir is None, pass a non-existent sentinel so _new_strategy_entries
     # produces only event-store-backed rows (no YAML mtime fallback).
     _configs = configs_dir if configs_dir is not None else Path("__no_configs__")
-    return {"entries": _ledger_entries(db_path, _configs), "lastRefreshedAt": _now_iso()}
+    if not db_path.exists():
+        return {"entries": [], "lastRefreshedAt": _now_iso()}
+    conn = _open_ro_conn(db_path)
+    try:
+        entries = _ledger_entries(conn, _configs)
+    finally:
+        conn.close()
+    return {"entries": entries, "lastRefreshedAt": _now_iso()}
 
 
-def _strategy_rows(db_path: Path, configs_dir: Path) -> list[_StrategyRow]:
+def _strategy_rows(conn: sqlite3.Connection | None, configs_dir: Path) -> list[_StrategyRow]:
     configs = _load_strategy_configs(configs_dir)
-    latest_runs = _latest_backtest_metrics(db_path)
-    promotions = _latest_promotions(db_path)
-    sessions = _latest_session_states(db_path)
-    jobs = _latest_orchestration_jobs(db_path)
+    if conn is not None:
+        latest_runs = _event_queries.latest_backtest_metrics(conn)
+        promotions = _latest_promotions(conn)
+        sessions = _latest_session_states(conn)
+        jobs = _latest_orchestration_jobs(conn)
+    else:
+        latest_runs = {}
+        promotions = {}
+        sessions = {}
+        jobs = {}
     rows: list[_StrategyRow] = []
     for config in configs:
         metrics = latest_runs.get(config.strategy_id, {})
@@ -888,22 +947,7 @@ def _load_strategy_configs(configs_dir: Path) -> list[StrategyConfig]:
     return result
 
 
-def _latest_backtest_metrics(db_path: Path) -> dict[str, dict[str, Any]]:
-    if not db_path.exists():
-        return {}
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        return _event_queries.latest_backtest_metrics(conn)
-    finally:
-        conn.close()
-
-
-def _latest_promotions(db_path: Path) -> dict[str, dict[str, Any]]:
-    if not db_path.exists():
-        return {}
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _latest_promotions(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     try:
         rows = conn.execute(
             """
@@ -919,8 +963,6 @@ def _latest_promotions(db_path: Path) -> dict[str, dict[str, Any]]:
         ).fetchall()
     except sqlite3.Error:
         return {}
-    finally:
-        conn.close()
     return {row["strategy_id"]: dict(row) for row in rows}
 
 
@@ -1190,21 +1232,14 @@ _LEDGER_SOURCE_PRIORITY = {
 }
 
 
-def _ledger_entries(db_path: Path, configs_dir: Path) -> list[dict[str, Any]]:
-    if not db_path.exists():
-        return []
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    try:
-        entries: list[dict[str, Any]] = []
-        entries += _promotion_entries(conn)
-        entries += _kill_switch_entries(conn)
-        entries += _session_start_entries(conn)
-        entries += _session_stop_entries(conn)
-        entries += _backtest_complete_entries(conn)
-        entries += _new_strategy_entries(conn, configs_dir)
-    finally:
-        conn.close()
+def _ledger_entries(conn: sqlite3.Connection, configs_dir: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    entries += _promotion_entries(conn)
+    entries += _kill_switch_entries(conn)
+    entries += _session_start_entries(conn)
+    entries += _session_stop_entries(conn)
+    entries += _backtest_complete_entries(conn)
+    entries += _new_strategy_entries(conn, configs_dir)
     return sorted(
         entries,
         key=lambda e: (
@@ -1217,11 +1252,7 @@ def _ledger_entries(db_path: Path, configs_dir: Path) -> list[dict[str, Any]]:
     )
 
 
-def _latest_session_states(db_path: Path) -> dict[str, dict[str, Any]]:
-    if not db_path.exists():
-        return {}
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _latest_session_states(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     try:
         rows = conn.execute(
             """
@@ -1242,8 +1273,6 @@ def _latest_session_states(db_path: Path) -> dict[str, dict[str, Any]]:
         ).fetchall()
     except sqlite3.Error:
         return {}
-    finally:
-        conn.close()
     result: dict[str, dict[str, Any]] = {}
     failure_reasons = {"crashed", "failed", "kill_switch", "orphan_recovered", "error"}
     for row in rows:
@@ -1277,11 +1306,7 @@ def _ledger_outcome_label(outcome_kind: str) -> str:
     return "PROMOTED"
 
 
-def _latest_orchestration_jobs(db_path: Path) -> dict[str, dict[str, str]]:
-    if not db_path.exists():
-        return {}
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _latest_orchestration_jobs(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
     try:
         rows = conn.execute(
             """
@@ -1297,8 +1322,6 @@ def _latest_orchestration_jobs(db_path: Path) -> dict[str, dict[str, str]]:
         ).fetchall()
     except sqlite3.Error:
         return {}
-    finally:
-        conn.close()
     return {
         row["strategy_id"]: {
             "job_id": str(row["job_id"]),
@@ -1311,11 +1334,7 @@ def _latest_orchestration_jobs(db_path: Path) -> dict[str, dict[str, str]]:
     }
 
 
-def _latest_pnl(db_path: Path) -> dict[str, Any]:
-    if not db_path.exists():
-        return {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+def _latest_pnl(conn: sqlite3.Connection) -> dict[str, Any]:
     try:
         rows = conn.execute(
             """
@@ -1327,8 +1346,6 @@ def _latest_pnl(db_path: Path) -> dict[str, Any]:
         ).fetchall()
     except sqlite3.Error:
         return {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
-    finally:
-        conn.close()
     if not rows:
         return {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
     latest = rows[0]

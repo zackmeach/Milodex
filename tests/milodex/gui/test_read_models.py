@@ -1627,3 +1627,98 @@ def test_kill_switch_orders_above_session_stop_when_simultaneous(tmp_path: Path)
             f"Kill-switch 'fired' row (idx={fired_idx}) must sort before session 'started' row "
             f"(idx={started_idx}) because the kill-switch timestamp is later"
         )
+
+
+# ---------------------------------------------------------------------------
+# PR4: read-only connections + single-connection-per-refresh
+# ---------------------------------------------------------------------------
+
+
+def test_open_ro_conn_rejects_writes(tmp_path: Path) -> None:
+    """Connections opened via _open_ro_conn must be read-only.
+
+    mode=ro surfaces any write attempt as sqlite3.OperationalError — that is
+    the whole point of this PR.
+    """
+    import pytest as _pytest
+
+    from milodex.gui.read_models import _open_ro_conn
+
+    db = tmp_path / "test.db"
+    # Create the file with a simple table via a normal rw connection first.
+    setup = sqlite3.connect(str(db))
+    setup.execute("CREATE TABLE t (x INTEGER)")
+    setup.commit()
+    setup.close()
+
+    conn = _open_ro_conn(db)
+    try:
+        with _pytest.raises(sqlite3.OperationalError):
+            conn.execute("INSERT INTO t VALUES (1)")
+    finally:
+        conn.close()
+
+
+def test_build_front_page_snapshot_nonexistent_db(tmp_path: Path) -> None:
+    """build_front_page_snapshot returns a valid empty snapshot for a missing DB."""
+    from milodex.gui.read_models import build_front_page_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    missing = tmp_path / "does_not_exist.db"
+
+    snapshot = build_front_page_snapshot(missing, configs)
+
+    assert "summary" in snapshot
+    assert "lastRefreshedAt" in snapshot
+    summary = snapshot["summary"]
+    assert summary["totalConfigs"] == 0
+    assert summary["runningCount"] == 0
+    assert summary["pnl"] == {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
+
+
+def test_build_bench_snapshot_nonexistent_db(tmp_path: Path) -> None:
+    """build_bench_snapshot returns a valid empty snapshot for a missing DB."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    missing = tmp_path / "does_not_exist.db"
+
+    snapshot = build_bench_snapshot(missing, configs)
+
+    assert "sections" in snapshot
+    assert "lastRefreshedAt" in snapshot
+    assert len(snapshot["sections"]) == 5  # one per _VISIBLE_STAGES
+    for section in snapshot["sections"]:
+        assert section["strategies"] == []
+
+
+def test_build_kanban_snapshot_nonexistent_db(tmp_path: Path) -> None:
+    """build_kanban_snapshot returns a valid empty snapshot for a missing DB."""
+    from milodex.gui.read_models import build_kanban_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    missing = tmp_path / "does_not_exist.db"
+
+    snapshot = build_kanban_snapshot(missing, configs)
+
+    assert "lanes" in snapshot
+    assert "summary" in snapshot
+    assert "lastRefreshedAt" in snapshot
+    assert len(snapshot["lanes"]) == 5
+    for lane in snapshot["lanes"]:
+        assert lane["cards"] == []
+
+
+def test_build_ledger_snapshot_nonexistent_db(tmp_path: Path) -> None:
+    """build_ledger_snapshot returns an empty entries list for a missing DB."""
+    from milodex.gui.read_models import build_ledger_snapshot
+
+    missing = tmp_path / "does_not_exist.db"
+
+    snapshot = build_ledger_snapshot(missing)
+
+    assert snapshot["entries"] == []
+    assert "lastRefreshedAt" in snapshot
