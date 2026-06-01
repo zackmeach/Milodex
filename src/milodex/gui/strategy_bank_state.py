@@ -267,6 +267,9 @@ def _fetch_blocked(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "sharpeRatio": sharpe,
                 "maxDrawdownPct": max_dd,
                 "tradeCount": trade_count or 0,
+                # family arg intentionally omitted — _SQL_BLOCKED excludes paper-promoted
+                # strategies, and the lifecycle-exempt regime strategy lives at paper, so it
+                # never reaches this blocked-list path.
                 "gateFailures": _compute_gate_failures(sharpe, max_dd, trade_count),
                 "startedAt": row["started_at"] or "",
                 "runId": row["run_id"] or "",
