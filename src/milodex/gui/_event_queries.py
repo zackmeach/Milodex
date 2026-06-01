@@ -97,9 +97,9 @@ def latest_backtest_metrics(conn: sqlite3.Connection) -> dict[str, dict[str, Any
     Executes the MAX-id-per-strategy completed-run self-join against the open
     *conn*.  The caller owns the connection (open/close/transaction context).
 
-    Callers should set ``conn.row_factory = sqlite3.Row`` before calling so
-    that column names are accessible by name.  If ``row_factory`` is not set,
-    index-based access is used as a fallback.
+    Callers are expected to set ``conn.row_factory = sqlite3.Row`` before
+    calling.  A plain-tuple fallback (index-based access) exists for the
+    no-factory case, but the function does not defend against missing columns.
 
     Parameters
     ----------

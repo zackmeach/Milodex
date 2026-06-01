@@ -12,7 +12,6 @@ state.  The GUI surfaces that bind to these models remain observability-first.
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 from dataclasses import dataclass, field
@@ -1551,16 +1550,6 @@ def _int_or_none(*values: Any) -> int | None:
         except (TypeError, ValueError):
             continue
     return None
-
-
-def _json(value: str | None) -> dict[str, Any]:
-    if not value:
-        return {}
-    try:
-        data = json.loads(value)
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _now_iso() -> str:

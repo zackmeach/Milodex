@@ -339,3 +339,69 @@ def test_latest_backtest_metrics_keys_present(tmp_path: Path) -> None:
     assert m["sharpe"] is None
     assert m["max_drawdown_pct"] is None
     assert m["trade_count"] is None
+
+
+# ---------------------------------------------------------------------------
+# Additional robustness: non-dict oos_aggregate sub-values
+# ---------------------------------------------------------------------------
+
+
+def test_oos_aggregate_metrics_oos_aggregate_is_list() -> None:
+    """oos_aggregate value is a list → all-None, no exception."""
+    from milodex.gui._event_queries import oos_aggregate_metrics
+
+    result = oos_aggregate_metrics(json.dumps({"oos_aggregate": [1, 2, 3]}))
+    assert result == {"sharpe": None, "max_drawdown_pct": None, "trade_count": None}
+
+
+def test_oos_aggregate_metrics_oos_aggregate_is_null() -> None:
+    """oos_aggregate value is null (None) → all-None, no exception."""
+    from milodex.gui._event_queries import oos_aggregate_metrics
+
+    result = oos_aggregate_metrics(json.dumps({"oos_aggregate": None}))
+    assert result == {"sharpe": None, "max_drawdown_pct": None, "trade_count": None}
+
+
+def test_oos_aggregate_metrics_oos_aggregate_is_number() -> None:
+    """oos_aggregate value is a number → all-None, no exception."""
+    from milodex.gui._event_queries import oos_aggregate_metrics
+
+    result = oos_aggregate_metrics(json.dumps({"oos_aggregate": 42}))
+    assert result == {"sharpe": None, "max_drawdown_pct": None, "trade_count": None}
+
+
+# ---------------------------------------------------------------------------
+# latest_backtest_metrics: plain-tuple (no row_factory) fallback
+# ---------------------------------------------------------------------------
+
+
+def test_latest_backtest_metrics_plain_tuple_rows(tmp_path: Path) -> None:
+    """latest_backtest_metrics works correctly when row_factory is NOT set (plain tuples)."""
+    from milodex.gui._event_queries import latest_backtest_metrics
+
+    db = tmp_path / "test.db"
+    _create_backtest_table(db)
+    _seed_run(
+        db,
+        run_id="run-tuple",
+        strategy_id="strat.tuple",
+        sharpe=1.11,
+        max_drawdown_pct=3.5,
+        trade_count=55,
+        started_at="2026-04-01T00:00:00+00:00",
+    )
+
+    # Deliberately do NOT set row_factory — default sqlite3.Connection has no factory.
+    conn = sqlite3.connect(str(db))
+    try:
+        result = latest_backtest_metrics(conn)
+    finally:
+        conn.close()
+
+    assert "strat.tuple" in result
+    m = result["strat.tuple"]
+    assert m["run_id"] == "run-tuple"
+    assert m["started_at"] == "2026-04-01T00:00:00+00:00"
+    assert m["sharpe"] == 1.11
+    assert m["max_drawdown_pct"] == 3.5
+    assert m["trade_count"] == 55
