@@ -52,103 +52,10 @@ strategy:
 
 
 def _create_db(path: Path) -> None:
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE promotions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            from_stage TEXT NOT NULL,
-            to_stage TEXT NOT NULL,
-            promotion_type TEXT NOT NULL,
-            approved_by TEXT NOT NULL,
-            backtest_run_id TEXT,
-            sharpe_ratio REAL,
-            max_drawdown_pct REAL,
-            trade_count INTEGER,
-            notes TEXT
-        );
-        CREATE TABLE backtest_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL UNIQUE,
-            strategy_id TEXT NOT NULL,
-            config_path TEXT,
-            config_hash TEXT,
-            start_date TEXT NOT NULL,
-            end_date TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            status TEXT NOT NULL,
-            slippage_pct REAL,
-            commission_per_trade REAL,
-            metadata_json TEXT NOT NULL
-        );
-        CREATE TABLE kill_switch_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            recorded_at TEXT NOT NULL,
-            reason TEXT
-        );
-        CREATE TABLE strategy_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            exit_reason TEXT,
-            metadata_json TEXT NOT NULL
-        );
-        CREATE TABLE portfolio_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            equity REAL NOT NULL,
-            cash REAL NOT NULL,
-            portfolio_value REAL NOT NULL,
-            daily_pnl REAL NOT NULL,
-            positions_json TEXT NOT NULL
-        );
-        CREATE TABLE trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            source TEXT NOT NULL
-        );
-        CREATE TABLE orchestration_batches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            batch_id TEXT NOT NULL UNIQUE,
-            action_type TEXT NOT NULL,
-            requested_by TEXT NOT NULL,
-            requested_at TEXT NOT NULL,
-            status TEXT NOT NULL,
-            metadata_json TEXT NOT NULL
-        );
-        CREATE TABLE orchestration_jobs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            job_id TEXT NOT NULL UNIQUE,
-            batch_id TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            action_type TEXT NOT NULL,
-            requested_stage TEXT NOT NULL,
-            status TEXT NOT NULL,
-            queued_at TEXT NOT NULL,
-            started_at TEXT,
-            ended_at TEXT,
-            cancel_requested_at TEXT,
-            execution_ref_type TEXT,
-            execution_ref TEXT,
-            progress_current INTEGER,
-            progress_total INTEGER,
-            progress_label TEXT,
-            error_code TEXT,
-            error_message TEXT,
-            metadata_json TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
+
+    EventStore(path)
 
 
 def _seed_backtest(
@@ -671,8 +578,47 @@ def test_kanban_snapshot_derives_session_state_from_strategy_runs(tmp_path: Path
         """,
         (strategy_id,),
     )
-    conn.execute("INSERT INTO trades (session_id, source) VALUES ('session-1', 'paper')")
-    conn.execute("INSERT INTO trades (session_id, source) VALUES ('session-1', 'paper')")
+    # Insert minimal explanations first (trades.explanation_id is NOT NULL).
+    conn.execute(
+        "INSERT INTO explanations (recorded_at, decision_type, status, symbol, side, quantity,"
+        " order_type, time_in_force, submitted_by, market_open,"
+        " account_equity, account_cash, account_portfolio_value, account_daily_pnl,"
+        " risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json,"
+        " session_id)"
+        " VALUES ('2026-05-09T12:00:00+00:00','submit','submitted','SPY','buy',1.0,"
+        " 'market','day','test',1, 10000.0,10000.0,10000.0,0.0,"
+        " 1,'ok','[]','{}','{}','session-1')"
+    )
+    eid1 = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO explanations (recorded_at, decision_type, status, symbol, side, quantity,"
+        " order_type, time_in_force, submitted_by, market_open,"
+        " account_equity, account_cash, account_portfolio_value, account_daily_pnl,"
+        " risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json,"
+        " session_id)"
+        " VALUES ('2026-05-09T12:01:00+00:00','submit','submitted','SPY','buy',1.0,"
+        " 'market','day','test',1, 10000.0,10000.0,10000.0,0.0,"
+        " 1,'ok','[]','{}','{}','session-1')"
+    )
+    eid2 = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO trades"
+        " (explanation_id, recorded_at, status, source, symbol, side, quantity,"
+        "  order_type, time_in_force, estimated_unit_price, estimated_order_value, submitted_by,"
+        "  session_id)"
+        " VALUES (?, '2026-05-09T12:00:00+00:00','submitted','paper','SPY','buy',1.0,"
+        "  'market','day',100.0,100.0,'test', 'session-1')",
+        (eid1,),
+    )
+    conn.execute(
+        "INSERT INTO trades"
+        " (explanation_id, recorded_at, status, source, symbol, side, quantity,"
+        "  order_type, time_in_force, estimated_unit_price, estimated_order_value, submitted_by,"
+        "  session_id)"
+        " VALUES (?, '2026-05-09T12:01:00+00:00','submitted','paper','SPY','buy',1.0,"
+        "  'market','day',100.0,100.0,'test', 'session-1')",
+        (eid2,),
+    )
     conn.commit()
     conn.close()
 
@@ -708,7 +654,26 @@ def test_bench_snapshot_marks_controlled_stop_paper_evidence_completed(
         """,
         (strategy_id,),
     )
-    conn.execute("INSERT INTO trades (session_id, source) VALUES ('session-2', 'paper')")
+    conn.execute(
+        "INSERT INTO explanations (recorded_at, decision_type, status, symbol, side, quantity,"
+        " order_type, time_in_force, submitted_by, market_open,"
+        " account_equity, account_cash, account_portfolio_value, account_daily_pnl,"
+        " risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json,"
+        " session_id)"
+        " VALUES ('2026-05-09T12:00:00+00:00','submit','submitted','SPY','buy',1.0,"
+        " 'market','day','test',1, 10000.0,10000.0,10000.0,0.0,"
+        " 1,'ok','[]','{}','{}','session-2')"
+    )
+    eid3 = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+    conn.execute(
+        "INSERT INTO trades"
+        " (explanation_id, recorded_at, status, source, symbol, side, quantity,"
+        "  order_type, time_in_force, estimated_unit_price, estimated_order_value, submitted_by,"
+        "  session_id)"
+        " VALUES (?, '2026-05-09T12:00:00+00:00','submitted','paper','SPY','buy',1.0,"
+        "  'market','day',100.0,100.0,'test', 'session-2')",
+        (eid3,),
+    )
     conn.commit()
     conn.close()
 

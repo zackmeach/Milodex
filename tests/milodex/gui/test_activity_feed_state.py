@@ -41,46 +41,10 @@ _skip_no_qt = pytest.mark.skipif(
 
 
 def _create_fixture_db(path: Path) -> None:
-    """Create a minimal SQLite DB with explanations + trades tables."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE explanations (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at      TEXT NOT NULL,
-            decision_type    TEXT NOT NULL,
-            status           TEXT NOT NULL,
-            strategy_name    TEXT NOT NULL,
-            strategy_stage   TEXT NOT NULL,
-            symbol           TEXT NOT NULL,
-            side             TEXT NOT NULL,
-            quantity         REAL NOT NULL,
-            risk_allowed     INTEGER NOT NULL,
-            session_id       TEXT NOT NULL,
-            backtest_run_id  TEXT
-        );
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
 
-        CREATE TABLE trades (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            explanation_id        INTEGER,
-            recorded_at           TEXT NOT NULL,
-            status                TEXT NOT NULL,
-            source                TEXT,
-            symbol                TEXT NOT NULL,
-            side                  TEXT NOT NULL,
-            quantity              REAL NOT NULL,
-            strategy_name         TEXT NOT NULL,
-            strategy_stage        TEXT NOT NULL,
-            broker_order_id       TEXT,
-            broker_status         TEXT,
-            estimated_order_value REAL,
-            session_id            TEXT NOT NULL,
-            backtest_run_id       TEXT
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    EventStore(path)
 
 
 def _seed_explanation(
@@ -103,8 +67,14 @@ def _seed_explanation(
         """
         INSERT INTO explanations
             (recorded_at, decision_type, status, strategy_name, strategy_stage,
-             symbol, side, quantity, risk_allowed, session_id, backtest_run_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             symbol, side, quantity, risk_allowed, session_id, backtest_run_id,
+             order_type, time_in_force, submitted_by, market_open,
+             account_equity, account_cash, account_portfolio_value, account_daily_pnl,
+             risk_summary, reason_codes_json, risk_checks_json, context_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                'market', 'day', 'test', 1,
+                10000.0, 10000.0, 10000.0, 0.0,
+                'ok', '[]', '{}', '{}')
         """,
         (
             recorded_at,
@@ -144,14 +114,35 @@ def _seed_trade(
     session_id: str = "sess-001",
     backtest_run_id: str | None = None,
 ) -> int:
+    # trades.explanation_id is NOT NULL in the real schema.  If the caller did
+    # not supply one, insert a minimal stub explanation so the FK is satisfied.
+    # The stub uses decision_type='backtest_fill' so the paper-scope feed
+    # filter (EXPLANATION_PAPER_SQL) excludes it from every query result.
+    if explanation_id is None:
+        explanation_id = _seed_explanation(
+            db,
+            recorded_at=recorded_at,
+            decision_type="backtest_fill",
+            status="submitted",
+            strategy_name=strategy_name,
+            strategy_stage=strategy_stage,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            risk_allowed=1,
+            session_id=session_id,
+            backtest_run_id=None,
+        )
     conn = sqlite3.connect(str(db))
     cur = conn.execute(
         """
         INSERT INTO trades
             (explanation_id, recorded_at, status, source, symbol, side, quantity,
              strategy_name, strategy_stage, broker_order_id, broker_status,
-             estimated_order_value, session_id, backtest_run_id)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             estimated_order_value, session_id, backtest_run_id,
+             order_type, time_in_force, estimated_unit_price, submitted_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                'market', 'day', 100.0, 'test')
         """,
         (
             explanation_id,
@@ -165,7 +156,7 @@ def _seed_trade(
             strategy_stage,
             broker_order_id,
             broker_status,
-            estimated_order_value,
+            estimated_order_value if estimated_order_value is not None else 100.0,
             session_id,
             backtest_run_id,
         ),

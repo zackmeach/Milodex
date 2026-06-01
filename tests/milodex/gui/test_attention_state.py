@@ -42,97 +42,10 @@ _skip_no_qt = pytest.mark.skipif(
 
 
 def _create_fixture_db(path: Path) -> None:
-    """Create a minimal SQLite DB with all tables required by AttentionState."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE promotions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT,
-            strategy_id TEXT,
-            from_stage TEXT,
-            to_stage TEXT,
-            promotion_type TEXT,
-            approved_by TEXT,
-            backtest_run_id TEXT,
-            sharpe_ratio REAL,
-            max_drawdown_pct REAL,
-            trade_count INTEGER,
-            notes TEXT,
-            manifest_id TEXT,
-            reverses_event_id TEXT,
-            evidence_json TEXT
-        );
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
 
-        CREATE TABLE backtest_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT,
-            strategy_id TEXT,
-            config_path TEXT,
-            config_hash TEXT,
-            start_date TEXT,
-            end_date TEXT,
-            started_at TEXT,
-            ended_at TEXT,
-            status TEXT,
-            slippage_pct REAL,
-            commission_per_trade REAL,
-            metadata_json TEXT
-        );
-
-        CREATE TABLE strategy_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT,
-            strategy_id TEXT,
-            started_at TEXT,
-            ended_at TEXT,
-            exit_reason TEXT,
-            metadata_json TEXT
-        );
-
-        CREATE TABLE strategy_manifests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            strategy_id TEXT,
-            stage TEXT,
-            config_hash TEXT,
-            config_json TEXT,
-            config_path TEXT,
-            frozen_at TEXT,
-            frozen_by TEXT
-        );
-
-        CREATE TABLE trades (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            explanation_id TEXT,
-            recorded_at TEXT,
-            status TEXT,
-            source TEXT,
-            symbol TEXT,
-            side TEXT,
-            quantity REAL,
-            strategy_name TEXT,
-            strategy_stage TEXT,
-            broker_order_id TEXT,
-            broker_status TEXT,
-            estimated_order_value REAL,
-            session_id TEXT,
-            backtest_run_id TEXT
-        );
-
-        CREATE TABLE explanations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT,
-            decision_type TEXT,
-            status TEXT,
-            strategy_name TEXT,
-            strategy_stage TEXT,
-            symbol TEXT,
-            session_id TEXT
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    EventStore(path)
 
 
 # ---------------------------------------------------------------------------
@@ -158,9 +71,9 @@ def _seed_promotion(
     conn.execute(
         """
         INSERT INTO promotions
-            (recorded_at, strategy_id, from_stage, to_stage, promotion_type,
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type, approved_by,
              backtest_run_id, sharpe_ratio, max_drawdown_pct, trade_count)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, 'test', ?, ?, ?, ?)
         """,
         (
             recorded_at,
@@ -199,8 +112,9 @@ def _seed_backtest_run(
     conn.execute(
         """
         INSERT INTO backtest_runs
-            (run_id, strategy_id, status, started_at, ended_at, metadata_json)
-        VALUES (?, ?, ?, ?, ?, ?)
+            (run_id, strategy_id, start_date, end_date,
+             status, started_at, ended_at, metadata_json)
+        VALUES (?, ?, '2020-01-01', '2024-12-31', ?, ?, ?, ?)
         """,
         (
             run_id,
@@ -236,7 +150,7 @@ def _seed_strategy_run(
             strategy_id,
             datetime.now(tz=UTC).isoformat(),
             ended_at,
-            json.dumps(meta),
+            json.dumps(meta) if meta else "{}",
         ),
     )
     conn.commit()
@@ -255,14 +169,34 @@ def _seed_trade(
     if recorded_at is None:
         recorded_at = datetime.now(tz=UTC).isoformat()
     conn = sqlite3.connect(str(db))
+    # trades.explanation_id is NOT NULL; insert a minimal stub explanation first.
+    conn.execute(
+        """
+        INSERT INTO explanations (
+            recorded_at, decision_type, status, symbol, side, quantity,
+            order_type, time_in_force, submitted_by, market_open,
+            account_equity, account_cash, account_portfolio_value, account_daily_pnl,
+            risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json,
+            strategy_name, strategy_stage
+        ) VALUES (?, 'submit', ?, 'SPY', 'BUY', 1.0,
+                  'market', 'day', 'test', 1,
+                  10000.0, 10000.0, 10000.0, 0.0,
+                  1, 'ok', '[]', '{}', '{}',
+                  ?, ?)
+        """,
+        (recorded_at, status, strategy_name, strategy_stage),
+    )
+    expl_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
     conn.execute(
         """
         INSERT INTO trades
-            (recorded_at, status, strategy_name, strategy_stage, backtest_run_id,
-             symbol, side, quantity)
-        VALUES (?, ?, ?, ?, ?, 'SPY', 'BUY', 1.0)
+            (explanation_id, recorded_at, status, source, strategy_name, strategy_stage,
+             backtest_run_id, symbol, side, quantity, order_type, time_in_force,
+             estimated_unit_price, estimated_order_value, submitted_by)
+        VALUES (?, ?, ?, 'paper', ?, ?, ?, 'SPY', 'BUY', 1.0,
+                'market', 'day', 100.0, 100.0, 'test')
         """,
-        (recorded_at, status, strategy_name, strategy_stage, backtest_run_id),
+        (expl_id, recorded_at, status, strategy_name, strategy_stage, backtest_run_id),
     )
     conn.commit()
     conn.close()
@@ -273,8 +207,8 @@ def _seed_frozen_manifest(db: Path, *, strategy_id: str) -> None:
     conn.execute(
         """
         INSERT INTO strategy_manifests
-            (strategy_id, stage, frozen_at)
-        VALUES (?, 'paper', ?)
+            (strategy_id, stage, config_hash, config_json, config_path, frozen_at, frozen_by)
+        VALUES (?, 'paper', 'abc123', '{}', 'configs/test.yaml', ?, 'test')
         """,
         (strategy_id, datetime.now(tz=UTC).isoformat()),
     )

@@ -38,74 +38,6 @@ _skip_no_qt = pytest.mark.skipif(
 # Fixture DB helpers
 # ---------------------------------------------------------------------------
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS backtest_runs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    run_id TEXT NOT NULL UNIQUE,
-    strategy_id TEXT NOT NULL,
-    start_date TEXT NOT NULL,
-    end_date TEXT NOT NULL,
-    started_at TEXT NOT NULL,
-    status TEXT NOT NULL,
-    metadata_json TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS explanations (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    recorded_at TEXT NOT NULL,
-    decision_type TEXT NOT NULL,
-    status TEXT NOT NULL,
-    strategy_name TEXT,
-    strategy_stage TEXT,
-    strategy_config_path TEXT,
-    config_hash TEXT,
-    symbol TEXT NOT NULL,
-    side TEXT NOT NULL,
-    quantity REAL NOT NULL,
-    order_type TEXT NOT NULL,
-    time_in_force TEXT NOT NULL,
-    submitted_by TEXT NOT NULL,
-    market_open INTEGER NOT NULL,
-    latest_bar_timestamp TEXT,
-    latest_bar_close REAL,
-    account_equity REAL NOT NULL,
-    account_cash REAL NOT NULL,
-    account_portfolio_value REAL NOT NULL,
-    account_daily_pnl REAL NOT NULL,
-    risk_allowed INTEGER NOT NULL,
-    risk_summary TEXT NOT NULL,
-    reason_codes_json TEXT NOT NULL,
-    risk_checks_json TEXT NOT NULL,
-    context_json TEXT NOT NULL,
-    session_id TEXT,
-    backtest_run_id INTEGER REFERENCES backtest_runs(id)
-);
-
-CREATE TABLE IF NOT EXISTS trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    explanation_id INTEGER NOT NULL REFERENCES explanations(id) ON DELETE CASCADE,
-    recorded_at TEXT NOT NULL,
-    status TEXT NOT NULL,
-    source TEXT NOT NULL,
-    symbol TEXT NOT NULL,
-    side TEXT NOT NULL,
-    quantity REAL NOT NULL,
-    order_type TEXT NOT NULL,
-    time_in_force TEXT NOT NULL,
-    estimated_unit_price REAL NOT NULL,
-    estimated_order_value REAL NOT NULL,
-    strategy_name TEXT,
-    strategy_stage TEXT,
-    strategy_config_path TEXT,
-    submitted_by TEXT NOT NULL,
-    broker_order_id TEXT,
-    broker_status TEXT,
-    message TEXT,
-    session_id TEXT,
-    backtest_run_id INTEGER REFERENCES backtest_runs(id)
-);
-"""
-
 _EXPL_DEFAULTS = dict(
     decision_type="submit",
     status="submitted",
@@ -158,10 +90,10 @@ _TRADE_DEFAULTS = dict(
 
 
 def _create_fixture_db(path: Path) -> None:
-    conn = sqlite3.connect(str(path))
-    conn.executescript(_DDL)
-    conn.commit()
-    conn.close()
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
+
+    EventStore(path)
 
 
 def _seed_explanation(db: Path, recorded_at: str, **kwargs) -> int:
