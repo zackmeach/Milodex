@@ -908,3 +908,40 @@ def test_refresh_populates_rollups(qapp, tmp_path) -> None:
 # Lifecycle scaffold tests (missing-DB error, error-after-success preservation,
 # in-flight drop, stop-drains-worker) were removed in PR C of RM-007 — those
 # contracts are now covered ONCE in tests/milodex/gui/test_polling_lifecycle.py.
+
+
+# ---------------------------------------------------------------------------
+# Invariant: needsReview case-a uses sharpe/max_drawdown_pct/trade_count keys
+# (pins the _event_queries.latest_backtest_metrics key names against the
+# old _SQL_LATEST_BACKTEST_METRICS wf_sharpe/wf_max_dd/wf_trades aliases)
+# ---------------------------------------------------------------------------
+
+
+def test_needs_review_case_a_metrics_drive_gate_correctly(tmp_path) -> None:
+    """Gate-failure computation in needsReview case (a) uses the correct metric
+    keys after the _event_queries refactor.
+
+    Seeds a strategy with metrics that pass all three gates (sharpe > 0.5,
+    max_dd < 15, trades >= 30).  The strategy is not paper-promoted.
+    Asserts needs_review >= 1, confirming the key names reach _compute_gate_failures
+    correctly via the refactored path.
+    """
+    from milodex.gui.attention_state import _query_attention
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+
+    _seed_backtest_run(
+        db,
+        strategy_id="strat.key.check",
+        sharpe=0.75,
+        max_dd=12.0,
+        trades=35,
+    )
+
+    result = _query_attention(db)
+    assert result["needs_review"] >= 1, (
+        "Gate-passing strategy with no paper promotion must appear in needsReview(a); "
+        "a key-name mismatch in the refactored path would cause all metrics to be None "
+        "and the gate to fail (gate-fail → not in needsReview)"
+    )

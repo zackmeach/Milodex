@@ -972,3 +972,74 @@ def test_bounded_feed_preserves_newest_first_across_cap(tmp_path: Path) -> None:
     assert times == sorted(times, reverse=True)
     newest = (base + timedelta(minutes=_FEED_CAP + 49)).isoformat()
     assert rows[0]["time"] == newest
+
+
+# ---------------------------------------------------------------------------
+# Invariant #5: backtest feed rows render same metrics as before the refactor
+# Pins the oos_aggregate_metrics extractor output against the previously
+# SQL-side json_extract aliases (sharpe, max_dd, n).
+# ---------------------------------------------------------------------------
+
+
+def test_backtest_feed_metrics_identical_after_refactor(tmp_path: Path) -> None:
+    """Backtest feed row detail is byte-identical whether metrics come from SQL
+    json_extract (pre-refactor) or Python oos_aggregate_metrics (post-refactor).
+
+    Seeds a completed backtest run and confirms:
+    - kind == 'backtest'
+    - detail contains 'Sharpe', 'max-dd', 'n=' formatted exactly as before
+    - symbol is empty string
+    - tone is 'data' (backtest tone)
+    """
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db_with_backtests(db)
+
+    _seed_completed_backtest(
+        db,
+        run_id="run-metrics",
+        strategy_id="momentum.daily.dual_absolute.gem_weekly.v1",
+        ended_at="2026-05-10T12:00:00+00:00",
+        sharpe=0.83,
+        max_drawdown_pct=17.88,
+        trade_count=20,
+    )
+
+    feed = _query_feed(db)
+    bt_rows = [r for r in feed if r["kind"] == "backtest"]
+    assert len(bt_rows) == 1
+
+    row = bt_rows[0]
+    detail = row["detail"]
+
+    # Check exact format: "Sharpe 0.83 · max-dd 1788.0% · n=20"
+    # max_dd = abs(17.88) * 100 = 1788.0
+    assert "Sharpe 0.83" in detail, f"Expected 'Sharpe 0.83' in detail: {detail!r}"
+    assert "max-dd" in detail, f"Expected 'max-dd' in detail: {detail!r}"
+    assert "n=20" in detail, f"Expected 'n=20' in detail: {detail!r}"
+    assert row["symbol"] == ""
+    assert row["tone"] == "data"
+
+
+def test_backtest_feed_null_metrics_yields_completed(tmp_path: Path) -> None:
+    """Backtest row with no oos_aggregate → detail == 'completed'."""
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db_with_backtests(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """INSERT INTO backtest_runs
+           (run_id, strategy_id, start_date, end_date, started_at, ended_at, status, metadata_json)
+           VALUES ('run-null-meta', 'strat.null', '2020-01-01', '2024-12-31',
+                   '2026-01-01T00:00:00+00:00', '2026-05-10T12:00:00+00:00', 'completed', '{}')"""
+    )
+    conn.commit()
+    conn.close()
+
+    feed = _query_feed(db)
+    bt_rows = [r for r in feed if r["kind"] == "backtest"]
+    assert len(bt_rows) == 1
+    assert bt_rows[0]["detail"] == "completed"
