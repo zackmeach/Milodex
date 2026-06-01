@@ -68,6 +68,7 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
+from milodex.gui import _event_queries
 from milodex.gui._dashboard_scope import EXPLANATION_PAPER_SQL, TRADE_PAPER_SQL
 from milodex.gui.polling_lifecycle import PollingReadModel
 
@@ -154,12 +155,9 @@ LIMIT {_FEED_CAP}
 
 _SQL_BACKTESTS = f"""
 SELECT
-    ended_at                                                        AS time,
-    strategy_id                                                     AS strategy,
-    'backtest'                                                      AS kind,
-    json_extract(metadata_json, '$.oos_aggregate.sharpe')           AS sharpe,
-    json_extract(metadata_json, '$.oos_aggregate.max_drawdown_pct') AS max_dd,
-    json_extract(metadata_json, '$.oos_aggregate.trade_count')      AS n
+    ended_at     AS time,
+    strategy_id  AS strategy,
+    metadata_json
 FROM backtest_runs
 WHERE status = 'completed'
   AND ended_at IS NOT NULL
@@ -251,12 +249,15 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
         )
 
     for row in bt_rows:
+        metrics = _event_queries.oos_aggregate_metrics(row["metadata_json"])
         feed.append(
             {
                 "time": _coerce_iso(row["time"]),
                 "strategy": row["strategy"],
                 "kind": "backtest",
-                "detail": _backtest_detail(row["sharpe"], row["max_dd"], row["n"]),
+                "detail": _backtest_detail(
+                    metrics["sharpe"], metrics["max_drawdown_pct"], metrics["trade_count"]
+                ),
                 "symbol": "",
                 "tone": _row_tone("backtest"),
             }

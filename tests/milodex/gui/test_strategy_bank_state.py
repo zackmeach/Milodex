@@ -618,3 +618,98 @@ def test_statistical_promotion_metrics_use_promotion_record(tmp_path) -> None:
         f"Expected maxDrawdownPct=8.5, got {row['maxDrawdownPct']!r}"
     )
     assert row["tradeCount"] == 150, f"Expected tradeCount=150, got {row['tradeCount']!r}"
+
+
+# ---------------------------------------------------------------------------
+# Invariant #3: paper-promoted strategies are EXCLUDED from blocked list
+# (highest-risk regression point for the _event_queries.py refactor)
+# ---------------------------------------------------------------------------
+
+
+def test_paper_promoted_strategy_absent_from_blocked(tmp_path) -> None:
+    """INVARIANT #3: a strategy promoted to paper must NOT appear in blocked list,
+    even if it has a completed backtest.
+
+    This is the NOT-IN-paper semantic that _fetch_blocked enforces.  After the
+    _event_queries refactor the Python-side exclusion must reproduce it exactly.
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+
+    # Strategy A: promoted to paper → must NOT appear in blocked
+    _seed_paper_row(db, "breakout.daily.atr_channel.sector_etfs.v1", sharpe=0.64)
+    _seed_blocked_row(
+        db,
+        "breakout.daily.atr_channel.sector_etfs.v1",
+        "run-paper-bt",
+        sharpe=0.64,
+    )
+
+    # Strategy B: NOT promoted to paper, has completed backtest → must appear in blocked
+    _seed_blocked_row(db, "seasonality.daily.turn_of_month.spy.v1", "run-blocked-bt", sharpe=-0.27)
+
+    paper, blocked = _query_bank(db)
+
+    paper_ids = {r["strategyId"] for r in paper}
+    blocked_ids = {r["strategyId"] for r in blocked}
+
+    assert "breakout.daily.atr_channel.sector_etfs.v1" in paper_ids, (
+        "Paper-promoted strategy must appear in paper list"
+    )
+    assert "breakout.daily.atr_channel.sector_etfs.v1" not in blocked_ids, (
+        "Paper-promoted strategy must NOT appear in blocked list (invariant #3)"
+    )
+    assert "seasonality.daily.turn_of_month.spy.v1" in blocked_ids, (
+        "Non-promoted strategy with completed backtest must appear in blocked list"
+    )
+
+
+def test_blocked_list_output_ordering(tmp_path) -> None:
+    """Blocked list is ordered by strategy_id (alphabetical ascending)."""
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+
+    # Seed in reverse alphabetical order
+    _seed_blocked_row(db, "zzz.strategy", "run-z", sharpe=0.1)
+    _seed_blocked_row(db, "aaa.strategy", "run-a", sharpe=0.2)
+    _seed_blocked_row(db, "mmm.strategy", "run-m", sharpe=0.3)
+
+    _, blocked = _query_bank(db)
+
+    ids = [r["strategyId"] for r in blocked]
+    assert ids == sorted(ids), f"Blocked list not sorted by strategyId: {ids}"
+
+
+def test_blocked_dict_shape(tmp_path) -> None:
+    """Blocked list rows carry all required keys with correct types."""
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    _seed_blocked_row(db, "seasonality.daily.turn_of_month.spy.v1", "run-x", sharpe=-0.27)
+
+    _, blocked = _query_bank(db)
+
+    assert len(blocked) == 1
+    row = blocked[0]
+    required_keys = {
+        "strategyId",
+        "sharpeRatio",
+        "maxDrawdownPct",
+        "tradeCount",
+        "gateFailures",
+        "startedAt",
+        "runId",
+        "auditFlag",
+        "flagFailingNotRetired",
+    }
+    assert required_keys.issubset(row.keys()), (
+        f"Missing keys in blocked row: {required_keys - row.keys()}"
+    )
+    assert isinstance(row["gateFailures"], list)
+    assert isinstance(row["auditFlag"], bool)
+    assert isinstance(row["flagFailingNotRetired"], bool)

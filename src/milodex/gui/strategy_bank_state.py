@@ -73,6 +73,7 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
+from milodex.gui import _event_queries
 from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
 
@@ -124,28 +125,9 @@ WHERE p.to_stage = 'paper'
 ORDER BY p.recorded_at;
 """
 
-# Backtest-stage strategies (blocked).
-# Cross-reference: docs/STRATEGY_BANK.md lines 53–71.
-_SQL_BLOCKED = """
-SELECT br.strategy_id,
-       br.run_id,
-       br.started_at,
-       json_extract(br.metadata_json, '$.oos_aggregate.sharpe')            AS wf_sharpe,
-       json_extract(br.metadata_json, '$.oos_aggregate.max_drawdown_pct')  AS wf_max_dd,
-       json_extract(br.metadata_json, '$.oos_aggregate.trade_count')       AS wf_trades
-FROM backtest_runs br
-INNER JOIN (
-    SELECT strategy_id, MAX(id) AS max_id
-    FROM backtest_runs
-    WHERE status = 'completed'
-    GROUP BY strategy_id
-) latest ON br.strategy_id = latest.strategy_id AND br.id = latest.max_id
-WHERE br.strategy_id NOT IN (
-    SELECT strategy_id FROM promotions WHERE to_stage = 'paper'
-)
-AND br.status = 'completed'
-ORDER BY br.strategy_id;
-"""
+# _SQL_BLOCKED was removed; _fetch_blocked now calls
+# _event_queries.latest_backtest_metrics and excludes paper-promoted strategies
+# in Python (see _fetch_blocked below).
 
 # Strategy IDs that carry a manual audit flag (ADR 0032 audit trail).
 # Static for now; will become a join against an audit_notes table when one exists.
@@ -254,25 +236,35 @@ def _fetch_paper(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 
 def _fetch_blocked(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(_SQL_BLOCKED).fetchall()
+    # Obtain the full latest-completed-run map then exclude paper-promoted strategies
+    # (replicates the former SQL NOT-IN-paper filter in Python).
+    all_metrics = _event_queries.latest_backtest_metrics(conn)
+
+    paper_strategy_ids: set[str] = {
+        r["strategy_id"]
+        for r in conn.execute(
+            "SELECT DISTINCT strategy_id FROM promotions WHERE to_stage = 'paper'"
+        ).fetchall()
+    }
+
     result: list[dict[str, Any]] = []
-    for row in rows:
-        strategy_id = row["strategy_id"]
-        sharpe = row["wf_sharpe"]
-        max_dd = row["wf_max_dd"]
-        trade_count = row["wf_trades"]
+    for strategy_id, m in all_metrics.items():
+        if strategy_id in paper_strategy_ids:
+            continue  # replicate NOT IN (paper) — family arg omitted per original comment
+        sharpe = m["sharpe"]
+        max_dd = m["max_drawdown_pct"]
+        trade_count = m["trade_count"]
         result.append(
             {
                 "strategyId": strategy_id,
                 "sharpeRatio": sharpe,
                 "maxDrawdownPct": max_dd,
                 "tradeCount": trade_count or 0,
-                # family arg intentionally omitted — _SQL_BLOCKED excludes paper-promoted
-                # strategies, and the lifecycle-exempt regime strategy lives at paper, so it
-                # never reaches this blocked-list path.
+                # family arg intentionally omitted — paper-promoted strategies are excluded
+                # above, and the lifecycle-exempt regime strategy lives at paper.
                 "gateFailures": _compute_gate_failures(sharpe, max_dd, trade_count),
-                "startedAt": row["started_at"] or "",
-                "runId": row["run_id"] or "",
+                "startedAt": m["started_at"] or "",
+                "runId": m["run_id"] or "",
                 # ADR 0032 audit trail: static flag.
                 "auditFlag": strategy_id in _AUDIT_FLAGGED,
                 # flagFailingNotRetired: strategy is kept at backtest by governance
@@ -280,6 +272,8 @@ def _fetch_blocked(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "flagFailingNotRetired": strategy_id in _FLAGGED_NOT_RETIRED,
             }
         )
+    # Replicate ORDER BY br.strategy_id from the former _SQL_BLOCKED.
+    result.sort(key=lambda r: r["strategyId"])
     return result
 
 

@@ -63,6 +63,7 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
+from milodex.gui import _event_queries
 from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.gui.strategy_bank_state import _compute_gate_failures, _query_bank
 from milodex.promotion.state_machine import MIN_TRADES
@@ -138,20 +139,6 @@ WHERE id IN (
 )
 """
 
-_SQL_LATEST_BACKTEST_METRICS = """
-SELECT br.strategy_id,
-       json_extract(br.metadata_json, '$.oos_aggregate.sharpe')           AS wf_sharpe,
-       json_extract(br.metadata_json, '$.oos_aggregate.max_drawdown_pct') AS wf_max_dd,
-       json_extract(br.metadata_json, '$.oos_aggregate.trade_count')      AS wf_trades
-FROM backtest_runs br
-INNER JOIN (
-    SELECT strategy_id, MAX(id) AS max_id
-    FROM backtest_runs
-    WHERE status = 'completed'
-    GROUP BY strategy_id
-) latest ON br.strategy_id = latest.strategy_id AND br.id = latest.max_id
-WHERE br.status = 'completed'
-"""
 
 _SQL_PROMOTED_TO_PAPER = """
 SELECT DISTINCT strategy_id FROM promotions WHERE to_stage = 'paper'
@@ -236,14 +223,7 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
         }
 
         # --- latest backtest metrics (for needsReview case a) ---
-        bt_rows = conn.execute(_SQL_LATEST_BACKTEST_METRICS).fetchall()
-        bt_metrics: dict[str, dict[str, Any]] = {}
-        for r in bt_rows:
-            bt_metrics[r["strategy_id"]] = {
-                "sharpe": r["wf_sharpe"],
-                "max_dd": r["wf_max_dd"],
-                "trades": r["wf_trades"],
-            }
+        bt_metrics: dict[str, dict[str, Any]] = _event_queries.latest_backtest_metrics(conn)
 
         # --- paper evidence counts (filled paper trades per strategy) ---
         ev_rows = conn.execute(_SQL_PAPER_EVIDENCE_COUNTS).fetchall()
@@ -290,7 +270,9 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
             continue  # already promoted
         # family arg intentionally omitted — the `if sid in promoted_to_paper: continue` guard above
         # already filters out the lifecycle-exempt regime strategy before this call is reached.
-        failures = _compute_gate_failures(metrics["sharpe"], metrics["max_dd"], metrics["trades"])
+        failures = _compute_gate_failures(
+            metrics["sharpe"], metrics["max_drawdown_pct"], metrics["trade_count"]
+        )
         if not failures:  # gate-pass = empty failure list
             nr_case_a.add(sid)
 

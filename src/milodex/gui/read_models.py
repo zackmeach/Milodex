@@ -23,6 +23,7 @@ from typing import Any
 import yaml
 from PySide6.QtCore import Property, Signal, Slot
 
+from milodex.gui import _event_queries
 from milodex.gui.bench_v1 import (
     BenchStrategyState,
     EvidenceRecord,
@@ -894,34 +895,9 @@ def _latest_backtest_metrics(db_path: Path) -> dict[str, dict[str, Any]]:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute(
-            """
-            SELECT br.strategy_id, br.run_id, br.started_at, br.metadata_json
-            FROM backtest_runs br
-            INNER JOIN (
-                SELECT strategy_id, MAX(id) AS max_id
-                FROM backtest_runs
-                WHERE status = 'completed'
-                GROUP BY strategy_id
-            ) latest ON latest.strategy_id = br.strategy_id AND latest.max_id = br.id
-            """
-        ).fetchall()
-    except sqlite3.Error:
-        return {}
+        return _event_queries.latest_backtest_metrics(conn)
     finally:
         conn.close()
-    result: dict[str, dict[str, Any]] = {}
-    for row in rows:
-        metadata = _json(row["metadata_json"])
-        aggregate = metadata.get("oos_aggregate", {}) if isinstance(metadata, dict) else {}
-        result[row["strategy_id"]] = {
-            "run_id": row["run_id"],
-            "started_at": row["started_at"],
-            "sharpe": aggregate.get("sharpe"),
-            "max_drawdown_pct": aggregate.get("max_drawdown_pct"),
-            "trade_count": aggregate.get("trade_count"),
-        }
-    return result
 
 
 def _latest_promotions(db_path: Path) -> dict[str, dict[str, Any]]:
@@ -1091,10 +1067,7 @@ def _backtest_complete_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]
     try:
         rows = conn.execute(
             """
-            SELECT id, strategy_id, ended_at, status,
-                   json_extract(metadata_json, '$.oos_aggregate.sharpe') AS sharpe,
-                   json_extract(metadata_json, '$.oos_aggregate.max_drawdown_pct') AS max_dd,
-                   json_extract(metadata_json, '$.oos_aggregate.trade_count') AS n
+            SELECT id, strategy_id, ended_at, status, metadata_json
             FROM backtest_runs
             WHERE status = 'completed' AND ended_at IS NOT NULL
             ORDER BY ended_at DESC LIMIT 200
@@ -1103,7 +1076,8 @@ def _backtest_complete_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]
     except sqlite3.Error:
         return []
     for row in rows:
-        sharpe = row["sharpe"]
+        metrics = _event_queries.oos_aggregate_metrics(row["metadata_json"])
+        sharpe = metrics["sharpe"]
         if sharpe is None:
             kind = "backtested"
         elif sharpe >= capital_gate:
@@ -1116,10 +1090,10 @@ def _backtest_complete_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]
         reason_parts = []
         if sharpe is not None:
             reason_parts.append(f"Sharpe {sharpe:.2f}")
-        if row["max_dd"] is not None:
-            reason_parts.append(f"max-dd {abs(row['max_dd']) * 100:.1f}%")
-        if row["n"] is not None:
-            reason_parts.append(f"n={row['n']}")
+        if metrics["max_drawdown_pct"] is not None:
+            reason_parts.append(f"max-dd {abs(metrics['max_drawdown_pct']) * 100:.1f}%")
+        if metrics["trade_count"] is not None:
+            reason_parts.append(f"n={metrics['trade_count']}")
         reason = " · ".join(reason_parts) or "completed"
 
         entries.append(
