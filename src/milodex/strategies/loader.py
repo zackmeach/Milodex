@@ -320,59 +320,71 @@ def compute_config_hash(path: Path) -> str:
 
 
 def build_default_registry() -> StrategyRegistry:
-    """Return a registry preloaded with built-in strategy classes."""
-    from milodex.strategies.bench_unconditional_intraday_long import (
-        BenchUnconditionalIntradayLongStrategy,
-    )
-    from milodex.strategies.breakout_atr_channel import BreakoutAtrChannelStrategy
-    from milodex.strategies.breakout_donchian import BreakoutDonchianStrategy
-    from milodex.strategies.breakout_nr7_inside import BreakoutNr7InsideStrategy
-    from milodex.strategies.breakout_orb_intraday import BreakoutOrbIntradayStrategy
-    from milodex.strategies.meanrev_bbands_lowerband import MeanrevBbandsLowerbandStrategy
-    from milodex.strategies.meanrev_crypto_rsi2 import MeanrevCryptoRsi2Strategy
-    from milodex.strategies.meanrev_ibs_lowclose import MeanrevIbsLowcloseStrategy
-    from milodex.strategies.meanrev_rsi2_intraday import MeanrevRsi2IntradayStrategy
-    from milodex.strategies.meanrev_rsi2_pullback import MeanrevRsi2PullbackStrategy
-    from milodex.strategies.meanrev_vwap_reversion_intraday import (
-        MeanrevVwapReversionIntradayStrategy,
-    )
-    from milodex.strategies.momentum_52w_high_proximity import Momentum52wHighProximityStrategy
-    from milodex.strategies.momentum_crypto_ema_cross import MomentumCryptoEmaCrossStrategy
-    from milodex.strategies.momentum_daily_tsmom import MomentumDailyTsmomStrategy
-    from milodex.strategies.momentum_dual_absolute_gem import MomentumDualAbsoluteGemStrategy
-    from milodex.strategies.momentum_vwap_trend_intraday import (
-        MomentumVwapTrendIntradayStrategy,
-    )
-    from milodex.strategies.momentum_xsec_rotation import MomentumXsecRotationStrategy
-    from milodex.strategies.regime_spy_shy_200dma import RegimeSpyShy200DmaStrategy
-    from milodex.strategies.scored_linear_features import ScoredLinearFeaturesStrategy
-    from milodex.strategies.seasonality_turn_of_month import SeasonalityTurnOfMonthStrategy
-    from milodex.strategies.tree_bucketed_lookup import TreeBucketedLookupStrategy
+    """Return a registry preloaded with all concrete strategy classes.
 
+    Discovery is automatic: every module under ``milodex.strategies`` is
+    imported (in sorted order for determinism) and all concrete
+    :class:`Strategy` subclasses — including non-rule decision-layer seam
+    proofs (ScoredLinearFeatures, TreeBucketedLookup, backtest-only /
+    lifecycle-exempt) — are registered.  Import errors propagate loudly so a
+    broken strategy module can never silently drop its class from the registry.
+
+    Duplicate-key detection: if two distinct classes claim the same
+    ``(family, template)`` pair a :class:`ValueError` is raised immediately,
+    naming both classes.  This catches config-id collisions at startup rather
+    than silently last-wins.
+    """
+    import importlib
+    import inspect
+    import pkgutil
+
+    import milodex.strategies as _strategies_pkg
+
+    # Import every module in the package in sorted order for a stable scan.
+    for module_info in sorted(
+        pkgutil.iter_modules(_strategies_pkg.__path__, prefix="milodex.strategies."),
+        key=lambda m: m.name,
+    ):
+        importlib.import_module(module_info.name)  # import errors propagate
+
+    # Collect all concrete Strategy subclasses via a transitive walk.
+    def _all_subclasses(cls: type) -> list[type]:
+        result: list[type] = []
+        for sub in cls.__subclasses__():
+            result.append(sub)
+            result.extend(_all_subclasses(sub))
+        return result
+
+    candidates: list[type[Strategy]] = [
+        cls
+        for cls in _all_subclasses(Strategy)
+        if (
+            issubclass(cls, Strategy)
+            and cls is not Strategy
+            and not inspect.isabstract(cls)
+            and getattr(cls, "family", "") != ""
+            and getattr(cls, "template", "") != ""
+        )
+    ]
+
+    # Sort deterministically by (family, template) before registering.
+    candidates.sort(key=lambda cls: (cls.family, cls.template))
+
+    # Build registry with duplicate-key detection.
     registry = StrategyRegistry()
-    registry.register(RegimeSpyShy200DmaStrategy)
-    registry.register(SeasonalityTurnOfMonthStrategy)
-    registry.register(MeanrevBbandsLowerbandStrategy)
-    registry.register(MeanrevRsi2PullbackStrategy)
-    registry.register(MeanrevIbsLowcloseStrategy)
-    registry.register(MeanrevVwapReversionIntradayStrategy)
-    registry.register(MeanrevRsi2IntradayStrategy)
-    registry.register(Momentum52wHighProximityStrategy)
-    registry.register(MomentumDailyTsmomStrategy)
-    registry.register(BreakoutAtrChannelStrategy)
-    registry.register(BreakoutDonchianStrategy)
-    registry.register(BreakoutNr7InsideStrategy)
-    registry.register(BreakoutOrbIntradayStrategy)
-    registry.register(MomentumDualAbsoluteGemStrategy)
-    registry.register(MomentumXsecRotationStrategy)
-    registry.register(MomentumVwapTrendIntradayStrategy)
-    registry.register(BenchUnconditionalIntradayLongStrategy)
-    registry.register(MomentumCryptoEmaCrossStrategy)
-    registry.register(MeanrevCryptoRsi2Strategy)
-    # Non-rule deciders — decision-layer seam proof (axis 3). Backtest-only,
-    # lifecycle-exempt; they share the contract, not a code path.
-    registry.register(ScoredLinearFeaturesStrategy)
-    registry.register(TreeBucketedLookupStrategy)
+    seen: dict[tuple[str, str], type[Strategy]] = {}
+    for cls in candidates:
+        key = (cls.family, cls.template)
+        if key in seen:
+            msg = (
+                f"Duplicate strategy key {key!r}: "
+                f"'{cls.__qualname__}' in '{cls.__module__}' conflicts with "
+                f"'{seen[key].__qualname__}' in '{seen[key].__module__}'"
+            )
+            raise ValueError(msg)
+        seen[key] = cls
+        registry.register(cls)
+
     return registry
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
@@ -14,9 +15,44 @@ from milodex.strategies.loader import (
     StrategyConfig,
     StrategyLoader,
     StrategyRegistry,
+    build_default_registry,
     compute_config_hash,
+    load_strategy_config,
     resolve_universe_survivorship_corrected,
 )
+
+# ---------------------------------------------------------------------------
+# Helpers for the self-discovery guard tests
+# ---------------------------------------------------------------------------
+
+_CONFIGS_DIR = Path(__file__).parents[3] / "configs"
+
+# Files that are not per-strategy configs and should be skipped by the guard tests.
+_NON_STRATEGY_FILENAMES = frozenset(
+    {
+        "risk_defaults.yaml",
+        "sample_strategy.yaml",
+    }
+)
+
+
+def _strategy_yaml_paths() -> list[Path]:
+    """Return configs/*.yaml paths that are real (non-sample) strategy configs."""
+    paths = []
+    for p in sorted(_CONFIGS_DIR.glob("*.yaml")):
+        if p.name.startswith("universe_"):
+            continue
+        if p.name in _NON_STRATEGY_FILENAMES:
+            continue
+        # Quick structural check: must be a mapping with a 'strategy' key.
+        try:
+            with p.open("r", encoding="utf-8") as fh:
+                data = yaml.safe_load(fh)
+        except yaml.YAMLError:
+            continue
+        if isinstance(data, dict) and "strategy" in data:
+            paths.append(p)
+    return paths
 
 
 class DummyStrategy(Strategy):
@@ -337,3 +373,110 @@ def test_resolve_universe_survivorship_corrected_raises_on_unknown_ref(tmp_path:
     )
     with pytest.raises(ValueError, match="universe_ref 'universe.missing.v1' not found"):
         resolve_universe_survivorship_corrected("universe.missing.v1", sibling)
+
+
+# ---------------------------------------------------------------------------
+# Self-discovery guard tests (PR5)
+# ---------------------------------------------------------------------------
+
+
+def test_every_shipped_config_resolves_in_default_registry():
+    """Every real configs/*.yaml strategy must have a registered class.
+
+    This test catches the P5 failure mode: a developer adds a new strategy
+    class + YAML config but forgets to register it.  With self-discovery the
+    registry builds automatically, but if the new module's class is broken
+    (import error, no family/template, abstract) the scan won't find it and
+    this test will fail with a clear "resolve returned None" message.
+    """
+    registry = build_default_registry()
+    strategy_paths = _strategy_yaml_paths()
+    assert strategy_paths, "No strategy config files found under configs/ — check test helper"
+    for path in strategy_paths:
+        config = load_strategy_config(path)
+        resolved = registry.resolve(config.family, config.template)
+        assert resolved is not None, (
+            f"{path.name}: no class registered for "
+            f"family='{config.family}' template='{config.template}' — "
+            "add a concrete Strategy subclass with matching family/template attributes"
+        )
+
+
+def test_default_registry_discovers_all_known_strategy_keys():
+    """The self-discovery scan must find every (family, template) key that was
+    in the old hand-maintained explicit list.
+
+    The expected set is derived from the real config files so it stays in sync
+    automatically.  We assert at least as many entries as there are distinct
+    (family, template) pairs across configs, and spot-check a representative
+    sample of known keys.
+    """
+    registry = build_default_registry()
+
+    # Derive expected set from the real config files (ground truth).
+    config_keys: set[tuple[str, str]] = set()
+    for path in _strategy_yaml_paths():
+        config = load_strategy_config(path)
+        config_keys.add((config.family, config.template))
+
+    registry_keys = set(registry._strategies.keys())
+    missing = config_keys - registry_keys
+    assert not missing, (
+        f"Registry is missing {len(missing)} key(s) that appear in configs: "
+        + ", ".join(f"{fam!r}/{tpl!r}" for fam, tpl in sorted(missing))
+    )
+
+    # Registry size >= number of distinct config keys (may have extra classes
+    # not yet wired to a config, which is fine).
+    assert len(registry._strategies) >= len(config_keys), (
+        f"Registry has {len(registry._strategies)} entries but "
+        f"configs reference {len(config_keys)} distinct keys"
+    )
+
+    # Spot-check a representative subset of well-known strategies.
+    known_sample = [
+        ("regime", "daily.sma200_rotation"),
+        ("seasonality", "daily.turn_of_month"),
+        ("meanrev", "daily.ibs_lowclose"),
+        ("momentum", "daily.tsmom"),
+        ("breakout", "daily.atr_channel"),
+        ("scored", "daily.linear_features"),
+        ("tree", "daily.bucketed_lookup"),
+    ]
+    for family, template in known_sample:
+        assert registry.resolve(family, template) is not None, (
+            f"Expected strategy ({family!r}, {template!r}) not found in registry"
+        )
+
+
+def test_abstract_base_strategy_not_registered():
+    """The abstract Strategy base class must not appear in the registry."""
+    registry = build_default_registry()
+    # Strategy has family='' and template='' (annotations only, no values).
+    # Verify it was excluded by confirming no entry with blank keys exists.
+    assert registry.resolve("", "") is None, (
+        "Abstract Strategy base (family='', template='') was registered — "
+        "the filter for empty family/template is broken"
+    )
+    # Also confirm Strategy itself is not one of the registered values.
+    assert Strategy not in registry._strategies.values(), (
+        "Abstract Strategy base class appeared as a registered value"
+    )
+
+
+def test_no_duplicate_family_template_keys_in_scan():
+    """The default registry scan must contain no duplicate (family, template) pairs.
+
+    This exercises the duplicate-detection branch of build_default_registry():
+    if any two concrete classes share a key, that function raises ValueError
+    before returning.  A successful return here proves no duplicates exist in
+    the real strategy set.
+    """
+    # If build_default_registry() raises ValueError, the test fails with that
+    # error message, which names both offending classes.
+    registry = build_default_registry()
+    keys = list(registry._strategies.keys())
+    assert len(keys) == len(set(keys)), (
+        "Duplicate (family, template) keys found in registry — "
+        "this should have been caught by build_default_registry()"
+    )
