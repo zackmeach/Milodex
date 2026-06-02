@@ -1855,3 +1855,55 @@ def test_stop_is_idempotent(facade: BenchCommandFacade, config_dir: Path) -> Non
     bridge = BenchCommandBridge(facade)
     bridge.stop()
     bridge.stop()  # must not raise
+
+
+def test_stop_suppresses_post_submit_refresh_on_stopped_read_models(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    """Regression: a late async completion delivered AFTER shutdown must not
+    restart pool work on already-stopped read models.
+
+    The shutdown sequence (app.run_app) stops the lifecycle read models first,
+    then drains the bridge. A worker finishing during the drain posts a
+    QueuedConnection metacall that can be delivered after the slot returns — and
+    Qt does NOT reliably cancel an already-queued metacall on disconnect(). If
+    delivered, _on_async_submit_completed -> _refresh_after_submit would call
+    _kick_refresh() on a stopped BenchState/LedgerState, and
+    PollingReadModel._kick_refresh has no stopped-guard, so it would start a
+    fresh worker on a torn-down read model. stop() sets a _stopped flag that
+    suppresses the refresh.
+
+    The slot is invoked directly here (bypassing the signal) to simulate Qt
+    delivering the queued metacall despite stop()'s best-effort disconnect — the
+    _stopped guard, not the disconnect, must be what prevents the refresh.
+    """
+    _write_strategy(config_dir, stage="backtest")
+    bench_state = _FakeBenchState()
+    ledger_state = _FakeLedgerState()
+    bridge = BenchCommandBridge(facade, bench_state=bench_state, ledger_state=ledger_state)
+
+    submitted_payload = {
+        "proposal_id": "late-after-stop",
+        "action_family": ACTION_FAMILY_BACKTEST,
+        "status": "submitted",
+        "durable_refs": {},
+        "blockers": [],
+    }
+
+    # Baseline: before stop(), a submitted completion DOES refresh both models —
+    # proves the suppression below is the _stopped guard, not refresh never firing.
+    bridge._on_async_submit_completed(dict(submitted_payload))  # noqa: SLF001
+    assert bench_state.refresh_kicks == 1
+    assert ledger_state.refresh_kicks == 1
+
+    # Shutdown: read models stopped by the app sequence, then the bridge drained.
+    bridge.stop()
+
+    # A completion delivered after stop() must NOT restart the stopped models.
+    bridge._on_async_submit_completed(dict(submitted_payload))  # noqa: SLF001
+    assert bench_state.refresh_kicks == 1, (
+        "post-stop async completion restarted BenchState refresh on a stopped model"
+    )
+    assert ledger_state.refresh_kicks == 1, (
+        "post-stop async completion restarted LedgerState refresh on a stopped model"
+    )

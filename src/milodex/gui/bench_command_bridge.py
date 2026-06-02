@@ -172,6 +172,10 @@ class BenchCommandBridge(QObject):
             Qt.ConnectionType.QueuedConnection,
         )
         self._completed_connected = True
+        # Set True by stop(); guards _refresh_after_submit so a late async
+        # completion delivered after shutdown cannot restart work on
+        # already-stopped read models (see _refresh_after_submit).
+        self._stopped = False
 
     # ------------------------------------------------------------------ #
     # Shutdown lifecycle (P2). The bridge owns a PRIVATE QThreadPool used by
@@ -193,6 +197,12 @@ class BenchCommandBridge(QObject):
         backtest exceeding ``_SHUTDOWN_DRAIN_TIMEOUT_MS`` is abandoned just as
         the prior global-pool drain would have abandoned it.
 
+        Also sets a ``_stopped`` flag (before the drain) so a completion already
+        queued when ``stop()`` runs — Qt does NOT reliably cancel an
+        already-posted queued metacall on ``disconnect()`` — suppresses its
+        post-submit refresh rather than restarting work on read models the
+        shutdown sequence has already stopped (see ``_refresh_after_submit``).
+
         Idempotent: both shutdown paths can fire (``quitRequested`` calls
         ``QGuiApplication.quit()``, which triggers ``aboutToQuit``), so this is
         safe to call more than once.
@@ -202,6 +212,7 @@ class BenchCommandBridge(QObject):
 
         Returns ``True`` if the pool drained within the timeout.
         """
+        self._stopped = True
         drained = self._thread_pool.waitForDone(_SHUTDOWN_DRAIN_TIMEOUT_MS)
         self._disconnect_completed_signal()
         return drained
@@ -322,6 +333,15 @@ class BenchCommandBridge(QObject):
         return payload
 
     def _refresh_after_submit(self, operation: str) -> None:
+        # Suppress refreshes once the bridge is stopping. An async completion can
+        # be delivered (queued metacall) after the shutdown sequence has stopped
+        # the read models, and PollingReadModel._kick_refresh has NO stopped-guard
+        # (polling_lifecycle.py) — it would start a fresh worker on an
+        # already-torn-down read model. The disconnect in stop() is best-effort
+        # (Qt may still deliver an already-queued metacall), so this flag is the
+        # definitive guard against resurrecting read-model pool work on shutdown.
+        if self._stopped:
+            return
         if self._bench_state is not None:
             try:
                 self._bench_state._kick_refresh()  # noqa: SLF001
