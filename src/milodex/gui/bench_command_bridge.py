@@ -62,6 +62,11 @@ logger = logging.getLogger(__name__)
 # fallback banner, not an audit log — durable history lives in the event store.
 _MAX_RECENT_COMPLETIONS = 20
 
+# Best-effort drain timeout (ms) for the bridge's private async pool on
+# shutdown. Matches the AppController global-pool drain value so a backtest
+# in flight is given the same grace period regardless of which pool it ran on.
+_SHUTDOWN_DRAIN_TIMEOUT_MS = 3000
+
 
 class _SubmitSignals(QObject):
     completed = Signal("QVariantMap")
@@ -161,10 +166,55 @@ class BenchCommandBridge(QObject):
         self._completions: list[dict[str, Any]] = []
         self._thread_pool = QThreadPool()
         self._submit_signals = _SubmitSignals(self)
+        self._completed_connected = False
         self._submit_signals.completed.connect(
             self._on_async_submit_completed,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._completed_connected = True
+
+    # ------------------------------------------------------------------ #
+    # Shutdown lifecycle (P2). The bridge owns a PRIVATE QThreadPool used by
+    # _submit_async; it is registered with lifecycle=False, so it is excluded
+    # from the lifecycle_models drained by app.aboutToQuit / AppController.
+    # Before this fix NOTHING drained this private pool — quitting mid-async-
+    # submit abandoned a worker writing backtest_runs + explanations and
+    # dropped the queued completion. stop() is the explicit drain, wired into
+    # both shutdown paths in app.run_app outside the lifecycle filter.
+    # ------------------------------------------------------------------ #
+
+    def stop(self) -> bool:
+        """Best-effort drain of the private async pool, then disconnect.
+
+        Mirrors ``PollingReadModel.stop`` / ``_disconnect_signals``: drains
+        in-flight workers via ``waitForDone`` and defensively disconnects the
+        completion signal so a late ``QueuedConnection`` delivery cannot touch a
+        half-torn object on Windows shutdown. The drain is best-effort — a
+        backtest exceeding ``_SHUTDOWN_DRAIN_TIMEOUT_MS`` is abandoned just as
+        the prior global-pool drain would have abandoned it.
+
+        Idempotent: both shutdown paths can fire (``quitRequested`` calls
+        ``QGuiApplication.quit()``, which triggers ``aboutToQuit``), so this is
+        safe to call more than once.
+
+        Performs ZERO command actions: no facade call, no submit, no
+        re-dispatch, no ``_kick_refresh``, no DB / broker / lock write.
+
+        Returns ``True`` if the pool drained within the timeout.
+        """
+        drained = self._thread_pool.waitForDone(_SHUTDOWN_DRAIN_TIMEOUT_MS)
+        self._disconnect_completed_signal()
+        return drained
+
+    def _disconnect_completed_signal(self) -> None:
+        """Disconnect the async-completion signal if connected. Idempotent."""
+        if not self._completed_connected:
+            return
+        try:
+            self._submit_signals.completed.disconnect(self._on_async_submit_completed)
+        except (RuntimeError, TypeError):
+            pass
+        self._completed_connected = False
 
     # ------------------------------------------------------------------ #
     # Read-only completion sink (P18). Recording is a list insert; it never

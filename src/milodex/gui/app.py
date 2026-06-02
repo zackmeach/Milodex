@@ -26,7 +26,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _make_app_controller(read_models: list[object]) -> object:
+def _make_app_controller(
+    read_models: list[object], *, extra_drainables: list[object] | None = None
+) -> object:
     """Construct an ``AppController`` QObject with a ``quitRequested`` slot.
 
     Deferred import of PySide6 keeps the module importable in CLI paths that
@@ -37,6 +39,14 @@ def _make_app_controller(read_models: list[object]) -> object:
     read_models
         All polling read models held by the app.  ``stop()`` is called on each
         during clean shutdown; ``None`` entries are silently skipped.
+    extra_drainables
+        Non-lifecycle ``stop()``-bearing owners drained OUTSIDE the lifecycle
+        filter — chiefly the Bench command bridge, a non-polling QThreadPool
+        owner (``lifecycle=False``) that neither the lifecycle stop loop nor the
+        global-pool drain reaches.  Each is ``stop()``-ed after the global-pool
+        ``waitForDone`` and before ``QGuiApplication.quit()``; ``None`` entries
+        are silently skipped.  Optional/keyword so existing callers passing a
+        single positional ``read_models`` list keep working unchanged.
     """
     from PySide6.QtCore import QObject, QThreadPool, Slot
     from PySide6.QtGui import QGuiApplication
@@ -48,12 +58,15 @@ def _make_app_controller(read_models: list[object]) -> object:
         Clean shutdown sequence:
           1. stop() each polling read model
           2. drain QThreadPool (3-second timeout)
-          3. call QGuiApplication.quit()
+          3. stop() each extra non-lifecycle drainable (e.g. the Bench command
+             bridge's private async pool)
+          4. call QGuiApplication.quit()
         """
 
-        def __init__(self, rms: list[object]) -> None:
+        def __init__(self, rms: list[object], extras: list[object]) -> None:
             super().__init__()
             self._read_models = rms
+            self._extra_drainables = extras
 
         @Slot()
         def quitRequested(self) -> None:  # noqa: N802
@@ -65,9 +78,20 @@ def _make_app_controller(read_models: list[object]) -> object:
                     except Exception:
                         logger.exception("AppController.quitRequested: stop() failed on %r", rm)
             QThreadPool.globalInstance().waitForDone(3000)
+            # Drain non-lifecycle QThreadPool owners (Bench command bridge): the
+            # lifecycle stop loop never sees them and the global-pool drain above
+            # does not touch their private pools.
+            for drainable in self._extra_drainables:
+                if drainable is not None:
+                    try:
+                        drainable.stop()
+                    except Exception:
+                        logger.exception(
+                            "AppController.quitRequested: stop() failed on %r", drainable
+                        )
             QGuiApplication.quit()
 
-    return AppController(read_models)
+    return AppController(read_models, list(extra_drainables or []))
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +127,11 @@ def _build_qml_registry(
     preserved: ``operational_state`` first through ``activity_feed_state``,
     with ``orphan_reaper_controller`` LAST among lifecycle entries.  The three
     register-only entries (ThemeManager, BenchCommandBridge, RiskProfileBridge)
-    carry ``lifecycle=False`` and so are skipped by the lifecycle filter.
+    carry ``lifecycle=False`` and so are skipped by the lifecycle filter.  Of
+    those, BenchCommandBridge is a non-polling QThreadPool owner: its private
+    async pool is drained explicitly OUTSIDE the lifecycle filter (via
+    ``aboutToQuit`` and ``AppController.quitRequested`` in :func:`run_app`), not
+    by the lifecycle stop loop.
 
     To wire a NEW read model: add ONE ``QmlSingleton(...)`` entry here (plus
     its import + construction in :func:`run_app`).  The registration, polling
@@ -500,7 +528,14 @@ def run_app() -> int:
     # Exposes quitRequested() Slot to QML for the Risk Office drawer Quit button.
     # Clean shutdown: stop all polling read models → drain QThreadPool → quit.
     # Membership and order both come from the single registry's lifecycle slice.
-    app_controller = _make_app_controller(lifecycle_models)
+    # The Bench command bridge is a non-polling QThreadPool owner registered
+    # with lifecycle=False, so it is NOT in lifecycle_models. Drain it
+    # explicitly OUTSIDE the lifecycle filter (here via the controller's
+    # quitRequested, and via aboutToQuit below) so an in-flight async backtest
+    # submit is not abandoned mid-event-store-write on quit.
+    app_controller = _make_app_controller(
+        lifecycle_models, extra_drainables=[bench_command_bridge]
+    )
     engine.rootContext().setContextProperty("AppController", app_controller)
 
     # --- 5. QML import path ---------------------------------------------------
@@ -521,6 +556,9 @@ def run_app() -> int:
         # (operational_state first ... orphan_reaper_controller last).
         for model in lifecycle_models:
             model.stop()
+        # Bench command bridge is lifecycle=False; drain its private async pool
+        # explicitly on this early-return path too (symmetry with aboutToQuit).
+        bench_command_bridge.stop()
         return 1
 
     logger.info(
@@ -535,6 +573,9 @@ def run_app() -> int:
     engine.quit.connect(app.quit)
     for model in lifecycle_models:
         app.aboutToQuit.connect(model.stop)
+    # Bench command bridge: non-lifecycle QThreadPool owner, drained explicitly
+    # OUTSIDE the lifecycle filter (see _make_app_controller / _build_qml_registry).
+    app.aboutToQuit.connect(bench_command_bridge.stop)
 
     # --- 9. Event loop --------------------------------------------------------
     return app.exec()

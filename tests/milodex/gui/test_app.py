@@ -118,6 +118,63 @@ def test_run_app_returns_1_when_no_root_objects():
     assert result == 1
 
 
+class _StopSpy:
+    """Minimal ``stop()``-bearing double recording invocation count."""
+
+    def __init__(self) -> None:
+        self.stop_calls = 0
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+def test_make_app_controller_accepts_extra_drainables_and_drains_them_on_quit():
+    """``_make_app_controller`` accepts non-lifecycle drainables (the Bench
+    command bridge) and ``quitRequested`` stops them after the read models.
+
+    This is the wiring guarantee for the P2 fix: the bridge's private async
+    pool, which the lifecycle filter never reaches, is drained on clean quit.
+    """
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
+    from milodex.gui.app import _make_app_controller
+
+    # AppController is a QObject; an application instance must exist to create
+    # and exercise it. Reuse any existing one.
+    _app = QCoreApplication.instance() or QGuiApplication([])
+
+    rm = _StopSpy()
+    bridge = _StopSpy()
+    controller = _make_app_controller([rm], extra_drainables=[bridge])
+
+    # quitRequested calls QGuiApplication.quit() last; with no running event
+    # loop that is a harmless no-op.
+    controller.quitRequested()
+
+    assert rm.stop_calls == 1
+    assert bridge.stop_calls == 1, (
+        "AppController.quitRequested must drain the non-lifecycle bridge "
+        "(P2: its private async pool is otherwise never drained on quit)."
+    )
+
+
+def test_make_app_controller_single_positional_arg_still_works():
+    """Regression guard: callers passing only the positional read_models list
+    (e.g. the test_app subprocess harness: ``_make_app_controller([])``) must
+    keep working without supplying extra_drainables."""
+    from PySide6.QtCore import QCoreApplication
+    from PySide6.QtGui import QGuiApplication
+
+    from milodex.gui.app import _make_app_controller
+
+    _app = QCoreApplication.instance() or QGuiApplication([])
+
+    controller = _make_app_controller([])
+    # No read models, no extra drainables — quitRequested must not raise.
+    controller.quitRequested()
+
+
 def test_main_qml_exists():
     """Main.qml and DesignSystemShowcase.qml exist at the expected paths.
 
