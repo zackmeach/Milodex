@@ -39,12 +39,9 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
-from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
+from milodex.gui._event_queries import resolve_runner_liveness, runner_lock_live
 from milodex.gui.polling_lifecycle import PollingReadModel
-from milodex.strategies.paper_runner_control import (
-    controlled_stop_request_path,
-    runner_lock_name,
-)
+from milodex.strategies.paper_runner_control import controlled_stop_request_path
 
 logger = logging.getLogger(__name__)
 
@@ -88,10 +85,6 @@ def _cadence_seconds(config: dict[str, Any] | None) -> int:
         return _BAR_SIZE_TO_SECONDS.get(bar_size, _DEFAULT_CADENCE_SECONDS)
     except (KeyError, TypeError):
         return _DEFAULT_CADENCE_SECONDS
-
-
-def _session_state(ended_at: str | None, exit_reason: str | None) -> str:
-    return "running" if not ended_at else "stopped:" + (exit_reason or "unknown")
 
 
 def _heartbeat(last_eval_iso: str | None, now: datetime, cadence_seconds: int) -> str:
@@ -185,19 +178,24 @@ def _query_active_ops(
 
         last_eval: str | None = last_eval_by_session.get(session_id)
 
-        runner_lock = "released"
-        if locks_dir is not None:
-            lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
-            try:
-                # Identity-verified liveness (shared helper): "held" means a
-                # genuinely-live process owns the lock, not merely that a lock
-                # file exists. A hard-killed runner's stale lock reads as
-                # "released", surfacing the phantom (running row + released
-                # lock) instead of a false "held" badge.
-                if live_lock_holder(lock) is not None:
-                    runner_lock = "held"
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("ActiveOpsState: lock read failed for %s: %s", strategy_id, exc)
+        # One identity-verified lock check, two distinct consumers (PR6).
+        # `runner_lock_live` returns False when locks_dir is None (cannot
+        # verify) — so runnerLock honestly reports "released" rather than
+        # claiming a lock it never inspected. A genuinely-live process owning
+        # the lock reads "held"; a hard-killed runner's stale lock reads
+        # "released", surfacing the phantom (open row + released lock).
+        lock_verified_live = runner_lock_live(strategy_id, locks_dir)
+        runner_lock = "held" if lock_verified_live else "released"
+        # sessionState back-compat guard: when locks_dir is None, phantom
+        # detection is OFF — an open session resolves to legacy "running"
+        # (lock_live=True). Only an explicit locks_dir engages phantom
+        # detection. This guard must NOT leak into runnerLock above.
+        session_lock_live = True if locks_dir is None else lock_verified_live
+        session_state = resolve_runner_liveness(
+            ended_at=run["ended_at"],
+            exit_reason=run["exit_reason"],
+            lock_live=session_lock_live,
+        )
 
         stop_requested = False
         if locks_dir is not None:
@@ -210,7 +208,7 @@ def _query_active_ops(
         result.append(
             {
                 "strategyId": strategy_id,
-                "sessionState": _session_state(run["ended_at"], run["exit_reason"]),
+                "sessionState": session_state,
                 "cadence": label,
                 "lastEval": last_eval,
                 "heartbeat": _heartbeat(last_eval, now, cad_secs),
