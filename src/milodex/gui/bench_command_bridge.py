@@ -416,6 +416,15 @@ class BenchCommandBridge(QObject):
 
     @Slot("QVariantMap")
     def _on_async_submit_completed(self, payload: dict[str, Any]) -> None:
+        # Shutdown contract: once stop() has run, a late async completion must
+        # touch NOTHING on the half-torn bridge — no refresh, no recentCompletions
+        # mutation, no submitCompleted/recentCompletionsChanged emit. Qt does not
+        # reliably cancel an already-posted QueuedConnection metacall on
+        # disconnect(), so this early-return (not the best-effort disconnect) is
+        # what enforces the contract. The _refresh_after_submit guard remains as a
+        # backstop for the synchronous submit path.
+        if self._stopped:
+            return
         if str(payload.get("status") or "") == "submitted":
             self._refresh_after_submit(str(payload.get("action_family") or "async_submit"))
         self._emit_completion(payload)

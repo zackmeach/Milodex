@@ -1857,30 +1857,34 @@ def test_stop_is_idempotent(facade: BenchCommandFacade, config_dir: Path) -> Non
     bridge.stop()  # must not raise
 
 
-def test_stop_suppresses_post_submit_refresh_on_stopped_read_models(
+def test_stop_makes_late_async_completion_a_noop(
     facade: BenchCommandFacade, config_dir: Path
 ) -> None:
-    """Regression: a late async completion delivered AFTER shutdown must not
-    restart pool work on already-stopped read models.
+    """Regression: a late async completion delivered AFTER shutdown must touch
+    NOTHING on the half-torn bridge — no read-model refresh, no recentCompletions
+    mutation, no submitCompleted emit.
 
     The shutdown sequence (app.run_app) stops the lifecycle read models first,
     then drains the bridge. A worker finishing during the drain posts a
     QueuedConnection metacall that can be delivered after the slot returns — and
     Qt does NOT reliably cancel an already-queued metacall on disconnect(). If
-    delivered, _on_async_submit_completed -> _refresh_after_submit would call
-    _kick_refresh() on a stopped BenchState/LedgerState, and
-    PollingReadModel._kick_refresh has no stopped-guard, so it would start a
-    fresh worker on a torn-down read model. stop() sets a _stopped flag that
-    suppresses the refresh.
+    delivered, _on_async_submit_completed would (a) call _refresh_after_submit ->
+    _kick_refresh() on a stopped BenchState/LedgerState (PollingReadModel
+    ._kick_refresh has no stopped-guard), restarting pool work on a torn-down
+    model, and (b) record/emit completion state on the half-torn bridge. stop()
+    sets a _stopped flag and _on_async_submit_completed early-returns when set.
 
     The slot is invoked directly here (bypassing the signal) to simulate Qt
     delivering the queued metacall despite stop()'s best-effort disconnect — the
-    _stopped guard, not the disconnect, must be what prevents the refresh.
+    _stopped guard, not the disconnect, must be what makes it a no-op.
     """
     _write_strategy(config_dir, stage="backtest")
     bench_state = _FakeBenchState()
     ledger_state = _FakeLedgerState()
     bridge = BenchCommandBridge(facade, bench_state=bench_state, ledger_state=ledger_state)
+
+    submit_completed: list[dict] = []
+    bridge.submitCompleted.connect(submit_completed.append)
 
     submitted_payload = {
         "proposal_id": "late-after-stop",
@@ -1890,20 +1894,21 @@ def test_stop_suppresses_post_submit_refresh_on_stopped_read_models(
         "blockers": [],
     }
 
-    # Baseline: before stop(), a submitted completion DOES refresh both models —
-    # proves the suppression below is the _stopped guard, not refresh never firing.
+    # Baseline: before stop(), a submitted completion DOES refresh, record, and
+    # emit — proves the suppression below is the _stopped guard, not the handler
+    # never doing anything.
     bridge._on_async_submit_completed(dict(submitted_payload))  # noqa: SLF001
     assert bench_state.refresh_kicks == 1
     assert ledger_state.refresh_kicks == 1
+    assert len(bridge.recentCompletions) == 1
+    assert len(submit_completed) == 1
 
     # Shutdown: read models stopped by the app sequence, then the bridge drained.
     bridge.stop()
 
-    # A completion delivered after stop() must NOT restart the stopped models.
+    # A completion delivered after stop() must be a complete no-op.
     bridge._on_async_submit_completed(dict(submitted_payload))  # noqa: SLF001
-    assert bench_state.refresh_kicks == 1, (
-        "post-stop async completion restarted BenchState refresh on a stopped model"
-    )
-    assert ledger_state.refresh_kicks == 1, (
-        "post-stop async completion restarted LedgerState refresh on a stopped model"
-    )
+    assert bench_state.refresh_kicks == 1, "post-stop completion restarted BenchState refresh"
+    assert ledger_state.refresh_kicks == 1, "post-stop completion restarted LedgerState refresh"
+    assert len(bridge.recentCompletions) == 1, "post-stop completion mutated recentCompletions"
+    assert len(submit_completed) == 1, "post-stop completion emitted submitCompleted"
