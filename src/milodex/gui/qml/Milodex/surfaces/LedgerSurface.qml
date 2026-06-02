@@ -27,10 +27,10 @@ import QtQuick
 import QtQuick.Layouts
 import Milodex 1.0
 
-Item {
+SurfaceBase {
     id: root
 
-    property real captureContentHeight: scroller.contentHeight
+    captureContentHeight: scroller.contentHeight
 
     // ------------------------------------------------------------------
     // Mock ledger entries — each entry covers one event.
@@ -46,10 +46,10 @@ Item {
 
     readonly property var entries: LedgerState.entries
 
-    // sessionBag is parameterized in by Main.qml on surface load. The surface
-    // binds one-way to its timeFormat; the operator-facing writer is the Risk
-    // Office drawer, which emits timeFormatRequested → Main.qml writes back.
-    property var sessionBag: null
+    // sessionBag is inherited from SurfaceBase; Main.qml parameterizes it in on
+    // surface load. The surface binds one-way to its timeFormat; the operator-
+    // facing writer is the Risk Office drawer, which emits timeFormatRequested
+    // → Main.qml writes back.
 
     // timeFormat: read-only mirror of sessionBag.timeFormat. Drives formatTs().
     readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
@@ -108,360 +108,307 @@ Item {
     }
 
     // ------------------------------------------------------------------
-    // Scroll container, centered with comfortable max-width
+    // Scroll container, centered with comfortable max-width (table measure).
     // ------------------------------------------------------------------
 
-    Flickable {
+    ScrollSurface {
         id: scroller
-        anchors.fill: parent
-        contentWidth:  width
-        contentHeight: pageColumn.implicitHeight + Theme.space[7] * 2
-        clip:          true
-        flickableDirection: Flickable.VerticalFlick
+        maxContentWidth: 1280
 
-        Item {
-            anchors.horizontalCenter: parent.horizontalCenter
-            width:  Math.min(scroller.width - Theme.space[7] * 2, 1280)
-            height: pageColumn.implicitHeight + Theme.space[7] * 2
+        Column {
+            id: pageColumn
+            width: parent.width
+            spacing: Theme.space[5]
 
-            Column {
-                id: pageColumn
-                anchors.left:   parent.left
-                anchors.right:  parent.right
-                anchors.top:    parent.top
-                anchors.topMargin: Theme.space[7]
-                spacing: Theme.space[5]
+            // ====================================================
+            // HEADER — eyebrow + title + italic deck
+            // ====================================================
+            EditorialHeader {
+                width: parent.width
+                eyebrow: "Paper of Record"
+                title: "The Ledger"
+                standfirst: "A chronological record of every promotion, every refusal, every kill-switch fire. The system's behavior, on paper."
+                standfirstWidthFactor: 0.78
+            }
 
-                // ====================================================
-                // HEADER — eyebrow + title + italic deck
-                // ====================================================
+            // ====================================================
+            // FILTER ROWS — two rows: outcome groups + clear
+            // ====================================================
+
+            // Row 1: outcome-group chips (Promotion / Lifecycle / Backtest / System)
+            Row {
+                spacing: Theme.space[2]
+
                 Text {
-                    text: "Paper of Record"
+                    text: "GROUP —"
                     color: Theme.color.text.muted
                     font.family:        Theme.typography.label.xs.family
                     font.pixelSize:     Theme.typography.label.xs.size
                     font.weight:        Theme.typography.label.xs.weight
                     font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                    font.capitalization: Font.AllUppercase
+                    anchors.verticalCenter: parent.verticalCenter
                 }
 
-                Row {
-                    spacing: 0
-                    Text {
-                        text:  "The Ledger"
-                        color: Theme.color.brand.primary
-                        font.family:    Theme.typography.display.lg.family
-                        font.pixelSize: Theme.typography.display.lg.size
-                        font.weight:    Theme.typography.display.lg.weight
-                        font.letterSpacing: -0.6
-                    }
-                    Text {
-                        text:  "."
-                        color: Theme.color.brand.accent
-                        font.family:    Theme.typography.display.lg.family
-                        font.pixelSize: Theme.typography.display.lg.size
-                        font.weight:    Theme.typography.display.lg.weight
-                    }
-                }
-
-                Text {
-                    width: parent.width * 0.78
-                    text: "A chronological record of every promotion, every refusal, every kill-switch fire. The system's behavior, on paper."
-                    color: Theme.color.text.secondary
-                    font.family:    Theme.typography.body.lgPlus.family
-                    font.pixelSize: Theme.typography.body.lgPlus.size
-                    font.italic:    true
-                    wrapMode:       Text.WordWrap
-                    lineHeight:     1.5
-                }
-
-                // Hairline rule
-                Item { width: parent.width; height: Theme.space[3] }
-                Rectangle {
-                    width:  parent.width
-                    height: 1
-                    color:  Theme.color.border.regular
-                }
-
-                // ====================================================
-                // FILTER ROWS — two rows: outcome groups + clear
-                // ====================================================
-
-                // Row 1: outcome-group chips (Promotion / Lifecycle / Backtest / System)
-                Row {
-                    spacing: Theme.space[2]
-
-                    Text {
-                        text: "GROUP —"
-                        color: Theme.color.text.muted
-                        font.family:        Theme.typography.label.xs.family
-                        font.pixelSize:     Theme.typography.label.xs.size
-                        font.weight:        Theme.typography.label.xs.weight
-                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Repeater {
-                        model: [
-                            { label: "Promotion", group: "promotion" },
-                            { label: "Lifecycle", group: "lifecycle" },
-                            { label: "Backtest",  group: "backtest"  },
-                            { label: "System",    group: "system"    }
-                        ]
-                        delegate: Rectangle {
-                            readonly property bool activeFilter: LedgerState.groupFilter === modelData.group
-                            implicitWidth:  groupLabel.implicitWidth + Theme.space[3] * 2
-                            implicitHeight: groupLabel.implicitHeight + Theme.space[2] * 1.5
-                            color: activeFilter ? Theme.color.surface.raised : "transparent"
-                            border.color: activeFilter ? Theme.color.border.emphasis : Theme.color.border.regular
-                            border.width: 1
-                            radius: Theme.radius.sm
-
-                            Text {
-                                id: groupLabel
-                                anchors.centerIn: parent
-                                text:  modelData.label
-                                color: parent.activeFilter ? Theme.color.text.primary : Theme.color.text.secondary
-                                font.family:    Theme.typography.body.md.family
-                                font.pixelSize: Theme.typography.body.sm.size
-                                font.italic:    true
-                            }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: {
-                                    // Toggle: clicking an active group clears it.
-                                    if (LedgerState.groupFilter === modelData.group)
-                                        LedgerState.setGroupFilter("all")
-                                    else
-                                        LedgerState.setGroupFilter(modelData.group)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Row 2: stage / clear chips
-                Row {
-                    spacing: Theme.space[2]
-
-                    Text {
-                        text: "FILTER —"
-                        color: Theme.color.text.muted
-                        font.family:        Theme.typography.label.xs.family
-                        font.pixelSize:     Theme.typography.label.xs.size
-                        font.weight:        Theme.typography.label.xs.weight
-                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
-                        anchors.verticalCenter: parent.verticalCenter
-                    }
-
-                    Repeater {
-                        model: [
-                            { label: "all",   stage: "all",   strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
-                            { label: "paper", stage: "paper", strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
-                            { label: "clear", stage: "all",   strategy: "all",                       outcome: "all",                     time: "all"                   }
-                        ]
-                        delegate: Rectangle {
-                            readonly property bool activeFilter: modelData.label !== "clear"
-                                                              && modelData.stage === LedgerState.stageFilter
-                                                              && LedgerState.groupFilter === "all"
-                                                              && modelData.strategy === LedgerState.strategyFilter
-                                                              && modelData.outcome === LedgerState.outcomeFilter
-                                                              && modelData.time === LedgerState.timeFilter
-                            implicitWidth:  filterLabel2.implicitWidth + Theme.space[3] * 2
-                            implicitHeight: filterLabel2.implicitHeight + Theme.space[2] * 1.5
-                            color: activeFilter ? Theme.color.surface.raised
-                                  : modelData.label === "clear" ? Theme.color.surface.base
-                                  : "transparent"
-                            border.color: activeFilter ? Theme.color.border.emphasis : Theme.color.border.regular
-                            border.width: 1
-                            radius: Theme.radius.sm
-
-                            Text {
-                                id: filterLabel2
-                                anchors.centerIn: parent
-                                text:  modelData.label
-                                color: parent.activeFilter ? Theme.color.text.primary : Theme.color.text.secondary
-                                font.family:    Theme.typography.body.md.family
-                                font.pixelSize: Theme.typography.body.sm.size
-                                font.italic:    true
-                            }
-
-                            MouseArea {
-                                anchors.fill: parent
-                                hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: LedgerState.setLedgerFilter(
-                                    modelData.stage,
-                                    modelData.strategy,
-                                    modelData.outcome,
-                                    modelData.time
-                                )
-                            }
-                        }
-                    }
-                }
-
-                Item { width: parent.width; height: Theme.space[2] }
-
-                // ====================================================
-                // ENTRIES — one per event
-                // ====================================================
                 Repeater {
-                    model: root.entries
-                    delegate: Item {
-                        id: entryRoot
-                        property bool expanded: false
-                        readonly property bool longReason: (modelData.reason || "").length > 140
-                        width:  pageColumn.width
-                        height: entryColumn.implicitHeight + Theme.space[4] * 2
+                    model: [
+                        { label: "Promotion", group: "promotion" },
+                        { label: "Lifecycle", group: "lifecycle" },
+                        { label: "Backtest",  group: "backtest"  },
+                        { label: "System",    group: "system"    }
+                    ]
+                    delegate: Rectangle {
+                        readonly property bool activeFilter: LedgerState.groupFilter === modelData.group
+                        implicitWidth:  groupLabel.implicitWidth + Theme.space[3] * 2
+                        implicitHeight: groupLabel.implicitHeight + Theme.space[2] * 1.5
+                        color: activeFilter ? Theme.color.surface.raised : "transparent"
+                        border.color: activeFilter ? Theme.color.border.emphasis : Theme.color.border.regular
+                        border.width: 1
+                        radius: Theme.radius.sm
 
-                        Rectangle {
-                            anchors.bottom: parent.bottom
-                            width:  parent.width
-                            height: 1
-                            color:  Theme.color.border.subtle
+                        Text {
+                            id: groupLabel
+                            anchors.centerIn: parent
+                            text:  modelData.label
+                            color: parent.activeFilter ? Theme.color.text.primary : Theme.color.text.secondary
+                            font.family:    Theme.typography.body.md.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.italic:    true
                         }
 
-                        Column {
-                            id: entryColumn
-                            anchors.left:    parent.left
-                            anchors.right:   parent.right
-                            anchors.verticalCenter: parent.verticalCenter
-                            spacing: Theme.space[1]
-
-                            // -- Top row: timestamp / subject / transition / outcome --
-                            RowLayout {
-                                width: parent.width
-                                spacing: Theme.space[3]
-
-                                // Timestamp — formatted via root.formatTs (Task 33)
-                                Text {
-                                    text: root.formatTs(modelData.timestamp) || modelData.displayTimestamp || ""
-                                    color: Theme.color.text.secondary
-                                    font.family:    Theme.typography.data.sm.family
-                                    font.pixelSize: Theme.typography.data.sm.size
-                                    font.features:  Theme.typography.data.sm.features
-                                    Layout.preferredWidth: Theme.column.ledgerTimestamp
-                                }
-                                // Subject (strategy name or "kill switch")
-                                Text {
-                                    text: modelData.subject
-                                    color: Theme.color.text.primary
-                                    font.family:    Theme.typography.data.sm.family
-                                    font.pixelSize: Theme.typography.data.sm.size
-                                    font.features:  Theme.typography.data.sm.features
-                                    font.weight:    Font.Medium
-                                    Layout.preferredWidth: Theme.column.ledgerSubject
-                                    elide: Text.ElideRight
-                                }
-                                // Transition arrow
-                                Text {
-                                    text: modelData.transition
-                                    color: Theme.color.text.secondary
-                                    font.family:    Theme.typography.data.sm.family
-                                    font.pixelSize: Theme.typography.data.sm.size
-                                    font.features:  Theme.typography.data.sm.features
-                                    Layout.fillWidth: true
-                                    Layout.minimumWidth: Theme.column.ledgerTransition
-                                }
-                                // Outcome — colored language, right-aligned
-                                Text {
-                                    text: modelData.outcome
-                                    horizontalAlignment: Text.AlignRight
-                                    color: {
-                                        // Promotion group
-                                        if (modelData.outcomeKind === "promoted")          return Theme.status.positive
-                                        if (modelData.outcomeKind === "demoted")           return Theme.status.negative
-                                        if (modelData.outcomeKind === "returned")          return Theme.status.warning
-                                        // Legacy / unused kinds
-                                        if (modelData.outcomeKind === "refused")           return Theme.status.negative
-                                        if (modelData.outcomeKind === "pending")           return Theme.status.warning
-                                        // System group
-                                        if (modelData.outcomeKind === "fired")             return Theme.status.negative
-                                        if (modelData.outcomeKind === "info")              return Theme.status.info
-                                        if (modelData.outcomeKind === "added")             return Theme.color.text.muted
-                                        // Lifecycle group
-                                        if (modelData.outcomeKind === "started")           return Theme.status.info
-                                        if (modelData.outcomeKind === "stopped")           return Theme.color.text.secondary
-                                        // Backtest group — three-tone binding to policy thresholds
-                                        if (modelData.outcomeKind === "backtested_strong") return Theme.status.positive
-                                        if (modelData.outcomeKind === "backtested_paper")  return Theme.color.text.primary
-                                        if (modelData.outcomeKind === "backtested_weak")   return Theme.status.negative
-                                        if (modelData.outcomeKind === "backtested")        return Theme.color.text.muted
-                                        return Theme.color.text.muted
-                                    }
-                                    font.family:        Theme.typography.label.xs.family
-                                    font.pixelSize:     Theme.typography.label.xs.size
-                                    font.weight:        Font.DemiBold
-                                    font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.2
-                                    Layout.preferredWidth: Theme.column.ledgerOutcome
-                                }
-                            }
-
-                            // -- Reason line (indented under subject column) --
-                            Item {
-                                width: parent.width
-                                height: reasonText.implicitHeight
-                                        + (openRecordAction.visible ? openRecordAction.implicitHeight + Theme.space[2] : 0)
-                                        + Theme.space[1]
-
-                                Text {
-                                    id: reasonText
-                                    anchors.left: parent.left
-                                    anchors.leftMargin: Theme.column.ledgerTimestamp + Theme.space[3]
-                                    anchors.top: parent.top
-                                    anchors.topMargin: Theme.space[1]
-                                    width: parent.width - Theme.column.ledgerTimestamp - Theme.column.ledgerOutcome - Theme.space[3] * 2
-                                    text:  modelData.reason
-                                    color: Theme.color.text.secondary
-                                    font.family:    Theme.typography.data.sm.family
-                                    font.pixelSize: Theme.typography.data.sm.size
-                                    font.features:  Theme.typography.data.sm.features
-                                    wrapMode:       Text.WordWrap
-                                    maximumLineCount: entryRoot.expanded ? 100 : 2
-                                    elide: entryRoot.expanded ? Text.ElideNone : Text.ElideRight
-                                }
-
-                                QuietAction {
-                                    id: openRecordAction
-                                    visible: entryRoot.longReason
-                                    text: entryRoot.expanded ? "Close record" : "Open record"
-                                    anchors.left: reasonText.left
-                                    anchors.top: reasonText.bottom
-                                    anchors.topMargin: Theme.space[2]
-                                    onClicked: entryRoot.expanded = !entryRoot.expanded
-                                }
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                // Toggle: clicking an active group clears it.
+                                if (LedgerState.groupFilter === modelData.group)
+                                    LedgerState.setGroupFilter("all")
+                                else
+                                    LedgerState.setGroupFilter(modelData.group)
                             }
                         }
                     }
                 }
+            }
 
-                // ====================================================
-                // FOOTER — italic close-out
-                // ====================================================
-                Item { width: parent.width; height: Theme.space[3] }
-
-                Rectangle {
-                    width:  parent.width
-                    height: 1
-                    color:  Theme.color.border.subtle
-                }
+            // Row 2: stage / clear chips
+            Row {
+                spacing: Theme.space[2]
 
                 Text {
-                    width:  parent.width
-                    text: "Filterable by stage, strategy, outcome, date range. Every refusal is a permanent test."
+                    text: "FILTER —"
                     color: Theme.color.text.muted
-                    font.family:    Theme.typography.body.md.family
-                    font.pixelSize: Theme.typography.body.sm.size
-                    font.italic:    true
-                    wrapMode: Text.WordWrap
+                    font.family:        Theme.typography.label.xs.family
+                    font.pixelSize:     Theme.typography.label.xs.size
+                    font.weight:        Theme.typography.label.xs.weight
+                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                    anchors.verticalCenter: parent.verticalCenter
                 }
 
-                Item { width: parent.width; height: Theme.space[7] }
+                Repeater {
+                    model: [
+                        { label: "all",   stage: "all",   strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
+                        { label: "paper", stage: "paper", strategy: LedgerState.strategyFilter, outcome: LedgerState.outcomeFilter, time: LedgerState.timeFilter },
+                        { label: "clear", stage: "all",   strategy: "all",                       outcome: "all",                     time: "all"                   }
+                    ]
+                    delegate: Rectangle {
+                        readonly property bool activeFilter: modelData.label !== "clear"
+                                                          && modelData.stage === LedgerState.stageFilter
+                                                          && LedgerState.groupFilter === "all"
+                                                          && modelData.strategy === LedgerState.strategyFilter
+                                                          && modelData.outcome === LedgerState.outcomeFilter
+                                                          && modelData.time === LedgerState.timeFilter
+                        implicitWidth:  filterLabel2.implicitWidth + Theme.space[3] * 2
+                        implicitHeight: filterLabel2.implicitHeight + Theme.space[2] * 1.5
+                        color: activeFilter ? Theme.color.surface.raised
+                              : modelData.label === "clear" ? Theme.color.surface.base
+                              : "transparent"
+                        border.color: activeFilter ? Theme.color.border.emphasis : Theme.color.border.regular
+                        border.width: 1
+                        radius: Theme.radius.sm
+
+                        Text {
+                            id: filterLabel2
+                            anchors.centerIn: parent
+                            text:  modelData.label
+                            color: parent.activeFilter ? Theme.color.text.primary : Theme.color.text.secondary
+                            font.family:    Theme.typography.body.md.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.italic:    true
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: LedgerState.setLedgerFilter(
+                                modelData.stage,
+                                modelData.strategy,
+                                modelData.outcome,
+                                modelData.time
+                            )
+                        }
+                    }
+                }
             }
+
+            Item { width: parent.width; height: Theme.space[2] }
+
+            // ====================================================
+            // ENTRIES — one per event
+            // ====================================================
+            Repeater {
+                model: root.entries
+                delegate: Item {
+                    id: entryRoot
+                    property bool expanded: false
+                    readonly property bool longReason: (modelData.reason || "").length > 140
+                    width:  pageColumn.width
+                    height: entryColumn.implicitHeight + Theme.space[4] * 2
+
+                    Rectangle {
+                        anchors.bottom: parent.bottom
+                        width:  parent.width
+                        height: 1
+                        color:  Theme.color.border.subtle
+                    }
+
+                    Column {
+                        id: entryColumn
+                        anchors.left:    parent.left
+                        anchors.right:   parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Theme.space[1]
+
+                        // -- Top row: timestamp / subject / transition / outcome --
+                        RowLayout {
+                            width: parent.width
+                            spacing: Theme.space[3]
+
+                            // Timestamp — formatted via root.formatTs (Task 33)
+                            Text {
+                                text: root.formatTs(modelData.timestamp) || modelData.displayTimestamp || ""
+                                color: Theme.color.text.secondary
+                                font.family:    Theme.typography.data.sm.family
+                                font.pixelSize: Theme.typography.data.sm.size
+                                font.features:  Theme.typography.data.sm.features
+                                Layout.preferredWidth: Theme.column.ledgerTimestamp
+                            }
+                            // Subject (strategy name or "kill switch")
+                            Text {
+                                text: modelData.subject
+                                color: Theme.color.text.primary
+                                font.family:    Theme.typography.data.sm.family
+                                font.pixelSize: Theme.typography.data.sm.size
+                                font.features:  Theme.typography.data.sm.features
+                                font.weight:    Font.Medium
+                                Layout.preferredWidth: Theme.column.ledgerSubject
+                                elide: Text.ElideRight
+                            }
+                            // Transition arrow
+                            Text {
+                                text: modelData.transition
+                                color: Theme.color.text.secondary
+                                font.family:    Theme.typography.data.sm.family
+                                font.pixelSize: Theme.typography.data.sm.size
+                                font.features:  Theme.typography.data.sm.features
+                                Layout.fillWidth: true
+                                Layout.minimumWidth: Theme.column.ledgerTransition
+                            }
+                            // Outcome — colored language, right-aligned
+                            Text {
+                                text: modelData.outcome
+                                horizontalAlignment: Text.AlignRight
+                                color: {
+                                    // Promotion group
+                                    if (modelData.outcomeKind === "promoted")          return Theme.status.positive
+                                    if (modelData.outcomeKind === "demoted")           return Theme.status.negative
+                                    if (modelData.outcomeKind === "returned")          return Theme.status.warning
+                                    // Legacy / unused kinds
+                                    if (modelData.outcomeKind === "refused")           return Theme.status.negative
+                                    if (modelData.outcomeKind === "pending")           return Theme.status.warning
+                                    // System group
+                                    if (modelData.outcomeKind === "fired")             return Theme.status.negative
+                                    if (modelData.outcomeKind === "info")              return Theme.status.info
+                                    if (modelData.outcomeKind === "added")             return Theme.color.text.muted
+                                    // Lifecycle group
+                                    if (modelData.outcomeKind === "started")           return Theme.status.info
+                                    if (modelData.outcomeKind === "stopped")           return Theme.color.text.secondary
+                                    // Backtest group — three-tone binding to policy thresholds
+                                    if (modelData.outcomeKind === "backtested_strong") return Theme.status.positive
+                                    if (modelData.outcomeKind === "backtested_paper")  return Theme.color.text.primary
+                                    if (modelData.outcomeKind === "backtested_weak")   return Theme.status.negative
+                                    if (modelData.outcomeKind === "backtested")        return Theme.color.text.muted
+                                    return Theme.color.text.muted
+                                }
+                                font.family:        Theme.typography.label.xs.family
+                                font.pixelSize:     Theme.typography.label.xs.size
+                                font.weight:        Font.DemiBold
+                                font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.2
+                                Layout.preferredWidth: Theme.column.ledgerOutcome
+                            }
+                        }
+
+                        // -- Reason line (indented under subject column) --
+                        Item {
+                            width: parent.width
+                            height: reasonText.implicitHeight
+                                    + (openRecordAction.visible ? openRecordAction.implicitHeight + Theme.space[2] : 0)
+                                    + Theme.space[1]
+
+                            Text {
+                                id: reasonText
+                                anchors.left: parent.left
+                                anchors.leftMargin: Theme.column.ledgerTimestamp + Theme.space[3]
+                                anchors.top: parent.top
+                                anchors.topMargin: Theme.space[1]
+                                width: parent.width - Theme.column.ledgerTimestamp - Theme.column.ledgerOutcome - Theme.space[3] * 2
+                                text:  modelData.reason
+                                color: Theme.color.text.secondary
+                                font.family:    Theme.typography.data.sm.family
+                                font.pixelSize: Theme.typography.data.sm.size
+                                font.features:  Theme.typography.data.sm.features
+                                wrapMode:       Text.WordWrap
+                                maximumLineCount: entryRoot.expanded ? 100 : 2
+                                elide: entryRoot.expanded ? Text.ElideNone : Text.ElideRight
+                            }
+
+                            QuietAction {
+                                id: openRecordAction
+                                visible: entryRoot.longReason
+                                text: entryRoot.expanded ? "Close record" : "Open record"
+                                anchors.left: reasonText.left
+                                anchors.top: reasonText.bottom
+                                anchors.topMargin: Theme.space[2]
+                                onClicked: entryRoot.expanded = !entryRoot.expanded
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ====================================================
+            // FOOTER — italic close-out
+            // ====================================================
+            Item { width: parent.width; height: Theme.space[3] }
+
+            Rectangle {
+                width:  parent.width
+                height: 1
+                color:  Theme.color.border.subtle
+            }
+
+            Text {
+                width:  parent.width
+                text: "Filterable by stage, strategy, outcome, date range. Every refusal is a permanent test."
+                color: Theme.color.text.muted
+                font.family:    Theme.typography.body.md.family
+                font.pixelSize: Theme.typography.body.sm.size
+                font.italic:    true
+                wrapMode: Text.WordWrap
+            }
+
+            Item { width: parent.width; height: Theme.space[7] }
         }
     }
 }
