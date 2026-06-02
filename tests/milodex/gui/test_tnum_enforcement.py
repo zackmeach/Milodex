@@ -58,6 +58,13 @@ NUMERIC_QML_FILES: tuple[str, ...] = (
     "components/BenchRow.qml",
     "components/BenchEvidenceModal.qml",
     "components/BenchConfirmationModal.qml",
+    # PR 13 decompose: numeric body sub-components extracted from
+    # BenchConfirmationModal.qml. Each binds data.*.features alongside
+    # data.*.family, preserving the tabular-figure contract.
+    "components/DetailRow.qml",
+    "components/LabeledTextField.qml",
+    "components/RequirementRow.qml",
+    "components/SectionLabel.qml",
     "components/FunnelRow.qml",
     "components/GateTable.qml",
     "components/SectionHeader.qml",

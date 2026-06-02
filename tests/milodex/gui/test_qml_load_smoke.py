@@ -906,23 +906,13 @@ def test_bench_pr_k_bleed_through_guards() -> None:
     )
 
 
-def test_bench_pr_l_intent_packet_sections() -> None:
-    """PR L: all six ALL-CAPS section labels appear in BenchConfirmationModal.qml."""
-    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
-        encoding="utf-8"
-    )
-
-    for label in (
-        '"ACTION"',
-        '"INTENT PACKET"',
-        '"CURRENT SNAPSHOT"',
-        '"WOULD EVENTUALLY REQUIRE"',
-        '"FUTURE RECORD"',
-        '"SAFETY BOUNDARY"',
-    ):
-        assert label in modal_src, (
-            f"BenchConfirmationModal.qml must contain section label {label} (PR L)"
-        )
+# PR 13 re-aim: the former test_bench_pr_l_intent_packet_sections (a cosmetic
+# source-substring loop over the six ALL-CAPS section labels) was CONVERTED to
+# a behavioral check. test_modal_renders_labelled_sections in
+# tests/milodex/gui/test_bench_confirmation_modal_behavior.py drives an
+# instantiated modal and asserts the EXACT label strings render in the live
+# item tree (all seven, incl. COMMAND DRAFT PREVIEW) — a mislabel now fails
+# behaviorally, so the brittle raw-source pin is removed.
 
 
 def test_bench_pr_l_safety_boundary_wording() -> None:
@@ -1347,8 +1337,13 @@ def test_bench_pr_c2_modal_demote_submit_affordance() -> None:
     assert "BenchCommandBridge.proposeDemote(" in modal_src
     assert "BenchCommandBridge.submitDemote(" in modal_src
 
-    # Reason input is wired and gates the submit button.
-    assert "Reason required for the audit record" in modal_src
+    # Reason input is wired and gates the submit button. The placeholder
+    # copy ("Reason required for the audit record") was CONVERTED to a
+    # behavioral check (PR 13 re-aim): behavioral coverage in
+    # tests/milodex/gui/test_bench_confirmation_modal_behavior.py::
+    # test_stage_walkback_blank_reason_refuses_without_proposing asserts the
+    # placeholder renders in the live tree AND that a blank reason refuses
+    # without proposing. The structural property pin stays here.
     assert "_reasonText" in modal_src
 
     # The submit MouseArea only routes through the bridge — no facade,
@@ -1410,7 +1405,23 @@ def test_bench_pr_d1_modal_freeze_manifest_submit_affordance() -> None:
 
 
 def test_bench_pr13_modal_backtest_submit_affordance() -> None:
-    """PR 13: backtest evidence actions route through the command bridge."""
+    """PR 13: backtest evidence actions route through the command bridge.
+
+    DOCTRINE / SOCKET CONTRACT (kept as verbatim text): the bridge method
+    names proposeBacktest / submitBacktestAsync and the submitBacktest-
+    without-Async negation are the socket contract and stay pinned here.
+
+    The canonical-param substrings ("initial_equity": 100000, the 2020/2024
+    spread, walk_forward, risk_policy) and the backtest intent copy were
+    CONVERTED to behavioral checks (PR 13 re-aim). Behavioral coverage in
+    tests/milodex/gui/test_bench_confirmation_modal_behavior.py:
+    test_backtest_submit_proposes_canonical_params drives a backtest submit
+    and asserts the full proposed payload (initial_equity=100000, start/end,
+    walk_forward, risk_policy) by dict-equality; and
+    test_canonical_backtest_params_property_is_single_source reads the live
+    _canonicalBacktestParams off an instantiated modal. The intent copy is
+    asserted rendered in test_modal_renders_labelled_sections.
+    """
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
         encoding="utf-8"
     )
@@ -1420,12 +1431,6 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     assert "BenchCommandBridge.proposeBacktest(" in modal_src
     assert "BenchCommandBridge.submitBacktestAsync(" in modal_src
     assert "BenchCommandBridge.submitBacktest(" not in modal_src
-    assert '"start": "2020-01-01"' in modal_src
-    assert '"end": "2024-12-31"' in modal_src
-    assert '"walk_forward": true' in modal_src
-    assert '"initial_equity": 100000' in modal_src
-    assert '"risk_policy": "bypass"' in modal_src
-    assert "Run canonical walk-forward backtest evidence" in modal_src
 
 
 def test_bench_modal_long_running_submits_use_async_bridge_slots() -> None:
@@ -1463,8 +1468,13 @@ def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
     end = modal_src.find("function _dispatchSubmit", start)
     assert end != -1
     assert '"approved_by"' not in modal_src[start:end]
-    assert "Recommendation required" in modal_src
-    assert "Known risk required" in modal_src
+    # The two operator-evidence placeholders ("Recommendation required",
+    # "Known risk required") were CONVERTED to behavioral checks (PR 13
+    # re-aim): behavioral coverage in
+    # tests/milodex/gui/test_bench_confirmation_modal_behavior.py::
+    # test_promote_to_paper_blank_evidence_refuses asserts both placeholders
+    # render in the live tree AND that blank evidence refuses without
+    # proposing. The socket-method + payload-shape pins stay here.
 
 
 def test_bench_modal_promote_to_paper_prefills_operator_evidence() -> None:

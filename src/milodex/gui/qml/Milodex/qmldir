@@ -17,6 +17,13 @@ BenchModal 1.0 components/BenchModal.qml
 BenchEvidenceModal 1.0 components/BenchEvidenceModal.qml
 RightRailDossier 1.0 components/RightRailDossier.qml
 BenchConfirmationModal 1.0 components/BenchConfirmationModal.qml
+SectionLabel 1.0 components/SectionLabel.qml
+SectionRule 1.0 components/SectionRule.qml
+SafetyBanner 1.0 components/SafetyBanner.qml
+ProseBlock 1.0 components/ProseBlock.qml
+RequirementRow 1.0 components/RequirementRow.qml
+DetailRow 1.0 components/DetailRow.qml
+LabeledTextField 1.0 components/LabeledTextField.qml
 SectionHeader 1.0 components/SectionHeader.qml
 SegmentedToggle 1.0 components/SegmentedToggle.qml
 FunnelRow 1.0 components/FunnelRow.qml
