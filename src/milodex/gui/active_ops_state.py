@@ -25,8 +25,18 @@ Decision-rule branch taken: **only bar_size-style values exist**.
 Cadence label  : ``"daily (1D)"`` from ``tempo.bar_size = "1D"``.
 Cadence seconds: ``60`` -- runner poll interval for 1D bars per
                  ``milodex.strategies.runner._POLL_INTERVAL_BY_BAR_SIZE``.
-                 Limitation: this is the poll period, not the bar period (86400s).
-                 Heartbeat reflects check-in within 90s, not bar arrival.
+
+Heartbeat signal
+-----------------
+``heartbeat`` reflects the age of the runner's advisory-lock file mtime,
+which :meth:`AdvisoryLock.refresh` bumps every poll cycle (≈60 s for 1D
+bars) *before* the market-hours gate.  This is a true per-poll check-in
+signal independent of bar cadence — a healthy 1D runner that has not
+evaluated today still has a fresh lock (≤60 s old) and reads "on schedule".
+The prior explanation-recency approach caused daily runners to read
+"overdue" all day, making genuine stalls indistinguishable from idle.
+The ``lastEval`` field still carries the genuine last-evaluation timestamp
+(MAX ``explanations.recorded_at``) for informational display.
 """
 
 from __future__ import annotations
@@ -39,7 +49,11 @@ from typing import Any
 
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
-from milodex.gui._event_queries import resolve_runner_liveness, runner_lock_live
+from milodex.gui._event_queries import (
+    resolve_runner_liveness,
+    runner_lock_live,
+    runner_lock_mtime_age,
+)
 from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.strategies.paper_runner_control import controlled_stop_request_path
 
@@ -87,14 +101,44 @@ def _cadence_seconds(config: dict[str, Any] | None) -> int:
         return _DEFAULT_CADENCE_SECONDS
 
 
-def _heartbeat(last_eval_iso: str | None, now: datetime, cadence_seconds: int) -> str:
-    if last_eval_iso is None:
+def _heartbeat(lock_age_seconds: float | None, cadence_seconds: int) -> str:
+    """Classify runner health from advisory-lock mtime age.
+
+    Parameters
+    ----------
+    lock_age_seconds:
+        Seconds since the runner's lock file was last refreshed, as returned
+        by :func:`~milodex.gui._event_queries.runner_lock_mtime_age`.
+        ``None`` means the lock surface is unavailable (no locks_dir, or the
+        file is absent / unreadable).
+    cadence_seconds:
+        Runner poll interval derived from ``tempo.bar_size``
+        (``_BAR_SIZE_TO_SECONDS``).  The threshold is ``cadence_seconds * 2.0``.
+        Using 2.0× (not 1.5×) guards against slow post-close fetches: the
+        runner refreshes its lock at the *top* of the loop, before
+        ``run_cycle()``, so the real inter-refresh gap is
+        ``sleep(cadence_seconds) + run_cycle_duration``.  A 1.5× threshold
+        would flap a healthy 1D runner mid-fetch.
+
+    Returns
+    -------
+    ``"no activity"``  — lock age unavailable (no check-in surface).
+    ``"on schedule"``  — lock age ≤ cadence_seconds * 2.0.
+    ``"overdue by Nm"`` — lock age exceeds threshold; N whole minutes stale.
+    ``"overdue by Ns"`` — lock age exceeds threshold and < 60 s stale (sub-minute
+        overdue unit so the badge is honest for intraday cadences, e.g. 5Min
+        poll=10 s → threshold 20 s, an age of 25 s shows "overdue by 25s" rather
+        than the misleading "overdue by 0m").
+        The ``"overdue by "`` prefix is preserved so
+        ``DeskSurface.qml``'s ``indexOf("overdue")===0`` colour rule fires.
+    """
+    if lock_age_seconds is None:
         return "no activity"
-    last_eval = datetime.fromisoformat(last_eval_iso)
-    if last_eval.tzinfo is None:
-        last_eval = last_eval.replace(tzinfo=UTC)
-    age = (now - last_eval).total_seconds()
-    return "on schedule" if age <= cadence_seconds * 1.5 else f"overdue by {int(age // 60)}m"
+    if lock_age_seconds <= cadence_seconds * 2.0:
+        return "on schedule"
+    mins = int(lock_age_seconds // 60)
+    unit = f"{mins}m" if mins >= 1 else f"{int(lock_age_seconds)}s"
+    return f"overdue by {unit}"
 
 
 def _session_age(started_at_iso: str, now: datetime) -> str:
@@ -205,13 +249,29 @@ def _query_active_ops(
             except Exception as exc:  # noqa: BLE001
                 logger.warning("ActiveOpsState: sentinel check failed for %s: %s", strategy_id, exc)
 
+        # Heartbeat is driven by the advisory-lock mtime (refreshed every poll
+        # cycle, before the market-hours gate) rather than explanation recency.
+        # A daily runner only writes an explanation once per day; its lock is
+        # always ≤60 s old on a healthy session — the two signals are decoupled.
+        #
+        # Gate the mtime read on PID-verified liveness (lock_verified_live).
+        # A hard-killed runner's lock file has a fresh mtime from moments before
+        # death, but its PID is gone — reading the mtime would yield "on schedule"
+        # while sessionState="phantom" and runnerLock="released".  Gating on
+        # lock_verified_live makes all three signals coherent: PID dead →
+        # lock_age=None → "no activity".  Also avoids the redundant I/O on the
+        # dead-runner path.
+        lock_age = (
+            runner_lock_mtime_age(strategy_id, locks_dir, now) if lock_verified_live else None
+        )
+
         result.append(
             {
                 "strategyId": strategy_id,
                 "sessionState": session_state,
                 "cadence": label,
                 "lastEval": last_eval,
-                "heartbeat": _heartbeat(last_eval, now, cad_secs),
+                "heartbeat": _heartbeat(lock_age, cad_secs),
                 "runnerLock": runner_lock,
                 "stopRequested": stop_requested,
                 "sessionAge": _session_age(run["started_at"], now),

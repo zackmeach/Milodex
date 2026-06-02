@@ -37,6 +37,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +79,31 @@ def resolve_runner_liveness(
     if reason in _FAILURE_EXIT_REASONS or reason.startswith("crashed:"):
         return "failed"
     return "stopped"
+
+
+def runner_lock_mtime_age(
+    strategy_id: str, locks_dir: Path | None, now: datetime
+) -> float | None:
+    """Seconds since the runner lock file was last refreshed (per-poll heartbeat).
+
+    Returns ``None`` when ``locks_dir`` is ``None``, the lock file is absent,
+    or the stat fails.  The lock file mtime is updated by
+    :meth:`AdvisoryLock.refresh` once per runner poll cycle, so its age is
+    an accurate per-poll check-in signal independent of how often the
+    strategy actually writes an explanation row.
+    """
+    if locks_dir is None:
+        return None
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    try:
+        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
+        mtime = lock.path.stat().st_mtime
+        return now.timestamp() - mtime
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("runner_lock_mtime_age: stat failed for %s: %s", strategy_id, exc)
+        return None
 
 
 def runner_lock_live(strategy_id: str, locks_dir: Path | None) -> bool:

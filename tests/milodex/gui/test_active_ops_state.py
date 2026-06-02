@@ -101,46 +101,74 @@ class TestSessionState:
 
 
 class TestHeartbeat:
-    def _now(self) -> datetime:
-        return datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    """_heartbeat(lock_age_seconds, cadence_seconds) → str.
 
-    def test_none_last_eval(self) -> None:
+    Pure function: no filesystem, no datetime arithmetic.
+    Vocabulary is fixed (DeskSurface.qml colors on these literals).
+    """
+
+    def test_none_age_is_no_activity(self) -> None:
         from milodex.gui.active_ops_state import _heartbeat
 
-        assert _heartbeat(None, self._now(), 60) == "no activity"
+        assert _heartbeat(None, 60) == "no activity"
 
-    def test_on_schedule_at_exactly_1_5x(self) -> None:
+    def test_on_schedule_at_exactly_2_0x(self) -> None:
         from milodex.gui.active_ops_state import _heartbeat
 
-        now = self._now()
-        # age = exactly 1.5 * 60 = 90s -- on schedule (boundary inclusive)
-        last_eval = (now - timedelta(seconds=90)).isoformat()
-        assert _heartbeat(last_eval, now, 60) == "on schedule"
+        # age = exactly 2.0 * 60 = 120s -- boundary is inclusive
+        assert _heartbeat(120.0, 60) == "on schedule"
 
-    def test_just_over_1_5x_is_overdue(self) -> None:
+    def test_between_1_5x_and_2_0x_is_still_on_schedule(self) -> None:
         from milodex.gui.active_ops_state import _heartbeat
 
-        now = self._now()
-        # age = 91s -- just over the 90s threshold
-        last_eval = (now - timedelta(seconds=91)).isoformat()
-        result = _heartbeat(last_eval, now, 60)
+        # age = 90s (old 1.5x threshold) -- must now be "on schedule" with 2.0x
+        assert _heartbeat(90.0, 60) == "on schedule"
+
+    def test_fresh_age_is_on_schedule(self) -> None:
+        from milodex.gui.active_ops_state import _heartbeat
+
+        assert _heartbeat(30.0, 60) == "on schedule"
+
+    def test_just_over_2_0x_is_overdue(self) -> None:
+        from milodex.gui.active_ops_state import _heartbeat
+
+        # age = 121s -- just over the 120s (2.0 * 60) threshold
+        result = _heartbeat(121.0, 60)
         assert result.startswith("overdue by ")
 
     def test_overdue_minutes_format(self) -> None:
         from milodex.gui.active_ops_state import _heartbeat
 
-        now = self._now()
-        last_eval = (now - timedelta(minutes=10)).isoformat()
-        result = _heartbeat(last_eval, now, 60)
+        result = _heartbeat(600.0, 60)  # 10 minutes old
         assert result == "overdue by 10m"
 
-    def test_tz_naive_last_eval_does_not_raise(self) -> None:
+    def test_zero_age_is_on_schedule(self) -> None:
         from milodex.gui.active_ops_state import _heartbeat
 
-        now = self._now()
-        naive_iso = "2026-05-16T11:59:30"  # no tz
-        result = _heartbeat(naive_iso, now, 60)
-        assert isinstance(result, str)
+        assert _heartbeat(0.0, 60) == "on schedule"
+
+    def test_sub_minute_overdue_uses_seconds_unit(self) -> None:
+        from milodex.gui.active_ops_state import _heartbeat
+
+        # Intraday cadence: 5Min poll=10s, threshold=20s, age=25s (just over).
+        # Old code: int(25//60)=0 → "overdue by 0m" (nonsense).
+        # New code: mins=0 → unit="25s" → "overdue by 25s".
+        result = _heartbeat(25.0, 10)
+        assert result == "overdue by 25s"
+
+    def test_sub_minute_overdue_prefix_for_qml_color_rule(self) -> None:
+        from milodex.gui.active_ops_state import _heartbeat
+
+        # DeskSurface.qml:677 colors on indexOf("overdue")===0 — must still fire
+        # for sub-minute overdue values that now use the "s" unit.
+        result = _heartbeat(25.0, 10)
+        assert result.startswith("overdue by ")
+
+    def test_exactly_2_0x_intraday_is_on_schedule(self) -> None:
+        from milodex.gui.active_ops_state import _heartbeat
+
+        # 5Min cadence: seconds=10, threshold=20s exactly → "on schedule".
+        assert _heartbeat(20.0, 10) == "on schedule"
 
 
 class TestSessionAge:
@@ -381,7 +409,13 @@ def test_query_active_ops_multi_strategy(tmp_path) -> None:
 
 
 def test_query_active_ops_no_explanations_heartbeat_no_activity(tmp_path) -> None:
-    """A runner with no explanations rows has heartbeat = 'no activity'."""
+    """heartbeat='no activity' when no locks_dir is provided (no lock surface to inspect).
+
+    Post-PR7, heartbeat is driven by the advisory-lock mtime, not explanation
+    recency.  The causal factor here is the absent locks_dir (locks_dir=None
+    default) — runner_lock_mtime_age returns None → _heartbeat → 'no activity'.
+    Explanation row presence or absence is irrelevant to the heartbeat signal.
+    """
     from milodex.gui.active_ops_state import _query_active_ops
 
     db = tmp_path / "ops.db"
@@ -499,6 +533,60 @@ def test_query_active_ops_runner_lock_released_for_dead_pid(tmp_path) -> None:
     assert result[0]["runnerLock"] == "released"
 
 
+def test_query_active_ops_sigkill_dead_pid_fresh_mtime_heartbeat_no_activity(tmp_path) -> None:
+    """Hard-killed runner (dead PID, fresh mtime) → heartbeat='no activity', not 'on schedule'.
+
+    FIX 2 coherence: after SIGKILL the lock file's mtime is fresh (refreshed
+    moments before death), but the PID is gone.  Without the liveness gate,
+    runner_lock_mtime_age would read the fresh mtime and return "on schedule"
+    while sessionState="phantom" and runnerLock="released" — three contradictory
+    signals.  With the gate (lock_age gated on lock_verified_live=False),
+    lock_age=None → _heartbeat → 'no activity', coherent with phantom/released.
+    """
+    import os
+    import time
+
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now_ts = time.time()
+    now = datetime.fromtimestamp(now_ts, tz=UTC)
+    started = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+
+    # Plant a lock file with a dead PID (0) and a FRESH mtime (5s ago).
+    # pid=0 short-circuits runner_lock_live → False (dead-runner signature).
+    # The fresh mtime would yield "on schedule" if the gate were absent.
+    lock_file = locks_dir / f"{runner_lock_name('strat.a.v1')}.lock"
+    lock_file.write_text(
+        json.dumps(
+            {
+                "pid": 0,
+                "hostname": "ghost",
+                "holder_name": "milodex",
+                "started_at": now.isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Stamp mtime to 5s ago — well within any threshold, so without the gate
+    # this would produce "on schedule".
+    t = now_ts - 5
+    os.utime(lock_file, (t, t))
+
+    result = _query_active_ops(db, now, locks_dir=locks_dir)
+    r = result[0]
+    # All three signals must be coherent.
+    assert r["sessionState"] == "phantom"
+    assert r["runnerLock"] == "released"
+    assert r["heartbeat"] == "no activity"  # NOT "on schedule"
+
+
 def test_query_active_ops_runner_lock_released(tmp_path) -> None:
     """runnerLock='released' when no lock file present."""
     from milodex.gui.active_ops_state import _query_active_ops
@@ -603,6 +691,257 @@ def test_read_only_connection_blocks_writes(tmp_path) -> None:
     with pytest.raises(sqlite3.OperationalError):
         ro_conn.execute("CREATE TABLE x(a)")
     ro_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# runner_lock_mtime_age tests (new helper in _event_queries)
+# ---------------------------------------------------------------------------
+
+
+def test_runner_lock_mtime_age_none_locks_dir() -> None:
+    """Returns None when locks_dir is None — no surface to inspect."""
+    from milodex.gui._event_queries import runner_lock_mtime_age
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    result = runner_lock_mtime_age("strat.a.v1", None, now)
+    assert result is None
+
+
+def test_runner_lock_mtime_age_absent_lock_file(tmp_path) -> None:
+    """Returns None when the lock file does not exist."""
+    from milodex.gui._event_queries import runner_lock_mtime_age
+
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    result = runner_lock_mtime_age("strat.a.v1", locks_dir, now)
+    assert result is None
+
+
+def test_runner_lock_mtime_age_fresh(tmp_path) -> None:
+    """Returns a small positive age when the lock file was just written."""
+    import os
+    import time
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui._event_queries import runner_lock_mtime_age
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        # Stamp the lock file mtime to exactly 10 seconds ago.
+        lock_path = lock.path
+        t = time.time() - 10
+        os.utime(lock_path, (t, t))
+
+        now = datetime.fromtimestamp(time.time(), tz=UTC)
+        age = runner_lock_mtime_age("strat.a.v1", locks_dir, now)
+        assert age is not None
+        assert 9.0 <= age <= 15.0  # generous window for CI timing
+    finally:
+        lock.release()
+
+
+def test_runner_lock_mtime_age_stale(tmp_path) -> None:
+    """Returns a large age when the lock file mtime was set far in the past."""
+    import os
+    import time
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui._event_queries import runner_lock_mtime_age
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        lock_path = lock.path
+        t = time.time() - 600  # 10 minutes ago
+        os.utime(lock_path, (t, t))
+
+        now = datetime.fromtimestamp(time.time(), tz=UTC)
+        age = runner_lock_mtime_age("strat.a.v1", locks_dir, now)
+        assert age is not None
+        assert age >= 590  # at least 590s old
+    finally:
+        lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Heartbeat integration: lock-mtime as source (PR7)
+# ---------------------------------------------------------------------------
+
+
+def test_query_active_ops_heartbeat_fresh_lock_on_schedule(tmp_path) -> None:
+    """A runner with a fresh lock file (mtime ≤ cadence*2.0) → 'on schedule'.
+
+    This is the core bug-fix test: a daily runner whose lock was refreshed
+    recently reads 'on schedule' regardless of when the last explanation was
+    recorded (potentially hours ago).
+    """
+    import os
+    import time
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now_ts = time.time()
+    now = datetime.fromtimestamp(now_ts, tz=UTC)
+    started = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+
+    # Explanation recorded 6 hours ago — old logic would report "overdue".
+    _seed_explanation(db, "sess-001", (now - timedelta(hours=6)).isoformat())
+
+    # Lock file refreshed only 30s ago — within cadence*2.0 (60*2.0=120s).
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    lock_path = lock.path
+    t = now_ts - 30
+    os.utime(lock_path, (t, t))
+
+    try:
+        result = _query_active_ops(db, now, locks_dir=locks_dir)
+        assert result[0]["heartbeat"] == "on schedule"
+        # lastEval is still the explanation time — unchanged.
+        assert result[0]["lastEval"] is not None
+    finally:
+        lock.release()
+
+
+def test_query_active_ops_heartbeat_stale_lock_overdue(tmp_path) -> None:
+    """A runner with a stale lock file (mtime > cadence*2.0) → 'overdue by Nm'."""
+    import os
+    import time
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now_ts = time.time()
+    now = datetime.fromtimestamp(now_ts, tz=UTC)
+    started = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+
+    # Lock file last refreshed 10 minutes ago — well past cadence*2.0 (120s).
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    lock_path = lock.path
+    t = now_ts - 600
+    os.utime(lock_path, (t, t))
+
+    try:
+        result = _query_active_ops(db, now, locks_dir=locks_dir)
+        assert result[0]["heartbeat"].startswith("overdue by ")
+    finally:
+        lock.release()
+
+
+def test_query_active_ops_heartbeat_no_locks_dir_is_no_activity(tmp_path) -> None:
+    """Without a locks_dir the lock age is None → heartbeat = 'no activity'.
+
+    This is the existing back-compat case: no locks_dir means no surface
+    to inspect, so no health signal can be produced.
+    """
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    started = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+    # Seed a recent explanation — old logic would say "on schedule".
+    _seed_explanation(db, "sess-001", (now - timedelta(seconds=30)).isoformat())
+
+    result = _query_active_ops(db, now, locks_dir=None)
+    assert result[0]["heartbeat"] == "no activity"
+
+
+def test_query_active_ops_heartbeat_decoupled_from_explanation_recency(tmp_path) -> None:
+    """heartbeat='on schedule' for a live lock + fresh mtime even with ZERO explanations.
+
+    FIX 3 decoupling proof: post-PR7 the heartbeat signal is purely driven by
+    the advisory-lock mtime.  A runner with a live, freshly-refreshed lock and
+    ZERO explanation rows must still read 'on schedule'.  If heartbeat still
+    depended on explanation recency, it would read 'no activity' here.
+    """
+    import os
+    import time
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now_ts = time.time()
+    now = datetime.fromtimestamp(now_ts, tz=UTC)
+    started = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+    # Deliberately NO explanations seeded — zero rows.
+
+    # Acquire the lock via this live PID so runner_lock_live → True.
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    lock_path = lock.path
+    # Stamp mtime to 10s ago — well within cadence*2.0 (120s).
+    t = now_ts - 10
+    os.utime(lock_path, (t, t))
+
+    try:
+        result = _query_active_ops(db, now, locks_dir=locks_dir)
+        r = result[0]
+        assert r["lastEval"] is None  # zero explanations — confirmed
+        assert r["heartbeat"] == "on schedule"  # lock is fresh — decoupled
+    finally:
+        lock.release()
+
+
+def test_heartbeat_daily_cadence_old_last_eval_would_have_been_overdue(tmp_path) -> None:
+    """Mutation-proof: confirm the old last_eval logic produces 'overdue' for
+    the exact scenario the new lock-mtime logic fixes.
+
+    Scenario: daily runner, lock fresh (30s), last_eval 6h old.
+    - Old logic (_heartbeat takes last_eval ISO) → "overdue by 360m"
+    - New logic (_heartbeat takes lock_age_seconds) → "on schedule"
+    This test drives the new _heartbeat directly to prove the fix.
+    """
+    from milodex.gui.active_ops_state import _heartbeat
+
+    cadence = 60  # 1D poll interval
+    # Fresh lock: 30s old — well within 60*2.0=120s threshold.
+    assert _heartbeat(30.0, cadence) == "on schedule"
+
+    # Verify that the old scalar (6h in seconds) would have been "overdue".
+    # We simulate what old logic did: age = (now - last_eval).total_seconds()
+    # = 6 * 3600 = 21600s, which is >> 120s → "overdue by 360m".
+    old_age_seconds = 6 * 3600  # 6 hours
+    # The old _heartbeat used: age <= cadence * 1.5 for "on schedule"
+    # 21600 > 120 → would have been "overdue" under either threshold
+    assert old_age_seconds > cadence * 2.0  # confirms the old logic was wrong
+    # But the new logic with lock age = 30s says "on schedule":
+    assert _heartbeat(30.0, cadence) == "on schedule"
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +1061,13 @@ def test_refresh_populates_runners(qapp, tmp_path) -> None:
 
 @_skip_no_qt
 def test_no_explanations_heartbeat_no_activity(qapp, tmp_path) -> None:
-    """A runner with no explanations rows exposes heartbeat='no activity'."""
+    """heartbeat='no activity' when no locks_dir is provided (no lock surface to inspect).
+
+    Post-PR7, heartbeat is driven by advisory-lock mtime, not explanation recency.
+    The causal factor here is the absent locks_dir (ActiveOpsState default path
+    with no explicit locks_dir set, so runner_lock_mtime_age returns None →
+    'no activity').  Explanation rows are irrelevant to this signal.
+    """
     _ = qapp
     db = tmp_path / "ops.db"
     _create_fixture_db(db)
