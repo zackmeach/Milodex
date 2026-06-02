@@ -12,6 +12,16 @@
 // current behavior; the ADR-0049 prototype description above is retained as
 // historical context for this shell.
 //
+// PR 13 decompose: the seven inline body sub-components (SectionLabel,
+// SectionRule, SafetyBanner, ProseBlock, RequirementRow, DetailRow) and the
+// three repeated operator-input fields (LabeledTextField) were extracted to
+// shared components/ files. The seven section INSTANCES (their literal
+// labels/copy) and every bridge socket call + canonical backtest payload
+// stay INLINE here — those substrings are the doctrine perimeter the smoke
+// tests pin. The seven dispatch functions share a propose→validate→route
+// skeleton via _validateProposal / _finishSyncSubmit / _handleQueuedSubmit,
+// keeping each family's bridge method names inline.
+//
 // Layered on top of BenchModal.qml (the shared modal chrome) — this file
 // adds the four things BenchModal does not provide:
 //   - `open: bool` toggle with focus grab on open
@@ -121,6 +131,25 @@ Item {
     // temporarily omits the preview. Read-only; never mutated here.
     readonly property var  _preview:           (actionData && actionData.actionIntentPreview) || ({})
     readonly property bool _previewAvailable:  !!(actionData && actionData.actionIntentPreview)
+
+    // ------------------------------------------------------------------
+    // Canonical backtest evidence parameters (PR 13).
+    //
+    // Single source of truth for the walk-forward evidence shape the
+    // strategy bank uses: 2020-01-01 → 2024-12-31, $100,000 initial equity,
+    // and raw research risk policy (`bypass`). `_dispatchBacktestSubmit`
+    // spreads this into `proposeBacktest(...)` so the literal lives in
+    // exactly one place AND is behaviorally testable (a test can read this
+    // property off an instantiated modal). The canonical-evidence guarantee
+    // therefore survives regardless of where the literal is grepped.
+    // ------------------------------------------------------------------
+    readonly property var _canonicalBacktestParams: ({
+        "start": "2020-01-01",
+        "end": "2024-12-31",
+        "walk_forward": true,
+        "initial_equity": 100000,
+        "risk_policy": "bypass"
+    })
 
     // ------------------------------------------------------------------
     // PR O (ADR 0049): local command-draft preview
@@ -281,6 +310,56 @@ Item {
     }
 
     // ------------------------------------------------------------------
+    // Shared dispatch skeleton (PR 13).
+    //
+    // The seven action-family dispatch functions below all run the same
+    // shape: extract+validate inputs → propose → validate the proposal →
+    // route (sync submit | async queue). Only the inputs, the bridge
+    // method names, and (for backtest) the canonical payload differ — and
+    // those stay INLINE in each function so the socket-contract substrings
+    // remain greppable in this file. The two common steps below carry NO
+    // bridge method names; they only fold the duplicated proposal-blocker
+    // and sync-result handling.
+    // ------------------------------------------------------------------
+
+    // Returns true when `proposal` is well-formed and unblocked. On a bad
+    // proposal it sets the error string (and emits submitBlocked for the
+    // blockers case), clears _submitInFlight, and returns false so the
+    // caller bails before submit.
+    function _validateProposal(proposal) {
+        if (!proposal || !proposal.proposal_id) {
+            root._submitInFlight = false
+            root._submitErrorMessage = "Proposal could not be constructed."
+            return false
+        }
+        if (proposal.blockers && proposal.blockers.length > 0) {
+            root._submitInFlight = false
+            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
+            root.submitBlocked(proposal.blockers)
+            return false
+        }
+        return true
+    }
+
+    // Handle a synchronous submit result: on refusal set the error string +
+    // emit submitBlocked; on success emit submitted + close. Clears
+    // _submitInFlight either way.
+    function _finishSyncSubmit(result) {
+        root._submitInFlight = false
+        if (!result || result.status !== "submitted") {
+            var msg = ""
+            if (result && result.blockers && result.blockers.length > 0) {
+                msg = root._blockerSummary(result.blockers, "Submit refused.")
+            }
+            root._submitErrorMessage = msg
+            root.submitBlocked(result ? (result.blockers || []) : [])
+            return
+        }
+        root.submitted(result)
+        root.closeRequested()
+    }
+
+    // ------------------------------------------------------------------
     // ADR 0051 Phase C2 — demotion submit dispatch
     //
     // The MouseArea on the demote-only primary button calls this function.
@@ -315,35 +394,10 @@ Item {
             "to_stage": targetStage,
             "reason": reason
         })
-
-        if (!proposal || !proposal.proposal_id) {
-            root._submitInFlight = false
-            root._submitErrorMessage = "Proposal could not be constructed."
-            return
-        }
-
-        if (proposal.blockers && proposal.blockers.length > 0) {
-            root._submitInFlight = false
-            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
-            root.submitBlocked(proposal.blockers)
-            return
-        }
+        if (!root._validateProposal(proposal)) return
 
         var result = BenchCommandBridge.submitDemote(proposal.proposal_id)
-        root._submitInFlight = false
-
-        if (!result || result.status !== "submitted") {
-            var msg = ""
-            if (result && result.blockers && result.blockers.length > 0) {
-                msg = root._blockerSummary(result.blockers, "Submit refused.")
-            }
-            root._submitErrorMessage = msg
-            root.submitBlocked(result ? (result.blockers || []) : [])
-            return
-        }
-
-        root.submitted(result)
-        root.closeRequested()
+        root._finishSyncSubmit(result)
     }
 
     // ------------------------------------------------------------------
@@ -372,35 +426,10 @@ Item {
         var proposal = BenchCommandBridge.proposeFreezeManifest({
             "strategy_id": strategyId
         })
-
-        if (!proposal || !proposal.proposal_id) {
-            root._submitInFlight = false
-            root._submitErrorMessage = "Proposal could not be constructed."
-            return
-        }
-
-        if (proposal.blockers && proposal.blockers.length > 0) {
-            root._submitInFlight = false
-            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
-            root.submitBlocked(proposal.blockers)
-            return
-        }
+        if (!root._validateProposal(proposal)) return
 
         var result = BenchCommandBridge.submitFreezeManifest(proposal.proposal_id)
-        root._submitInFlight = false
-
-        if (!result || result.status !== "submitted") {
-            var msg = ""
-            if (result && result.blockers && result.blockers.length > 0) {
-                msg = root._blockerSummary(result.blockers, "Submit refused.")
-            }
-            root._submitErrorMessage = msg
-            root.submitBlocked(result ? (result.blockers || []) : [])
-            return
-        }
-
-        root.submitted(result)
-        root.closeRequested()
+        root._finishSyncSubmit(result)
     }
 
     // ------------------------------------------------------------------
@@ -409,8 +438,10 @@ Item {
     // Runs the evidence shape used by the strategy bank: walk-forward,
     // 2020-01-01 through 2024-12-31, $100,000 initial equity, and raw
     // research risk policy (`bypass`). QML supplies only the strategy id
-    // and canonical run settings; all validation and execution stays behind
-    // the Python command bridge.
+    // and the canonical run settings; all validation and execution stays
+    // behind the Python command bridge. The canonical settings come from
+    // the single readonly _canonicalBacktestParams source spread into the
+    // proposeBacktest call below.
     // ------------------------------------------------------------------
     function _dispatchBacktestSubmit() {
         if (!root._isBacktestSubmit) return
@@ -425,27 +456,11 @@ Item {
         root._submitErrorMessage = ""
         root._submitInFlight = true
 
-        var proposal = BenchCommandBridge.proposeBacktest({
-            "strategy_id": strategyId,
-            "start": "2020-01-01",
-            "end": "2024-12-31",
-            "walk_forward": true,
-            "initial_equity": 100000,
-            "risk_policy": "bypass"
-        })
-
-        if (!proposal || !proposal.proposal_id) {
-            root._submitInFlight = false
-            root._submitErrorMessage = "Proposal could not be constructed."
-            return
-        }
-
-        if (proposal.blockers && proposal.blockers.length > 0) {
-            root._submitInFlight = false
-            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
-            root.submitBlocked(proposal.blockers)
-            return
-        }
+        var proposal = BenchCommandBridge.proposeBacktest(Object.assign(
+            { "strategy_id": strategyId },
+            root._canonicalBacktestParams
+        ))
+        if (!root._validateProposal(proposal)) return
 
         root._pendingProposalId = proposal.proposal_id
         var result = BenchCommandBridge.submitBacktestAsync(proposal.proposal_id)
@@ -483,35 +498,10 @@ Item {
             "run_id": runId,
             "lifecycle_exempt": false
         })
-
-        if (!proposal || !proposal.proposal_id) {
-            root._submitInFlight = false
-            root._submitErrorMessage = "Proposal could not be constructed."
-            return
-        }
-
-        if (proposal.blockers && proposal.blockers.length > 0) {
-            root._submitInFlight = false
-            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
-            root.submitBlocked(proposal.blockers)
-            return
-        }
+        if (!root._validateProposal(proposal)) return
 
         var result = BenchCommandBridge.submitPromoteToPaper(proposal.proposal_id)
-        root._submitInFlight = false
-
-        if (!result || result.status !== "submitted") {
-            var msg = ""
-            if (result && result.blockers && result.blockers.length > 0) {
-                msg = root._blockerSummary(result.blockers, "Submit refused.")
-            }
-            root._submitErrorMessage = msg
-            root.submitBlocked(result ? (result.blockers || []) : [])
-            return
-        }
-
-        root.submitted(result)
-        root.closeRequested()
+        root._finishSyncSubmit(result)
     }
 
     // ------------------------------------------------------------------
@@ -538,19 +528,7 @@ Item {
         var proposal = BenchCommandBridge.proposeStartPaperRunner({
             "strategy_id": strategyId
         })
-
-        if (!proposal || !proposal.proposal_id) {
-            root._submitInFlight = false
-            root._submitErrorMessage = "Proposal could not be constructed."
-            return
-        }
-
-        if (proposal.blockers && proposal.blockers.length > 0) {
-            root._submitInFlight = false
-            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
-            root.submitBlocked(proposal.blockers)
-            return
-        }
+        if (!root._validateProposal(proposal)) return
 
         root._pendingProposalId = proposal.proposal_id
         var result = BenchCommandBridge.submitStartPaperRunnerAsync(proposal.proposal_id)
@@ -573,19 +551,7 @@ Item {
         var proposal = BenchCommandBridge.proposeStopPaperRunner({
             "strategy_id": strategyId
         })
-
-        if (!proposal || !proposal.proposal_id) {
-            root._submitInFlight = false
-            root._submitErrorMessage = "Proposal could not be constructed."
-            return
-        }
-
-        if (proposal.blockers && proposal.blockers.length > 0) {
-            root._submitInFlight = false
-            root._submitErrorMessage = root._blockerSummary(proposal.blockers, "Proposal blocked.")
-            root.submitBlocked(proposal.blockers)
-            return
-        }
+        if (!root._validateProposal(proposal)) return
 
         root._pendingProposalId = proposal.proposal_id
         var result = BenchCommandBridge.submitStopPaperRunnerAsync(proposal.proposal_id)
@@ -1065,42 +1031,13 @@ Item {
                 text: "The reason below is recorded with the append-only promotion event so the audit log can be reconstructed without re-asking the operator."
             }
 
-            Rectangle {
+            LabeledTextField {
                 visible: root._isStageWalkbackSubmit
-                width: parent.width
-                implicitHeight: reasonField.implicitHeight + Theme.space[3] * 2
-                color: Theme.color.surface.raised
-                border.color: reasonField.activeFocus ? Theme.status.negative : Theme.color.border.subtle
-                border.width: 1
-                radius: Theme.radius.md
-
-                TextInput {
-                    id: reasonField
-                    anchors.fill: parent
-                    anchors.margins: Theme.space[3]
-                    text: root._reasonText
-                    color: Theme.color.text.primary
-                    selectByMouse: true
-                    selectionColor: Theme.status.negative
-                    selectedTextColor: Theme.color.text.primary
-                    clip: true
-                    font.family:    Theme.typography.data.xs.family
-                    font.pixelSize: Theme.typography.data.xs.size
-                    font.features:  Theme.typography.data.xs.features
-                    onTextChanged: root._reasonText = text
-
-                    Text {
-                        visible: reasonField.text.length === 0
-                        anchors.fill: parent
-                        verticalAlignment: Text.AlignVCenter
-                        text: "Reason required for the audit record"
-                        color: Theme.color.text.disabled
-                        font.family:    Theme.typography.data.xs.family
-                        font.pixelSize: Theme.typography.data.xs.size
-                        font.features:  Theme.typography.data.xs.features
-                        font.italic: true
-                    }
-                }
+                placeholderText: "Reason required for the audit record"
+                text: root._reasonText
+                focusBorderColor: Theme.status.negative
+                selectedTextColor: Theme.color.text.primary
+                onTextEdited: (t) => root._reasonText = t
             }
 
             SectionLabel {
@@ -1114,80 +1051,22 @@ Item {
                 text: "Promotion to paper records the operator recommendation and known risk alongside the selected backtest evidence run."
             }
 
-            Rectangle {
+            LabeledTextField {
                 visible: root._isPromoteToPaperSubmit
-                width: parent.width
-                implicitHeight: recommendationField.implicitHeight + Theme.space[3] * 2
-                color: Theme.color.surface.raised
-                border.color: recommendationField.activeFocus ? Theme.color.text.primary : Theme.color.border.subtle
-                border.width: 1
-                radius: Theme.radius.md
-
-                TextInput {
-                    id: recommendationField
-                    anchors.fill: parent
-                    anchors.margins: Theme.space[3]
-                    text: root._recommendationText
-                    color: Theme.color.text.primary
-                    selectByMouse: true
-                    selectionColor: Theme.color.text.primary
-                    selectedTextColor: Theme.color.surface.base
-                    clip: true
-                    font.family:    Theme.typography.data.xs.family
-                    font.pixelSize: Theme.typography.data.xs.size
-                    font.features:  Theme.typography.data.xs.features
-                    onTextChanged: root._recommendationText = text
-
-                    Text {
-                        visible: recommendationField.text.length === 0
-                        anchors.fill: parent
-                        verticalAlignment: Text.AlignVCenter
-                        text: "Recommendation required"
-                        color: Theme.color.text.disabled
-                        font.family:    Theme.typography.data.xs.family
-                        font.pixelSize: Theme.typography.data.xs.size
-                        font.features:  Theme.typography.data.xs.features
-                        font.italic: true
-                    }
-                }
+                placeholderText: "Recommendation required"
+                text: root._recommendationText
+                focusBorderColor: Theme.color.text.primary
+                selectedTextColor: Theme.color.surface.base
+                onTextEdited: (t) => root._recommendationText = t
             }
 
-            Rectangle {
+            LabeledTextField {
                 visible: root._isPromoteToPaperSubmit
-                width: parent.width
-                implicitHeight: riskField.implicitHeight + Theme.space[3] * 2
-                color: Theme.color.surface.raised
-                border.color: riskField.activeFocus ? Theme.color.text.primary : Theme.color.border.subtle
-                border.width: 1
-                radius: Theme.radius.md
-
-                TextInput {
-                    id: riskField
-                    anchors.fill: parent
-                    anchors.margins: Theme.space[3]
-                    text: root._knownRiskText
-                    color: Theme.color.text.primary
-                    selectByMouse: true
-                    selectionColor: Theme.color.text.primary
-                    selectedTextColor: Theme.color.surface.base
-                    clip: true
-                    font.family:    Theme.typography.data.xs.family
-                    font.pixelSize: Theme.typography.data.xs.size
-                    font.features:  Theme.typography.data.xs.features
-                    onTextChanged: root._knownRiskText = text
-
-                    Text {
-                        visible: riskField.text.length === 0
-                        anchors.fill: parent
-                        verticalAlignment: Text.AlignVCenter
-                        text: "Known risk required"
-                        color: Theme.color.text.disabled
-                        font.family:    Theme.typography.data.xs.family
-                        font.pixelSize: Theme.typography.data.xs.size
-                        font.features:  Theme.typography.data.xs.features
-                        font.italic: true
-                    }
-                }
+                placeholderText: "Known risk required"
+                text: root._knownRiskText
+                focusBorderColor: Theme.color.text.primary
+                selectedTextColor: Theme.color.surface.base
+                onTextEdited: (t) => root._knownRiskText = t
             }
 
             Text {
@@ -1370,181 +1249,5 @@ Item {
                 }
             }
         ]
-    }
-
-    // ------------------------------------------------------------------
-    // PR L: Inline sub-components for the Intent Packet body
-    // ------------------------------------------------------------------
-
-    // Quiet ALL-CAPS section label — used to mark each of the seven packet
-    // sections. Same typographic register as BenchEvidenceModal's section
-    // headers but rendered in muted color (not brand.accent) per PR L
-    // visual direction ("structured, not decorative").
-    //
-    // Polish: optional `ordinal` prefix renders as a small mono numeral
-    // (`01`, `02`, …) ahead of the label so the seven-section structure
-    // reads as a deliberate progression rather than a flat list. Extra
-    // top breathing room (Theme.space[3]) separates sections visually
-    // without needing heavier rules.
-    component SectionLabel: Item {
-        id: sectionLabelRoot
-        property string label: ""
-        property string ordinal: ""
-        width: parent ? parent.width : 0
-        implicitHeight: sectionText.implicitHeight + Theme.space[3]
-
-        Row {
-            anchors.bottom: parent.bottom
-            spacing: Theme.space[2]
-
-            Text {
-                visible: sectionLabelRoot.ordinal.length > 0
-                text:  sectionLabelRoot.ordinal
-                color: Theme.color.text.disabled
-                font.family:    Theme.typography.data.xs.family
-                font.pixelSize: Theme.typography.data.xs.size
-                font.features:  Theme.typography.data.xs.features
-            }
-
-            Text {
-                id: sectionText
-                text:  sectionLabelRoot.label
-                color: Theme.color.text.muted
-                font.family:         Theme.typography.label.xs.family
-                font.pixelSize:      Theme.typography.label.xs.size
-                font.weight:         Font.DemiBold
-                font.letterSpacing:  Theme.typography.label.xs.letterSpacing
-                font.capitalization: Font.AllUppercase
-            }
-        }
-    }
-
-    // Section separator hairline — consistent with PR K body separators.
-    component SectionRule: Rectangle {
-        width: parent ? parent.width : 0
-        height: 1
-        color: Theme.color.border.subtle
-    }
-
-    // Safety banner — sober typeset stamp, NOT a yellow alert bar or a
-    // rotated rubber-stamp graphic. Per DESIGN_SYSTEM.md v0.2 §7.6's
-    // confirmation-modal interior contract: "Safety banner (when
-    // applicable): small-caps typography.label.xs red set in a band
-    // bounded by hairline rules above and below, color status.negative.
-    // Never a yellow alert bar and never a decorative rubber-stamp
-    // graphic."
-    //
-    // Used by COMMAND DRAFT PREVIEW to render "NOT SUBMITTABLE" as a
-    // typeset stamp band before the verbatim ADR 0049 banner copy.
-    component SafetyBanner: Column {
-        id: safetyBannerRoot
-        property string text: ""
-        width: parent ? parent.width : 0
-        spacing: 0
-
-        Rectangle {
-            width:  parent.width
-            height: 1
-            color:  Theme.status.negative
-        }
-
-        Item {
-            width:  parent.width
-            implicitHeight: bannerText.implicitHeight + Theme.space[3] * 2
-
-            Text {
-                id: bannerText
-                anchors.centerIn: parent
-                text:  safetyBannerRoot.text
-                color: Theme.status.negative
-                font.family:         Theme.typography.label.xs.family
-                font.pixelSize:      Theme.typography.label.xs.size
-                font.weight:         Font.DemiBold
-                font.letterSpacing:  Theme.typography.label.xs.letterSpacing + 0.6
-                font.capitalization: Font.AllUppercase
-            }
-        }
-
-        Rectangle {
-            width:  parent.width
-            height: 1
-            color:  Theme.status.negative
-        }
-    }
-
-    // Multi-line prose block — used by INTENT PACKET and SAFETY BOUNDARY.
-    component ProseBlock: Text {
-        width: parent ? parent.width : 0
-        color: Theme.color.text.secondary
-        font.family:    Theme.typography.deck.family
-        font.pixelSize: Theme.typography.deck.size
-        font.italic:    true
-        wrapMode:       Text.WordWrap
-    }
-
-    // Single bullet/glyph row inside WOULD EVENTUALLY REQUIRE.
-    component RequirementRow: RowLayout {
-        property string text: ""
-        width: parent ? parent.width : 0
-        spacing: Theme.space[2]
-
-        Text {
-            text:  "·"
-            color: Theme.color.text.muted
-            font.family:    Theme.typography.data.xs.family
-            font.pixelSize: Theme.typography.data.xs.size
-            font.features:  Theme.typography.data.xs.features
-        }
-
-        Text {
-            text:  parent.text
-            color: Theme.color.text.secondary
-            font.family:    Theme.typography.data.xs.family
-            font.pixelSize: Theme.typography.data.xs.size
-            font.features:  Theme.typography.data.xs.features
-            Layout.fillWidth: true
-            elide: Text.ElideRight
-        }
-    }
-
-    // Single label/value row (PR K original).
-    //
-    // Polish: label column narrowed 132 → 96 px so short labels ("Sharpe",
-    // "Wired", "Stage") sit closer to their values; the eye no longer
-    // crosses a wide gutter for every read. `numeric: true` right-aligns
-    // the value so columns of numbers (Sharpe / Max-DD / schema versions)
-    // read as a tabular stack instead of a left-aligned string list.
-    //
-    // `labelWidth` overrides the 96 px default for sections whose labels
-    // are visibly longer ("Submission state", "Evidence packet v", etc.) —
-    // applied per-row at the call site so the tight default still holds
-    // wherever it is visibly safe.
-    component DetailRow: RowLayout {
-        property string label: ""
-        property string value: ""
-        property bool   numeric: false
-        property real   labelWidth: 96
-        width: parent ? parent.width : 0
-        spacing: Theme.space[3]
-
-        Text {
-            text: label
-            color: Theme.color.text.muted
-            font.family:    Theme.typography.data.xs.family
-            font.pixelSize: Theme.typography.data.xs.size
-            font.features:  Theme.typography.data.xs.features
-            Layout.preferredWidth: labelWidth
-        }
-
-        Text {
-            text: value
-            color: Theme.color.text.secondary
-            font.family:    Theme.typography.data.xs.family
-            font.pixelSize: Theme.typography.data.xs.size
-            font.features:  Theme.typography.data.xs.features
-            Layout.fillWidth: true
-            horizontalAlignment: numeric ? Text.AlignRight : Text.AlignLeft
-            elide: Text.ElideRight
-        }
     }
 }
