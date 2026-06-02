@@ -59,15 +59,29 @@ SELECT p.strategy_id,
        p.max_drawdown_pct,
        p.trade_count
 FROM promotions p
+-- Latest-OVERALL promotion row per strategy (across ALL promotion types),
+-- ordered recorded_at DESC then id DESC. The latest row is the one with no
+-- later (recorded_at, id) row. This lets a later demotion supersede the prior
+-- paper row — MAX(id) WHERE to_stage='paper' would miss it and keep a demoted
+-- strategy listed as paper. Order by recorded_at (not id) so a backdated
+-- audit_backfill demotion is not mis-picked (see EventStore.get_latest_promotion_for_strategy).
 INNER JOIN (
-    SELECT strategy_id, MAX(id) AS max_id
-    FROM promotions
-    WHERE to_stage = 'paper'
-    GROUP BY strategy_id
-) latest ON p.strategy_id = latest.strategy_id AND p.id = latest.max_id
+    SELECT p1.strategy_id, p1.id AS latest_id
+    FROM promotions p1
+    WHERE NOT EXISTS (
+        SELECT 1 FROM promotions p2
+        WHERE p2.strategy_id = p1.strategy_id
+          AND (p2.recorded_at > p1.recorded_at
+               OR (p2.recorded_at = p1.recorded_at AND p2.id > p1.id))
+    )
+) latest ON p.strategy_id = latest.strategy_id AND p.id = latest.latest_id
 WHERE p.to_stage = 'paper'
 ORDER BY p.recorded_at;
 ```
+
+> The GUI `StrategyBankState` read model (`src/milodex/gui/strategy_bank_state.py`) is the authoritative implementation of the paper/blocked membership semantics; the queries here mirror it.
+>
+> **Two membership views.** The GUI `StrategyBankState` card uses the demotion-aware **current-stage** membership shown above (a demoted strategy leaves paper and resurfaces in blocked). `attention_state` (`src/milodex/gui/attention_state.py`) deliberately uses the **ever-promoted-to-paper** membership instead (`_query_bank(db_path)` default, `demotion_aware=False`) for underperformance monitoring: a demoted underperformer stays counted as underperforming but is excluded from needs-review once the demotion acknowledges it.
 
 Note: the regime strategy row now returns `evidence_run_id = 0733d4d1-...` (the 2026-05-15 re-promotion id=12 carries this `backtest_run_id`), but that run holds no WF stats — a lifecycle-exempt regime can't accumulate gate-able trades. The walk-forward metrics for regime (Sharpe 1.19 / MaxDD 0.95 / 27 trades) are sourced from the last full re-baseline run `f7e0730c-fbdb-4c05-919d-622f8b61185d` in `backtest_runs`, not from the promotion record.
 
@@ -88,7 +102,19 @@ INNER JOIN (
     GROUP BY strategy_id
 ) latest ON br.strategy_id = latest.strategy_id AND br.id = latest.max_id
 WHERE br.strategy_id NOT IN (
-    SELECT strategy_id FROM promotions WHERE to_stage = 'paper'
+    -- Strategies CURRENTLY at paper (latest-overall promotion row to_stage='paper'),
+    -- NOT ever-paper. A demoted strategy keeps its old paper row, so the prior
+    -- "ever-paper" form wrongly excluded it from blocked; here it correctly
+    -- resurfaces with its retained backtest evidence.
+    SELECT p1.strategy_id
+    FROM promotions p1
+    WHERE p1.to_stage = 'paper'
+      AND NOT EXISTS (
+          SELECT 1 FROM promotions p2
+          WHERE p2.strategy_id = p1.strategy_id
+            AND (p2.recorded_at > p1.recorded_at
+                 OR (p2.recorded_at = p1.recorded_at AND p2.id > p1.id))
+      )
 )
 AND br.status = 'completed'
 ORDER BY br.strategy_id;

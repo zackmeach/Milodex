@@ -62,6 +62,11 @@ logger = logging.getLogger(__name__)
 # fallback banner, not an audit log — durable history lives in the event store.
 _MAX_RECENT_COMPLETIONS = 20
 
+# Best-effort drain timeout (ms) for the bridge's private async pool on
+# shutdown. Matches the AppController global-pool drain value so a backtest
+# in flight is given the same grace period regardless of which pool it ran on.
+_SHUTDOWN_DRAIN_TIMEOUT_MS = 3000
+
 
 class _SubmitSignals(QObject):
     completed = Signal("QVariantMap")
@@ -161,10 +166,66 @@ class BenchCommandBridge(QObject):
         self._completions: list[dict[str, Any]] = []
         self._thread_pool = QThreadPool()
         self._submit_signals = _SubmitSignals(self)
+        self._completed_connected = False
         self._submit_signals.completed.connect(
             self._on_async_submit_completed,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._completed_connected = True
+        # Set True by stop(); guards _refresh_after_submit so a late async
+        # completion delivered after shutdown cannot restart work on
+        # already-stopped read models (see _refresh_after_submit).
+        self._stopped = False
+
+    # ------------------------------------------------------------------ #
+    # Shutdown lifecycle (P2). The bridge owns a PRIVATE QThreadPool used by
+    # _submit_async; it is registered with lifecycle=False, so it is excluded
+    # from the lifecycle_models drained by app.aboutToQuit / AppController.
+    # Before this fix NOTHING drained this private pool — quitting mid-async-
+    # submit abandoned a worker writing backtest_runs + explanations and
+    # dropped the queued completion. stop() is the explicit drain, wired into
+    # both shutdown paths in app.run_app outside the lifecycle filter.
+    # ------------------------------------------------------------------ #
+
+    def stop(self) -> bool:
+        """Best-effort drain of the private async pool, then disconnect.
+
+        Mirrors ``PollingReadModel.stop`` / ``_disconnect_signals``: drains
+        in-flight workers via ``waitForDone`` and defensively disconnects the
+        completion signal so a late ``QueuedConnection`` delivery cannot touch a
+        half-torn object on Windows shutdown. The drain is best-effort — a
+        backtest exceeding ``_SHUTDOWN_DRAIN_TIMEOUT_MS`` is abandoned just as
+        the prior global-pool drain would have abandoned it.
+
+        Also sets a ``_stopped`` flag (before the drain) so a completion already
+        queued when ``stop()`` runs — Qt does NOT reliably cancel an
+        already-posted queued metacall on ``disconnect()`` — suppresses its
+        post-submit refresh rather than restarting work on read models the
+        shutdown sequence has already stopped (see ``_refresh_after_submit``).
+
+        Idempotent: both shutdown paths can fire (``quitRequested`` calls
+        ``QGuiApplication.quit()``, which triggers ``aboutToQuit``), so this is
+        safe to call more than once.
+
+        Performs ZERO command actions: no facade call, no submit, no
+        re-dispatch, no ``_kick_refresh``, no DB / broker / lock write.
+
+        Returns ``True`` if the pool drained within the timeout.
+        """
+        self._stopped = True
+        drained = self._thread_pool.waitForDone(_SHUTDOWN_DRAIN_TIMEOUT_MS)
+        self._disconnect_completed_signal()
+        return drained
+
+    def _disconnect_completed_signal(self) -> None:
+        """Disconnect the async-completion signal if connected. Idempotent."""
+        if not self._completed_connected:
+            return
+        try:
+            self._submit_signals.completed.disconnect(self._on_async_submit_completed)
+        except (RuntimeError, TypeError):
+            pass
+        self._completed_connected = False
 
     # ------------------------------------------------------------------ #
     # Read-only completion sink (P18). Recording is a list insert; it never
@@ -272,6 +333,15 @@ class BenchCommandBridge(QObject):
         return payload
 
     def _refresh_after_submit(self, operation: str) -> None:
+        # Suppress refreshes once the bridge is stopping. An async completion can
+        # be delivered (queued metacall) after the shutdown sequence has stopped
+        # the read models, and PollingReadModel._kick_refresh has NO stopped-guard
+        # (polling_lifecycle.py) — it would start a fresh worker on an
+        # already-torn-down read model. The disconnect in stop() is best-effort
+        # (Qt may still deliver an already-queued metacall), so this flag is the
+        # definitive guard against resurrecting read-model pool work on shutdown.
+        if self._stopped:
+            return
         if self._bench_state is not None:
             try:
                 self._bench_state._kick_refresh()  # noqa: SLF001
@@ -346,6 +416,15 @@ class BenchCommandBridge(QObject):
 
     @Slot("QVariantMap")
     def _on_async_submit_completed(self, payload: dict[str, Any]) -> None:
+        # Shutdown contract: once stop() has run, a late async completion must
+        # touch NOTHING on the half-torn bridge — no refresh, no recentCompletions
+        # mutation, no submitCompleted/recentCompletionsChanged emit. Qt does not
+        # reliably cancel an already-posted QueuedConnection metacall on
+        # disconnect(), so this early-return (not the best-effort disconnect) is
+        # what enforces the contract. The _refresh_after_submit guard remains as a
+        # backstop for the synchronous submit path.
+        if self._stopped:
+            return
         if str(payload.get("status") or "") == "submitted":
             self._refresh_after_submit(str(payload.get("action_family") or "async_submit"))
         self._emit_completion(payload)

@@ -1752,3 +1752,163 @@ def test_get_recent_completions_returns_defensive_copy(
         "Mutating the list returned by recentCompletions must not affect internal state; "
         "the getter must return a defensive copy."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Shutdown drain (P2) — the private async pool must be drained and the
+# completion signal disconnected on stop(), in BOTH shutdown paths.
+#
+# Before the fix NOTHING drained BenchCommandBridge._thread_pool: app.aboutToQuit
+# only stopped lifecycle_models (the bridge is lifecycle=False) and
+# AppController.quitRequested drained the GLOBAL pool, not the bridge's private
+# one. Quitting mid-async-submit abandoned a worker writing backtest_runs +
+# explanations and silently dropped the queued completion (refresh).
+# --------------------------------------------------------------------------- #
+
+
+def test_stop_drains_in_flight_async_worker(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """stop() must block until the in-flight backtest worker finishes — the
+    worker is not abandoned mid-SQLite-write. Before the fix the private pool
+    was never drained, so the worker outlived the (would-be) quit."""
+    _write_strategy(config_dir, stage="backtest")
+    release = threading.Event()
+    ran = threading.Event()
+
+    class _RecordingEngine(_FakeSingleBacktestEngine):
+        def run(self, start, end, *, run_id=None):  # noqa: ANN001
+            result = super().run(start, end, run_id=run_id)
+            ran.set()
+            return result
+
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        backtest_engine_factory=lambda _strategy_id, **_kwargs: _RecordingEngine(
+            release_event=release
+        ),
+        workflow_readiness=_healthy_readiness(),
+    )
+    bridge = BenchCommandBridge(facade, bench_state=_FakeBenchState())
+
+    proposal = bridge.proposeBacktest(
+        {"strategy_id": STRATEGY_ID, "walk_forward": False, "initial_equity": 1000}
+    )
+    queued = bridge.submitBacktestAsync(proposal["proposal_id"])
+    assert queued["bridge_status"] == "queued"
+    # The worker is blocked inside engine.run — proves it is genuinely in flight.
+    assert not ran.is_set()
+
+    # Release the worker, then drain. waitForDone must return True (pool empty).
+    release.set()
+    drained = bridge.stop()
+    assert ran.is_set(), "stop() returned before the in-flight worker finished — abandoned"
+    assert drained is True, "waitForDone reported the private pool was not drained"
+
+
+def test_stop_disconnects_completion_signal(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """After stop(), a late QueuedConnection delivery must not reach
+    _on_async_submit_completed — the bridge could be half-torn-down on Windows
+    shutdown. Emitting a fake completion payload after stop() must NOT record a
+    new completion."""
+    _write_strategy(config_dir, stage="backtest")
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        workflow_readiness=_healthy_readiness(),
+    )
+    bridge = BenchCommandBridge(facade, bench_state=_FakeBenchState())
+
+    bridge.stop()
+    assert len(bridge.recentCompletions) == 0
+
+    # Directly emit the internal completion signal; the slot must be disconnected.
+    bridge._submit_signals.completed.emit(
+        {
+            "proposal_id": "late-delivery",
+            "action_family": ACTION_FAMILY_BACKTEST,
+            "status": "submitted",
+            "durable_refs": {},
+            "blockers": [],
+        }
+    )
+    # Pump the event loop so any (incorrectly) still-connected QueuedConnection
+    # slot would have a chance to fire.
+    _process_qt_until(lambda: False, timeout_ms=200)
+    assert len(bridge.recentCompletions) == 0, (
+        "stop() must disconnect _submit_signals.completed; a late delivery still "
+        "reached _on_async_submit_completed and recorded a completion."
+    )
+
+
+def test_stop_is_idempotent(facade: BenchCommandFacade, config_dir: Path) -> None:
+    """Both shutdown paths can fire (quitRequested calls QGuiApplication.quit()
+    which triggers aboutToQuit), so stop() must be safe to call more than once."""
+    _write_strategy(config_dir, stage="backtest")
+    bridge = BenchCommandBridge(facade)
+    bridge.stop()
+    bridge.stop()  # must not raise
+
+
+def test_stop_makes_late_async_completion_a_noop(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    """Regression: a late async completion delivered AFTER shutdown must touch
+    NOTHING on the half-torn bridge — no read-model refresh, no recentCompletions
+    mutation, no submitCompleted emit.
+
+    The shutdown sequence (app.run_app) stops the lifecycle read models first,
+    then drains the bridge. A worker finishing during the drain posts a
+    QueuedConnection metacall that can be delivered after the slot returns — and
+    Qt does NOT reliably cancel an already-queued metacall on disconnect(). If
+    delivered, _on_async_submit_completed would (a) call _refresh_after_submit ->
+    _kick_refresh() on a stopped BenchState/LedgerState (PollingReadModel
+    ._kick_refresh has no stopped-guard), restarting pool work on a torn-down
+    model, and (b) record/emit completion state on the half-torn bridge. stop()
+    sets a _stopped flag and _on_async_submit_completed early-returns when set.
+
+    The slot is invoked directly here (bypassing the signal) to simulate Qt
+    delivering the queued metacall despite stop()'s best-effort disconnect — the
+    _stopped guard, not the disconnect, must be what makes it a no-op.
+    """
+    _write_strategy(config_dir, stage="backtest")
+    bench_state = _FakeBenchState()
+    ledger_state = _FakeLedgerState()
+    bridge = BenchCommandBridge(facade, bench_state=bench_state, ledger_state=ledger_state)
+
+    submit_completed: list[dict] = []
+    bridge.submitCompleted.connect(submit_completed.append)
+
+    submitted_payload = {
+        "proposal_id": "late-after-stop",
+        "action_family": ACTION_FAMILY_BACKTEST,
+        "status": "submitted",
+        "durable_refs": {},
+        "blockers": [],
+    }
+
+    # Baseline: before stop(), a submitted completion DOES refresh, record, and
+    # emit — proves the suppression below is the _stopped guard, not the handler
+    # never doing anything.
+    bridge._on_async_submit_completed(dict(submitted_payload))  # noqa: SLF001
+    assert bench_state.refresh_kicks == 1
+    assert ledger_state.refresh_kicks == 1
+    assert len(bridge.recentCompletions) == 1
+    assert len(submit_completed) == 1
+
+    # Shutdown: read models stopped by the app sequence, then the bridge drained.
+    bridge.stop()
+
+    # A completion delivered after stop() must be a complete no-op.
+    bridge._on_async_submit_completed(dict(submitted_payload))  # noqa: SLF001
+    assert bench_state.refresh_kicks == 1, "post-stop completion restarted BenchState refresh"
+    assert ledger_state.refresh_kicks == 1, "post-stop completion restarted LedgerState refresh"
+    assert len(bridge.recentCompletions) == 1, "post-stop completion mutated recentCompletions"
+    assert len(submit_completed) == 1, "post-stop completion emitted submitCompleted"
