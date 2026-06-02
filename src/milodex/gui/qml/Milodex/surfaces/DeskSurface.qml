@@ -94,11 +94,10 @@ Item {
     // Pure formatting helpers (no literals that bind to the design system;
     // these are value-formatting only, not tokens).
     // ------------------------------------------------------------------
-    function fmtMoney(value) {
-        var n = Number(value || 0)
-        var sign = n < 0 ? "-" : ""
-        return sign + "$" + Math.abs(n).toLocaleString(Qt.locale("en_US"), "f", 2)
-    }
+    // Delegate to Formatters singleton (PR10).
+    // fmtPct is intentionally NOT repointed: it scales ×100 and adds a sign,
+    // which differs from Formatters.pct1 semantics (single-site, different semantics).
+    function fmtMoney(value) { return Formatters.money(value) }
 
     function fmtPct(value) {
         if (value === null || value === undefined)
@@ -108,15 +107,7 @@ Item {
         return sign + n.toFixed(2) + "%"
     }
 
-    // Returns "positive" | "negative" | "muted" for a numeric value.
-    function toneOf(value) {
-        if (value === null || value === undefined)
-            return "muted"
-        var n = Number(value)
-        if (n > 0) return "positive"
-        if (n < 0) return "negative"
-        return "muted"
-    }
+    function toneOf(value) { return Formatters.toneOf(value) }
 
     // sessionBag is parameterized in by Main.qml on surface load. The surface
     // binds one-way to its timeFormat; the operator-facing writer is the Risk
@@ -127,20 +118,8 @@ Item {
     readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
 
     // shortTime: formats an ISO 8601 string per root.timeFormat.
-    // Returns "—" for empty/null. Handles 24h and 12h.
-    function shortTime(iso) {
-        if (!iso) return "—"
-        var d = new Date(iso)
-        if (isNaN(d)) return iso
-        var hh = d.getHours()
-        var mm = d.getMinutes()
-        if (root.timeFormat === "12h") {
-            var ampm = hh >= 12 ? "PM" : "AM"
-            var h12 = hh % 12; if (h12 === 0) h12 = 12
-            return h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm
-        }
-        return (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm)
-    }
+    // Returns "—" for empty/null. Delegates to Formatters.shortTime (PR10).
+    function shortTime(iso) { return Formatters.shortTime(iso, root.timeFormat) }
 
     // ------------------------------------------------------------------
     // Background

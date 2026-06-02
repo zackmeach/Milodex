@@ -36,16 +36,10 @@ Item {
     property string filter:     ""
     property string kindFilter: ""
 
-    // Tone → editorial token mapping (centralised per spec §5).
-    // keep in sync with RollupCell.qml's tone→color mapping (RollupCell additionally has a display-only "brand" tone with no ActivityTable equivalent — do not add it here)
-    function _toneColor(tone) {
-        if (tone === "positive") return Theme.status.positive
-        if (tone === "negative") return Theme.status.negative
-        if (tone === "warning")  return Theme.status.warning
-        if (tone === "muted")    return Theme.color.text.muted
-        // "data" and anything else → primary text
-        return Theme.color.text.primary
-    }
+    // Tone → editorial token mapping — delegates to Formatters.toneColor (PR10).
+    // The "keep in sync with RollupCell" comment is retired; both now share
+    // the single Formatters.toneColor implementation.
+    function _toneColor(tone) { return Formatters.toneColor(tone) }
 
     // Filter rows in JS — purely computed, no read-model coupling.
     // Two independent predicates ANDed:
