@@ -131,6 +131,11 @@ _DESK_COMPONENTS = [
     "TapeRow.qml",
     "RunnerSelect.qml",
     "ActivityTable.qml",
+    # PR11 shared surface shells (components/). EditorialHeader has real color
+    # bindings worth pinning; all three are Theme-token-clean — gate them so.
+    "ScrollSurface.qml",
+    "EditorialHeader.qml",
+    "SurfaceBase.qml",
 ]
 
 

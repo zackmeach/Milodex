@@ -30,10 +30,10 @@ import QtQuick
 import QtQuick.Layouts
 import Milodex 1.0
 
-Item {
+SurfaceBase {
     id: root
 
-    property real captureContentHeight: scroller.contentHeight
+    captureContentHeight: scroller.contentHeight
 
     // ------------------------------------------------------------------
     // Issue 05: RunnerSelect dropdown relay signals.
@@ -109,10 +109,10 @@ Item {
 
     function toneOf(value) { return Formatters.toneOf(value) }
 
-    // sessionBag is parameterized in by Main.qml on surface load. The surface
-    // binds one-way to its timeFormat; the operator-facing writer is the Risk
-    // Office drawer, which emits timeFormatRequested → Main.qml writes back.
-    property var sessionBag: null
+    // sessionBag is inherited from SurfaceBase; Main.qml parameterizes it in on
+    // surface load. The surface binds one-way to its timeFormat; the operator-
+    // facing writer is the Risk Office drawer, which emits timeFormatRequested
+    // → Main.qml writes back.
 
     // timeFormat: read-only mirror of sessionBag.timeFormat. Drives shortTime().
     readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
@@ -208,23 +208,16 @@ Item {
     }
 
     // ------------------------------------------------------------------
-    // Scroll container
+    // Scroll container — full-width (maxContentWidth 0), wheel-only scroll.
+    // Deterministic desktop scrolling: wheel scrolls, click-drag does not.
     // ------------------------------------------------------------------
-    Flickable {
+    ScrollSurface {
         id: scroller
-        anchors.fill: parent
-        contentWidth:  width
-        contentHeight: pageColumn.implicitHeight + Theme.space[7] * 2
-        clip:          true
-        flickableDirection: Flickable.VerticalFlick
-        // Deterministic desktop scrolling: wheel scrolls, click-drag does not.
         interactive: false
 
         Column {
             id: pageColumn
-            x: Theme.space[7]
-            width: scroller.width - Theme.space[7] * 2
-            topPadding: Theme.space[7]
+            width: parent.width
             spacing: Theme.space[6]
 
             // ========================================================
@@ -1002,6 +995,14 @@ Item {
                 }
             }
 
+            Item { width: parent.width; height: Theme.space[7] }
+
+            // Bottom gutter parity: master DeskSurface double-counted
+            // pageColumn.topPadding (space[7]) into contentHeight, yielding ~96px
+            // of bottom breathing. The ScrollSurface recompose drops that
+            // double-count; this second trailing spacer restores the missing
+            // ~space[7], matching Front/Ledger bottom rhythm. Intentionally
+            // un-objectName'd so the section composition net ignores it.
             Item { width: parent.width; height: Theme.space[7] }
         }
     }
