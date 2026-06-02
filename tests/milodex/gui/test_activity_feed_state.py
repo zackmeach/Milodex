@@ -737,65 +737,6 @@ def test_kind_derivation_all_four_kinds(qapp, tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _create_fixture_db_with_backtests(path: Path) -> None:
-    """Create a minimal DB with explanations, trades, and backtest_runs tables."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE explanations (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at      TEXT NOT NULL,
-            decision_type    TEXT NOT NULL,
-            status           TEXT NOT NULL,
-            strategy_name    TEXT NOT NULL,
-            strategy_stage   TEXT NOT NULL,
-            symbol           TEXT NOT NULL,
-            side             TEXT NOT NULL,
-            quantity         REAL NOT NULL,
-            risk_allowed     INTEGER NOT NULL,
-            session_id       TEXT NOT NULL,
-            backtest_run_id  TEXT
-        );
-
-        CREATE TABLE trades (
-            id                    INTEGER PRIMARY KEY AUTOINCREMENT,
-            explanation_id        INTEGER,
-            recorded_at           TEXT NOT NULL,
-            status                TEXT NOT NULL,
-            source                TEXT,
-            symbol                TEXT NOT NULL,
-            side                  TEXT NOT NULL,
-            quantity              REAL NOT NULL,
-            strategy_name         TEXT NOT NULL,
-            strategy_stage        TEXT NOT NULL,
-            broker_order_id       TEXT,
-            broker_status         TEXT,
-            estimated_order_value REAL,
-            session_id            TEXT NOT NULL,
-            backtest_run_id       TEXT
-        );
-
-        CREATE TABLE backtest_runs (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id           TEXT NOT NULL UNIQUE,
-            strategy_id      TEXT NOT NULL,
-            config_path      TEXT,
-            config_hash      TEXT,
-            start_date       TEXT NOT NULL,
-            end_date         TEXT NOT NULL,
-            started_at       TEXT NOT NULL,
-            ended_at         TEXT,
-            status           TEXT NOT NULL,
-            slippage_pct     REAL,
-            commission_per_trade REAL,
-            metadata_json    TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
 def _seed_completed_backtest(
     db: Path,
     *,
@@ -838,7 +779,7 @@ def test_activity_feed_includes_backtest_results(tmp_path: Path) -> None:
     from milodex.gui.activity_feed_state import _query_feed
 
     db = tmp_path / "feed.db"
-    _create_fixture_db_with_backtests(db)
+    _create_fixture_db(db)
 
     # Seed one completed backtest
     _seed_completed_backtest(
@@ -857,8 +798,14 @@ def test_activity_feed_includes_backtest_results(tmp_path: Path) -> None:
     conn.execute(
         """INSERT INTO explanations
            (recorded_at, decision_type, status, strategy_name, strategy_stage,
-            symbol, side, quantity, risk_allowed, session_id)
-           VALUES (?, 'submit', 'submitted', 'alpha', 'paper', 'SPY', 'buy', 10, 1, 'sess-1')""",
+            symbol, side, quantity, risk_allowed, session_id,
+            order_type, time_in_force, submitted_by, market_open,
+            account_equity, account_cash, account_portfolio_value, account_daily_pnl,
+            risk_summary, reason_codes_json, risk_checks_json, context_json)
+           VALUES (?, 'submit', 'submitted', 'alpha', 'paper', 'SPY', 'buy', 10, 1, 'sess-1',
+                   'market', 'day', 'test', 1,
+                   10000.0, 10000.0, 10000.0, 0.0,
+                   'ok', '[]', '{}', '{}')""",
         (exp_ts,),
     )
     conn.commit()
@@ -881,7 +828,7 @@ def test_activity_feed_excludes_incomplete_backtests(tmp_path: Path) -> None:
     from milodex.gui.activity_feed_state import _query_feed
 
     db = tmp_path / "feed.db"
-    _create_fixture_db_with_backtests(db)
+    _create_fixture_db(db)
 
     conn = sqlite3.connect(str(db))
     # incomplete (running) backtest — should NOT appear
@@ -985,7 +932,7 @@ def test_backtest_feed_metrics_identical_after_refactor(tmp_path: Path) -> None:
     from milodex.gui.activity_feed_state import _query_feed
 
     db = tmp_path / "feed.db"
-    _create_fixture_db_with_backtests(db)
+    _create_fixture_db(db)
 
     _seed_completed_backtest(
         db,
@@ -1018,7 +965,7 @@ def test_backtest_feed_null_metrics_yields_completed(tmp_path: Path) -> None:
     from milodex.gui.activity_feed_state import _query_feed
 
     db = tmp_path / "feed.db"
-    _create_fixture_db_with_backtests(db)
+    _create_fixture_db(db)
 
     conn = sqlite3.connect(str(db))
     conn.execute(

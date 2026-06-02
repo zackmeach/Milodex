@@ -1312,70 +1312,14 @@ _COPY_CAPITAL_LOCK_SHORT_TEST = (
 # ---------------------------------------------------------------------------
 
 
-def _create_full_ledger_db(path: Path) -> None:
-    """Create a DB with all tables needed for 6-source ledger testing."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE promotions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            from_stage TEXT NOT NULL,
-            to_stage TEXT NOT NULL,
-            promotion_type TEXT NOT NULL,
-            approved_by TEXT NOT NULL,
-            backtest_run_id TEXT,
-            sharpe_ratio REAL,
-            max_drawdown_pct REAL,
-            trade_count INTEGER,
-            notes TEXT
-        );
-        CREATE TABLE backtest_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL UNIQUE,
-            strategy_id TEXT NOT NULL,
-            config_path TEXT,
-            config_hash TEXT,
-            start_date TEXT NOT NULL,
-            end_date TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            status TEXT NOT NULL,
-            slippage_pct REAL,
-            commission_per_trade REAL,
-            metadata_json TEXT NOT NULL
-        );
-        CREATE TABLE kill_switch_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_type TEXT NOT NULL,
-            recorded_at TEXT NOT NULL,
-            reason TEXT
-        );
-        CREATE TABLE strategy_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            exit_reason TEXT,
-            metadata_json TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-def test_ledger_entries_includes_all_six_event_types(tmp_path: Path) -> None:
+def test_ledger_entries_includes_all_six_event_types(tmp_path: Path, event_store_db: Path) -> None:
     """Ledger sources: promotions, kill_switch, session start, session stop,
     backtest completion, new strategy."""
     import json as _json
 
     from milodex.gui.read_models import build_ledger_snapshot
 
-    db = tmp_path / "milodex.db"
-    _create_full_ledger_db(db)
+    db = event_store_db
     configs = tmp_path / "configs"
     configs.mkdir()
 
@@ -1479,13 +1423,12 @@ strategy:
     assert timestamps == sorted(timestamps, reverse=True), "Entries are not sorted DESC"
 
 
-def test_kill_switch_does_not_emit_stop_row(tmp_path: Path) -> None:
+def test_kill_switch_does_not_emit_stop_row(tmp_path: Path, event_store_db: Path) -> None:
     """A session ended via kill_switch must NOT emit a 'STOPPED' row;
     the kill_switch_events row stands alone."""
     from milodex.gui.read_models import build_ledger_snapshot
 
-    db = tmp_path / "milodex.db"
-    _create_full_ledger_db(db)
+    db = event_store_db
     configs = tmp_path / "configs"
     configs.mkdir()
 
@@ -1525,7 +1468,9 @@ def test_kill_switch_does_not_emit_stop_row(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_kill_switch_orders_above_session_stop_when_simultaneous(tmp_path: Path) -> None:
+def test_kill_switch_orders_above_session_stop_when_simultaneous(
+    tmp_path: Path, event_store_db: Path
+) -> None:
     """When kill-switch fires and strategy_runs.ended_at write happen within ms
     of each other, the kill_switch_events entry must sort above the (excluded)
     stop entry — but the stop entry doesn't appear (excluded by filter), so the
@@ -1538,8 +1483,7 @@ def test_kill_switch_orders_above_session_stop_when_simultaneous(tmp_path: Path)
     """
     from milodex.gui.read_models import build_ledger_snapshot
 
-    db = tmp_path / "milodex.db"
-    _create_full_ledger_db(db)
+    db = event_store_db
     configs = tmp_path / "configs"
     configs.mkdir()
 
