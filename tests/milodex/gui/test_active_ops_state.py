@@ -42,37 +42,62 @@ _skip_no_qt = pytest.mark.skipif(
 
 
 class TestSessionState:
-    def test_running_when_ended_at_none(self) -> None:
-        from milodex.gui.active_ops_state import _session_state
+    """sessionState is now driven by the shared 4-state resolver.
 
-        assert _session_state(None, None) == "running"
+    The legacy ``_session_state`` helper (which emitted ``"stopped:<reason>"``)
+    was removed in PR6 in favour of ``_event_queries.resolve_runner_liveness``.
+    These tests pin the new 4-state contract (running / phantom / stopped /
+    failed) at the resolver level; lock-awareness is exercised separately via
+    ``_query_active_ops`` with an explicit ``locks_dir``.
+    """
 
-    def test_running_when_ended_at_empty_string(self) -> None:
-        from milodex.gui.active_ops_state import _session_state
+    def test_running_when_ended_at_none_and_lock_live(self) -> None:
+        from milodex.gui._event_queries import resolve_runner_liveness
 
-        assert _session_state("", None) == "running"
+        assert resolve_runner_liveness(ended_at=None, exit_reason=None, lock_live=True) == "running"
 
-    def test_stopped_with_exit_reason(self) -> None:
-        from milodex.gui.active_ops_state import _session_state
+    def test_running_when_ended_at_empty_string_and_lock_live(self) -> None:
+        from milodex.gui._event_queries import resolve_runner_liveness
 
-        ts = "2026-05-16T10:00:00+00:00"
-        assert _session_state(ts, "controlled_stop") == "stopped:controlled_stop"
+        assert resolve_runner_liveness(ended_at="", exit_reason=None, lock_live=True) == "running"
 
-    def test_stopped_kill_switch(self) -> None:
-        from milodex.gui.active_ops_state import _session_state
-
-        assert _session_state("2026-05-16T10:00:00+00:00", "kill_switch") == "stopped:kill_switch"
-
-    def test_stopped_orphan_recovered(self) -> None:
-        from milodex.gui.active_ops_state import _session_state
+    def test_stopped_with_benign_exit_reason(self) -> None:
+        from milodex.gui._event_queries import resolve_runner_liveness
 
         ts = "2026-05-16T10:00:00+00:00"
-        assert _session_state(ts, "orphan_recovered") == "stopped:orphan_recovered"
+        assert (
+            resolve_runner_liveness(ended_at=ts, exit_reason="controlled_stop", lock_live=False)
+            == "stopped"
+        )
 
-    def test_stopped_null_exit_reason_becomes_unknown(self) -> None:
-        from milodex.gui.active_ops_state import _session_state
+    def test_failed_kill_switch(self) -> None:
+        from milodex.gui._event_queries import resolve_runner_liveness
 
-        assert _session_state("2026-05-16T10:00:00+00:00", None) == "stopped:unknown"
+        assert (
+            resolve_runner_liveness(
+                ended_at="2026-05-16T10:00:00+00:00", exit_reason="kill_switch", lock_live=False
+            )
+            == "failed"
+        )
+
+    def test_failed_orphan_recovered(self) -> None:
+        from milodex.gui._event_queries import resolve_runner_liveness
+
+        ts = "2026-05-16T10:00:00+00:00"
+        assert (
+            resolve_runner_liveness(ended_at=ts, exit_reason="orphan_recovered", lock_live=False)
+            == "failed"
+        )
+
+    def test_stopped_null_exit_reason(self) -> None:
+        from milodex.gui._event_queries import resolve_runner_liveness
+
+        assert (
+            resolve_runner_liveness(
+                ended_at="2026-05-16T10:00:00+00:00", exit_reason=None, lock_live=False
+            )
+            == "stopped"
+        )
 
 
 class TestHeartbeat:
@@ -239,6 +264,57 @@ def test_query_active_ops_running_runner(tmp_path) -> None:
     assert r["sessionState"] == "running"
 
 
+def test_query_active_ops_open_run_no_live_lock_is_phantom(tmp_path) -> None:
+    """An open run with an explicit locks_dir holding no live lock is a phantom.
+
+    This is the P8 corpse case: a hard-killed runner whose strategy_runs row
+    never closed. With phantom detection ON (explicit locks_dir), sessionState
+    must be "phantom" and runnerLock "released" — both driven from the single
+    lock check.
+    """
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    started = (now - timedelta(hours=2)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+
+    result = _query_active_ops(db, now, locks_dir=locks_dir)
+
+    assert len(result) == 1
+    assert result[0]["sessionState"] == "phantom"
+    assert result[0]["runnerLock"] == "released"
+
+
+def test_query_active_ops_open_run_locks_dir_none_is_legacy_running(tmp_path) -> None:
+    """Back-compat guard: locks_dir=None disables phantom detection.
+
+    An open run with no locks_dir resolves to legacy "running" — the dozens of
+    existing tests that seed an open run without a locks_dir must keep passing.
+    """
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    started = (now - timedelta(hours=2)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-001", started)
+
+    result = _query_active_ops(db, now, locks_dir=None)
+
+    assert len(result) == 1
+    assert result[0]["sessionState"] == "running"
+    # The sessionState legacy guard (lock_live=True when locks_dir is None) must
+    # NOT leak into runnerLock: with no locks_dir there is nothing to verify, so
+    # the badge stays honestly "released" rather than claiming a held lock.
+    assert result[0]["runnerLock"] == "released"
+
+
 def test_query_active_ops_stopped_runner(tmp_path) -> None:
     from milodex.gui.active_ops_state import _query_active_ops
 
@@ -253,7 +329,7 @@ def test_query_active_ops_stopped_runner(tmp_path) -> None:
     result = _query_active_ops(db, now)
 
     assert len(result) == 1
-    assert result[0]["sessionState"] == "stopped:controlled_stop"
+    assert result[0]["sessionState"] == "stopped"
 
 
 def test_query_active_ops_latest_run_per_strategy(tmp_path) -> None:
@@ -608,7 +684,11 @@ def test_refresh_populates_runners(qapp, tmp_path) -> None:
     _seed_run(db, "strat.a.v1", "sess-a", t)
     _seed_run(db, "strat.b.v1", "sess-b", t2, ended_at=t2_end, exit_reason="controlled_stop")
 
-    state = _make_state(db)
+    # Explicit empty locks_dir → deterministic phantom detection (no live lock
+    # for either seeded strategy), isolated from the production locks dir.
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    state = _make_state(db, locks_dir=locks_dir)
     state._kick_refresh()  # noqa: SLF001
     _drain_pool(state)
 
@@ -618,11 +698,12 @@ def test_refresh_populates_runners(qapp, tmp_path) -> None:
     ids = {r["strategyId"] for r in runners}
     assert ids == {"strat.a.v1", "strat.b.v1"}
 
-    running = next(r for r in runners if r["strategyId"] == "strat.a.v1")
+    open_runner = next(r for r in runners if r["strategyId"] == "strat.a.v1")
     stopped = next(r for r in runners if r["strategyId"] == "strat.b.v1")
 
-    assert running["sessionState"] == "running"
-    assert stopped["sessionState"] == "stopped:controlled_stop"
+    # Open run with no live lock is a phantom (PR6); closed controlled_stop is stopped.
+    assert open_runner["sessionState"] == "phantom"
+    assert stopped["sessionState"] == "stopped"
 
     for r in runners:
         assert "cadence" in r

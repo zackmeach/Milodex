@@ -130,10 +130,20 @@ class FrontPageState(PollingReadModel):
 
     summaryChanged = Signal()  # noqa: N815
 
-    def __init__(self, db_path: Path, configs_dir: Path, refresh_interval_ms: int = 30_000) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        configs_dir: Path,
+        refresh_interval_ms: int = 30_000,
+        locks_dir: Path | None = None,
+    ) -> None:
+        if locks_dir is None:
+            from milodex.config import get_locks_dir
+
+            locks_dir = get_locks_dir()
         self._summary: dict[str, Any] = _empty_front_summary()
         super().__init__(
-            builder=lambda: build_front_page_snapshot(db_path, configs_dir),
+            builder=lambda: build_front_page_snapshot(db_path, configs_dir, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
         )
 
@@ -155,11 +165,21 @@ class BenchState(PollingReadModel):
     sectionsChanged = Signal()  # noqa: N815
     selectedStrategyChanged = Signal()  # noqa: N815
 
-    def __init__(self, db_path: Path, configs_dir: Path, refresh_interval_ms: int = 30_000) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        configs_dir: Path,
+        refresh_interval_ms: int = 30_000,
+        locks_dir: Path | None = None,
+    ) -> None:
+        if locks_dir is None:
+            from milodex.config import get_locks_dir
+
+            locks_dir = get_locks_dir()
         self._sections: list[dict[str, Any]] = []
         self._selected_strategy_id = ""
         super().__init__(
-            builder=lambda: build_bench_snapshot(db_path, configs_dir),
+            builder=lambda: build_bench_snapshot(db_path, configs_dir, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
         )
 
@@ -191,11 +211,21 @@ class KanbanState(PollingReadModel):
     lanesChanged = Signal()  # noqa: N815
     summaryChanged = Signal()  # noqa: N815
 
-    def __init__(self, db_path: Path, configs_dir: Path, refresh_interval_ms: int = 30_000) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        configs_dir: Path,
+        refresh_interval_ms: int = 30_000,
+        locks_dir: Path | None = None,
+    ) -> None:
+        if locks_dir is None:
+            from milodex.config import get_locks_dir
+
+            locks_dir = get_locks_dir()
         self._lanes: list[dict[str, Any]] = []
         self._summary: dict[str, Any] = {}
         super().__init__(
-            builder=lambda: build_kanban_snapshot(db_path, configs_dir),
+            builder=lambda: build_kanban_snapshot(db_path, configs_dir, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
         )
 
@@ -340,10 +370,12 @@ def _open_ro_conn(db_path: Path) -> sqlite3.Connection:
     return conn
 
 
-def build_front_page_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
+def build_front_page_snapshot(
+    db_path: Path, configs_dir: Path, locks_dir: Path | None = None
+) -> dict[str, Any]:
     _pnl_default = {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
     if not db_path.exists():
-        rows = _strategy_rows(None, configs_dir)
+        rows = _strategy_rows(None, configs_dir, locks_dir)
         stage_counts = _stage_counts(rows)
         running_count = sum(1 for row in rows if row.stage in {"paper", "micro_live", "live"})
         feature = _feature_row(rows)
@@ -364,7 +396,7 @@ def build_front_page_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any
         return {"summary": summary, "lastRefreshedAt": summary["lastRefreshedAt"]}
     conn = _open_ro_conn(db_path)
     try:
-        rows = _strategy_rows(conn, configs_dir)
+        rows = _strategy_rows(conn, configs_dir, locks_dir)
         stage_counts = _stage_counts(rows)
         running_count = sum(1 for row in rows if row.stage in {"paper", "micro_live", "live"})
         feature = _feature_row(rows)
@@ -387,7 +419,9 @@ def build_front_page_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any
     return {"summary": summary, "lastRefreshedAt": summary["lastRefreshedAt"]}
 
 
-def build_bench_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
+def build_bench_snapshot(
+    db_path: Path, configs_dir: Path, locks_dir: Path | None = None
+) -> dict[str, Any]:
     labels = {
         "idle": ("i.", "Idle", "configured, not yet run"),
         "backtest": ("ii.", "Backtest", "historical evidence and gate verdicts"),
@@ -397,7 +431,7 @@ def build_bench_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
     }
     conn: sqlite3.Connection | None = _open_ro_conn(db_path) if db_path.exists() else None
     try:
-        rows = _strategy_rows(conn, configs_dir)
+        rows = _strategy_rows(conn, configs_dir, locks_dir)
         sections = []
         for stage in _VISIBLE_STAGES:
             roman, name, caption = labels[stage]
@@ -417,7 +451,9 @@ def build_bench_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
     return {"sections": sections, "lastRefreshedAt": _now_iso()}
 
 
-def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
+def build_kanban_snapshot(
+    db_path: Path, configs_dir: Path, locks_dir: Path | None = None
+) -> dict[str, Any]:
     labels = {
         "idle": ("i.", "Idle", "configured, no action queued"),
         "backtest": ("ii.", "Backtest", "historical evidence review"),
@@ -427,7 +463,7 @@ def build_kanban_snapshot(db_path: Path, configs_dir: Path) -> dict[str, Any]:
     }
     conn: sqlite3.Connection | None = _open_ro_conn(db_path) if db_path.exists() else None
     try:
-        rows = _strategy_rows(conn, configs_dir)
+        rows = _strategy_rows(conn, configs_dir, locks_dir)
         lanes: list[dict[str, Any]] = []
         for lane in _VISIBLE_STAGES:
             roman, name, caption = labels[lane]
@@ -483,12 +519,16 @@ def build_ledger_snapshot(db_path: Path, configs_dir: Path | None = None) -> dic
     return {"entries": entries, "lastRefreshedAt": _now_iso()}
 
 
-def _strategy_rows(conn: sqlite3.Connection | None, configs_dir: Path) -> list[_StrategyRow]:
+def _strategy_rows(
+    conn: sqlite3.Connection | None,
+    configs_dir: Path,
+    locks_dir: Path | None = None,
+) -> list[_StrategyRow]:
     configs = _load_strategy_configs(configs_dir)
     if conn is not None:
         latest_runs = _event_queries.latest_backtest_metrics(conn)
         promotions = _latest_promotions(conn)
-        sessions = _latest_session_states(conn)
+        sessions = _latest_session_states(conn, locks_dir)
         jobs = _latest_orchestration_jobs(conn)
     else:
         latest_runs = {}
@@ -821,16 +861,13 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
 
     Carries the descriptive metadata a confirmation modal needs to render
     an Intent Packet without recomputing classifications in QML. This is a
-    *preview*, never an executable command:
-
-      - ``executable`` MUST stay False
-      - ``wired`` MUST stay False
-
-    until command infrastructure lands behind a separate ADR. Downstream UI
-    reads these flags to keep the v1 framing explicit.
-
-    The preview never carries a command payload, a proposal object, or any
+    *preview*: it never carries a command payload, a proposal object, or any
     field whose name implies execution (submit, dispatch, broker, event).
+
+    The ``executable`` and ``wired`` flags now track *submit-capability* —
+    True for actions the ADR-0051 command facade can submit, False otherwise.
+    The wired command path landed with ADR 0051 (BenchSurface action-menu
+    wiring); downstream UI reads these flags to gate confirmation vs. preview.
     """
     label = item.label
     target_stage = item.target_stage or ""
@@ -1252,7 +1289,9 @@ def _ledger_entries(conn: sqlite3.Connection, configs_dir: Path) -> list[dict[st
     )
 
 
-def _latest_session_states(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
+def _latest_session_states(
+    conn: sqlite3.Connection, locks_dir: Path | None = None
+) -> dict[str, dict[str, Any]]:
     try:
         rows = conn.execute(
             """
@@ -1274,19 +1313,35 @@ def _latest_session_states(conn: sqlite3.Connection) -> dict[str, dict[str, Any]
     except sqlite3.Error:
         return {}
     result: dict[str, dict[str, Any]] = {}
-    failure_reasons = {"crashed", "failed", "kill_switch", "orphan_recovered", "error"}
     for row in rows:
+        strategy_id = row["strategy_id"]
         exit_reason = str(row["exit_reason"] or "")
-        if row["ended_at"] in (None, ""):
-            state = "running"
-            detail = "session active"
-        elif exit_reason in failure_reasons:
-            state = "failed"
-            detail = exit_reason
+        # Back-compat guard (PR6): phantom detection only engages when an
+        # explicit locks_dir is supplied. When None, an open session resolves
+        # to legacy "running" (lock_live=True). Lock-verified liveness unifies
+        # the running/phantom split via the shared resolver. The resolver only
+        # consults lock_live for open rows, so skip the per-strategy lock I/O
+        # for already-closed sessions.
+        if row["ended_at"] not in (None, ""):
+            lock_live = False
+        elif locks_dir is None:
+            lock_live = True
         else:
-            state = "stopped"
+            lock_live = _event_queries.runner_lock_live(strategy_id, locks_dir)
+        state = _event_queries.resolve_runner_liveness(
+            ended_at=row["ended_at"],
+            exit_reason=exit_reason,
+            lock_live=lock_live,
+        )
+        if state == "running":
+            detail = "session active"
+        elif state == "phantom":
+            detail = "phantom: no live runner lock"
+        elif state == "failed":
+            detail = exit_reason
+        else:  # stopped
             detail = exit_reason or "session ended"
-        result[row["strategy_id"]] = {
+        result[strategy_id] = {
             "state": state,
             "session_id": str(row["session_id"]),
             "started_at": str(row["started_at"] or ""),

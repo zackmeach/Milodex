@@ -632,6 +632,79 @@ def test_kanban_snapshot_derives_session_state_from_strategy_runs(tmp_path: Path
     assert card["evidencePacket"]["paperEvidence"]["sessionId"] == "session-1"
 
 
+def test_bench_snapshot_open_run_no_live_lock_is_phantom_no_stop_trading(
+    tmp_path: Path, event_store_db: Path
+) -> None:
+    """An open run with an explicit locks_dir holding no live lock is a phantom.
+
+    Phantom detection is ON (explicit locks_dir → empty tmp dir). The bench row
+    must report sessionState "phantom" and the action menu must NOT offer
+    "Stop Trading" — the UI must not offer to stop a corpse.
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = event_store_db
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO strategy_runs (
+            session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json
+        )
+        VALUES ('session-1', ?, '2026-05-09T12:00:00+00:00', NULL, NULL, '{}')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    snapshot = build_bench_snapshot(db, configs, locks_dir=locks_dir)
+    paper = next(section for section in snapshot["sections"] if section["stage"] == "paper")
+    row = paper["strategies"][0]
+
+    assert row["sessionState"] == "phantom"
+    labels = [a["label"] for a in row["actions"]]
+    assert "Stop Trading" not in labels
+
+
+def test_bench_snapshot_open_run_locks_dir_none_is_legacy_running(
+    tmp_path: Path, event_store_db: Path
+) -> None:
+    """Back-compat guard: locks_dir=None disables phantom detection → legacy running."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = event_store_db
+
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO strategy_runs (
+            session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json
+        )
+        VALUES ('session-1', ?, '2026-05-09T12:00:00+00:00', NULL, NULL, '{}')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    snapshot = build_bench_snapshot(db, configs, locks_dir=None)
+    paper = next(section for section in snapshot["sections"] if section["stage"] == "paper")
+    row = paper["strategies"][0]
+
+    assert row["sessionState"] == "running"
+
+
 def test_bench_snapshot_marks_controlled_stop_paper_evidence_completed(
     tmp_path: Path,
 ) -> None:

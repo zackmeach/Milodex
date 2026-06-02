@@ -35,8 +35,70 @@ Design notes
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
+from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Runner liveness — shared 4-state resolver (PR6)
+# ---------------------------------------------------------------------------
+
+_FAILURE_EXIT_REASONS = frozenset({"crashed", "failed", "kill_switch", "orphan_recovered", "error"})
+"""Exit reasons that classify a *closed* runner session as ``"failed"``.
+
+Identical to the previously-local set in ``read_models._latest_session_states``;
+consolidated here so the two readers share one definition. The ``crashed:<detail>``
+prefix is handled separately by :func:`resolve_runner_liveness`.
+"""
+
+
+def resolve_runner_liveness(
+    *, ended_at: str | None, exit_reason: str | None, lock_live: bool
+) -> str:
+    """Resolve a single runner session to ``running | phantom | stopped | failed``.
+
+    Pure function — the one place the GUI decides what a runner row *is* for
+    display-trust and which-actions purposes. Lock-verified liveness arrives as
+    the pre-computed ``lock_live`` flag so this stays side-effect-free and
+    trivially testable.
+
+    - ``ended_at`` is ``None``/``""`` (open session):
+        ``"running"`` if ``lock_live`` else ``"phantom"`` — a hard-killed runner
+        whose row never closed is a phantom, not a live runner.
+    - closed session with a failure exit reason (in :data:`_FAILURE_EXIT_REASONS`
+      or with a ``"crashed:"`` prefix): ``"failed"``.
+    - any other closed session: ``"stopped"``.
+    """
+    if ended_at in (None, ""):
+        return "running" if lock_live else "phantom"
+    reason = exit_reason or ""
+    if reason in _FAILURE_EXIT_REASONS or reason.startswith("crashed:"):
+        return "failed"
+    return "stopped"
+
+
+def runner_lock_live(strategy_id: str, locks_dir: Path | None) -> bool:
+    """Return ``True`` iff a genuinely-live process holds ``strategy_id``'s runner lock.
+
+    Identity-verified liveness via :func:`milodex.core.advisory_lock.live_lock_holder`
+    — a stale / recycled-PID lock file reads as *not* live. Returns ``False`` when
+    ``locks_dir`` is ``None`` (no lock surface to inspect) or on any read error.
+    """
+    if locks_dir is None:
+        return False
+    from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    try:
+        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
+        return live_lock_holder(lock) is not None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("runner_lock_live: lock read failed for %s: %s", strategy_id, exc)
+        return False
+
 
 # ---------------------------------------------------------------------------
 # Public API

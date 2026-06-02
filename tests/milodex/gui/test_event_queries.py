@@ -387,3 +387,89 @@ def test_latest_backtest_metrics_plain_tuple_rows(tmp_path: Path) -> None:
     assert m["sharpe"] == 1.11
     assert m["max_drawdown_pct"] == 3.5
     assert m["trade_count"] == 55
+
+
+# ---------------------------------------------------------------------------
+# resolve_runner_liveness — pure 4-state resolver (PR6)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_runner_liveness_open_and_live_is_running() -> None:
+    """ended_at None + lock live → running."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    assert resolve_runner_liveness(ended_at=None, exit_reason=None, lock_live=True) == "running"
+
+
+def test_resolve_runner_liveness_open_empty_string_and_live_is_running() -> None:
+    """ended_at empty-string + lock live → running."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    assert resolve_runner_liveness(ended_at="", exit_reason=None, lock_live=True) == "running"
+
+
+def test_resolve_runner_liveness_open_and_dead_is_phantom() -> None:
+    """ended_at None + lock NOT live → phantom (the P8 corpse case)."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    assert resolve_runner_liveness(ended_at=None, exit_reason=None, lock_live=False) == "phantom"
+
+
+def test_resolve_runner_liveness_open_empty_string_and_dead_is_phantom() -> None:
+    """ended_at empty-string + lock NOT live → phantom."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    assert resolve_runner_liveness(ended_at="", exit_reason=None, lock_live=False) == "phantom"
+
+
+def test_resolve_runner_liveness_closed_clean_is_stopped() -> None:
+    """Closed with a benign exit reason → stopped (lock_live irrelevant once closed)."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    ts = "2026-05-16T10:00:00+00:00"
+    assert (
+        resolve_runner_liveness(ended_at=ts, exit_reason="controlled_stop", lock_live=False)
+        == "stopped"
+    )
+
+
+def test_resolve_runner_liveness_closed_none_reason_is_stopped() -> None:
+    """Closed with no exit reason → stopped (not a failure)."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    ts = "2026-05-16T10:00:00+00:00"
+    assert resolve_runner_liveness(ended_at=ts, exit_reason=None, lock_live=True) == "stopped"
+
+
+def test_resolve_runner_liveness_closed_failure_reason_is_failed() -> None:
+    """Closed with a canonical failure reason → failed."""
+    from milodex.gui._event_queries import (
+        _FAILURE_EXIT_REASONS,
+        resolve_runner_liveness,
+    )
+
+    ts = "2026-05-16T10:00:00+00:00"
+    for reason in _FAILURE_EXIT_REASONS:
+        assert (
+            resolve_runner_liveness(ended_at=ts, exit_reason=reason, lock_live=False) == "failed"
+        ), reason
+
+
+def test_resolve_runner_liveness_closed_crashed_prefix_is_failed() -> None:
+    """Closed with a ``crashed:<detail>`` exit reason → failed (prefix handling)."""
+    from milodex.gui._event_queries import resolve_runner_liveness
+
+    ts = "2026-05-16T10:00:00+00:00"
+    assert (
+        resolve_runner_liveness(ended_at=ts, exit_reason="crashed: KeyError", lock_live=False)
+        == "failed"
+    )
+
+
+def test_failure_exit_reasons_matches_legacy_set() -> None:
+    """The canonical failure set equals the legacy read_models local set."""
+    from milodex.gui._event_queries import _FAILURE_EXIT_REASONS
+
+    assert _FAILURE_EXIT_REASONS == frozenset(
+        {"crashed", "failed", "kill_switch", "orphan_recovered", "error"}
+    )
