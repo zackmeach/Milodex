@@ -178,6 +178,35 @@ def _seed_paper_row(
     conn.close()
 
 
+def _seed_demotion_row(
+    path: Path,
+    strategy_id: str,
+    to_stage: str = "backtest",
+    recorded_at: str = "2026-05-19T00:00:00+00:00",
+) -> None:
+    """Insert one demotion promotion record (promotion_type='demotion').
+
+    Mirrors :func:`milodex.promotion.state_machine.demote`: appends a row with
+    ``promotion_type='demotion'``, ``from_stage='paper'``, and the given
+    ``to_stage`` (one of backtest / idle / disabled). It does NOT delete the
+    prior paper-promotion row — that is the exact condition the membership fix
+    must handle. Default ``recorded_at`` is LATER than ``_seed_paper_row``'s
+    default (2026-05-07) so the demotion is the latest-overall row.
+    """
+    conn = sqlite3.connect(str(path))
+    conn.execute(
+        """
+        INSERT INTO promotions
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type,
+             approved_by, backtest_run_id, sharpe_ratio, max_drawdown_pct, trade_count)
+        VALUES (?, ?, 'paper', ?, 'demotion', 'test', NULL, NULL, NULL, NULL)
+        """,
+        (recorded_at, strategy_id, to_stage),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _seed_blocked_row(
     path: Path,
     strategy_id: str,
@@ -679,3 +708,142 @@ def test_blocked_dict_shape(tmp_path) -> None:
     assert isinstance(row["gateFailures"], list)
     assert isinstance(row["auditFlag"], bool)
     assert isinstance(row["flagFailingNotRetired"], bool)
+
+
+# ---------------------------------------------------------------------------
+# Demotion membership — current stage must derive from the LATEST-overall
+# promotion row (recorded_at DESC, id DESC), matching
+# EventStore.get_latest_promotion_for_strategy. A demoted paper strategy
+# must leave the paper list and (with backtest evidence) resurface in blocked.
+# ---------------------------------------------------------------------------
+
+
+def test_demote_to_backtest_leaves_paper_enters_blocked(tmp_path) -> None:
+    """paper -> demote(backtest): strategy NOT in paper, IS in blocked."""
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    sid = "breakout.daily.atr_channel.sector_etfs.v1"
+    _seed_paper_row(db, sid, sharpe=0.64)
+    # Completed backtest evidence survives the demotion.
+    _seed_blocked_row(db, sid, "run-bt", sharpe=0.64)
+    _seed_demotion_row(db, sid, to_stage="backtest")
+
+    paper, blocked = _query_bank(db, demotion_aware=True)
+    paper_ids = {r["strategyId"] for r in paper}
+    blocked_ids = {r["strategyId"] for r in blocked}
+
+    assert sid not in paper_ids, "Demoted strategy must NOT remain in paper"
+    assert sid in blocked_ids, "Demoted strategy with backtest evidence must be blocked"
+
+
+def test_demote_to_idle_leaves_paper_enters_blocked(tmp_path) -> None:
+    """paper -> demote(idle): strategy NOT in paper, IS in blocked.
+
+    The GUI exposes only paper/blocked buckets; a demoted-to-idle strategy that
+    still carries completed backtest evidence lands in blocked. This is the
+    intended 2-bucket behavior — there is no separate idle bucket in the GUI.
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    sid = "breakout.daily.atr_channel.sector_etfs.v1"
+    _seed_paper_row(db, sid, sharpe=0.64)
+    _seed_blocked_row(db, sid, "run-bt", sharpe=0.64)
+    _seed_demotion_row(db, sid, to_stage="idle")
+
+    paper, blocked = _query_bank(db, demotion_aware=True)
+    paper_ids = {r["strategyId"] for r in paper}
+    blocked_ids = {r["strategyId"] for r in blocked}
+
+    assert sid not in paper_ids, "Demoted-to-idle strategy must NOT remain in paper"
+    assert sid in blocked_ids, "Demoted-to-idle strategy with backtest evidence lands in blocked"
+
+
+def test_demote_then_repromote_returns_to_paper(tmp_path) -> None:
+    """paper -> demote(backtest) -> re-promote(paper): IS in paper, NOT in blocked."""
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    sid = "breakout.daily.atr_channel.sector_etfs.v1"
+    _seed_paper_row(db, sid, sharpe=0.64, recorded_at="2026-05-07T00:00:00+00:00")
+    _seed_blocked_row(db, sid, "run-bt", sharpe=0.64)
+    _seed_demotion_row(db, sid, to_stage="backtest", recorded_at="2026-05-19T00:00:00+00:00")
+    # Latest-overall row is a fresh paper promotion.
+    _seed_paper_row(db, sid, sharpe=0.64, recorded_at="2026-05-25T00:00:00+00:00")
+
+    paper, blocked = _query_bank(db, demotion_aware=True)
+    paper_ids = {r["strategyId"] for r in paper}
+    blocked_ids = {r["strategyId"] for r in blocked}
+
+    assert sid in paper_ids, "Re-promoted strategy must appear in paper again"
+    assert sid not in blocked_ids, "Re-promoted strategy must NOT be blocked"
+
+
+def test_backdated_demotion_does_not_drop_from_paper(tmp_path) -> None:
+    """A BACKDATED demotion (recorded_at EARLIER than the paper promotion) must
+    NOT drop the strategy from paper — the latest-by-recorded_at row is still
+    the paper promotion.
+
+    Pins the recorded_at ordering choice (matches
+    EventStore.get_latest_promotion_for_strategy): an ADR-0032 audit_backfill
+    demotion can be backdated, and ordering by id alone would mis-pick it.
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    sid = "breakout.daily.atr_channel.sector_etfs.v1"
+    # Paper promotion inserted FIRST → LOWER id, but with the LATER recorded_at.
+    _seed_paper_row(db, sid, sharpe=0.64, recorded_at="2026-05-07T00:00:00+00:00")
+    # Backdated demotion inserted SECOND → HIGHER id, but with the EARLIER recorded_at.
+    # Under id-only ordering the higher-id demotion would wrongly win and drop the
+    # strategy from paper; under recorded_at DESC, id DESC the paper row wins.
+    _seed_demotion_row(db, sid, to_stage="backtest", recorded_at="2026-05-01T00:00:00+00:00")
+    _seed_blocked_row(db, sid, "run-bt", sharpe=0.64)
+
+    paper, blocked = _query_bank(db, demotion_aware=True)
+    paper_ids = {r["strategyId"] for r in paper}
+    blocked_ids = {r["strategyId"] for r in blocked}
+
+    assert sid in paper_ids, "Latest-by-recorded_at is the paper row; must stay in paper"
+    assert sid not in blocked_ids, "Currently-at-paper strategy must NOT be blocked"
+
+
+def test_default_query_bank_keeps_demoted_strategy_in_paper(tmp_path) -> None:
+    """DECOUPLING PIN: under the DEFAULT (demotion_aware=False) a paper->demote(backtest)
+    strategy STILL appears in the paper list ("ever-promoted-to-paper" membership).
+
+    This is the exact contract milodex.gui.attention_state relies on: it calls
+    _query_bank(db_path) with the default and derives paper_strategy_ids from the
+    result for its underperformance / needsReview case-(c) computation. A demoted
+    underperformer must STAY counted as underperforming (the demotion is subtracted
+    separately in attention_state's case-c logic). Flipping this default to the
+    demotion-aware / current-stage membership would silently break that monitoring —
+    the GUI Strategy Bank card opts into demotion-awareness via demotion_aware=True
+    instead. Do NOT change this default.
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    sid = "breakout.daily.atr_channel.sector_etfs.v1"
+    _seed_paper_row(db, sid, sharpe=0.64)
+    _seed_blocked_row(db, sid, "run-bt", sharpe=0.64)
+    _seed_demotion_row(db, sid, to_stage="backtest")
+
+    paper, blocked = _query_bank(db)  # default: demotion_aware=False
+    paper_ids = {r["strategyId"] for r in paper}
+    blocked_ids = {r["strategyId"] for r in blocked}
+
+    assert sid in paper_ids, (
+        "DEFAULT membership is ever-promoted-to-paper: a demoted strategy must STAY "
+        "in paper (attention_state relies on this for underperformance monitoring)"
+    )
+    # And under ever-paper exclusion it is therefore NOT surfaced in blocked.
+    assert sid not in blocked_ids, (
+        "Under ever-paper exclusion the demoted strategy is excluded from blocked"
+    )

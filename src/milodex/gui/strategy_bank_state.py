@@ -94,6 +94,13 @@ logger = logging.getLogger(__name__)
 # those columns as NULL for regime — this fix surfaces the actual walk-forward
 # figures from the re-baseline run (e.g. Sharpe 1.19, MaxDD 0.95, 27 trades
 # for regime.daily.sma200_rotation.spy_shy.v1 per STRATEGY_BANK.md lines 49, 95).
+# DEFAULT (demotion_aware=False) — "ever-promoted-to-paper" membership: each
+# strategy's LATEST paper-promotion row (MAX(id) WHERE to_stage='paper'). A later
+# demotion does NOT drop the strategy from this set. attention_state._query_attention
+# relies on this exact membership for its underperformance / needsReview case-(c)
+# computation (a demoted underperformer must STAY counted as underperforming, with
+# the demotion handled separately). Do NOT change this default without re-checking
+# tests/milodex/gui/test_attention_state.py.
 _SQL_PAPER = """
 SELECT p.strategy_id,
        p.recorded_at                AS promoted_at,
@@ -125,9 +132,68 @@ WHERE p.to_stage = 'paper'
 ORDER BY p.recorded_at;
 """
 
-# _SQL_BLOCKED was removed; _fetch_blocked now calls
-# _event_queries.latest_backtest_metrics and excludes paper-promoted strategies
-# in Python (see _fetch_blocked below).
+# demotion_aware=True — "current-stage = paper" membership for the GUI Strategy
+# Bank card.  Restrict to each strategy's LATEST-OVERALL promotion row (across ALL
+# promotion types), ordered recorded_at DESC then id DESC — the same ordering as
+# EventStore.get_latest_promotion_for_strategy. The latest row is the one for which
+# NO later (recorded_at, id) row exists; a demotion therefore supersedes the prior
+# paper row (MAX(id) WHERE to_stage='paper' could not see it). Ordering by
+# recorded_at — not id — is deliberate: a backdated audit_backfill demotion must not
+# be mis-picked as latest.
+_SQL_PAPER_CURRENT_STAGE = """
+SELECT p.strategy_id,
+       p.recorded_at                AS promoted_at,
+       p.backtest_run_id            AS evidence_run_id,
+       p.promotion_type,
+       COALESCE(p.sharpe_ratio,
+           json_extract(br.metadata_json, '$.oos_aggregate.sharpe'))        AS sharpe_ratio,
+       COALESCE(p.max_drawdown_pct,
+           json_extract(br.metadata_json, '$.oos_aggregate.max_drawdown_pct')) AS max_drawdown_pct,
+       COALESCE(p.trade_count,
+           json_extract(br.metadata_json, '$.oos_aggregate.trade_count'))   AS trade_count
+FROM promotions p
+INNER JOIN (
+    SELECT p1.strategy_id, p1.id AS latest_id
+    FROM promotions p1
+    WHERE NOT EXISTS (
+        SELECT 1 FROM promotions p2
+        WHERE p2.strategy_id = p1.strategy_id
+          AND (p2.recorded_at > p1.recorded_at
+               OR (p2.recorded_at = p1.recorded_at AND p2.id > p1.id))
+    )
+) latest ON p.strategy_id = latest.strategy_id AND p.id = latest.latest_id
+LEFT JOIN (
+    SELECT br1.strategy_id, br1.metadata_json
+    FROM backtest_runs br1
+    WHERE br1.id = (
+        SELECT MAX(br2.id)
+        FROM backtest_runs br2
+        WHERE br2.strategy_id = br1.strategy_id AND br2.status = 'completed'
+    )
+) br ON p.strategy_id = br.strategy_id
+WHERE p.to_stage = 'paper'
+ORDER BY p.recorded_at;
+"""
+
+# Blocked-exclusion paper-membership SQL, parallel to the two _SQL_PAPER forms.
+# DEFAULT (demotion_aware=False) = "ever-paper": any strategy ever promoted to paper
+# is excluded from blocked. demotion_aware=True = "currently-at-paper": only strategies
+# whose LATEST-OVERALL promotion row is to_stage='paper' are excluded, so a demoted
+# strategy resurfaces in blocked (it retains its completed backtest evidence).
+_SQL_BLOCKED_EXCLUDE_PAPER_EVER = (
+    "SELECT DISTINCT strategy_id FROM promotions WHERE to_stage = 'paper'"
+)
+_SQL_BLOCKED_EXCLUDE_PAPER_CURRENT = """
+SELECT p1.strategy_id
+FROM promotions p1
+WHERE p1.to_stage = 'paper'
+  AND NOT EXISTS (
+      SELECT 1 FROM promotions p2
+      WHERE p2.strategy_id = p1.strategy_id
+        AND (p2.recorded_at > p1.recorded_at
+             OR (p2.recorded_at = p1.recorded_at AND p2.id > p1.id))
+  )
+"""
 
 # Strategy IDs that carry a manual audit flag (ADR 0032 audit trail).
 # Static for now; will become a join against an audit_notes table when one exists.
@@ -190,8 +256,14 @@ def _build_bank_snapshot(db_path: Path) -> dict[str, Any]:
     callers (``milodex.gui.attention_state`` consumes it directly). This
     shim packs the tuple into the ``dict`` payload the polling lifecycle
     expects, including the ``lastRefreshedAt`` ISO timestamp.
+
+    The GUI Strategy Bank surface uses the demotion-aware "current stage"
+    membership (``demotion_aware=True``): a demoted strategy leaves the paper
+    card and resurfaces in blocked.  attention_state deliberately keeps the
+    default ("ever-promoted-to-paper") membership for underperformance
+    monitoring — see ``_query_bank``.
     """
-    paper, blocked = _query_bank(db_path)
+    paper, blocked = _query_bank(db_path, demotion_aware=True)
     return {
         "paper": paper,
         "blocked": blocked,
@@ -199,23 +271,40 @@ def _build_bank_snapshot(db_path: Path) -> dict[str, Any]:
     }
 
 
-def _query_bank(db_path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def _query_bank(
+    db_path: Path, *, demotion_aware: bool = False
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Run both SQL queries and return (paper_list, blocked_list).
 
     Extracted as a module-level helper so it is testable without Qt.
+
+    ``demotion_aware`` selects the paper-membership semantics (default ``False``):
+
+    - ``False`` (default) — "ever-promoted-to-paper": a strategy's LATEST
+      paper-promotion row defines membership; a later demotion does NOT drop it.
+      This is the contract ``milodex.gui.attention_state`` relies on for its
+      underperformance / needsReview case-(c) logic — a demoted underperformer
+      stays counted as underperforming and the demotion is handled separately.
+    - ``True`` — "current stage = paper": a strategy's LATEST-OVERALL promotion
+      row (recorded_at DESC, id DESC) defines membership; a demotion supersedes
+      the prior paper row, so the strategy leaves paper and (with backtest
+      evidence) resurfaces in blocked.  This is what the GUI Strategy Bank card uses.
     """
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        paper = _fetch_paper(conn)
-        blocked = _fetch_blocked(conn)
+        paper = _fetch_paper(conn, demotion_aware=demotion_aware)
+        blocked = _fetch_blocked(conn, demotion_aware=demotion_aware)
     finally:
         conn.close()
     return paper, blocked
 
 
-def _fetch_paper(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    rows = conn.execute(_SQL_PAPER).fetchall()
+def _fetch_paper(
+    conn: sqlite3.Connection, *, demotion_aware: bool = False
+) -> list[dict[str, Any]]:
+    sql = _SQL_PAPER_CURRENT_STAGE if demotion_aware else _SQL_PAPER
+    rows = conn.execute(sql).fetchall()
     result: list[dict[str, Any]] = []
     for row in rows:
         strategy_id = row["strategy_id"]
@@ -235,16 +324,26 @@ def _fetch_paper(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return result
 
 
-def _fetch_blocked(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+def _fetch_blocked(
+    conn: sqlite3.Connection, *, demotion_aware: bool = False
+) -> list[dict[str, Any]]:
     # Obtain the full latest-completed-run map then exclude paper-promoted strategies
     # (replicates the former SQL NOT-IN-paper filter in Python).
     all_metrics = _event_queries.latest_backtest_metrics(conn)
 
+    # Paper-exclusion membership mirrors _fetch_paper's:
+    # - demotion_aware=False (DEFAULT): "ever-paper" — any strategy ever promoted to
+    #   paper is excluded from blocked.
+    # - demotion_aware=True: "currently-at-paper" — only strategies whose
+    #   LATEST-OVERALL promotion row (recorded_at DESC, id DESC, matching
+    #   EventStore.get_latest_promotion_for_strategy) has to_stage='paper' are
+    #   excluded; a demoted strategy keeps its completed backtest evidence and
+    #   therefore resurfaces in blocked.
+    exclude_sql = (
+        _SQL_BLOCKED_EXCLUDE_PAPER_CURRENT if demotion_aware else _SQL_BLOCKED_EXCLUDE_PAPER_EVER
+    )
     paper_strategy_ids: set[str] = {
-        r["strategy_id"]
-        for r in conn.execute(
-            "SELECT DISTINCT strategy_id FROM promotions WHERE to_stage = 'paper'"
-        ).fetchall()
+        r["strategy_id"] for r in conn.execute(exclude_sql).fetchall()
     }
 
     result: list[dict[str, Any]] = []
