@@ -17,8 +17,16 @@ by the facade and the modules it routes into (``milodex.promotion``,
   proposal identity (``proposal_id``) survives the round-trip without QML
   needing to reconstruct dataclasses,
 * refreshes the Bench and Ledger read models on a successful submit (single
-  permitted reach into ``_kick_refresh`` on each polling model), and
-* emits a ``submitCompleted`` signal QML surfaces can listen to.
+  permitted reach into ``_kick_refresh`` on each polling model),
+* emits a ``submitCompleted`` signal QML surfaces can listen to, and
+* retains a bounded, **read-only** record of recent completion outcomes
+  (``recentCompletions``) for a display-fallback sink. This record exists so a
+  completion can never vanish when the operator closes the confirmation modal
+  mid-spawn (P18): the modal's listener returns early when closed, but the
+  bridge records every outcome regardless. The sink **never re-issues or acks a
+  command** — recording is a list insert, dismissing (``dismissCompletion``) is
+  a list removal. No facade call, no submit, no event-store / broker / lock
+  write is performed by the sink.
 
 ``submitCapableActionFamilies()`` enumerates all six wired families.
 """
@@ -27,10 +35,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
-from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal, Slot
+from PySide6.QtCore import Property, QObject, QRunnable, Qt, QThreadPool, Signal, Slot
 
 from milodex.commands.bench import (
     ACTION_FAMILY_BACKTEST,
@@ -49,6 +57,10 @@ if TYPE_CHECKING:
     from milodex.gui.read_models import BenchState, LedgerState
 
 logger = logging.getLogger(__name__)
+
+# Upper bound on the read-only recent-completion display record. The sink is a
+# fallback banner, not an audit log — durable history lives in the event store.
+_MAX_RECENT_COMPLETIONS = 20
 
 
 class _SubmitSignals(QObject):
@@ -120,6 +132,9 @@ class BenchCommandBridge(QObject):
     # Payload is the ``CommandResult.to_dict()`` mapping.
     submitCompleted = Signal("QVariantMap")  # noqa: N815
     submitQueued = Signal("QVariantMap")  # noqa: N815
+    # Emitted whenever the read-only recent-completion record changes (a new
+    # completion is recorded or one is dismissed). Read-only display state only.
+    recentCompletionsChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -138,12 +153,97 @@ class BenchCommandBridge(QObject):
         # the dataclass. Each proposal is consumed exactly once; stale ids
         # produce a structured error result.
         self._proposals: dict[str, CommandProposal] = {}
+        # Bounded, newest-first, read-only display record of recent completion
+        # outcomes. Populated by _emit_completion on every completion (sync,
+        # async, unknown-proposal error); trimmed at _MAX_RECENT_COMPLETIONS.
+        # Mutated only by _emit_completion (insert) and dismissCompletion
+        # (remove); never re-issues or acks a command.
+        self._completions: list[dict[str, Any]] = []
         self._thread_pool = QThreadPool()
         self._submit_signals = _SubmitSignals(self)
         self._submit_signals.completed.connect(
             self._on_async_submit_completed,
             Qt.ConnectionType.QueuedConnection,
         )
+
+    # ------------------------------------------------------------------ #
+    # Read-only completion sink (P18). Recording is a list insert; it never
+    # re-issues or acks a command, never touches the facade / broker / event
+    # store / advisory locks, and never calls _kick_refresh.
+    # ------------------------------------------------------------------ #
+
+    def _emit_completion(self, payload: dict[str, Any]) -> None:
+        """Single emit chokepoint for every submit completion.
+
+        Records a compact, read-only display entry from *payload* and then
+        re-emits the unmodified ``submitCompleted`` signal. Routing all three
+        completion sites (sync, async, unknown-proposal error) through here
+        guarantees every outcome is captured even when the modal — the only
+        ``submitCompleted`` listener that renders inline feedback — is closed
+        and drops the result.
+
+        This method performs ZERO command actions: no facade call, no submit,
+        no re-dispatch, no DB / broker / lock write. It mutates only the
+        in-memory display list, then forwards the original payload.
+        """
+        self._record_completion(payload)
+        self.submitCompleted.emit(payload)
+
+    def _record_completion(self, payload: dict[str, Any]) -> None:
+        durable_refs = payload.get("durable_refs") or {}
+        strategy_id = durable_refs.get("strategy_id") or payload.get("strategy_id") or ""
+        status = str(payload.get("status") or "")
+        record = {
+            "proposalId": str(payload.get("proposal_id") or ""),
+            "strategyId": str(strategy_id),
+            "actionFamily": str(payload.get("action_family") or ""),
+            "status": status,
+            "message": self._completion_message(payload, status),
+            # Monotonic display ordering key. Python datetime is fine here —
+            # this never crosses into the audit trail.
+            "recordedAt": datetime.now(tz=UTC).isoformat(),
+        }
+        self._completions.insert(0, record)
+        del self._completions[_MAX_RECENT_COMPLETIONS:]
+        self.recentCompletionsChanged.emit()
+
+    @staticmethod
+    def _completion_message(payload: dict[str, Any], status: str) -> str:
+        if status == "submitted":
+            family = str(payload.get("action_family") or "command")
+            return f"{family} submitted."
+        blockers = payload.get("blockers") or []
+        if blockers:
+            first = blockers[0]
+            message = first.get("message") if isinstance(first, dict) else None
+            if message:
+                return str(message)
+        return "Submit did not complete."
+
+    def _get_recent_completions(self) -> list[dict[str, Any]]:
+        return list(self._completions)
+
+    recentCompletions = Property(  # noqa: N815
+        "QVariantList", _get_recent_completions, notify=recentCompletionsChanged
+    )
+
+    @Slot(str)
+    def dismissCompletion(self, proposal_id: str) -> None:  # noqa: N802
+        """Remove the display entry/entries for *proposal_id* from the banner.
+
+        Display-only: dismisses the banner notice, it does NOT ack a command.
+        Makes no facade call, no submit, no re-dispatch, no _kick_refresh, and
+        no event-store / broker / lock write — it only mutates the read-only
+        display list.
+        """
+        if not proposal_id:
+            return
+        before = len(self._completions)
+        self._completions = [
+            record for record in self._completions if record.get("proposalId") != proposal_id
+        ]
+        if len(self._completions) != before:
+            self.recentCompletionsChanged.emit()
 
     def _unknown_proposal_payload(
         self, proposal_id: str, *, action_family: str, submit_method: str, propose_method: str
@@ -168,7 +268,7 @@ class BenchCommandBridge(QObject):
             "submitted_at": None,
             "audit_event_id": None,
         }
-        self.submitCompleted.emit(payload)
+        self._emit_completion(payload)
         return payload
 
     def _refresh_after_submit(self, operation: str) -> None:
@@ -218,7 +318,7 @@ class BenchCommandBridge(QObject):
         if result.status == "submitted":
             self._refresh_after_submit(refresh_label)
 
-        self.submitCompleted.emit(payload)
+        self._emit_completion(payload)
         return payload
 
     def _submit_async(
@@ -248,7 +348,7 @@ class BenchCommandBridge(QObject):
     def _on_async_submit_completed(self, payload: dict[str, Any]) -> None:
         if str(payload.get("status") or "") == "submitted":
             self._refresh_after_submit(str(payload.get("action_family") or "async_submit"))
-        self.submitCompleted.emit(payload)
+        self._emit_completion(payload)
 
     # ------------------------------------------------------------------ #
     # QML-callable slots (demotion / walk-back only — ADR 0051 Phase C2)

@@ -1415,3 +1415,340 @@ def test_qml_modal_does_not_hardcode_frozen_by_literal() -> None:
         "BenchConfirmationModal._dispatchFreezeManifestSubmit must not "
         'hardcode "operator" as the freezing identity (Phase D1).'
     )
+
+
+# --------------------------------------------------------------------------- #
+# PR8 (P18) — bounded, read-only recent-completion sink on the bridge
+#
+# Every completion (sync / async / unknown-proposal error) is recorded on the
+# bridge regardless of whether a modal is listening, so an outcome can never
+# vanish when the operator closes the modal mid-spawn. The record is a
+# display-only fallback: recording inserts a list entry, dismissing removes
+# one — neither re-issues nor acks a command.
+# --------------------------------------------------------------------------- #
+
+
+def _bridge_with_real_runner_control(
+    config_dir: Path,
+    locks_dir: Path,
+    event_store: EventStore,
+    *,
+    bench_state: object | None = None,
+):
+    control = _FakePaperRunnerControl(locks_dir)
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+        paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
+    )
+    bridge = BenchCommandBridge(facade, bench_state=bench_state)
+    return bridge, control
+
+
+def test_async_start_records_completion_when_no_modal_is_listening(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """Heart of P18: the async outcome is captured on the bridge even when the
+    modal (the only happy-path listener) is closed and not wired."""
+    _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-async-no-modal")
+    bridge, _control = _bridge_with_real_runner_control(
+        config_dir, locks_dir, event_store, bench_state=_FakeBenchState()
+    )
+
+    # Deliberately do NOT connect any submitCompleted handler — simulate a
+    # closed modal. The bridge must still record the completion.
+    start = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    queued = bridge.submitStartPaperRunnerAsync(start["proposal_id"])
+    assert queued["bridge_status"] == "queued"
+
+    assert _process_qt_until(lambda: len(bridge.recentCompletions) == 1)
+    record = bridge.recentCompletions[0]
+    assert record["proposalId"] == start["proposal_id"]
+    assert record["status"] == "submitted"
+    assert record["actionFamily"] == ACTION_FAMILY_START_PAPER_RUNNER
+
+
+def test_blocked_and_error_submits_are_both_recorded(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """The case a DB refresh can NEVER surface: blocked/errored outcomes write
+    no orchestration row, so the in-memory record is the only trace."""
+    _write_strategy(config_dir, stage="paper")
+    bridge, _control = _bridge_with_real_runner_control(config_dir, locks_dir, event_store)
+
+    # Blocked: stop with no live runner lock present → honest refusal.
+    stop = bridge.proposeStopPaperRunner({"strategy_id": STRATEGY_ID})
+    blocked = bridge.submitStopPaperRunner(stop["proposal_id"])
+    assert blocked["status"] != "submitted"
+    assert blocked["blockers"]
+
+    # Error: unknown proposal id (the _unknown_proposal_payload path).
+    errored = bridge.submitStartPaperRunner("does-not-exist")
+    assert errored["status"] == "error"
+
+    statuses = {r["status"] for r in bridge.recentCompletions}
+    assert blocked["status"] in statuses
+    assert "error" in statuses
+    # Both carry a human message so the banner has something to render.
+    assert all(r["message"] for r in bridge.recentCompletions)
+
+
+def test_unknown_proposal_error_path_records(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    """The sync unknown-proposal-id branch must also record (third emit site)."""
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+
+    result = bridge.submitDemote("missing-proposal")
+    assert result["status"] == "error"
+
+    assert len(bridge.recentCompletions) == 1
+    record = bridge.recentCompletions[0]
+    assert record["proposalId"] == "missing-proposal"
+    assert record["status"] == "error"
+    assert record["actionFamily"] == ACTION_FAMILY_DEMOTE
+
+
+def test_dismiss_completion_removes_entry_and_issues_no_command(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """Double-dispatch guard: dismissing the banner notice mutates only the
+    display list — it makes ZERO submitter / facade calls."""
+    _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-dismiss-session")
+    bridge, control = _bridge_with_real_runner_control(
+        config_dir, locks_dir, event_store, bench_state=_FakeBenchState()
+    )
+
+    start = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    result = bridge.submitStartPaperRunner(start["proposal_id"])
+    assert result["status"] == "submitted"
+    assert len(bridge.recentCompletions) == 1
+
+    starts_before = list(control.starts)
+    stops_before = list(control.stops)
+
+    bridge.dismissCompletion(start["proposal_id"])
+
+    assert bridge.recentCompletions == []
+    # No re-dispatch: the runner control saw no further start/stop.
+    assert control.starts == starts_before
+    assert control.stops == stops_before
+
+
+def test_dismiss_unknown_id_is_a_noop(facade: BenchCommandFacade, config_dir: Path) -> None:
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+    bridge.submitDemote("missing-proposal")
+    assert len(bridge.recentCompletions) == 1
+
+    bridge.dismissCompletion("not-a-real-id")
+    assert len(bridge.recentCompletions) == 1
+
+
+def test_recent_completions_are_bounded_newest_first(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    """Emitting more than the cap trims the oldest; newest is retained at [0]."""
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+
+    cap = bridge_module._MAX_RECENT_COMPLETIONS
+    for i in range(cap + 5):
+        bridge._emit_completion(
+            {
+                "proposal_id": f"p{i}",
+                "action_family": ACTION_FAMILY_DEMOTE,
+                "status": "submitted",
+                "durable_refs": {},
+                "blockers": [],
+            }
+        )
+
+    assert len(bridge.recentCompletions) == cap
+    assert bridge.recentCompletions[0]["proposalId"] == f"p{cap + 4}"
+    # The oldest five must have been trimmed.
+    retained_ids = {r["proposalId"] for r in bridge.recentCompletions}
+    assert "p0" not in retained_ids
+
+
+def test_emit_completion_does_not_perturb_submit_completed_payload(
+    facade: BenchCommandFacade, config_dir: Path, event_store: EventStore
+) -> None:
+    """Recording is additive: the submitCompleted signal still fires once per
+    submit with the unmodified CommandResult payload."""
+    _write_strategy(config_dir, stage="backtest")
+    _append_walk_forward_backtest_run(event_store, run_id="bt-gui-promote")
+    bridge = BenchCommandBridge(facade, bench_state=_FakeBenchState())
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    proposal = bridge.proposePromoteToPaper(
+        {
+            "strategy_id": STRATEGY_ID,
+            "recommendation": "Backtest evidence is strong enough for paper.",
+            "known_risk": "Regime shifts may degrade the signal.",
+            "run_id": "bt-gui-promote",
+        }
+    )
+    result = bridge.submitPromoteToPaper(proposal["proposal_id"])
+
+    assert len(payloads) == 1
+    assert payloads[0]["status"] == "submitted"
+    assert payloads[0]["proposal_id"] == result["proposal_id"]
+    # The recorded display entry is separate from the signal payload.
+    assert len(bridge.recentCompletions) == 1
+
+
+def test_strategy_id_resolved_from_durable_refs(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """The display record's strategyId must resolve from the CommandResult's
+    durable_refs (CommandResult.to_dict carries no top-level strategy_id)."""
+    _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-strategy-id-session")
+    bridge, _control = _bridge_with_real_runner_control(
+        config_dir, locks_dir, event_store, bench_state=_FakeBenchState()
+    )
+
+    start = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    result = bridge.submitStartPaperRunner(start["proposal_id"])
+    assert result["status"] == "submitted"
+
+    record = bridge.recentCompletions[0]
+    assert record["strategyId"] == result["durable_refs"].get("strategy_id")
+
+
+# --------------------------------------------------------------------------- #
+# PR8 review fixes
+# --------------------------------------------------------------------------- #
+
+
+def test_dismiss_by_submitted_proposal_id_removes_entry(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """FIX 1 bridge contract: dismissCompletion(proposal_id) on a submitted
+    completion removes exactly that entry and leaves blocked/error records in
+    place. This is the Python-side contract the BenchSurface onSubmitted
+    handler relies on (it calls dismissCompletion with the same proposal_id
+    the modal's ``submitted`` signal carries)."""
+    _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-fix1-session")
+    bridge, _control = _bridge_with_real_runner_control(
+        config_dir, locks_dir, event_store, bench_state=_FakeBenchState()
+    )
+
+    # Record a successful start — this is the happy-path completion the modal
+    # would emit ``submitted`` for, triggering dismissCompletion.
+    start = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    result = bridge.submitStartPaperRunner(start["proposal_id"])
+    assert result["status"] == "submitted"
+    assert len(bridge.recentCompletions) == 1
+
+    # Also record a blocked outcome — should NOT be removed by the happy-path dismiss.
+    stop = bridge.proposeStopPaperRunner({"strategy_id": STRATEGY_ID})
+    blocked = bridge.submitStopPaperRunner(stop["proposal_id"])
+    assert blocked["status"] != "submitted"
+    assert len(bridge.recentCompletions) == 2
+
+    # Simulate the onSubmitted handler: dismiss by the submitted proposal_id.
+    bridge.dismissCompletion(start["proposal_id"])
+
+    # Happy-path entry gone; blocked record stays.
+    assert len(bridge.recentCompletions) == 1
+    remaining_ids = {r["proposalId"] for r in bridge.recentCompletions}
+    assert start["proposal_id"] not in remaining_ids
+    assert stop["proposal_id"] in remaining_ids
+
+
+def test_async_completion_emits_submit_completed_exactly_once_and_records_exactly_one_entry(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """Async emit-count pin: a single async submit produces exactly one
+    ``submitCompleted`` signal emission and exactly one ``recentCompletions``
+    entry — not zero (unrecorded) and not two (double-fired)."""
+    _write_strategy(config_dir, stage="paper")
+    _append_open_strategy_run(event_store, session_id="bridge-async-pin-session")
+    bridge, _control = _bridge_with_real_runner_control(
+        config_dir, locks_dir, event_store, bench_state=_FakeBenchState()
+    )
+
+    payloads: list[dict] = []
+    bridge.submitCompleted.connect(payloads.append)
+
+    start = bridge.proposeStartPaperRunner({"strategy_id": STRATEGY_ID})
+    queued = bridge.submitStartPaperRunnerAsync(start["proposal_id"])
+    assert queued["bridge_status"] == "queued"
+    # Nothing recorded yet while the worker is in flight.
+    assert len(bridge.recentCompletions) == 0
+
+    assert _process_qt_until(lambda: len(payloads) == 1)
+
+    assert len(payloads) == 1, (
+        f"Expected exactly 1 submitCompleted emission; got {len(payloads)}"
+    )
+    assert len(bridge.recentCompletions) == 1, (
+        f"Expected exactly 1 recentCompletions entry; got {len(bridge.recentCompletions)}"
+    )
+    assert payloads[0]["proposal_id"] == start["proposal_id"]
+    assert bridge.recentCompletions[0]["proposalId"] == start["proposal_id"]
+
+
+def test_dismiss_empty_id_is_noop_and_does_not_remove_empty_keyed_entries(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    """FIX 3: dismissCompletion('') must return immediately without removing
+    any entries. Before the fix it would remove all entries whose proposalId
+    happened to be an empty string."""
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+
+    # Manually inject an entry — use _emit_completion with an empty proposal_id
+    # to create a realistic worst-case entry that the old code would remove.
+    bridge._emit_completion(
+        {
+            "proposal_id": "",
+            "action_family": ACTION_FAMILY_DEMOTE,
+            "status": "error",
+            "durable_refs": {},
+            "blockers": [],
+        }
+    )
+    assert len(bridge.recentCompletions) == 1
+
+    # dismissCompletion("") must not touch the list.
+    bridge.dismissCompletion("")
+    assert len(bridge.recentCompletions) == 1
+
+
+def test_get_recent_completions_returns_defensive_copy(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    """FIX 2: _get_recent_completions returns a copy; mutating the returned
+    list must not affect the internal sink state."""
+    _write_strategy(config_dir, stage="paper")
+    bridge = BenchCommandBridge(facade)
+
+    bridge._emit_completion(
+        {
+            "proposal_id": "p-copy-test",
+            "action_family": ACTION_FAMILY_DEMOTE,
+            "status": "submitted",
+            "durable_refs": {},
+            "blockers": [],
+        }
+    )
+    assert len(bridge.recentCompletions) == 1
+
+    # Mutate the returned list — the internal sink must be unaffected.
+    copy = bridge.recentCompletions
+    copy.clear()
+    assert len(bridge.recentCompletions) == 1, (
+        "Mutating the list returned by recentCompletions must not affect internal state; "
+        "the getter must return a defensive copy."
+    )
