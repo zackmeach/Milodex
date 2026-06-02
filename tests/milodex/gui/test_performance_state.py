@@ -197,25 +197,10 @@ def test_is_stale_tz_naive_input_does_not_raise() -> None:
 
 
 def _create_fixture_db(path: Path) -> None:
-    """Create a minimal SQLite DB with portfolio_snapshots (exact production schema)."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE portfolio_snapshots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT NOT NULL,
-            session_id TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            equity REAL NOT NULL,
-            cash REAL NOT NULL,
-            portfolio_value REAL NOT NULL,
-            daily_pnl REAL NOT NULL,
-            positions_json TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
+
+    EventStore(path)
 
 
 _SNAPSHOT_COUNTER = 0

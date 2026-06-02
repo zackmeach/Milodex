@@ -165,30 +165,10 @@ class TestSessionAge:
 
 
 def _create_fixture_db(path: Path) -> None:
-    """Create a minimal SQLite DB with strategy_runs + explanations."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE strategy_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            exit_reason TEXT,
-            metadata_json TEXT
-        );
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
 
-        CREATE TABLE explanations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id TEXT NOT NULL,
-            recorded_at TEXT NOT NULL,
-            strategy_stage TEXT
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    EventStore(path)
 
 
 def _seed_run(
@@ -203,8 +183,9 @@ def _seed_run(
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
-        INSERT INTO strategy_runs (session_id, strategy_id, started_at, ended_at, exit_reason)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO strategy_runs
+            (session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json)
+        VALUES (?, ?, ?, ?, ?, '{}')
         """,
         (session_id, strategy_id, started_at, ended_at, exit_reason),
     )
@@ -216,8 +197,18 @@ def _seed_explanation(db: Path, session_id: str, recorded_at: str) -> None:
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
-        INSERT INTO explanations (session_id, recorded_at, strategy_stage)
-        VALUES (?, ?, 'entry')
+        INSERT INTO explanations (
+            session_id, recorded_at, strategy_stage,
+            decision_type, status, symbol, side, quantity,
+            order_type, time_in_force, submitted_by, market_open,
+            account_equity, account_cash, account_portfolio_value, account_daily_pnl,
+            risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json
+        )
+        VALUES (?, ?, 'entry',
+                'submit', 'submitted', 'SPY', 'buy', 1.0,
+                'market', 'day', 'test', 1,
+                10000.0, 10000.0, 10000.0, 0.0,
+                1, 'ok', '[]', '{}', '{}')
         """,
         (session_id, recorded_at),
     )

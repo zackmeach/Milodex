@@ -38,28 +38,10 @@ def _make_conn(path: Path) -> sqlite3.Connection:
 
 
 def _create_backtest_table(path: Path) -> None:
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE backtest_runs (
-            id               INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id           TEXT NOT NULL UNIQUE,
-            strategy_id      TEXT NOT NULL,
-            config_path      TEXT,
-            config_hash      TEXT,
-            start_date       TEXT NOT NULL,
-            end_date         TEXT NOT NULL,
-            started_at       TEXT NOT NULL,
-            ended_at         TEXT,
-            status           TEXT NOT NULL,
-            slippage_pct     REAL,
-            commission_per_trade REAL,
-            metadata_json    TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
+
+    EventStore(path)
 
 
 def _seed_run(

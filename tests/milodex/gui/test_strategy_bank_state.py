@@ -148,44 +148,10 @@ def test_compute_gate_failures_regime_family_exempt() -> None:
 
 
 def _create_fixture_db(path: Path) -> None:
-    """Create a minimal SQLite DB with the two tables the queries need."""
-    conn = sqlite3.connect(str(path))
-    conn.executescript(
-        """
-        CREATE TABLE promotions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            recorded_at TEXT NOT NULL,
-            strategy_id TEXT NOT NULL,
-            from_stage TEXT NOT NULL,
-            to_stage TEXT NOT NULL,
-            promotion_type TEXT NOT NULL,
-            approved_by TEXT NOT NULL,
-            backtest_run_id TEXT,
-            sharpe_ratio REAL,
-            max_drawdown_pct REAL,
-            trade_count INTEGER,
-            notes TEXT
-        );
+    """Apply the REAL (fully-migrated) schema via EventStore."""
+    from milodex.core.event_store import EventStore
 
-        CREATE TABLE backtest_runs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            run_id TEXT NOT NULL UNIQUE,
-            strategy_id TEXT NOT NULL,
-            config_path TEXT,
-            config_hash TEXT,
-            start_date TEXT NOT NULL,
-            end_date TEXT NOT NULL,
-            started_at TEXT NOT NULL,
-            ended_at TEXT,
-            status TEXT NOT NULL,
-            slippage_pct REAL,
-            commission_per_trade REAL,
-            metadata_json TEXT NOT NULL
-        );
-        """
-    )
-    conn.commit()
-    conn.close()
+    EventStore(path)
 
 
 def _seed_paper_row(
