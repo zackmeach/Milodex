@@ -241,24 +241,12 @@ Item {
     // Formatting helpers (pure JS — no side effects)
     // ------------------------------------------------------------------
 
-    function _or(v) {
-        if (v === undefined || v === null) return "—"
-        if (typeof v === "string" && v.length === 0) return "—"
-        return v
-    }
-    function _fmtSharpe(v) {
-        if (v === undefined || v === null) return "—"
-        return ("+" + Number(v).toFixed(2)).replace("+-", "-")
-    }
-    function _fmtPct(v) {
-        if (v === undefined || v === null) return "—"
-        return Number(v).toFixed(1) + "%"
-    }
-    function _fmtInt(v) {
-        if (v === undefined || v === null) return "—"
-        if (v === 0) return "0"
-        return "" + v
-    }
+    // Formatting helpers — consolidated to Formatters singleton (PR10).
+    // _fmtList and _fmtBool are single-site and remain local.
+    function _or(v)        { return Formatters.orDash(v) }
+    function _fmtSharpe(v) { return Formatters.sharpe(v) }
+    function _fmtPct(v)    { return Formatters.pct1(v) }
+    function _fmtInt(v)    { return Formatters.count(v) }
     function _fmtList(v) {
         if (!v || !v.length) return "—"
         return v.join(", ")

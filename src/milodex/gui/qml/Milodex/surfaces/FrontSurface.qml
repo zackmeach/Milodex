@@ -64,18 +64,8 @@ Item {
                                            : OperationalState.marketOpen ? Theme.status.positive
                                            : Theme.status.warning
 
-    function moneyParts(value) {
-        var n = Number(value || 0)
-        var abs = Math.abs(n)
-        var whole = Math.floor(abs)
-        var fraction = Math.round((abs - whole) * 100)
-        if (fraction === 100) { whole += 1; fraction = 0 }
-        return {
-            sign: n >= 0 ? "+" : "-",
-            whole: whole.toLocaleString(Qt.locale("en_US"), "f", 0),
-            cents: "." + (fraction < 10 ? "0" + fraction : fraction)
-        }
-    }
+    // Delegate to Formatters singleton (PR10).
+    function moneyParts(value) { return Formatters.moneyParts(value) }
 
     readonly property var pnlParts: moneyParts(pnl.today || 0)
     readonly property bool pnlIsFlat: Math.abs(Number(pnl.today || 0)) < 0.005

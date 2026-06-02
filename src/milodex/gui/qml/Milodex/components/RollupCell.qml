@@ -29,18 +29,11 @@ Item {
     property string value: ""
     property string tone:  "data"
 
-    // Tone → editorial token mapping (centralised here per spec §5).
-    // keep in sync with ActivityTable.qml's tone→color mapping (brand is RollupCell-only — ActivityTable rows never carry display tones)
+    // Tone → editorial token mapping — delegates to Formatters.toneColor (PR10).
+    // The "keep in sync with ActivityTable" comment is retired; both now share
+    // the single Formatters.toneColor implementation.
     // No Behavior — state changes are instant.
-    readonly property color _valueColor: {
-        if (root.tone === "brand")    return Theme.color.brand.primary
-        if (root.tone === "positive") return Theme.status.positive
-        if (root.tone === "negative") return Theme.status.negative
-        if (root.tone === "warning")  return Theme.status.warning
-        if (root.tone === "muted")    return Theme.color.text.muted
-        // "data" and anything else → primary mono text
-        return Theme.color.text.primary
-    }
+    readonly property color _valueColor: Formatters.toneColor(root.tone)
 
     implicitWidth:  valueText.implicitWidth
     implicitHeight: labelText.implicitHeight + Theme.space[1] + valueText.implicitHeight

@@ -1,5 +1,6 @@
 module Milodex
 singleton Theme 1.0 Theme.qml
+singleton Formatters 1.0 Formatters.qml
 EditorialDark 1.0 themes/EditorialDark.qml
 EditorialLight 1.0 themes/EditorialLight.qml
 Bronze 1.0 themes/Bronze.qml

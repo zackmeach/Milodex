@@ -88,15 +88,11 @@ Item {
     // Formatting helpers
     // -----------------------------------------------------------------------
 
-    function formattedSharpe(row) {
-        if (row.sharpe === undefined || row.sharpe === null || !isFinite(Number(row.sharpe))) return "—"
-        return ("+" + Number(row.sharpe).toFixed(2)).replace("+-", "-")
-    }
-
-    function formattedMaxDD(row) {
-        if (row.maxDrawdownPct === undefined || row.maxDrawdownPct === null) return "—"
-        return Number(row.maxDrawdownPct).toFixed(1) + "%"
-    }
+    // Delegate to Formatters singleton (PR10).
+    // formattedTrades is intentionally NOT repointed: it returns "—" for
+    // tradeCount===0, which diverges from Formatters.count's "0".
+    function formattedSharpe(row) { return Formatters.sharpe(row.sharpe) }
+    function formattedMaxDD(row)  { return Formatters.pct1(row.maxDrawdownPct) }
 
     function formattedTrades(row) {
         if (!row.tradeCount || row.tradeCount === 0) return "—"
