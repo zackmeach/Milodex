@@ -309,6 +309,7 @@ Item {
 
                 // ---- I · RISK & MODE -------------------------------
                 Column {
+                    objectName: "deskSectionRiskMode"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
                     Layout.preferredHeight: implicitHeight
@@ -413,6 +414,7 @@ Item {
                 // ---- II · PERFORMANCE & TRUST ----------------------
                 Column {
                     id: perfCol
+                    objectName: "deskSectionPerformance"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
                     Layout.preferredHeight: implicitHeight
@@ -589,6 +591,7 @@ Item {
                 // ---- III · ACTIVE OPERATIONS ----------------------
                 Column {
                     id: activeOpsCol
+                    objectName: "deskSectionActiveOps"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
                     Layout.preferredHeight: implicitHeight
@@ -720,6 +723,7 @@ Item {
                 // ---- IV · RISK LAYER THROUGHPUT -------------------
                 Column {
                     id: throughputCol
+                    objectName: "deskSectionRiskThroughput"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
                     Layout.preferredHeight: implicitHeight
@@ -779,6 +783,7 @@ Item {
                 // ---- V · STRATEGY ATTENTION -----------------------
                 Column {
                     id: attentionCol
+                    objectName: "deskSectionAttention"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 4
                     Layout.preferredHeight: implicitHeight
@@ -885,6 +890,7 @@ Item {
 
                 // ---- VI · MARKET TAPE -----------------------------
                 Column {
+                    objectName: "deskSectionMarketTape"
                     Layout.fillWidth: true
                     Layout.preferredWidth: 3
                     Layout.preferredHeight: implicitHeight
@@ -941,6 +947,7 @@ Item {
             // ========================================================
             Column {
                 id: feedCol
+                objectName: "deskSectionOrderTape"
                 width: parent.width
                 spacing: Theme.space[3]
 
