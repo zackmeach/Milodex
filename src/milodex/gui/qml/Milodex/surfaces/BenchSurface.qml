@@ -289,6 +289,99 @@ Item {
                 }
             }
 
+            // ---- Async completion fallback banner --------------------------
+            // P18 durable fallback for the async start/stop/backtest commands.
+            // The confirmation modal's _handleAsyncSubmitCompleted is the happy
+            // path (immediate inline feedback) but it DROPS the outcome if the
+            // operator closes the modal mid-spawn. This banner binds to
+            // BenchCommandBridge.recentCompletions on the SURFACE, so it is not
+            // torn down when the modal closes — the outcome surfaces here even
+            // when the modal listener missed it. Read-only: the dismiss control
+            // only removes the display notice, it does not ack/re-issue a command.
+            //
+            // Visual pattern mirrors the AnchorSurface broker-error banner
+            // (border + status color + glyph; collapsed when empty).
+            Column {
+                id: completionBanner
+                width: parent.width - Theme.space[7] * 2
+                spacing: Theme.space[2]
+                visible: BenchCommandBridge.recentCompletions.length > 0
+
+                // status → tone color: submitted→positive, error→negative,
+                // anything else (blocked)→warning.
+                function _toneColor(status) {
+                    if (status === "submitted") return Theme.status.positive
+                    if (status === "error")     return Theme.status.negative
+                    return Theme.status.warning
+                }
+
+                Repeater {
+                    model: BenchCommandBridge.recentCompletions
+
+                    delegate: Rectangle {
+                        required property var modelData
+                        width: completionBanner.width
+                        implicitHeight: noticeRow.implicitHeight + Theme.space[3] * 2
+                        color: Theme.color.surface.base
+                        radius: Theme.radius.md
+                        border.width: 1
+                        border.color: completionBanner._toneColor(modelData.status)
+
+                        Row {
+                            id: noticeRow
+                            anchors {
+                                left: parent.left
+                                right: parent.right
+                                top: parent.top
+                                margins: Theme.space[3]
+                            }
+                            spacing: Theme.space[2]
+
+                            // Status glyph dot.
+                            Rectangle {
+                                anchors.verticalCenter: parent.verticalCenter
+                                width: 8
+                                height: 8
+                                radius: Theme.radius.full
+                                color: completionBanner._toneColor(modelData.status)
+                            }
+
+                            Text {
+                                width: parent.width - 8 - dismissControl.width - Theme.space[2] * 2
+                                text: (modelData.message || "")
+                                color: completionBanner._toneColor(modelData.status)
+                                font.family:    Theme.typography.body.md.family
+                                font.pixelSize: Theme.typography.body.md.size
+                                wrapMode: Text.WordWrap
+                                verticalAlignment: Text.AlignVCenter
+                            }
+
+                            // Dismiss control — display-only. Removes this
+                            // notice from the bridge's read-only record; issues
+                            // NO command (no submit, no re-dispatch).
+                            Text {
+                                id: dismissControl
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "Dismiss"
+                                color: Theme.color.text.muted
+                                font.family: Theme.typography.label.xs.family
+                                font.pixelSize: Theme.typography.label.xs.size
+                                font.weight: Font.DemiBold
+                                font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                                font.capitalization: Font.AllUppercase
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    cursorShape: Qt.PointingHandCursor
+                                    onClicked: BenchCommandBridge.dismissCompletion(
+                                        modelData.proposalId)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // ---- Stage sections --------------------------------------------
             // Repeater over sections from BenchState.sections
             Repeater {
@@ -702,6 +795,7 @@ Item {
         // read model on the Python side; this handler just dismisses the
         // preview state so the next operator click sees a clean modal.
         onSubmitted: (result) => {
+            BenchCommandBridge.dismissCompletion(result.proposal_id)
             root.closeAllModals()
         }
     }
