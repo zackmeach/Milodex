@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from milodex.broker.exceptions import InsufficientFundsError, OrderRejectedError
 from milodex.broker.models import (
     AccountInfo,
     Order,
@@ -69,6 +70,18 @@ class StubBroker:
 
     def cancel_order(self, order_id: str) -> bool:
         return any(order.id == order_id for order in self.orders)
+
+
+class RejectingStubBroker(StubBroker):
+    """Broker stub that raises on submit_order."""
+
+    def __init__(self, rejection: Exception, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._rejection = rejection
+
+    def submit_order(self, **kwargs) -> Order:
+        self.submit_calls.append(kwargs)
+        raise self._rejection
 
 
 class StubProvider:
@@ -298,6 +311,87 @@ def test_submit_paper_calls_broker(
     assert result.status == ExecutionStatus.SUBMITTED
     assert result.order is not None
     assert broker.submit_calls
+
+
+def test_submit_paper_records_broker_order_rejection_without_raising(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    rejection = OrderRejectedError("potential wash trade detected ... 40310000")
+    broker = RejectingStubBroker(
+        rejection,
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.REJECTED
+    assert result.risk_decision.allowed is True
+    assert result.order is None
+    assert "wash trade" in (result.message or "").lower()
+    explanations = event_store.list_explanations()
+    assert len(explanations) == 1
+    assert explanations[0].status == ExecutionStatus.REJECTED.value
+    assert explanations[0].decision_type == "submit"
+    trades = event_store.list_trades()
+    assert len(trades) == 1
+    assert trades[0].status == ExecutionStatus.REJECTED.value
+
+
+def test_submit_paper_records_insufficient_funds_rejection_without_raising(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    broker = RejectingStubBroker(
+        InsufficientFundsError("insufficient buying power"),
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.REJECTED
+    assert result.risk_decision.allowed is True
+    assert event_store.list_explanations()[0].status == ExecutionStatus.REJECTED.value
 
 
 def test_preview_rejects_limit_orders_before_risk_evaluation(

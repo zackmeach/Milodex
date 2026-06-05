@@ -22,6 +22,7 @@ class ExecutionStatus(Enum):
     PREVIEW = "preview"
     BLOCKED = "blocked"
     SUBMITTED = "submitted"
+    REJECTED = "rejected"
     CANCELLED = "cancelled"
 
 

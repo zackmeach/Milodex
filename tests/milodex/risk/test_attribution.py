@@ -18,6 +18,9 @@ from milodex.risk.attribution import (
     OPERATOR_ATTRIBUTION,
     attribute_position,
     count_positions_by_strategy,
+    strategy_open_lots,
+    strategy_position_quantity,
+    strategy_positions,
 )
 
 _NOW = datetime(2026, 5, 6, 18, 0, tzinfo=UTC)
@@ -409,3 +412,155 @@ def test_attribute_position_over_sell_does_not_drive_running_balance_negative(st
     )
 
     assert attribute_position(symbol="SPY", event_store=store) == "strategy_a"
+
+
+# ---------------------------------------------------------------------------
+# strategy_positions / strategy_open_lots (ADR 0055)
+# ---------------------------------------------------------------------------
+
+
+def test_strategy_positions_folds_buys_minus_sells_and_clamps_at_zero(store):
+    """Per-strategy ledger: buys minus sells, clamped at zero."""
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=3),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=4,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+
+    assert strategy_positions("strategy_a", store) == {"SPY": 6.0}
+
+
+def test_strategy_positions_excludes_other_strategies_and_non_submitted(store):
+    """Only submitted rows for the requested strategy_id count."""
+    _record_trade(store, symbol="SPY", side="buy", quantity=10, strategy_name="strategy_a")
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=99,
+        strategy_name="strategy_b",
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=50,
+        strategy_name="strategy_a",
+        status="blocked",
+        broker_order_id=None,
+    )
+
+    assert strategy_positions("strategy_a", store) == {"SPY": 10.0}
+    assert strategy_position_quantity("strategy_a", "SPY", store) == 10.0
+    assert strategy_position_quantity("strategy_a", "QQQ", store) == 0.0
+
+
+def test_strategy_positions_over_sell_clamps_to_zero(store):
+    """Oversized sell clamps running balance at zero (same as ADR 0029 walk)."""
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=14,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert strategy_positions("strategy_a", store) == {}
+
+
+def test_strategy_open_lots_weighted_avg_and_opened_at(store):
+    """Open lot tracks weighted-average buy price and zero->nonzero opened_at."""
+    t0 = _NOW - timedelta(days=5)
+    t1 = _NOW - timedelta(days=3)
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=t0,
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=5,
+        strategy_name="strategy_a",
+        recorded_at=t1,
+    )
+
+    lots = strategy_open_lots("strategy_a", store)
+    assert lots["SPY"]["quantity"] == 15.0
+    assert lots["SPY"]["opened_at"] == t0
+    expected_avg = (10 * 100.0 + 5 * 100.0) / 15.0
+    assert lots["SPY"]["avg_entry_price"] == pytest.approx(expected_avg)
+
+
+def test_strategy_open_lots_resets_after_full_liquidation_and_reentry(store):
+    """Full liquidation clears the lot; a later buy starts a fresh opened_at/avg."""
+    t_open = _NOW - timedelta(days=10)
+    t_close = _NOW - timedelta(days=8)
+    t_reopen = _NOW - timedelta(days=2)
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=t_open,
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=t_close,
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=_explanation(store, recorded_at=t_reopen),
+            recorded_at=t_reopen,
+            status="submitted",
+            source="paper",
+            symbol="SPY",
+            side="buy",
+            quantity=5,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=200.0,
+            estimated_order_value=1000.0,
+            strategy_name="strategy_a",
+            strategy_stage="paper",
+            strategy_config_path=None,
+            submitted_by="strategy_runner",
+            broker_order_id="broker-rebuy",
+            broker_status=None,
+            message=None,
+        )
+    )
+
+    lots = strategy_open_lots("strategy_a", store)
+    assert lots["SPY"]["quantity"] == 5.0
+    assert lots["SPY"]["opened_at"] == t_reopen
+    assert lots["SPY"]["avg_entry_price"] == 200.0
