@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from milodex.broker.exceptions import OrderRejectedError
 from milodex.broker.models import (
     AccountInfo,
     Order,
@@ -20,6 +21,7 @@ from milodex.broker.models import (
 )
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.execution import ExecutionService
+from milodex.execution.models import ExecutionStatus
 from milodex.execution.state import KillSwitchStateStore
 from milodex.strategies.runner import StrategyRunner
 
@@ -91,6 +93,18 @@ class StubBroker:
     def cancel_all_orders(self) -> list[Order]:
         self.cancel_all_orders_calls += 1
         return []
+
+
+class RejectingStubBroker(StubBroker):
+    """Broker stub that raises OrderRejectedError on submit."""
+
+    def __init__(self, rejection: OrderRejectedError, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._rejection = rejection
+
+    def submit_order(self, **kwargs) -> Order:
+        self.submit_calls.append(kwargs)
+        raise self._rejection
 
 
 class StubProvider:
@@ -293,6 +307,67 @@ def test_runner_submits_regime_signal_through_execution_service(
     assert event_store.list_strategy_runs()[0].exit_reason == "controlled_stop"
 
 
+def test_runner_run_cycle_survives_broker_order_rejection(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    config_path = make_regime_config_intraday(strategy_config_dir)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "allocation_pct: 1.0", "allocation_pct: 0.80"
+        ),
+        encoding="utf-8",
+    )
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    rejection = OrderRejectedError("potential wash trade detected ... 40310000")
+    broker = RejectingStubBroker(
+        rejection,
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, config_path)
+
+    results = runner.run_cycle()
+    runner.shutdown(mode="controlled")
+
+    assert len(results) == 1
+    assert results[0].status == ExecutionStatus.REJECTED
+    submit_explanations = [
+        event for event in event_store.list_explanations() if event.decision_type == "submit"
+    ]
+    assert len(submit_explanations) == 1
+    assert submit_explanations[0].status == ExecutionStatus.REJECTED.value
+    assert event_store.list_strategy_runs()[0].exit_reason == "controlled_stop"
+
+
 def test_runner_records_no_action_explanation_when_strategy_holds_target(
     tmp_path: Path,
     strategy_config_dir: Path,
@@ -331,8 +406,62 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
         provider=provider,
         risk_defaults_file=risk_defaults_file,
     )
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+    buy_at = datetime.now(tz=UTC)
+    explanation_id = event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=buy_at,
+            decision_type="submit",
+            status="submitted",
+            strategy_name=strategy_id,
+            strategy_stage="paper",
+            strategy_config_path=None,
+            config_hash=None,
+            symbol="SHY",
+            side="buy",
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=buy_at,
+            latest_bar_close=20.0,
+            account_equity=10_000.0,
+            account_cash=8_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="OK",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id="hold-target-session",
+        )
+    )
+    event_store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=buy_at,
+            status="submitted",
+            source="paper",
+            symbol="SHY",
+            side="buy",
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=20.0,
+            estimated_order_value=20.0,
+            strategy_name=strategy_id,
+            strategy_stage="paper",
+            strategy_config_path=None,
+            submitted_by="strategy_runner",
+            broker_order_id="shy-hold-seed",
+            broker_status=None,
+            message=None,
+        )
+    )
     runner = StrategyRunner(
-        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        strategy_id=strategy_id,
         config_dir=strategy_config_dir,
         broker_client=broker,
         data_provider=provider,
@@ -344,16 +473,13 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
     runner.shutdown(mode="controlled")
 
     assert results == []
-    explanations = [
-        event
-        for event in event_store.list_explanations()
-        if event.decision_type != "reconcile_incident"
+    no_trade = [
+        event for event in event_store.list_explanations() if event.decision_type == "no_trade"
     ]
-    assert len(explanations) == 1
-    assert explanations[0].decision_type == "no_trade"
-    assert explanations[0].status in {"no_signal", "no_action"}
-    assert explanations[0].session_id == runner.session_id
-    assert event_store.list_trades() == []
+    assert len(no_trade) == 1
+    assert no_trade[0].status in {"no_signal", "no_action"}
+    assert no_trade[0].session_id == runner.session_id
+    assert len(event_store.list_trades()) == 1
 
 
 def test_runner_kill_switch_shutdown_cancels_orders_and_activates_halt(
@@ -644,7 +770,7 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
         TradeEvent(
             explanation_id=explanation_id,
             recorded_at=buy_date,
-            status="filled",
+            status="submitted",
             source="paper",
             symbol="SPY",
             side="buy",
@@ -754,6 +880,132 @@ def test_runner_builds_empty_entry_state_when_no_positions(
     )
 
     assert runner._build_entry_state() == {}
+
+
+def test_runner_current_positions_uses_strategy_ledger_not_broker_net(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """ADR 0055 / 2026-06-03: sibling sell flattening broker net must not hide A's lot."""
+    strategy_a = "regime.daily.sma200_rotation.spy_shy.v1"
+    strategy_b = "momentum.vwap_trend.spy_5min.v1"
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    buy_at = datetime(2026, 6, 3, 14, 51, 7, tzinfo=UTC)
+    sell_at = datetime(2026, 6, 3, 14, 51, 12, tzinfo=UTC)
+
+    def _submitted_trade(
+        *,
+        strategy_name: str,
+        side: str,
+        quantity: float,
+        recorded_at: datetime,
+        unit_price: float,
+    ) -> None:
+        explanation_id = event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=recorded_at,
+                decision_type="submit",
+                status="submitted",
+                strategy_name=strategy_name,
+                strategy_stage="paper",
+                strategy_config_path=None,
+                config_hash=None,
+                symbol="SPY",
+                side=side,
+                quantity=quantity,
+                order_type="market",
+                time_in_force="day",
+                submitted_by="strategy_runner",
+                market_open=True,
+                latest_bar_timestamp=recorded_at,
+                latest_bar_close=unit_price,
+                account_equity=10_000.0,
+                account_cash=10_000.0,
+                account_portfolio_value=10_000.0,
+                account_daily_pnl=0.0,
+                risk_allowed=True,
+                risk_summary="OK",
+                reason_codes=[],
+                risk_checks=[],
+                context={},
+                session_id="sibling-session",
+            )
+        )
+        event_store.append_trade(
+            TradeEvent(
+                explanation_id=explanation_id,
+                recorded_at=recorded_at,
+                status="submitted",
+                source="paper",
+                symbol="SPY",
+                side=side,
+                quantity=quantity,
+                order_type="market",
+                time_in_force="day",
+                estimated_unit_price=unit_price,
+                estimated_order_value=quantity * unit_price,
+                strategy_name=strategy_name,
+                strategy_stage="paper",
+                strategy_config_path=None,
+                submitted_by="strategy_runner",
+                broker_order_id=f"{strategy_name}-{side}",
+                broker_status=None,
+                message=None,
+            )
+        )
+
+    _submitted_trade(
+        strategy_name=strategy_a,
+        side="buy",
+        quantity=13.0,
+        recorded_at=buy_at,
+        unit_price=590.0,
+    )
+    _submitted_trade(
+        strategy_name=strategy_b,
+        side="sell",
+        quantity=13.0,
+        recorded_at=sell_at,
+        unit_price=590.0,
+    )
+
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        positions=[],
+    )
+    service, _, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id=strategy_a,
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    assert runner._current_positions() == {"SPY": 13.0}
+
+    entry_state = runner._build_entry_state()
+    assert entry_state["SPY"]["entry_price"] == 590.0
+    assert entry_state["SPY"]["held_days"] == (date.today() - buy_at.date()).days
 
 
 def test_runner_evaluation_symbol_uses_resolved_context_universe(

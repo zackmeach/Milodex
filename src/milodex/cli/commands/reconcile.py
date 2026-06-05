@@ -104,9 +104,9 @@ def _run_reconcile(event_store, broker, *, as_of: datetime) -> CommandResult:
     return CommandResult(
         command="reconcile",
         data=data,
-        human_lines=human_lines(result),
+        human_lines=human_lines(result, event_store),
         renderable=renderable,
-        warnings=build_warnings(result),
+        warnings=build_warnings(result, event_store),
     )
 
 

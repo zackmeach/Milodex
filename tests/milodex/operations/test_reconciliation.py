@@ -17,7 +17,11 @@ from datetime import UTC, datetime, timedelta
 
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.operations.reconciliation import (
+    build_warnings,
+    human_lines,
     incident_already_logged,
+    incident_reason_codes,
+    latest_readiness,
     local_open_orders_from_trades,
     run_reconciliation,
 )
@@ -531,3 +535,128 @@ def test_sync_single_order_by_id(tmp_path):
     assert len(result.synced) == 1
     assert result.synced[0].broker_order_id == "ord-1"
     assert _local_open_count(store) == 1
+
+
+# ---------------------------------------------------------------------------
+# Per-strategy ledger breakdown (ADR 0055) — warnings only, not incidents
+# ---------------------------------------------------------------------------
+
+_RSI2 = "meanrev.rsi2.spy_5min.v1"
+_VWAP = "momentum.vwap_trend.spy_5min.v1"
+_LEDGER_AS_OF = datetime(2026, 6, 3, 16, 0, tzinfo=UTC)
+
+
+def _submitted_strategy_trade(
+    store: EventStore,
+    *,
+    strategy_name: str,
+    side: str,
+    quantity: float,
+    recorded_at: datetime,
+) -> None:
+    explanation_id = store.append_explanation(
+        ExplanationEvent(
+            recorded_at=recorded_at,
+            decision_type="submit",
+            status="submitted",
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path=None,
+            config_hash=None,
+            symbol="SPY",
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=recorded_at,
+            latest_bar_close=590.0,
+            account_equity=10_000.0,
+            account_cash=10_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="OK",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id="ledger-divergence-session",
+        )
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=recorded_at,
+            status="submitted",
+            source="paper",
+            symbol="SPY",
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=590.0,
+            estimated_order_value=quantity * 590.0,
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path=None,
+            submitted_by="strategy_runner",
+            broker_order_id=None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
+class _BrokerFlatWithSpy:
+    def get_account(self):
+        return None
+
+    def get_positions(self):
+        return []
+
+    def get_orders(self, status=None, limit=None):
+        return []
+
+    def is_market_open(self):
+        return True
+
+
+def test_per_strategy_ledger_divergence_warns_without_incident(tmp_path):
+    """2026-06-03: per-strategy sum can diverge from broker net without arming R-OPS-004."""
+    store = EventStore(tmp_path / "milodex.db")
+    _submitted_strategy_trade(
+        store,
+        strategy_name=_RSI2,
+        side="buy",
+        quantity=13.0,
+        recorded_at=datetime(2026, 6, 3, 14, 51, 7, tzinfo=UTC),
+    )
+    _submitted_strategy_trade(
+        store,
+        strategy_name=_VWAP,
+        side="sell",
+        quantity=13.0,
+        recorded_at=datetime(2026, 6, 3, 14, 51, 12, tzinfo=UTC),
+    )
+
+    result = run_reconciliation(
+        event_store=store,
+        broker=_BrokerFlatWithSpy(),
+        persist=True,
+        now=_LEDGER_AS_OF,
+    )
+
+    assert result.incident_reason_codes == []
+    assert incident_reason_codes(result.position_rows, result.order_rows) == []
+
+    warnings = build_warnings(result, store)
+    assert any("per-strategy ledger" in w.lower() for w in warnings)
+    assert any(_RSI2 in w for w in warnings)
+    assert any("SPY" in w for w in warnings)
+
+    lines = human_lines(result, store)
+    assert any("per-strategy ledger" in ln.lower() for ln in lines)
+
+    readiness = latest_readiness(store, now=_LEDGER_AS_OF)
+    assert readiness.ready is True

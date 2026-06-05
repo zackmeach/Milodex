@@ -26,7 +26,8 @@ reserved pseudo-strategy id ``"operator"``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from datetime import datetime
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
@@ -159,6 +160,110 @@ def count_positions_by_strategy(
         owner = attribute_position(symbol=symbol, event_store=event_store)
         counts[owner] = counts.get(owner, 0) + 1
     return counts
+
+
+def strategy_positions(strategy_id: str, event_store: EventStore) -> dict[str, float]:
+    """Per-strategy submitted-fill ledger: symbol -> quantity (buys minus sells, clamped)."""
+    balances = _fold_strategy_balances(strategy_id, event_store)
+    return {symbol: qty for symbol, qty in balances.items() if qty > 0}
+
+
+def strategy_position_quantity(
+    strategy_id: str,
+    symbol: str,
+    event_store: EventStore,
+) -> float:
+    """Quantity for one symbol from :func:`strategy_positions`, or ``0.0``."""
+    normalized = symbol.strip().upper()
+    return strategy_positions(strategy_id, event_store).get(normalized, 0.0)
+
+
+def strategy_open_lots(strategy_id: str, event_store: EventStore) -> dict[str, dict[str, Any]]:
+    """Open lots per symbol for entry_state: quantity, avg_entry_price, opened_at."""
+    rows = _fetch_submitted_trade_rows_for_strategy(event_store, strategy_id)
+    lots: dict[str, dict[str, Any]] = {}
+    state: dict[str, dict[str, Any]] = {}
+
+    for row in rows:
+        symbol = str(row["symbol"]).strip().upper()
+        side = str(row["side"]).lower()
+        qty = float(row["quantity"])
+        recorded_at = _coerce_recorded_at(row["recorded_at"])
+        unit_price = float(row.get("estimated_unit_price") or 0.0)
+        sym_state = state.setdefault(
+            symbol,
+            {
+                "running_qty": 0.0,
+                "avg_entry_price": 0.0,
+                "opened_at": None,
+            },
+        )
+        prior_qty = float(sym_state["running_qty"])
+        if side == "buy":
+            if prior_qty <= 0:
+                sym_state["running_qty"] = qty
+                sym_state["avg_entry_price"] = unit_price
+                sym_state["opened_at"] = recorded_at
+            else:
+                new_qty = prior_qty + qty
+                sym_state["avg_entry_price"] = (
+                    sym_state["avg_entry_price"] * prior_qty + unit_price * qty
+                ) / new_qty
+                sym_state["running_qty"] = new_qty
+        elif side == "sell":
+            sym_state["running_qty"] = max(0.0, prior_qty - qty)
+            if sym_state["running_qty"] <= 0:
+                sym_state["avg_entry_price"] = 0.0
+                sym_state["opened_at"] = None
+        if sym_state["running_qty"] > 0 and sym_state["opened_at"] is not None:
+            lots[symbol] = {
+                "quantity": float(sym_state["running_qty"]),
+                "avg_entry_price": float(sym_state["avg_entry_price"]),
+                "opened_at": sym_state["opened_at"],
+            }
+        else:
+            lots.pop(symbol, None)
+
+    return lots
+
+
+def _fold_strategy_balances(strategy_id: str, event_store: EventStore) -> dict[str, float]:
+    rows = _fetch_submitted_trade_rows_for_strategy(event_store, strategy_id)
+    running: dict[str, float] = {}
+    for row in rows:
+        symbol = str(row["symbol"]).strip().upper()
+        side = str(row["side"]).lower()
+        qty = float(row["quantity"])
+        prior = running.get(symbol, 0.0)
+        if side == "buy":
+            running[symbol] = prior + qty
+        elif side == "sell":
+            running[symbol] = max(0.0, prior - qty)
+    return running
+
+
+def _fetch_submitted_trade_rows_for_strategy(
+    event_store: EventStore,
+    strategy_id: str,
+) -> list[dict]:
+    """Submitted trade rows for one strategy, oldest-first (indexed by strategy_name)."""
+    with event_store._connect() as connection:  # noqa: SLF001 — see ADR 0029 §Open questions
+        rows = connection.execute(
+            """
+            SELECT id, recorded_at, side, quantity, symbol, estimated_unit_price, strategy_name
+            FROM trades
+            WHERE strategy_name = ? AND status = 'submitted'
+            ORDER BY id ASC
+            """,
+            (strategy_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _coerce_recorded_at(value: object) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.fromisoformat(str(value))
 
 
 def _fetch_submitted_trade_rows(event_store: EventStore, symbol: str) -> list[dict]:

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from milodex.broker import BrokerClient, Order
+from milodex.broker.exceptions import InsufficientFundsError, OrderRejectedError
 from milodex.broker.models import OrderType
 from milodex.config import get_data_dir, get_logs_dir, get_trading_mode
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
@@ -141,15 +142,36 @@ class ExecutionService:
             )
             return result
 
-        order = self._broker.submit_order(
-            symbol=result.execution_request.symbol,
-            side=result.execution_request.side,
-            quantity=result.execution_request.quantity,
-            order_type=result.execution_request.order_type,
-            limit_price=result.execution_request.limit_price,
-            stop_price=result.execution_request.stop_price,
-            time_in_force=result.execution_request.time_in_force,
-        )
+        try:
+            order = self._broker.submit_order(
+                symbol=result.execution_request.symbol,
+                side=result.execution_request.side,
+                quantity=result.execution_request.quantity,
+                order_type=result.execution_request.order_type,
+                limit_price=result.execution_request.limit_price,
+                stop_price=result.execution_request.stop_price,
+                time_in_force=result.execution_request.time_in_force,
+            )
+        except (OrderRejectedError, InsufficientFundsError) as exc:
+            rejected_result = ExecutionResult(
+                status=ExecutionStatus.REJECTED,
+                execution_request=result.execution_request,
+                risk_decision=result.risk_decision,
+                account=result.account,
+                market_open=result.market_open,
+                latest_bar=result.latest_bar,
+                message=str(exc),
+                recorded_at=datetime.now(tz=UTC),
+            )
+            self._record_execution(
+                intent,
+                rejected_result,
+                decision_type="submit",
+                session_id=session_id,
+                source=source,
+                backtest_run_id=backtest_run_id,
+            )
+            return rejected_result
 
         submitted_result = ExecutionResult(
             status=ExecutionStatus.SUBMITTED,

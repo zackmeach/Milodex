@@ -20,6 +20,7 @@ from milodex.core.event_store import (
     ReconciliationRunEvent,
     TradeEvent,
 )
+from milodex.risk.attribution import strategy_positions
 from milodex.risk.models import ReconciliationReadiness
 
 ET_TZ = ZoneInfo("America/New_York")
@@ -874,7 +875,7 @@ def record_incident_event(
     )
 
 
-def build_warnings(result: ReconciliationResult) -> list[str]:
+def build_warnings(result: ReconciliationResult, event_store: EventStore) -> list[str]:
     warnings: list[str] = []
     if not result.broker.connected:
         warnings.append(
@@ -894,10 +895,70 @@ def build_warnings(result: ReconciliationResult) -> list[str]:
             "Drift detected - R-OPS-004 now blocks exposure-increasing paper previews "
             "and submits until reconciliation is clean for the current New York date."
         )
+    warnings.extend(per_strategy_ledger_warnings(event_store, result))
     return warnings
 
 
-def human_lines(result: ReconciliationResult) -> list[str]:
+def per_strategy_ledger_warnings(
+    event_store: EventStore,
+    result: ReconciliationResult,
+) -> list[str]:
+    """Informational WARN when per-strategy ledgers sum != broker net (ADR 0055).
+
+      Does not feed ``incident_reason_codes`` or readiness — concurrent same-symbol
+    trading can legitimately diverge (e.g. rsi2 +13 / broker flat).
+    """
+    if not result.broker.connected:
+        return []
+
+    broker_by_symbol = {
+        position.symbol.upper(): float(position.quantity) for position in result.broker.positions
+    }
+    strategy_ids = _distinct_strategy_ids_with_submitted_trades(event_store)
+    ledger_by_strategy = {
+        strategy_id: strategy_positions(strategy_id, event_store) for strategy_id in strategy_ids
+    }
+    symbols: set[str] = set(broker_by_symbol)
+    for positions in ledger_by_strategy.values():
+        symbols.update(positions)
+
+    warnings: list[str] = []
+    epsilon = 1e-6
+    for symbol in sorted(symbols):
+        broker_qty = broker_by_symbol.get(symbol, 0.0)
+        breakdown = {
+            strategy_id: positions[symbol]
+            for strategy_id, positions in ledger_by_strategy.items()
+            if positions.get(symbol, 0.0) > 0
+        }
+        ledger_sum = sum(breakdown.values())
+        if abs(ledger_sum - broker_qty) <= epsilon:
+            continue
+        parts = ", ".join(
+            f"{strategy_id}={qty:g}" for strategy_id, qty in sorted(breakdown.items())
+        )
+        warnings.append(
+            f"Per-strategy ledger divergence on {symbol}: broker net {broker_qty:g}, "
+            f"sum of strategy ledgers {ledger_sum:g} ({parts}). "
+            "Expected during concurrent same-symbol trading (ADR 0055); informational only."
+        )
+    return warnings
+
+
+def _distinct_strategy_ids_with_submitted_trades(event_store: EventStore) -> list[str]:
+    with event_store._connect() as connection:  # noqa: SLF001 — ADR 0029 pattern
+        rows = connection.execute(
+            """
+            SELECT DISTINCT strategy_name
+            FROM trades
+            WHERE status = 'submitted' AND strategy_name IS NOT NULL
+            ORDER BY strategy_name ASC
+            """
+        ).fetchall()
+    return [str(row["strategy_name"]) for row in rows]
+
+
+def human_lines(result: ReconciliationResult, event_store: EventStore) -> list[str]:
     now_label = result.recorded_at.strftime("%Y-%m-%d %H:%M:%S UTC")
     lines = [
         f"Milodex Reconciliation - {now_label}",
@@ -934,6 +995,12 @@ def human_lines(result: ReconciliationResult) -> list[str]:
                 f"  {marker}  {row.symbol:<6}  local {local_label:<8}  "
                 f"broker {broker_label:<8}  kind: {row.kind}"
             )
+    ledger_warnings = per_strategy_ledger_warnings(event_store, result)
+    if ledger_warnings:
+        lines.append("")
+        lines.append("Per-strategy ledger (informational, ADR 0055):")
+        for warning in ledger_warnings:
+            lines.append(f"  WARN  {warning}")
     lines.append("")
     order_mismatch_count = sum(1 for r in result.order_rows if r.kind != "ok")
     lines.append(

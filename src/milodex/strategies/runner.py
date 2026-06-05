@@ -21,6 +21,7 @@ from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.operations.reconciliation import run_reconciliation
+from milodex.risk.attribution import strategy_open_lots, strategy_positions
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
 from milodex.strategies.paper_runner_control import consume_controlled_stop_request
@@ -268,6 +269,9 @@ class StrategyRunner:
             return []
 
         if not intents:
+            if self._processed_intent_bar_at != latest_bar.timestamp:
+                self._processed_intent_keys.clear()
+                self._processed_intent_bar_at = latest_bar.timestamp
             self._record_no_action(
                 latest_bar.timestamp, latest_bar.close, reasoning=decision.reasoning
             )
@@ -469,41 +473,19 @@ class StrategyRunner:
         raise ValueError(msg)
 
     def _build_entry_state(self) -> dict[str, dict[str, Any]]:
-        """Build entry_state for each open position from broker + trade history.
-
-        ``entry_price`` comes from the broker's reported average fill price.
-        ``held_days`` is derived from the most recent paper BUY trade in the
-        event store for each symbol.  Falls back to 0 when no trade record
-        exists (e.g. position opened outside this system).
-
-        Uses a targeted indexed SQL query instead of a full-table scan so the
-        cost is proportional to the number of distinct symbols that have ever
-        had a paper buy, not the total trade count.
-        """
-        positions = self._broker.get_positions()
-        if not positions:
+        """Build entry_state from this strategy's event-store open lots (ADR 0055)."""
+        open_lots = strategy_open_lots(self._strategy_id, self._event_store)
+        if not open_lots:
             return {}
 
         today = date.today()
-        # Fix #5: single targeted READ-ONLY query — MAX(recorded_at) per symbol
-        # for paper buys, rather than a full list_trades() scan.
-        raw = self._event_store.get_last_paper_buy_date_by_symbol()
-        last_buy_date: dict[str, date] = {}
-        for sym, recorded_at_str in raw.items():
-            try:
-                # recorded_at is stored as ISO text; take the date portion.
-                last_buy_date[sym] = datetime.fromisoformat(recorded_at_str).date()
-            except (ValueError, TypeError):
-                pass
-
         entry_state: dict[str, dict[str, Any]] = {}
-        for position in positions:
-            sym = position.symbol.upper()
-            buy_date = last_buy_date.get(sym)
-            held_days = (today - buy_date).days if buy_date is not None else 0
+        for sym, lot in open_lots.items():
+            opened_at = lot["opened_at"]
+            opened_date = opened_at.date() if isinstance(opened_at, datetime) else today
             entry_state[sym] = {
-                "entry_price": float(position.avg_entry_price),
-                "held_days": held_days,
+                "entry_price": float(lot["avg_entry_price"]),
+                "held_days": (today - opened_date).days,
             }
         return entry_state
 
@@ -517,11 +499,7 @@ class StrategyRunner:
         return max(365, largest_parameter * 3)
 
     def _current_positions(self) -> dict[str, float]:
-        return {
-            position.symbol.upper(): float(position.quantity)
-            for position in self._broker.get_positions()
-            if float(position.quantity) > 0
-        }
+        return strategy_positions(self._strategy_id, self._event_store)
 
     def _runner_intent(self, intent: TradeIntent) -> TradeIntent:
         return TradeIntent(
