@@ -18,6 +18,7 @@ from typing import Any
 import yaml
 
 from milodex.strategies.loader import StrategyConfig
+from milodex.strategies.runner_status import _FAILURE_EXIT_REASONS
 
 _STAGES = ("backtest", "paper", "micro_live", "live")
 _VISIBLE_STAGES = ("idle", "backtest", "paper", "micro_live", "live")
@@ -117,7 +118,7 @@ def _paper_evidence(session: dict[str, Any]) -> dict[str, Any]:
         status = "running"
     elif exit_reason in {"controlled_stop", "interrupted"}:
         status = "completed"
-    elif exit_reason in {"kill_switch", "orphan_recovered"} or exit_reason.startswith("crashed:"):
+    elif exit_reason in _FAILURE_EXIT_REASONS or exit_reason.startswith("crashed:"):
         status = "warning"
     else:
         status = "completed" if state == "stopped" else state

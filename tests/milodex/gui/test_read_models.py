@@ -757,6 +757,40 @@ def test_bench_snapshot_marks_controlled_stop_paper_evidence_completed(
     assert card["paperEvidence"]["tradeCount"] == 1
 
 
+def test_bench_snapshot_marks_reaper_closed_paper_evidence_warning(
+    tmp_path: Path,
+) -> None:
+    """A session the GUI reaper closed ('orphaned_no_live_runner') is a failure
+    closure, not a clean stop — paper evidence must read 'warning', matching
+    the runner-startup 'orphan_recovered' closure."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO strategy_runs (
+            session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json
+        )
+        VALUES ('session-reaped', ?, '2026-05-09T12:00:00+00:00',
+                '2026-05-09T12:30:00+00:00', 'orphaned_no_live_runner', '{}')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
+
+    card = build_bench_snapshot(db, configs)["sections"][2]["strategies"][0]
+
+    assert card["paperEvidence"]["status"] == "warning"
+    assert card["paperEvidence"]["exitReason"] == "orphaned_no_live_runner"
+
+
 def test_kanban_snapshot_surfaces_queued_orchestration_job_activity(tmp_path: Path) -> None:
     from milodex.gui.read_models import build_kanban_snapshot
 
@@ -1533,6 +1567,36 @@ def test_kill_switch_does_not_emit_stop_row(tmp_path: Path, event_store_db: Path
     )
     assert any(e["outcomeKind"] == "fired" for e in entries), (
         "Expected a 'fired' row from kill_switch_events"
+    )
+
+
+def test_ledger_excludes_reaper_closed_session_stop(tmp_path: Path, event_store_db: Path) -> None:
+    """A session the GUI reaper closed ('orphaned_no_live_runner') is a
+    synthetic reconciliation closure, not an operator stop — no 'STOPPED'
+    ledger row, matching the 'orphan_recovered' exclusion."""
+    from milodex.gui.read_models import build_ledger_snapshot
+
+    db = event_store_db
+    configs = tmp_path / "configs"
+    configs.mkdir()
+
+    sid = "meanrev.daily.rsi2pullback.v1"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """INSERT INTO strategy_runs
+           (session_id, strategy_id, started_at, ended_at, exit_reason, metadata_json)
+           VALUES ('sess-reaped', ?, '2026-05-10T09:00:00+00:00',
+                   '2026-05-10T14:00:00+00:00', 'orphaned_no_live_runner', '{}')""",
+        (sid,),
+    )
+    conn.commit()
+    conn.close()
+
+    entries = build_ledger_snapshot(db, configs)["entries"]
+
+    stopped_entries = [e for e in entries if e.get("outcomeKind") == "stopped"]
+    assert stopped_entries == [], (
+        f"No 'stopped' row expected for a reaper-closed session; got: {stopped_entries}"
     )
 
 

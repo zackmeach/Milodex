@@ -466,10 +466,23 @@ def test_resolve_runner_liveness_closed_crashed_prefix_is_failed() -> None:
     )
 
 
-def test_failure_exit_reasons_matches_legacy_set() -> None:
-    """The canonical failure set equals the legacy read_models local set."""
+def test_failure_exit_reasons_canonical_set() -> None:
+    """Pins the canonical failure-exit-reason taxonomy.
+
+    Extends the legacy read_models local set with 'orphaned_no_live_runner'
+    (the GUI reaper's closure reason, `strategies/orphan_reconciliation.py`),
+    which the legacy set missed — reaper-closed sessions classified as clean
+    "stopped" on every surface until the 2026-06-09 taxonomy fix.
+    """
     from milodex.gui._event_queries import _FAILURE_EXIT_REASONS
 
     assert _FAILURE_EXIT_REASONS == frozenset(
-        {"crashed", "failed", "kill_switch", "orphan_recovered", "error"}
+        {
+            "crashed",
+            "failed",
+            "kill_switch",
+            "orphan_recovered",
+            "orphaned_no_live_runner",
+            "error",
+        }
     )

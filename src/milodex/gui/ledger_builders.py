@@ -116,8 +116,10 @@ def _session_start_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
 
 def _session_stop_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Sessions ended for operator-initiated reasons. EXCLUDES kill-switch
-    and orphan-recovered closures (those emit their own ledger rows from
-    kill_switch_events or are synthetic reconciliation rows)."""
+    and both orphan closures (those emit their own ledger rows from
+    kill_switch_events or are synthetic reconciliation rows —
+    'orphan_recovered' from the runner's startup self-reconcile,
+    'orphaned_no_live_runner' from the GUI bootstrap/periodic reaper)."""
     entries: list[dict[str, Any]] = []
     try:
         rows = conn.execute(
@@ -125,7 +127,8 @@ def _session_stop_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             SELECT strategy_id, ended_at, exit_reason, session_id
             FROM strategy_runs
             WHERE ended_at IS NOT NULL
-              AND exit_reason NOT IN ('kill_switch', 'orphan_recovered')
+              AND exit_reason NOT IN
+                ('kill_switch', 'orphan_recovered', 'orphaned_no_live_runner')
             ORDER BY ended_at DESC LIMIT 200
             """
         ).fetchall()

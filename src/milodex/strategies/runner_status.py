@@ -32,11 +32,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_FAILURE_EXIT_REASONS = frozenset({"crashed", "failed", "kill_switch", "orphan_recovered", "error"})
+_FAILURE_EXIT_REASONS = frozenset(
+    {
+        "crashed",
+        "failed",
+        "kill_switch",
+        "orphan_recovered",
+        "orphaned_no_live_runner",
+        "error",
+    }
+)
 """Exit reasons that classify a *closed* runner session as ``"failed"``.
 
-The ``crashed:<detail>`` prefix is handled separately by
-:func:`resolve_runner_liveness`.
+Two distinct orphan closures exist and both belong here:
+``orphan_recovered`` (runner startup self-reconcile,
+``EventStore.reconcile_orphan_strategy_runs``) and
+``orphaned_no_live_runner`` (the GUI bootstrap/periodic reaper,
+``strategies/orphan_reconciliation.py``). The ``crashed:<detail>`` prefix is
+handled separately by :func:`resolve_runner_liveness`.
 """
 
 _DEFAULT_CADENCE_SECONDS = 60.0
