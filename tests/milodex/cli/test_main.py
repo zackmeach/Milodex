@@ -779,6 +779,77 @@ def test_strategy_run_allows_concurrent_different_strategies(monkeypatch, tmp_pa
         holder_a.release()
 
 
+def test_strategy_run_refuses_second_strategy_on_same_eval_symbol(monkeypatch, tmp_path):
+    """Launch-time co-run guard: two strategies sharing the evaluation symbol
+    (first resolved universe symbol) must not run concurrently."""
+    from milodex.core.advisory_lock import AdvisoryLock
+
+    monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
+    strategy_a = "regime.daily.sma200_rotation.spy_shy.v1"
+    strategy_b = "meanrev.rsi2.intraday.spy.v1"
+
+    holder_a = AdvisoryLock(
+        f"milodex.runtime.strategy.{strategy_a}",
+        locks_dir=tmp_path,
+        holder_name=f"milodex strategy run {strategy_a}",
+    )
+    holder_a.acquire()
+    try:
+        runner_b = StubStrategyRunner()
+        stderr = StringIO()
+
+        exit_code = cli_entrypoint(
+            ["strategy", "run", strategy_b],
+            strategy_runner_factory=lambda sid: runner_b,
+            locks_dir=tmp_path,
+            stdout=StringIO(),
+            stderr=stderr,
+        )
+
+        assert exit_code == 1
+        assert runner_b.run_calls == 0
+        err_text = stderr.getvalue()
+        assert "SPY" in err_text
+        assert strategy_a in err_text
+        assert strategy_b in err_text
+    finally:
+        holder_a.release()
+
+
+def test_strategy_run_allows_strategies_on_different_eval_symbols(monkeypatch, tmp_path):
+    """Strategies whose evaluation symbols differ may still co-run."""
+    from milodex.core.advisory_lock import AdvisoryLock
+
+    monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
+    strategy_a = "regime.daily.sma200_rotation.spy_shy.v1"
+    strategy_b = "meanrev.daily.pullback_rsi2.curated_largecap.v1"
+
+    holder_a = AdvisoryLock(
+        f"milodex.runtime.strategy.{strategy_a}",
+        locks_dir=tmp_path,
+        holder_name=f"milodex strategy run {strategy_a}",
+    )
+    holder_a.acquire()
+    try:
+        runner_b = StubStrategyRunner()
+        stdout = StringIO()
+        stderr = StringIO()
+
+        exit_code = cli_entrypoint(
+            ["strategy", "run", strategy_b],
+            strategy_runner_factory=lambda sid: runner_b,
+            locks_dir=tmp_path,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+        assert exit_code == 0, f"strategy B refused: stderr={stderr.getvalue()!r}"
+        assert runner_b.run_calls == 1
+        assert f"strategy: {strategy_b}" in stdout.getvalue()
+    finally:
+        holder_a.release()
+
+
 def test_main_reports_broker_errors_to_stderr():
     broker = StubBroker(error=BrokerAuthError("bad credentials"))
     stdout = StringIO()

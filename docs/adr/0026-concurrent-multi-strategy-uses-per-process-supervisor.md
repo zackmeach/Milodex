@@ -119,3 +119,16 @@ Current posture:
 - **Cross-process serialization is deferred to a micro_live hard gate.** Closing the cross-process race needs a per-account read→submit lock (or a broker-reservation protocol) so two processes cannot both evaluate-then-submit against a stale snapshot. **Paper stays lock-free** (the accepted-overshoot bound is "transiently one extra concurrent position / one extra order's notional per simultaneous fire", recoverable and visible in the audit trail). The serialization lock is a **blocking requirement before any micro_live or live capital**, alongside the per-strategy attribution gap and the `recent_orders` truncation gap recorded in `docs/RISK_POLICY.md` "Known limitations".
 
 **2. The reaper re-check is now two guards, not one.** The 2026-05-29 addendum states "The single skip guards both the row-close and the unlink." The 2026-05-30 pass **split that into two guards** to close a sub-window: a runner can acquire its lock *after* the row-close re-check but *before* the unlink, and unlinking its freshly-written lock would orphan a live runner. **Guard 1** re-confirms the holder immediately before the row-close; **Guard 2** re-confirms again immediately before the unlink (skipping the unlink, but keeping the already-correct closed row, if a fresh holder appeared). The lock-precedes-row ordering invariant (`strategy.py` enters `with runner_lock:` before `StrategyRunner.__init__` appends the row) is unchanged and still load-bearing — do not reverse it.
+
+## Addendum (2026-06-05) — Launch-time same evaluation-symbol co-run enforcement
+
+ADR 0055's interim same-symbol+account guardrail is now **partially code-enforced at runner launch**. Before acquiring the per-strategy runner lock, `milodex strategy run` (CLI and GUI spawn path) scans other strategy configs for identity-verified live runner locks and refuses to start when the new strategy's **evaluation symbol** — the first resolved universe symbol, matching `StrategyRunner._evaluation_symbol()` — is already held by another live runner.
+
+Scope and limits:
+
+1. **Evaluation symbol only, not whole-universe overlap.** Two strategies may co-run when their first resolved universe symbols differ, even if their full universes intersect elsewhere. Multi-symbol strategies are keyed only on `context.universe[0]`.
+2. **Launch-time check, not submit serialization.** This closes the operator foot-gun of starting two same-symbol runners; it does not serialize cross-process `evaluate_intent` → submit. The cross-process cap race and submit serialization deferred in the 2026-05-30 addendum remain open and are still blocking requirements before micro_live/live capital.
+3. **Residual TOCTOU.** Two launches racing each other can both pass the scan before either acquires its per-strategy lock. A per-symbol advisory lock (or equivalent race-free gate) remains the upgrade path if a hard guarantee is required.
+4. **Live-soak guardrail unchanged.** Strategy-scoped position ledger work (ADR 0055) and supervised fleet soak are still required before treating same-symbol operation as fully verified; launch refusal reduces wash-trade and position-view risk but does not lift the soak gate alone.
+
+Helpers live in `src/milodex/strategies/paper_runner_control.py` (`evaluation_symbol_for_config`, `live_runner_eval_symbols`).
