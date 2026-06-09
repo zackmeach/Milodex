@@ -18,6 +18,7 @@ from milodex.strategies.paper_runner_control import (
     live_runner_eval_symbols,
     runner_lock_name,
 )
+from milodex.strategies.runner_status import collect_runner_statuses
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -31,6 +32,17 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     add_global_flags(strategy_run_parser)
     strategy_run_parser.add_argument(
         "strategy_id", help="Strategy identifier from the YAML config."
+    )
+    strategy_status_parser = strategy_subparsers.add_parser(
+        "status",
+        help="Show runner liveness, heartbeat, and last evaluation per strategy.",
+    )
+    add_global_flags(strategy_status_parser)
+    strategy_status_parser.add_argument(
+        "strategy_id",
+        nargs="?",
+        default=None,
+        help="Optional strategy identifier; defaults to all strategies with recorded sessions.",
     )
 
 
@@ -94,7 +106,50 @@ def _check_stage_compatibility(strategy_id: str, config_stage: str, trading_mode
         raise ValueError(msg)
 
 
+def _format_status_block(entry: dict) -> list[str]:
+    lines = [f"{entry['strategy_id']}  state: {entry['state']}"]
+    if entry["session_id"] is not None:
+        session_line = f"  session {entry['session_id']} started {entry['session_started_at']}"
+        if entry["session_ended_at"] is not None:
+            session_line += (
+                f", ended {entry['session_ended_at']} (exit: {entry['exit_reason'] or 'unknown'})"
+            )
+        lines.append(session_line)
+    if entry["holder_pid"] is not None:
+        lines.append(
+            f"  pid {entry['holder_pid']} on {entry['holder_hostname']}  "
+            f"heartbeat: {entry['heartbeat']}"
+        )
+    lines.append(f"  last evaluation: {entry['last_eval_at'] or 'none this session'}")
+    lines.append(f"  stop requested: {'yes' if entry['stop_requested'] else 'no'}")
+    if entry["note"]:
+        lines.append(f"  note: {entry['note']}")
+    return lines
+
+
+def _run_status(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    locks_dir = ctx.locks_dir or get_locks_dir()
+    statuses = collect_runner_statuses(
+        ctx.get_event_store(),
+        config_dir=ctx.config_dir,
+        locks_dir=locks_dir,
+        strategy_id=args.strategy_id,
+    )
+    lines = ["Strategy Runner Status"]
+    if not statuses:
+        lines.append("No strategy sessions recorded.")
+    for entry in statuses:
+        lines.extend(_format_status_block(entry))
+    return CommandResult(
+        command="strategy.status",
+        data={"statuses": statuses},
+        human_lines=lines,
+    )
+
+
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    if args.strategy_command == "status":
+        return _run_status(args, ctx)
     if args.strategy_command != "run":
         raise ValueError(f"Unsupported strategy command: {args.strategy_command}")
     if ctx.get_trading_mode() != "paper":
