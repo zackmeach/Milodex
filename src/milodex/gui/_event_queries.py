@@ -37,93 +37,24 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime
-from pathlib import Path
 from typing import Any
-
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Runner liveness — shared 4-state resolver (PR6)
+#
+# The resolver and lock probes moved to ``milodex.strategies.runner_status``
+# so non-GUI surfaces (``milodex strategy status``) can consume runner
+# liveness without importing the GUI package. Re-exported here for the
+# existing GUI callers.
 # ---------------------------------------------------------------------------
+from milodex.strategies.runner_status import (  # noqa: F401
+    _FAILURE_EXIT_REASONS,
+    resolve_runner_liveness,
+    runner_lock_live,
+    runner_lock_mtime_age,
+)
 
-_FAILURE_EXIT_REASONS = frozenset({"crashed", "failed", "kill_switch", "orphan_recovered", "error"})
-"""Exit reasons that classify a *closed* runner session as ``"failed"``.
-
-Identical to the previously-local set in ``read_models._latest_session_states``;
-consolidated here so the two readers share one definition. The ``crashed:<detail>``
-prefix is handled separately by :func:`resolve_runner_liveness`.
-"""
-
-
-def resolve_runner_liveness(
-    *, ended_at: str | None, exit_reason: str | None, lock_live: bool
-) -> str:
-    """Resolve a single runner session to ``running | phantom | stopped | failed``.
-
-    Pure function — the one place the GUI decides what a runner row *is* for
-    display-trust and which-actions purposes. Lock-verified liveness arrives as
-    the pre-computed ``lock_live`` flag so this stays side-effect-free and
-    trivially testable.
-
-    - ``ended_at`` is ``None``/``""`` (open session):
-        ``"running"`` if ``lock_live`` else ``"phantom"`` — a hard-killed runner
-        whose row never closed is a phantom, not a live runner.
-    - closed session with a failure exit reason (in :data:`_FAILURE_EXIT_REASONS`
-      or with a ``"crashed:"`` prefix): ``"failed"``.
-    - any other closed session: ``"stopped"``.
-    """
-    if ended_at in (None, ""):
-        return "running" if lock_live else "phantom"
-    reason = exit_reason or ""
-    if reason in _FAILURE_EXIT_REASONS or reason.startswith("crashed:"):
-        return "failed"
-    return "stopped"
-
-
-def runner_lock_mtime_age(
-    strategy_id: str, locks_dir: Path | None, now: datetime
-) -> float | None:
-    """Seconds since the runner lock file was last refreshed (per-poll heartbeat).
-
-    Returns ``None`` when ``locks_dir`` is ``None``, the lock file is absent,
-    or the stat fails.  The lock file mtime is updated by
-    :meth:`AdvisoryLock.refresh` once per runner poll cycle, so its age is
-    an accurate per-poll check-in signal independent of how often the
-    strategy actually writes an explanation row.
-    """
-    if locks_dir is None:
-        return None
-    from milodex.core.advisory_lock import AdvisoryLock
-    from milodex.strategies.paper_runner_control import runner_lock_name
-
-    try:
-        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
-        mtime = lock.path.stat().st_mtime
-        return now.timestamp() - mtime
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("runner_lock_mtime_age: stat failed for %s: %s", strategy_id, exc)
-        return None
-
-
-def runner_lock_live(strategy_id: str, locks_dir: Path | None) -> bool:
-    """Return ``True`` iff a genuinely-live process holds ``strategy_id``'s runner lock.
-
-    Identity-verified liveness via :func:`milodex.core.advisory_lock.live_lock_holder`
-    — a stale / recycled-PID lock file reads as *not* live. Returns ``False`` when
-    ``locks_dir`` is ``None`` (no lock surface to inspect) or on any read error.
-    """
-    if locks_dir is None:
-        return False
-    from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
-    from milodex.strategies.paper_runner_control import runner_lock_name
-
-    try:
-        lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=locks_dir)
-        return live_lock_holder(lock) is not None
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("runner_lock_live: lock read failed for %s: %s", strategy_id, exc)
-        return False
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

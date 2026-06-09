@@ -56,6 +56,7 @@ from milodex.gui._event_queries import (
 )
 from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.strategies.paper_runner_control import controlled_stop_request_path
+from milodex.strategies.runner_status import heartbeat_label
 
 logger = logging.getLogger(__name__)
 
@@ -101,44 +102,10 @@ def _cadence_seconds(config: dict[str, Any] | None) -> int:
         return _DEFAULT_CADENCE_SECONDS
 
 
-def _heartbeat(lock_age_seconds: float | None, cadence_seconds: int) -> str:
-    """Classify runner health from advisory-lock mtime age.
-
-    Parameters
-    ----------
-    lock_age_seconds:
-        Seconds since the runner's lock file was last refreshed, as returned
-        by :func:`~milodex.gui._event_queries.runner_lock_mtime_age`.
-        ``None`` means the lock surface is unavailable (no locks_dir, or the
-        file is absent / unreadable).
-    cadence_seconds:
-        Runner poll interval derived from ``tempo.bar_size``
-        (``_BAR_SIZE_TO_SECONDS``).  The threshold is ``cadence_seconds * 2.0``.
-        Using 2.0× (not 1.5×) guards against slow post-close fetches: the
-        runner refreshes its lock at the *top* of the loop, before
-        ``run_cycle()``, so the real inter-refresh gap is
-        ``sleep(cadence_seconds) + run_cycle_duration``.  A 1.5× threshold
-        would flap a healthy 1D runner mid-fetch.
-
-    Returns
-    -------
-    ``"no activity"``  — lock age unavailable (no check-in surface).
-    ``"on schedule"``  — lock age ≤ cadence_seconds * 2.0.
-    ``"overdue by Nm"`` — lock age exceeds threshold; N whole minutes stale.
-    ``"overdue by Ns"`` — lock age exceeds threshold and < 60 s stale (sub-minute
-        overdue unit so the badge is honest for intraday cadences, e.g. 5Min
-        poll=10 s → threshold 20 s, an age of 25 s shows "overdue by 25s" rather
-        than the misleading "overdue by 0m").
-        The ``"overdue by "`` prefix is preserved so
-        ``DeskSurface.qml``'s ``indexOf("overdue")===0`` colour rule fires.
-    """
-    if lock_age_seconds is None:
-        return "no activity"
-    if lock_age_seconds <= cadence_seconds * 2.0:
-        return "on schedule"
-    mins = int(lock_age_seconds // 60)
-    unit = f"{mins}m" if mins >= 1 else f"{int(lock_age_seconds)}s"
-    return f"overdue by {unit}"
+# Heartbeat classification moved to milodex.strategies.runner_status so the
+# CLI status surface shares one definition; aliased to keep this module's
+# call sites and tests stable.
+_heartbeat = heartbeat_label
 
 
 def _session_age(started_at_iso: str, now: datetime) -> str:

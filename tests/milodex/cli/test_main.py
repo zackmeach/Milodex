@@ -850,6 +850,182 @@ def test_strategy_run_allows_strategies_on_different_eval_symbols(monkeypatch, t
         holder_a.release()
 
 
+_STATUS_STRATEGY_ID = "meanrev.daily.pullback_rsi2.statustest.v1"
+
+
+def _write_status_test_config(config_dir: Path) -> None:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    (config_dir / "statustest.yaml").write_text(
+        f"""
+strategy:
+  id: "{_STATUS_STRATEGY_ID}"
+  family: "meanrev"
+  template: "daily.pullback_rsi2"
+  variant: "statustest"
+  version: 1
+  description: "strategy status CLI test"
+  enabled: true
+  universe:
+    - "SPY"
+  parameters:
+    rsi_lookback: 2
+    rsi_entry_threshold: 10
+    rsi_exit_threshold: 50
+    ma_filter_length: 200
+    stop_loss_pct: 0.05
+    max_hold_days: 5
+    max_concurrent_positions: 1
+    sizing_rule: "equal_notional"
+    per_position_notional_pct: 0.10
+    ranking_enabled: false
+    ranking_metric: "rsi_ascending"
+    market_regime_symbol: ""
+    market_regime_ma_length: 200
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+  stage: "paper"
+  backtest:
+    commission_per_trade: 0.00
+    min_trades_required: 30
+  disable_conditions_additional: []
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _status_test_store(tmp_path: Path):
+    from milodex.core.event_store import EventStore, StrategyRunEvent
+
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="session-status-test",
+            strategy_id=_STATUS_STRATEGY_ID,
+            started_at=datetime(2026, 6, 9, 13, 30, tzinfo=UTC),
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    return store
+
+
+def test_strategy_status_reports_phantom_runner(tmp_path):
+    """An open strategy_runs row with no live lock reads as phantom, with the
+    reap-orphans pointer in the human output."""
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert _STATUS_STRATEGY_ID in output
+    assert "state: phantom" in output
+    assert "reap-orphans" in output
+
+
+def test_strategy_status_reports_running_runner_with_live_lock(tmp_path):
+    from milodex.core.advisory_lock import AdvisoryLock
+
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    holder = AdvisoryLock(
+        f"milodex.runtime.strategy.{_STATUS_STRATEGY_ID}",
+        locks_dir=locks_dir,
+        holder_name=f"milodex strategy run {_STATUS_STRATEGY_ID}",
+    )
+    holder.acquire()
+    stdout = StringIO()
+    try:
+        exit_code = cli_entrypoint(
+            ["strategy", "status", _STATUS_STRATEGY_ID],
+            event_store_factory=lambda: store,
+            config_dir=config_dir,
+            locks_dir=locks_dir,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+    finally:
+        holder.release()
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "state: running" in output
+    assert "heartbeat: on schedule" in output
+    assert "by design" in output  # 1D idle-by-design note
+
+
+def test_strategy_status_json_payload(tmp_path):
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status", "--json"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    assert payload["command"] == "strategy.status"
+    statuses = payload["data"]["statuses"]
+    assert len(statuses) == 1
+    assert statuses[0]["strategy_id"] == _STATUS_STRATEGY_ID
+    assert statuses[0]["state"] == "phantom"
+    assert statuses[0]["session_id"] == "session-status-test"
+
+
+def test_strategy_status_unknown_strategy_errors(tmp_path):
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status", "nope.daily.missing.x.v1"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert "not found" in stderr.getvalue()
+
+
 def test_main_reports_broker_errors_to_stderr():
     broker = StubBroker(error=BrokerAuthError("bad credentials"))
     stdout = StringIO()

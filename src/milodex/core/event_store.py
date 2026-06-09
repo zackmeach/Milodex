@@ -607,6 +607,22 @@ class EventStore:
             connection.commit()
             return cursor.rowcount
 
+    def latest_explanation_recorded_at(self, session_id: str) -> str | None:
+        """Most recent ``explanations.recorded_at`` for *session_id*, or ``None``.
+
+        Single-row aggregate — bounded by construction, safe on the status
+        hot path (unlike :meth:`list_explanations`, which loads every row).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT MAX(recorded_at) AS last_eval FROM explanations WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        value = row["last_eval"]
+        return str(value) if value is not None else None
+
     def list_explanations(self) -> list[ExplanationEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM explanations ORDER BY id ASC").fetchall()
