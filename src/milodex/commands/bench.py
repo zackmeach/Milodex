@@ -67,7 +67,11 @@ from milodex.promotion.state_machine import _update_stage_in_yaml as _governance
 from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.risk.policy import RiskPolicy
 from milodex.strategies.loader import load_strategy_config
-from milodex.strategies.paper_runner_control import runner_lock_name
+from milodex.strategies.paper_runner_control import (
+    evaluation_symbol_for_config,
+    live_runner_eval_symbols,
+    runner_lock_name,
+)
 
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
@@ -1037,6 +1041,13 @@ class BenchCommandFacade:
             preconditions.append(Precondition("advisory_lock_free", passed=False))
         else:
             preconditions.append(Precondition("advisory_lock_free", passed=True))
+
+        collision_blocker = self._peek_eval_symbol_collision(strategy_id, config)
+        if collision_blocker is not None:
+            blockers.append(collision_blocker)
+            preconditions.append(Precondition("evaluation_symbol_free", passed=False))
+        else:
+            preconditions.append(Precondition("evaluation_symbol_free", passed=True))
 
         readiness_report, readiness_blockers, readiness_preconditions = (
             self._evaluate_workflow_readiness(
@@ -2377,6 +2388,52 @@ class BenchCommandFacade:
             "holder_name": holder.holder_name,
             "started_at": holder.started_at.isoformat(),
         }
+
+    def _peek_eval_symbol_collision(
+        self, strategy_id: str, config: StrategyConfig
+    ) -> Blocker | None:
+        """Pre-spawn mirror of the ``milodex strategy run`` launch guard.
+
+        The CLI child enforces the same evaluation-symbol co-run refusal (ADR
+        0026 addendum 2026-06-05), but from the GUI spawn path that refusal
+        happens inside a detached subprocess — the child dies and Bench shows
+        nothing. Surfacing it here as a structured proposal blocker makes the
+        collision visible *before* any process is spawned. Read-only; the
+        child's own check remains the enforcement backstop, and the residual
+        scan→acquire TOCTOU documented in the addendum is unchanged.
+        """
+        try:
+            eval_symbol = evaluation_symbol_for_config(config)
+        except ValueError as exc:
+            return Blocker(
+                reason_code="evaluation_symbol_unresolvable",
+                message=(
+                    f"Strategy '{strategy_id}' has no resolvable evaluation symbol; "
+                    f"the runner would refuse to start: {exc}"
+                ),
+                context={"strategy_id": strategy_id},
+            )
+        live_by_symbol = live_runner_eval_symbols(
+            self._config_dir,
+            self._locks_dir,
+            exclude_strategy_id=strategy_id,
+        )
+        colliding_strategy_id = live_by_symbol.get(eval_symbol)
+        if colliding_strategy_id is None:
+            return None
+        return Blocker(
+            reason_code="evaluation_symbol_in_use",
+            message=(
+                f"Evaluation symbol '{eval_symbol}' is already in use by the live "
+                f"runner for '{colliding_strategy_id}'. Stop that runner before "
+                f"starting '{strategy_id}' on the same symbol (same-symbol co-run "
+                "guardrail, ADR 0026 addendum / ADR 0055)."
+            ),
+            context={
+                "evaluation_symbol": eval_symbol,
+                "colliding_strategy_id": colliding_strategy_id,
+            },
+        )
 
     def _latest_open_session_id(self, strategy_id: str) -> str | None:
         if self._event_store_factory is None:
