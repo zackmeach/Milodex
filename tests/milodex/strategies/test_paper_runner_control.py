@@ -53,6 +53,105 @@ def test_controlled_stop_request_ignores_other_strategy(tmp_path: Path) -> None:
     assert path.exists()
 
 
+def test_controlled_stop_request_accepts_utf8_bom(tmp_path: Path) -> None:
+    """A BOM-prefixed UTF-8 stop request (e.g. written by a Windows tool that
+    emits utf-8-sig) is consumed normally."""
+    path = controlled_stop_request_path(tmp_path, "strategy-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"strategy_id": "strategy-a", "mode": "controlled"}),
+        encoding="utf-8-sig",
+    )
+
+    payload = consume_controlled_stop_request(path, strategy_id="strategy-a")
+
+    assert payload is not None
+    assert payload["mode"] == "controlled"
+    assert not path.exists()
+
+
+def test_invalid_json_stop_request_is_preserved_not_deleted(tmp_path: Path, caplog) -> None:
+    path = controlled_stop_request_path(tmp_path, "strategy-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"strategy_id": "strategy-a", "mode": "contro', encoding="utf-8")
+    invalid_path = path.with_name(path.name + ".invalid")
+
+    with caplog.at_level("WARNING"):
+        payload = consume_controlled_stop_request(path, strategy_id="strategy-a")
+
+    assert payload is None
+    assert not path.exists()
+    assert invalid_path.exists()
+    assert invalid_path.read_text(encoding="utf-8").startswith('{"strategy_id"')
+    assert any("Invalid controlled-stop request" in r.message for r in caplog.records)
+
+
+def test_utf16_stop_request_is_preserved_not_deleted(tmp_path: Path, caplog) -> None:
+    """PowerShell 5.1 writes UTF-16 LE by default — the soak showed stop-request
+    encoding matters. A UTF-16 file is not consumable but must stay diagnosable."""
+    path = controlled_stop_request_path(tmp_path, "strategy-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({"strategy_id": "strategy-a", "mode": "controlled"}),
+        encoding="utf-16",
+    )
+    invalid_path = path.with_name(path.name + ".invalid")
+
+    with caplog.at_level("WARNING"):
+        payload = consume_controlled_stop_request(path, strategy_id="strategy-a")
+
+    assert payload is None
+    assert not path.exists()
+    assert invalid_path.exists()
+    assert any("Invalid controlled-stop request" in r.message for r in caplog.records)
+
+
+def test_non_object_json_stop_request_is_preserved(tmp_path: Path, caplog) -> None:
+    path = controlled_stop_request_path(tmp_path, "strategy-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('["not", "a", "dict"]', encoding="utf-8")
+    invalid_path = path.with_name(path.name + ".invalid")
+
+    with caplog.at_level("WARNING"):
+        payload = consume_controlled_stop_request(path, strategy_id="strategy-a")
+
+    assert payload is None
+    assert invalid_path.exists()
+    assert any("non-object JSON payload" in r.message for r in caplog.records)
+
+
+def test_second_invalid_stop_request_replaces_preserved_copy(tmp_path: Path) -> None:
+    path = controlled_stop_request_path(tmp_path, "strategy-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    invalid_path = path.with_name(path.name + ".invalid")
+
+    path.write_text("first-garbage", encoding="utf-8")
+    assert consume_controlled_stop_request(path, strategy_id="strategy-a") is None
+    path.write_text("second-garbage", encoding="utf-8")
+    assert consume_controlled_stop_request(path, strategy_id="strategy-a") is None
+
+    assert invalid_path.read_text(encoding="utf-8") == "second-garbage"
+
+
+def test_invalid_stop_request_does_not_stop_runner(tmp_path: Path) -> None:
+    """A malformed stop request must not be consumed as a stop: the runner's
+    check leaves no shutdown requested and the runner keeps going."""
+    from milodex.strategies.runner import StrategyRunner
+
+    path = controlled_stop_request_path(tmp_path, "strategy-a")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json at all", encoding="utf-8")
+
+    runner = StrategyRunner.__new__(StrategyRunner)
+    runner._controlled_stop_request_path = path
+    runner._strategy_id = "strategy-a"
+    runner._requested_shutdown = None
+
+    runner._check_controlled_stop_request()
+
+    assert runner._requested_shutdown is None
+
+
 def test_runner_log_path_is_none_when_no_log_dir(tmp_path: Path) -> None:
     control = PaperRunnerControl(locks_dir=tmp_path)
 

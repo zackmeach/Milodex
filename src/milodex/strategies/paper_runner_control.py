@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ if TYPE_CHECKING:
 
 from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
 from milodex.strategies.loader import StrategyConfig, load_strategy_config, resolve_universe_ref
+
+logger = logging.getLogger(__name__)
 
 _INTERPRETER_PROBE_TIMEOUT_SECONDS = 15
 
@@ -95,18 +98,64 @@ def controlled_stop_request_path(locks_dir: Path, strategy_id: str) -> Path:
     return Path(locks_dir) / f"{runner_lock_name(strategy_id)}.controlled_stop.json"
 
 
+def _preserve_invalid_stop_request(path: Path, reason: str) -> None:
+    """Set aside an unparseable stop-request file as ``<name>.invalid``.
+
+    A malformed request must neither be consumed (it expressed *something*,
+    just not parseably) nor re-parsed every poll cycle, and silently deleting
+    it makes a mis-encoded stop request undiagnosable — the 2026-06-08/09
+    soak showed stop-request encoding matters in practice. ``Path.replace``
+    overwrites any older preserved copy (only the most recent invalid request
+    is kept). Falls back to unlink — loudly — if the rename itself fails.
+    """
+    invalid_path = path.with_name(path.name + ".invalid")
+    try:
+        path.replace(invalid_path)
+    except OSError as exc:
+        logger.warning(
+            "Invalid controlled-stop request at %s (%s); preserve-as-%s failed (%s) — removing",
+            path,
+            reason,
+            invalid_path.name,
+            exc,
+        )
+        path.unlink(missing_ok=True)
+        return
+    logger.warning(
+        "Invalid controlled-stop request at %s (%s); preserved as %s — "
+        "the stop request was NOT consumed",
+        path,
+        reason,
+        invalid_path,
+    )
+
+
 def consume_controlled_stop_request(
     path: Path | None,
     *,
     strategy_id: str,
 ) -> dict[str, Any] | None:
-    """Consume a pending controlled-stop request for ``strategy_id`` if present."""
+    """Consume a pending controlled-stop request for ``strategy_id`` if present.
+
+    Encoding: UTF-8; a UTF-8 BOM is tolerated (``utf-8-sig``). A file that
+    cannot be decoded or parsed (e.g. a PowerShell-written UTF-16 file, or
+    truncated JSON) is preserved as ``<name>.invalid`` with a warning rather
+    than silently deleted, so a mis-encoded stop request is diagnosable. A
+    transient read error leaves the file in place for the next poll.
+    """
     if path is None or not path.exists():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        path.unlink(missing_ok=True)
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        logger.warning("Controlled-stop request at %s unreadable (%s); will retry", path, exc)
+        return None
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        _preserve_invalid_stop_request(path, repr(exc))
+        return None
+
+    if not isinstance(payload, dict):
+        _preserve_invalid_stop_request(path, f"non-object JSON payload ({type(payload).__name__})")
         return None
 
     if payload.get("strategy_id") != strategy_id or payload.get("mode") != "controlled":
