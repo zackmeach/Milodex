@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from milodex.core.advisory_lock import LockHolder
 
+from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
+from milodex.strategies.loader import StrategyConfig, load_strategy_config, resolve_universe_ref
+
 _INTERPRETER_PROBE_TIMEOUT_SECONDS = 15
 
 # The runner is launched as ``python -m milodex.cli.main strategy run``.
@@ -34,6 +37,57 @@ class PaperRunnerLaunchError(RuntimeError):
 def runner_lock_name(strategy_id: str) -> str:
     """Return the advisory-lock namespace for a paper runner."""
     return f"milodex.runtime.strategy.{strategy_id}"
+
+
+def resolved_universe_for_config(config: StrategyConfig) -> tuple[str, ...]:
+    """Return the runtime universe for ``config``, resolving ``universe_ref`` when set."""
+    resolved = config.universe
+    if config.universe_ref is not None and not resolved:
+        resolved = resolve_universe_ref(config.universe_ref, config.path)
+    return resolved
+
+
+def evaluation_symbol_for_config(config: StrategyConfig) -> str:
+    """Return the strategy evaluation symbol (first resolved universe symbol).
+
+    Matches :meth:`milodex.strategies.runner.StrategyRunner._evaluation_symbol`.
+    """
+    universe = resolved_universe_for_config(config)
+    if not universe:
+        msg = f"Strategy '{config.strategy_id}' has no resolvable universe for runtime execution."
+        raise ValueError(msg)
+    return universe[0]
+
+
+def live_runner_eval_symbols(
+    config_dir: Path,
+    locks_dir: Path,
+    *,
+    exclude_strategy_id: str | None = None,
+) -> dict[str, str]:
+    """Map evaluation symbols to strategy IDs for other live runner locks.
+
+    Returns ``{eval_symbol: strategy_id}`` for strategies whose per-strategy
+    runner lock is held by an identity-verified live process. Stale or
+    recycled-PID locks are ignored.
+    """
+    live_by_symbol: dict[str, str] = {}
+    for path in sorted(Path(config_dir).glob("*.yaml")):
+        try:
+            config = load_strategy_config(path)
+        except ValueError:
+            continue
+        if exclude_strategy_id is not None and config.strategy_id == exclude_strategy_id:
+            continue
+        lock = AdvisoryLock(runner_lock_name(config.strategy_id), locks_dir=locks_dir)
+        if live_lock_holder(lock) is None:
+            continue
+        try:
+            eval_symbol = evaluation_symbol_for_config(config)
+        except ValueError:
+            continue
+        live_by_symbol[eval_symbol] = config.strategy_id
+    return live_by_symbol
 
 
 def controlled_stop_request_path(locks_dir: Path, strategy_id: str) -> Path:
@@ -206,8 +260,6 @@ class PaperRunnerControl:
         does not block a legitimate relaunch. The child's ``O_EXCL`` acquire in
         :meth:`start` remains the final single-runner correctness backstop.
         """
-        from milodex.core.advisory_lock import AdvisoryLock, live_lock_holder
-
         lock = AdvisoryLock(runner_lock_name(strategy_id), locks_dir=self._locks_dir)
         return live_lock_holder(lock)
 
