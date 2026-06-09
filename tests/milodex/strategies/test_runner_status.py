@@ -234,6 +234,32 @@ def test_stopped_and_failed_states(store, config_dir, locks_dir):
     assert _status_for(statuses, other_id)["exit_reason"].startswith("crashed:")
 
 
+def test_reaper_closed_session_classifies_failed(store, config_dir, locks_dir):
+    """Both orphan closures are failures: 'orphan_recovered' (runner startup
+    self-reconcile) and 'orphaned_no_live_runner' (GUI reaper)."""
+    now = datetime.now(tz=UTC)
+    _append_run(
+        store,
+        session_id="session-reaped",
+        ended_at=now,
+        exit_reason="orphaned_no_live_runner",
+    )
+    other_id = "meanrev.daily.pullback_rsi2.other.v1"
+    _write_minimal_strategy_config(config_dir, strategy_id=other_id, variant="other")
+    _append_run(
+        store,
+        strategy_id=other_id,
+        session_id="session-self-reconciled",
+        ended_at=now,
+        exit_reason="orphan_recovered",
+    )
+
+    statuses = collect_runner_statuses(store, config_dir=config_dir, locks_dir=locks_dir)
+
+    assert _status_for(statuses)["state"] == "failed"
+    assert _status_for(statuses, other_id)["state"] == "failed"
+
+
 def test_latest_session_wins(store, config_dir, locks_dir):
     old = datetime.now(tz=UTC) - timedelta(days=2)
     _append_run(
