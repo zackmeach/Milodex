@@ -52,8 +52,8 @@ Window {
     // ------------------------------------------------------------------
     // Active surface state
     //
-    // String enum: "anchor" | "strategy-bank" | "bench" | "design-system" |
-    // "attribution-stub".  Stubs render a "(coming soon)" placeholder.
+    // String enum: "front" | "bench" | "ledger" | "desk" | "design-system".
+    // Unknown ids render the "(coming soon)" placeholder.
     // ------------------------------------------------------------------
 
     property string activeSurface: "front"
@@ -174,6 +174,10 @@ Window {
         function onReapIntervalRequested(seconds) {
             if (typeof OrphanReaperController !== "undefined")
                 OrphanReaperController.persistInterval(seconds)
+        }
+        // HR-4: drawer RESET KILL SWITCH button → open the reset modal.
+        function onKillSwitchResetRequested() {
+            killSwitchResetModal.open = true
         }
     }
     onDropdownDismissedSignal: {
@@ -301,6 +305,8 @@ Window {
             lastRefreshedAt: OperationalState.lastRefreshedAt
             activeProfileName: root._activeProfile  // PR-7c: badge copy
             onBadgeClicked: riskDrawer.open = !riskDrawer.open  // PR-7c: toggle drawer
+            // HR-4: kill-switch posture text click opens the reset modal directly
+            onKillSwitchResetClicked: killSwitchResetModal.open = true
         }
 
         // 1px hairline divider below the bar
@@ -359,19 +365,14 @@ Window {
         }
 
         // Surface routing.  The four primary surfaces are FRONT / BENCH /
-        // LEDGER / DESK.  The earlier surfaces (anchor, strategy-bank,
-        // design-system) remain in the codebase and are reachable by
-        // setting `activeSurface` to their ID programmatically — they're
-        // simply not exposed in the primary nav anymore.
+        // LEDGER / DESK.
         source: {
             if (root.activeSurface === "front")          return "surfaces/FrontSurface.qml"
             if (root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"
             if (root.activeSurface === "ledger")         return "surfaces/LedgerSurface.qml"
             if (root.activeSurface === "desk")           return "surfaces/DeskSurface.qml"
-            // Hidden surfaces (reachable only by programmatic activeSurface assignment):
-            //   "anchor"         — kill-switch reset modal (sole GUI path; ADR 0035)
+            // Hidden surface (reachable only by programmatic activeSurface assignment):
             //   "design-system"  — token/theme preview (developer-internal; ADR 0035 integration smoke)
-            if (root.activeSurface === "anchor")         return "surfaces/AnchorSurface.qml"
             if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
             return ""  // unknown id renders the placeholder
         }
@@ -419,6 +420,20 @@ Window {
         }
         // Task 37: route quit through AppController context property
         onQuitRequested: AppController.quitRequested()
+    }
+
+    // ------------------------------------------------------------------
+    // HR-4: Kill-switch reset modal (ADR 0005).
+    // Opened from two paths:
+    //   1. RiskStrip posture text click (onKillSwitchResetClicked above)
+    //   2. Risk Office drawer KILL SWITCH section (onKillSwitchResetRequested above)
+    // ------------------------------------------------------------------
+
+    KillSwitchResetModal {
+        id: killSwitchResetModal
+        parent: root.contentItem  // parent to Window.contentItem so anchors fill the window
+        z: 11000                  // above the Risk Office drawer (z=10000)
+        onCloseRequested: killSwitchResetModal.open = false
     }
 
     // Wire RiskProfileBridge signals

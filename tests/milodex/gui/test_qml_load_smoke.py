@@ -39,12 +39,14 @@ import pytest
 # Top-level surfaces and main window. Components are exercised transitively
 # when a surface that imports them loads successfully.
 _QML_TARGETS = [
-    "surfaces/AnchorSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
     "surfaces/BenchSurface.qml",
     "surfaces/LedgerSurface.qml",
     "surfaces/DeskSurface.qml",
+    # HR-4: AnchorSurface deleted; KillSwitchResetModal is a component, exercised
+    # transitively when Main.qml or any surface that imports it loads.
+    "components/KillSwitchResetModal.qml",
 ]
 
 # Main.qml is the application root; it is tested separately because it wraps
