@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -1556,3 +1556,94 @@ def test_count_paper_rejections_filters_strategy_stage_and_risk_allowed(tmp_path
     )
 
     assert store.count_paper_rejections("alpha") == 1
+
+
+# ---------------------------------------------------------------------------
+# count_recent_submitted_orders (duplicate-order durable backstop)
+#
+# R-P1-4: backtest fills are stamped recorded_at = wall-clock now, so without
+# a source='paper' predicate a concurrent backtest on the same symbol makes
+# the runner's duplicate-order check see thousands of "recent submitted
+# orders" and spuriously veto legitimate paper intents.
+# ---------------------------------------------------------------------------
+
+
+def _append_dedup_trade(
+    store: EventStore,
+    *,
+    recorded_at: datetime,
+    symbol: str = "SPY",
+    side: str = "buy",
+    status: str = "submitted",
+    source: str = "paper",
+) -> None:
+    explanation_id = store.append_explanation(
+        ExplanationEvent(**_explanation_kwargs(submitted_by="operator", symbol=symbol, side=side))
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=recorded_at,
+            status=status,
+            source=source,
+            symbol=symbol,
+            side=side,
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=400.0,
+            estimated_order_value=400.0,
+            strategy_name="alpha",
+            strategy_stage="paper",
+            strategy_config_path="configs/x.yaml",
+            submitted_by="operator",
+            broker_order_id=None,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
+def test_count_recent_submitted_orders_excludes_backtest_rows(tmp_path):
+    """Concurrent-backtest non-veto: backtest rows never count (R-P1-4)."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    _append_dedup_trade(store, recorded_at=now, source="backtest")
+    _append_dedup_trade(store, recorded_at=now, source="backtest")
+
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=now) == 0
+
+
+def test_count_recent_submitted_orders_counts_paper_rows_in_window(tmp_path):
+    """Paper submitted rows inside the window count; symbol/side filtered."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    _append_dedup_trade(store, recorded_at=now)
+    _append_dedup_trade(store, recorded_at=now, side="sell")  # excluded: side
+    _append_dedup_trade(store, recorded_at=now, symbol="QQQ")  # excluded: symbol
+    _append_dedup_trade(store, recorded_at=now, status="blocked")  # excluded: status
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_count_recent_submitted_orders_window_is_enforced_in_sql(tmp_path):
+    """Rows older than ``since`` are excluded by the SQL time predicate."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    _append_dedup_trade(store, recorded_at=now - timedelta(seconds=120))  # outside
+    _append_dedup_trade(store, recorded_at=now - timedelta(seconds=30))  # inside
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_count_recent_submitted_orders_treats_naive_timestamps_as_utc(tmp_path):
+    """Semantics preserved from the prior Python comparison: naive == UTC."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    naive_inside = datetime(2026, 5, 7, 13, 59, 30)  # 30 s before now, no tzinfo
+    _append_dedup_trade(store, recorded_at=naive_inside)
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1

@@ -10,6 +10,7 @@ Pin the reconstruction-from-trades semantics:
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from itertools import count
 
 import pytest
 
@@ -67,6 +68,14 @@ def _explanation(store: EventStore, *, recorded_at: datetime, status: str = "sub
     )
 
 
+_ORDER_IDS = count(1)
+
+# Sentinel: "caller didn't choose" — the helper then mints a unique order id
+# per submitted trade, matching production (broker order ids are unique per
+# order; the strategy fold's reversal is keyed on that identity).
+_AUTO_ORDER_ID = "<auto>"
+
+
 def _record_trade(
     store: EventStore,
     *,
@@ -77,9 +86,55 @@ def _record_trade(
     status: str = "submitted",
     submitted_by: str = "strategy_runner",
     recorded_at: datetime | None = None,
-    broker_order_id: str | None = "broker-1",
+    broker_order_id: str | None = _AUTO_ORDER_ID,
+    source: str = "paper",
 ) -> int:
     """Insert a paired explanation+trade row and return the trade id."""
+    when = recorded_at if recorded_at is not None else _NOW
+    if broker_order_id == _AUTO_ORDER_ID:
+        broker_order_id = f"broker-{next(_ORDER_IDS)}" if status == "submitted" else None
+    explanation_id = _explanation(store, recorded_at=when, status=status)
+    return store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=when,
+            status=status,
+            source=source,
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=100.0,
+            estimated_order_value=quantity * 100.0,
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path=None,
+            submitted_by=submitted_by,
+            broker_order_id=broker_order_id,
+            broker_status=None,
+            message=None,
+        )
+    )
+
+
+def _record_corrective_row(
+    store: EventStore,
+    *,
+    symbol: str,
+    side: str,
+    quantity: float,
+    status: str,
+    broker_order_id: str,
+    recorded_at: datetime | None = None,
+) -> int:
+    """Append a corrective terminal row shaped like ``sync_local_only_orders``.
+
+    Mirrors operations/reconciliation.py: ``strategy_name=None``,
+    ``submitted_by="reconcile"``, ``estimated_unit_price=0.0``,
+    ``source="paper"`` — the reversal must find these by broker_order_id,
+    never by strategy_name.
+    """
     when = recorded_at if recorded_at is not None else _NOW
     explanation_id = _explanation(store, recorded_at=when, status=status)
     return store.append_trade(
@@ -93,15 +148,15 @@ def _record_trade(
             quantity=quantity,
             order_type="market",
             time_in_force="day",
-            estimated_unit_price=100.0,
-            estimated_order_value=quantity * 100.0,
-            strategy_name=strategy_name,
+            estimated_unit_price=0.0,
+            estimated_order_value=0.0,
+            strategy_name=None,
             strategy_stage="paper",
             strategy_config_path=None,
-            submitted_by=submitted_by,
-            broker_order_id=broker_order_id if status == "submitted" else None,
-            broker_status=None,
-            message=None,
+            submitted_by="reconcile",
+            broker_order_id=broker_order_id,
+            broker_status=status,
+            message="order-status sync: test",
         )
     )
 
@@ -564,3 +619,131 @@ def test_strategy_open_lots_resets_after_full_liquidation_and_reentry(store):
     assert lots["SPY"]["quantity"] == 5.0
     assert lots["SPY"]["opened_at"] == t_reopen
     assert lots["SPY"]["avg_entry_price"] == 200.0
+
+
+# ---------------------------------------------------------------------------
+# Paper-source scoping + corrective-row reversal (R-P0-1 / HR-1)
+# ---------------------------------------------------------------------------
+
+
+def test_backtest_fills_do_not_contaminate_strategy_ledger(store):
+    """A backtest fill must not appear in any strategy-ledger surface.
+
+    R-P0-1 regression: the backtest engine writes ``trades`` rows with
+    ``source='backtest'``, ``status='submitted'``, and the real
+    ``strategy_name`` through the same ExecutionService into the same DB.
+    Without paper scoping, the runner's position view folds them as live
+    holdings and emits phantom exits every close.
+    """
+    _record_trade(
+        store,
+        symbol="NVDA",
+        side="buy",
+        quantity=1341,
+        strategy_name="strategy_a",
+        source="backtest",
+    )
+
+    assert strategy_positions("strategy_a", store) == {}
+    assert strategy_open_lots("strategy_a", store) == {}
+    assert attribute_position(symbol="NVDA", event_store=store) == OPERATOR_ATTRIBUTION
+
+
+def test_backtest_fills_do_not_shadow_paper_ledger(store):
+    """Interleaved backtest rows leave the paper fold untouched.
+
+    The backtest SELL here is larger than the paper position; if it leaked
+    into the fold it would clamp the paper lot to zero (a phantom exit's
+    mirror image).
+    """
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=500,
+        strategy_name="strategy_a",
+        source="backtest",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="sell",
+        quantity=505,
+        strategy_name="strategy_a",
+        source="backtest",
+        recorded_at=_NOW,
+    )
+
+    assert strategy_positions("strategy_a", store) == {"SPY": 10.0}
+    assert attribute_position(symbol="SPY", event_store=store) == "strategy_a"
+
+
+def test_corrective_cancelled_row_closes_strategy_ledger_lot(store):
+    """submitted→cancelled reversal: a sync corrective row closes the lot.
+
+    The corrective row carries ``strategy_name=None`` (see
+    ``sync_local_only_orders``), so the reversal must locate it by
+    ``broker_order_id`` — a strategy-name-filtered fetch alone never sees it.
+    """
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        broker_order_id="order-cancel",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+    _record_corrective_row(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        status="cancelled",
+        broker_order_id="order-cancel",
+    )
+
+    assert strategy_positions("strategy_a", store) == {}
+    assert strategy_open_lots("strategy_a", store) == {}
+
+
+def test_corrective_filled_row_counts_the_order_once(store):
+    """submitted→filled must count once, with the original row's lot fields.
+
+    The corrective row carries ``estimated_unit_price=0.0``; the fold must
+    keep the original submission's price/timestamp, using the corrective
+    status only to decide whether the order counts.
+    """
+    t_open = _NOW - timedelta(days=1)
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        broker_order_id="order-fill",
+        recorded_at=t_open,
+    )
+    _record_corrective_row(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        status="filled",
+        broker_order_id="order-fill",
+    )
+
+    assert strategy_positions("strategy_a", store) == {"SPY": 10.0}
+    lots = strategy_open_lots("strategy_a", store)
+    assert lots["SPY"]["quantity"] == 10.0
+    assert lots["SPY"]["avg_entry_price"] == 100.0
+    assert lots["SPY"]["opened_at"] == t_open

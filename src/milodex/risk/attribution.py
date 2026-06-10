@@ -19,6 +19,15 @@ counting it would misattribute the symbol to whichever strategy
 proposed the rejected trade. The reconstruction walk MUST exclude
 those rows.
 
+Source scoping (R-P0-1): only ``source="paper"`` rows participate in
+any fold or walk here. Backtest fills are written to the same
+``trades`` table with the same ``strategy_name``/``status`` vocabulary;
+without the source predicate every backtest run contaminates the live
+position view. The per-strategy fold additionally applies
+latest-status-per-``broker_order_id`` reversal (mirroring
+``fold_positions`` in operations/reconciliation.py) so corrective
+terminal rows appended by ``sync_local_only_orders`` close ledger lots.
+
 Decision 3: Pre-attribution positions (no recoverable submitted opening
 fill, or one whose ``strategy_name IS NULL``) are attributed to the
 reserved pseudo-strategy id ``"operator"``.
@@ -32,6 +41,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
 
+
+# Mirror of operations/reconciliation.py POSITION_AFFECTING_STATUSES.
+# Duplicated (not imported) because reconciliation.py imports
+# strategy_positions from this module — the edge already runs the other way.
+_POSITION_AFFECTING_STATUSES = frozenset({"submitted", "accepted", "filled"})
 
 OPERATOR_ATTRIBUTION = "operator"
 """Reserved pseudo-strategy id for positions opened outside any runner.
@@ -246,18 +260,76 @@ def _fetch_submitted_trade_rows_for_strategy(
     event_store: EventStore,
     strategy_id: str,
 ) -> list[dict]:
-    """Submitted trade rows for one strategy, oldest-first (indexed by strategy_name)."""
+    """Effective paper-fill rows for one strategy, oldest-first (indexed by strategy_name).
+
+    Mirrors ``fold_positions`` (operations/reconciliation.py) semantics:
+
+    - Only ``source = 'paper'`` rows participate. Backtest fills share the
+      ``trades`` table with the same ``strategy_name`` and ``status``; without
+      this predicate every backtest run pollutes the live ledger (R-P0-1).
+    - The latest status per ``broker_order_id`` wins, so a corrective terminal
+      row appended by ``sync_local_only_orders`` reverses the original
+      optimistic ``submitted`` contribution: submitted→filled counts once,
+      submitted→cancelled counts zero. Corrective rows carry
+      ``strategy_name=None``, so they are looked up by order id in a second
+      query — a strategy-name-filtered fetch alone can never see them. The
+      original strategy row (its id-position, price, timestamp) is what the
+      fold consumes; the corrective row only decides whether it counts.
+    - Rows without a ``broker_order_id`` are counted individually, as before.
+    - Only position-affecting statuses count as fills (Decision 2's exclusion
+      of preview/blocked/cancelled rows, extended to the corrective-row
+      vocabulary).
+    """
     with event_store._connect() as connection:  # noqa: SLF001 — see ADR 0029 §Open questions
-        rows = connection.execute(
-            """
-            SELECT id, recorded_at, side, quantity, symbol, estimated_unit_price, strategy_name
-            FROM trades
-            WHERE strategy_name = ? AND status = 'submitted'
-            ORDER BY id ASC
-            """,
-            (strategy_id,),
-        ).fetchall()
-    return [dict(row) for row in rows]
+        rows = [
+            dict(r)
+            for r in connection.execute(
+                """
+                SELECT id, recorded_at, side, quantity, symbol, estimated_unit_price,
+                       strategy_name, status, broker_order_id
+                FROM trades
+                WHERE strategy_name = ? AND source = 'paper'
+                  AND status NOT IN ('preview', 'blocked')
+                ORDER BY id ASC
+                """,
+                (strategy_id,),
+            ).fetchall()
+        ]
+        latest_status_by_order: dict[str, str] = {}
+        if any(row["broker_order_id"] is not None for row in rows):
+            status_rows = connection.execute(
+                """
+                SELECT broker_order_id, status
+                FROM trades
+                WHERE source = 'paper'
+                  AND broker_order_id IS NOT NULL
+                  AND status NOT IN ('preview', 'blocked')
+                  AND broker_order_id IN (
+                      SELECT broker_order_id FROM trades
+                      WHERE strategy_name = ? AND source = 'paper'
+                        AND broker_order_id IS NOT NULL
+                        AND status NOT IN ('preview', 'blocked')
+                  )
+                ORDER BY id ASC
+                """,
+                (strategy_id,),
+            ).fetchall()
+            for status_row in status_rows:  # id ASC — last write wins
+                latest_status_by_order[status_row["broker_order_id"]] = status_row["status"]
+    effective: list[dict] = []
+    seen_orders: set[str] = set()
+    for row in rows:
+        order_id = row["broker_order_id"]
+        if order_id is None:
+            if row["status"] in _POSITION_AFFECTING_STATUSES:
+                effective.append(row)
+            continue
+        if order_id in seen_orders:
+            continue
+        seen_orders.add(order_id)
+        if latest_status_by_order.get(order_id) in _POSITION_AFFECTING_STATUSES:
+            effective.append(row)
+    return effective
 
 
 def _coerce_recorded_at(value: object) -> datetime:
@@ -271,7 +343,9 @@ def _fetch_submitted_trade_rows(event_store: EventStore, symbol: str) -> list[di
 
     Uses the ``idx_trades_symbol`` index. Filters to ``status="submitted"``
     in SQL — Decision 2's requirement that blocked, preview, and
-    cancelled rows are excluded from the walk.
+    cancelled rows are excluded from the walk — and to ``source="paper"``
+    so backtest fills sharing the ``trades`` table never drive the
+    attribution walk (R-P0-1).
 
     Returns a list of dicts (column -> value), ordered ascending by id.
     """
@@ -283,7 +357,7 @@ def _fetch_submitted_trade_rows(event_store: EventStore, symbol: str) -> list[di
             """
             SELECT id, recorded_at, side, quantity, strategy_name, submitted_by, status
             FROM trades
-            WHERE symbol = ? AND status = 'submitted'
+            WHERE symbol = ? AND status = 'submitted' AND source = 'paper'
             ORDER BY id ASC
             """,
             (symbol,),

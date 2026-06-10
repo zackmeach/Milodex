@@ -848,32 +848,31 @@ class EventStore:
         Only ``status="submitted"`` rows count — ``preview``/``blocked``
         rows never reached the broker, and ``cancelled`` is excluded to
         mirror the broker-side filter (which excludes CANCELLED/REJECTED).
-        Uses the ``idx_trades_symbol`` index; the ``side``/``status``/time
-        predicates filter the already-narrowed per-symbol partition.
-        Timestamps are compared in Python against the ISO-8601
-        ``recorded_at`` to match the evaluator's existing window semantics.
+        Only ``source="paper"`` rows count: backtest fills are stamped
+        ``recorded_at = wall-clock now``, so a concurrent backtest on the
+        same symbol would otherwise spuriously veto live paper submissions
+        (R-P1-4). Uses the ``idx_trades_symbol`` index; the ``side``/
+        ``status``/``source``/time predicates filter the already-narrowed
+        per-symbol partition. The time window is pushed into SQL via
+        ``datetime()`` normalization, matching the prior Python comparison
+        semantics: naive timestamps are treated as UTC and unparseable
+        ``recorded_at`` values are excluded.
         """
         normalized_symbol = symbol.strip().upper()
         normalized_side = side.strip().lower()
+        since_utc = since.astimezone(UTC) if since.tzinfo else since.replace(tzinfo=UTC)
         with self._connect() as connection:
-            rows = connection.execute(
+            row = connection.execute(
                 """
-                SELECT side, recorded_at
+                SELECT COUNT(*)
                 FROM trades
-                WHERE symbol = ? AND status = 'submitted' AND lower(side) = ?
+                WHERE symbol = ? AND status = 'submitted' AND source = 'paper'
+                  AND lower(side) = ?
+                  AND datetime(recorded_at) >= datetime(?)
                 """,
-                (normalized_symbol, normalized_side),
-            ).fetchall()
-        count = 0
-        for row in rows:
-            recorded = _parse_datetime(row["recorded_at"])
-            if recorded is None:
-                continue
-            if recorded.tzinfo is None:
-                recorded = recorded.replace(tzinfo=UTC)
-            if recorded >= since:
-                count += 1
-        return count
+                (normalized_symbol, normalized_side, since_utc.isoformat()),
+            ).fetchone()
+        return int(row[0])
 
     # ------------------------------------------------------------------
     # Maintenance / compaction (operator-run; see operations/maintenance.py)
