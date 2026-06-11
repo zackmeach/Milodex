@@ -157,6 +157,10 @@ _ACTION_INTENT_COPY: dict[str, str] = {
         "Open the read-only Evidence snapshot for this strategy. "
         "Informational only — no state changes."
     ),
+    "freeze_manifest": (
+        "Freeze the current strategy config as the active promotion manifest. "
+        "Required before promoting to the next stage."
+    ),
     "unknown": "Action not recognised by the intent preview.",
 }
 
@@ -184,6 +188,7 @@ _ACTION_FUTURE_RECORD: dict[str, str] = {
     "initiate_backtest": "backtest_run",
     "refresh_backtest": "backtest_run",
     "open_evidence": "evidence_view",
+    "freeze_manifest": "manifest_freeze_event",
     "unknown": "—",
 }
 

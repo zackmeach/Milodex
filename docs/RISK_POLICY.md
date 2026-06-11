@@ -275,6 +275,8 @@ These are deliberate Phase-1 gaps. Each is **acceptable for paper** but a **hard
 5. **The per-strategy concurrent cap does not count in-flight orders.** `_check_strategy_concurrent_positions` attributes positions via `attribute_position(...)`, which reconstructs ownership from the durable *trades* history; a pending (unfilled) order has no trade record and broker orders carry no strategy attribution, so in-flight orders are invisible to the per-strategy cap. A single strategy can briefly overshoot its own `max_positions` via in-flight orders. Closing this needs an event-store "open-orders-by-strategy" query — deferred to the live gate.
 6. **Per-strategy `daily_loss_cap_pct` measures account P&L, not strategy P&L.** See "Daily Loss Cap Semantics" above. Per-strategy P&L attribution is deferred to the live-capital gate.
 
+7. **IEX data-fidelity limits for intraday promotion cases.** All live and cached bars for intraday strategies use the IEX feed, which represents approximately 2–3% of consolidated tape volume. Volume-derived signals (session VWAP, volume-weighted indicators) systematically deviate from consolidated-tape values. Backtest evidence is internally consistent on IEX data, but bar-by-bar VWAP and volume figures do not match SIP consolidated data. This gap is acceptable for paper; it is a hard gate before any intraday strategy is considered for micro_live or live promotion — an SIP-grade data feed or cross-validation against consolidated data is required first.
+
 ---
 
 ## Relationship to SRS and Config
