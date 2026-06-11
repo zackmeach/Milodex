@@ -1912,3 +1912,133 @@ def test_stop_makes_late_async_completion_a_noop(
     assert ledger_state.refresh_kicks == 1, "post-stop completion restarted LedgerState refresh"
     assert len(bridge.recentCompletions) == 1, "post-stop completion mutated recentCompletions"
     assert len(submit_completed) == 1, "post-stop completion emitted submitCompleted"
+
+
+# ---------------------------------------------------------------------------
+# HR-10: runReconciliationAsync — bridge tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeReconcileFacade:
+    """Minimal facade stub for reconciliation bridge tests."""
+
+    def __init__(self, result: dict) -> None:
+        self._result = result
+        self.calls = 0
+
+    def run_reconciliation_now(self) -> dict:
+        self.calls += 1
+        return dict(self._result)
+
+
+def _make_reconcile_bridge(fake_facade) -> BenchCommandBridge:
+    """Return a BenchCommandBridge wired with *fake_facade* as its _facade."""
+    bridge = BenchCommandBridge.__new__(BenchCommandBridge)
+    from PySide6.QtCore import QObject, QThreadPool
+
+    from milodex.gui.bench_command_bridge import _SubmitSignals
+
+    QObject.__init__(bridge)
+    bridge._facade = fake_facade  # noqa: SLF001
+    bridge._bench_state = None
+    bridge._ledger_state = None
+    bridge._proposals = {}
+    bridge._completions = []
+    bridge._thread_pool = QThreadPool()
+    bridge._submit_signals = _SubmitSignals(bridge)
+    bridge._completed_connected = True
+    bridge._submit_signals.completed.connect(
+        bridge._on_async_submit_completed,  # noqa: SLF001
+        __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.ConnectionType.QueuedConnection,
+    )
+    bridge._stopped = False
+    return bridge
+
+
+class TestRunReconciliationAsync:
+    """BenchCommandBridge.runReconciliationAsync emits reconciliationCompleted (HR-10)."""
+
+    def test_queued_payload_returned_immediately(self, facade: BenchCommandFacade) -> None:
+        """runReconciliationAsync returns a queued status dict without blocking."""
+        bridge = BenchCommandBridge(facade)
+        result = bridge.runReconciliationAsync()
+        assert result.get("bridge_status") == "queued", (
+            f"Expected bridge_status='queued'; got {result!r}"
+        )
+
+    def test_reconciliation_completed_payload_shape(self, facade: BenchCommandFacade) -> None:
+        """reconciliationCompleted emits a dict with the expected payload keys."""
+        clean_result = {
+            "status": "clean",
+            "clean": True,
+            "mismatch_count": 0,
+            "trading_day": "2026-06-10",
+            "run_id": "abc-123",
+            "run_db_id": 42,
+            "recorded_at": "2026-06-10T12:00:00+00:00",
+            "error": "",
+        }
+        fake_facade = _FakeReconcileFacade(clean_result)
+        bridge = BenchCommandBridge.__new__(BenchCommandBridge)
+        from PySide6.QtCore import QObject, QThreadPool
+
+        from milodex.gui.bench_command_bridge import _SubmitSignals
+
+        QObject.__init__(bridge)
+        bridge._facade = fake_facade  # noqa: SLF001
+        bridge._bench_state = None
+        bridge._ledger_state = None
+        bridge._proposals = {}
+        bridge._completions = []
+        bridge._thread_pool = QThreadPool()
+        bridge._submit_signals = _SubmitSignals(bridge)
+        bridge._completed_connected = True
+        bridge._submit_signals.completed.connect(
+            bridge._on_async_submit_completed,  # noqa: SLF001
+            __import__("PySide6.QtCore", fromlist=["Qt"]).Qt.ConnectionType.QueuedConnection,
+        )
+        bridge._stopped = False
+
+        completed_payloads: list[dict] = []
+        bridge.reconciliationCompleted.connect(completed_payloads.append)
+
+        bridge.runReconciliationAsync()
+        # Process Qt events until the completion arrives (timeout = 2 s)
+        assert _process_qt_until(lambda: len(completed_payloads) >= 1), (
+            "reconciliationCompleted was not emitted within 2 s"
+        )
+        payload = completed_payloads[0]
+        for key in ("status", "clean", "mismatch_count", "trading_day", "run_id",
+                    "run_db_id", "recorded_at", "error"):
+            assert key in payload, f"Expected key {key!r} in reconciliationCompleted payload"
+        assert payload["status"] == "clean"
+        assert payload["clean"] is True
+        assert payload["run_id"] == "abc-123"
+
+    def test_stopped_bridge_returns_stopped_status(self, facade: BenchCommandFacade) -> None:
+        """runReconciliationAsync on a stopped bridge returns a bridge_status='stopped' dict."""
+        bridge = BenchCommandBridge(facade)
+        bridge.stop()
+        result = bridge.runReconciliationAsync()
+        assert result.get("bridge_status") == "stopped", (
+            f"Expected bridge_status='stopped' after bridge.stop(); got {result!r}"
+        )
+
+    def test_stopped_bridge_suppresses_late_completion(
+        self, facade: BenchCommandFacade
+    ) -> None:
+        """After stop(), _on_reconciliation_completed must not emit reconciliationCompleted."""
+        bridge = BenchCommandBridge(facade)
+        emitted: list[dict] = []
+        bridge.reconciliationCompleted.connect(emitted.append)
+
+        bridge.stop()
+        # Simulate late delivery of a completion after stop()
+        bridge._on_reconciliation_completed(  # noqa: SLF001
+            {"status": "clean", "clean": True, "mismatch_count": 0,
+             "trading_day": "", "run_id": "", "run_db_id": None,
+             "recorded_at": "", "error": ""}
+        )
+        assert len(emitted) == 0, (
+            "reconciliationCompleted must not be emitted after bridge.stop()"
+        )

@@ -45,7 +45,7 @@ from milodex.core.event_store import (
     OrchestrationJobEvent,
     PromotionEvent,
 )
-from milodex.operations.reconciliation import latest_readiness
+from milodex.operations.reconciliation import latest_readiness, run_reconciliation
 from milodex.promotion import (
     FROZEN_STAGES,
     MIN_TRADES,
@@ -518,6 +518,7 @@ class BenchCommandFacade:
         locks_dir: Path,
         get_trading_mode: Callable[[], str],
         event_store_factory: Callable[[], EventStore] | None = None,
+        broker_factory: Callable[[], Any] | None = None,
         backtest_engine_factory: Callable[..., Any] | None = None,
         paper_runner_control: Any | None = None,
         workflow_readiness: Any | None = None,
@@ -527,6 +528,7 @@ class BenchCommandFacade:
         self._locks_dir = Path(locks_dir)
         self._get_trading_mode = get_trading_mode
         self._event_store_factory = event_store_factory
+        self._broker_factory = broker_factory
         self._backtest_engine_factory = backtest_engine_factory
         self._paper_runner_control = paper_runner_control
         self._workflow_readiness = workflow_readiness or _DefaultWorkflowReadiness(
@@ -2071,6 +2073,95 @@ class BenchCommandFacade:
             audit_event_id=session_id,
         )
         return self._finish_orchestration_job(job_ref, submit_result)
+
+    # ------------------------------------------------------------------ #
+    # Direct action: run reconciliation (HR-10 / G-P2-2)
+    # ------------------------------------------------------------------ #
+
+    def run_reconciliation_now(self) -> dict[str, Any]:
+        """Run a live broker reconciliation and persist the result.
+
+        Direct action — not a propose/submit pair.  Reconciliation is
+        read-mostly (compares broker state vs. the local event store) and
+        writes only a single ``ReconciliationRunEvent`` row.  The lighter
+        path is appropriate per the roadmap's HR-10 recommendation.
+
+        Returns a ``QVariantMap``-friendly dict with the keys:
+        - ``status``       — "clean", "dirty", "incomplete", or "error"
+        - ``clean``        — bool (True only when status == "clean")
+        - ``mismatch_count`` — int (0 when clean or error)
+        - ``trading_day``  — local NY trading-day string, or "" on error
+        - ``run_id``       — reconciliation run UUID, or "" on error
+        - ``run_db_id``    — int DB row id, or None on error
+        - ``recorded_at``  — ISO-8601 UTC timestamp, or "" on error
+        - ``error``        — error message string, or "" on success
+
+        Structured-error (never raises): broker unreachable, event-store
+        unavailable, and any other exception produce ``status="error"``
+        with a populated ``error`` key rather than propagating the
+        exception to the caller.
+        """
+        if self._event_store_factory is None:
+            return {
+                "status": "error",
+                "clean": False,
+                "mismatch_count": 0,
+                "trading_day": "",
+                "run_id": "",
+                "run_db_id": None,
+                "recorded_at": "",
+                "error": (
+                    "BenchCommandFacade was constructed without an event_store_factory; "
+                    "reconciliation requires one."
+                ),
+            }
+        if self._broker_factory is None:
+            return {
+                "status": "error",
+                "clean": False,
+                "mismatch_count": 0,
+                "trading_day": "",
+                "run_id": "",
+                "run_db_id": None,
+                "recorded_at": "",
+                "error": (
+                    "BenchCommandFacade was constructed without a broker_factory; "
+                    "reconciliation requires a live broker connection."
+                ),
+            }
+        try:
+            event_store = self._event_store_factory()
+            broker = self._broker_factory()
+            result = run_reconciliation(
+                event_store=event_store,
+                broker=broker,
+                persist=True,
+                now=self._now(),
+            )
+        except Exception as exc:  # noqa: BLE001 - surface structured error, never raise.
+            logger.exception("run_reconciliation_now: reconciliation failed.")
+            return {
+                "status": "error",
+                "clean": False,
+                "mismatch_count": 0,
+                "trading_day": "",
+                "run_id": "",
+                "run_db_id": None,
+                "recorded_at": "",
+                "error": f"Reconciliation failed: {exc}",
+            }
+        position_mismatches = sum(1 for r in result.position_rows if r.kind != "ok")
+        order_mismatches = sum(1 for r in result.order_rows if r.kind != "ok")
+        return {
+            "status": result.status,
+            "clean": result.reconciliation_clean,
+            "mismatch_count": position_mismatches + order_mismatches,
+            "trading_day": result.to_dict().get("local_trading_day", ""),
+            "run_id": result.run_id,
+            "run_db_id": result.run_db_id,
+            "recorded_at": result.recorded_at.isoformat(),
+            "error": "",
+        }
 
     # ------------------------------------------------------------------ #
     # Internal helpers

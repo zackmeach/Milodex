@@ -117,6 +117,37 @@ def _resolve_operator_identity() -> str:
     return "operator"
 
 
+class _ReconciliationSignals(QObject):
+    completed = Signal("QVariantMap")
+
+
+class _ReconciliationRunnable(QRunnable):
+    """Worker that calls ``BenchCommandFacade.run_reconciliation_now()`` off the main thread."""
+
+    def __init__(self, facade: BenchCommandFacade, signals: _ReconciliationSignals) -> None:
+        super().__init__()
+        self._facade = facade
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:  # pragma: no cover - exercised through QObject lifecycle tests
+        try:
+            result = self._facade.run_reconciliation_now()
+        except Exception as exc:  # noqa: BLE001 - bridge must surface final result.
+            logger.exception("Bench reconciliation async run failed.")
+            result = {
+                "status": "error",
+                "clean": False,
+                "mismatch_count": 0,
+                "trading_day": "",
+                "run_id": "",
+                "run_db_id": None,
+                "recorded_at": "",
+                "error": f"Async reconciliation failed: {exc}",
+            }
+        self._signals.completed.emit(result)
+
+
 class BenchCommandBridge(QObject):
     """Qt-side bridge to the Bench command facade (ADR 0051 Phase F).
 
@@ -140,6 +171,9 @@ class BenchCommandBridge(QObject):
     # Emitted whenever the read-only recent-completion record changes (a new
     # completion is recorded or one is dismissed). Read-only display state only.
     recentCompletionsChanged = Signal()  # noqa: N815
+    # Emitted when an async reconciliation run completes (HR-10 / G-P2-2).
+    # Payload is the dict returned by BenchCommandFacade.run_reconciliation_now().
+    reconciliationCompleted = Signal("QVariantMap")  # noqa: N815
 
     def __init__(
         self,
@@ -673,6 +707,41 @@ class BenchCommandBridge(QObject):
             propose_method="proposeStopPaperRunner",
             submitter=self._facade.submit_stop_paper_runner,
         )
+
+    # ------------------------------------------------------------------ #
+    # Direct action: reconciliation (HR-10 / G-P2-2)
+    # ------------------------------------------------------------------ #
+
+    @Slot(result="QVariantMap")
+    def runReconciliationAsync(self) -> dict[str, Any]:  # noqa: N802
+        """Queue a live reconciliation run on the bridge's async pool.
+
+        Mirrors the async-submit pattern: returns a ``{"bridge_status":
+        "queued"}`` dict immediately; emits ``reconciliationCompleted``
+        with the full result dict when the worker finishes.  The
+        ``_stopped`` guard prevents a late-queued completion from
+        touching the bridge after shutdown.
+
+        QML usage::
+
+            BenchCommandBridge.runReconciliationAsync()
+            // await reconciliationCompleted signal for the result
+        """
+        if self._stopped:
+            return {"bridge_status": "stopped", "error": "Bridge is shutting down."}
+
+        signals = _ReconciliationSignals(self)
+        signals.completed.connect(
+            self._on_reconciliation_completed, Qt.ConnectionType.QueuedConnection
+        )
+        self._thread_pool.start(_ReconciliationRunnable(self._facade, signals))
+        return {"bridge_status": "queued"}
+
+    @Slot("QVariantMap")
+    def _on_reconciliation_completed(self, payload: dict[str, Any]) -> None:
+        if self._stopped:
+            return
+        self.reconciliationCompleted.emit(payload)
 
     # ------------------------------------------------------------------ #
     # Introspection (used by tests and operator surfaces)
