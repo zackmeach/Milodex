@@ -3230,13 +3230,24 @@ def test__resolve_config_malformed_matched_yaml_returns_strategy_config_invalid(
 
 
 class _FakeBroker:
-    """Minimal broker stub whose snapshot returns zero positions/orders."""
+    """Minimal broker stub whose snapshot returns zero positions/orders.
+
+    HR-13 item 13: includes get_orders and is_market_open so
+    run_reconciliation_now can reach a status="clean" result without raising
+    AttributeError in the broker snapshot path.
+    """
 
     def get_positions(self):
         return []
 
     def get_open_orders(self):
         return []
+
+    def get_orders(self, status: str = "all", limit: int = 100):
+        return []
+
+    def is_market_open(self) -> bool:
+        return False
 
     def get_account(self):
         return None
@@ -3292,7 +3303,12 @@ class TestRunReconciliationNow:
     def test_persists_reconciliation_run_row(
         self, config_dir: Path, locks_dir: Path, event_store: EventStore
     ) -> None:
-        """run_reconciliation_now with persist=True writes a run row to the event store."""
+        """run_reconciliation_now with persist=True writes a run row to the event store.
+
+        HR-13 item 13: _FakeBroker now supplies get_orders + is_market_open so
+        the broker snapshot succeeds and run_reconciliation can reach
+        status='clean' (zero broker positions, zero local positions).
+        """
         facade = self._facade_with_broker(
             config_dir, locks_dir, event_store, broker_factory=_FakeBroker
         )
@@ -3300,6 +3316,11 @@ class TestRunReconciliationNow:
         assert result["status"] != "error", (
             f"Expected a non-error result; got status={result['status']!r}, "
             f"error={result['error']!r}"
+        )
+        # With an empty broker and an empty event store, reconciliation must be
+        # clean (no mismatches).
+        assert result["status"] == "clean", (
+            f"Expected status='clean' with empty broker and empty store; got {result['status']!r}"
         )
         # The run row must be retrievable via the event store.
         latest = event_store.get_latest_reconciliation_run()
