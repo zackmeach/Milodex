@@ -1983,6 +1983,53 @@ def test_intraday_closed_market_early_out_after_session_drained(
     assert runner._intraday_quiet_closed_cycles == 0
 
 
+def test_intraday_drained_flag_requires_wall_clock_margin(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Round-3 regression: quiet-cycle count alone must NOT arm the early-out.
+
+    With the clock pinned INSIDE the publication-lag margin (2 bar-widths +
+    max(3 bar-widths, 10 min) past the newest bar), arbitrarily many quiet
+    closed-market cycles keep fetching — a straggler could still publish.
+    Once the clock passes the margin, the next quiet cycle arms. Deleting
+    the wall-clock condition makes this test fail (review round 2 showed
+    the counter alone reproduced every prior pinned transition).
+    """
+    make_regime_config_intraday(strategy_config_dir)
+    base_end = datetime(2026, 6, 10, 19, 50, tzinfo=UTC)
+    runner, broker, provider, event_store = _build_hr2_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        bars_by_symbol={
+            "SPY": build_intraday_barset([10.0, 10.0], end=base_end, freq="1min"),
+            "SHY": build_intraday_barset([10.0, 10.0], end=base_end, freq="1min"),
+        },
+        market_open=False,
+    )
+    # Margin for 1Min bars = 2min + max(3min, 10min) = 12min. Pin inside it.
+    runner._now = lambda: base_end + timedelta(minutes=5)
+
+    runner.run_cycle()  # evaluates the latest completed bar
+    for _ in range(4):  # quiet cycles well past the >=2 count requirement
+        runner.run_cycle()
+    assert runner._intraday_session_drained is False, (
+        "quiet-cycle count alone must not arm inside the publication-lag margin"
+    )
+    fetches_inside_margin = len(provider.get_bars_calls)
+    assert fetches_inside_margin == 5, "fetching must continue inside the margin"
+
+    runner._now = lambda: base_end + timedelta(minutes=13)  # past the 12min margin
+    runner.run_cycle()  # quiet cycle past the margin → arms
+    assert runner._intraday_session_drained is True
+    runner.run_cycle()
+    assert len(provider.get_bars_calls) == fetches_inside_margin + 1, (
+        "post-arm closed-market cycles must not fetch"
+    )
+
+
 def test_intraday_drained_flag_waits_for_late_published_final_bar(
     tmp_path: Path,
     strategy_config_dir: Path,

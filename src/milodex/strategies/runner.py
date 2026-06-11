@@ -102,15 +102,21 @@ class StrategyRunner:
         # cycles skip the fetch entirely. Reset on the first open-market
         # cycle. Never set on the 1D path (daily uses the lockin watermark).
         #
-        # Arming is deliberately conservative (review finding): the feed
+        # Arming is deliberately conservative (review rounds 2-3): the feed
         # publishes a bar's aggregate with lag (seconds routinely, longer on
-        # hiccups), so the first quiet closed-market cycle may simply predate
-        # the session's final bar appearing. Arming requires BOTH two
-        # consecutive quiet closed-market fetches (a straggler published
-        # within one poll interval is caught by the next cycle) AND a
-        # wall-clock margin of 3 bar-widths past the newest processed bar
-        # (covers hiccup-scale lag, calendar-free). Cost: at most ~3
-        # bar-widths of extra post-close polling before going quiet.
+        # hiccups), and in the at-risk state the unpublished straggler
+        # completes TWO bar-widths after the newest processed bar
+        # (start-of-window timestamps). Arming requires BOTH two consecutive
+        # quiet closed-market fetches (a straggler published within one poll
+        # interval is caught by the next cycle) AND a wall-clock margin of
+        # 2 bar-widths + max(3 bar-widths, 10 minutes) past the newest
+        # processed bar — i.e. at least 10 minutes of publication-lag
+        # tolerance past the straggler's own window close, at any tempo,
+        # calendar-free. A straggler publishing later than that is
+        # permanently skipped (accepted residual: session strategies are
+        # flat by then via exit_minutes_before_close, and extended-hours
+        # bars keep resetting the quiet count until ~20:00 ET on liquid
+        # symbols). Cost: bounded extra post-close quiet polling.
         self._intraday_session_drained = False
         self._intraday_quiet_closed_cycles = 0
         self._pending_lockin_signature: tuple[float, float, float, float, int] | None = None
@@ -289,13 +295,17 @@ class StrategyRunner:
             if not is_daily_bar and not market_open:
                 # A quiet closed-market fetch: the newest completed bar is
                 # already processed. Arm the early-out only once no straggler
-                # can plausibly still be pending publication — two consecutive
-                # quiet fetches AND 3 bar-widths of wall clock past the newest
-                # bar (see __init__ comment; review finding on feed lag).
+                # can plausibly still be pending publication (see __init__
+                # comment). The margin is anchored at the bar BEFORE a
+                # pending straggler, which completes 2 bar-widths later —
+                # hence 2 bar-widths plus a max(3 bar-widths, 10 min)
+                # publication-lag allowance past the straggler's own close.
                 self._intraday_quiet_closed_cycles += 1
+                bar = self._bar_duration()
+                margin = 2 * bar + max(3 * bar, timedelta(minutes=10))
                 if (
                     self._intraday_quiet_closed_cycles >= 2
-                    and self._now() - latest_bar.timestamp >= 3 * self._bar_duration()
+                    and self._now() - latest_bar.timestamp >= margin
                 ):
                     self._intraday_session_drained = True
             return []
