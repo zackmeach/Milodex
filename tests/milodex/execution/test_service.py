@@ -47,6 +47,7 @@ class StubBroker:
         self.market_open = market_open
         self.submit_order_result = submit_order
         self.submit_calls: list[dict[str, object]] = []
+        self.cancel_all_calls = 0
 
     def get_account(self) -> AccountInfo:
         return self.account
@@ -70,6 +71,10 @@ class StubBroker:
 
     def cancel_order(self, order_id: str) -> bool:
         return any(order.id == order_id for order in self.orders)
+
+    def cancel_all_orders(self) -> list[Order]:
+        self.cancel_all_calls += 1
+        return []
 
 
 class RejectingStubBroker(StubBroker):
@@ -651,6 +656,51 @@ def test_kill_switch_status_and_activation(
     assert state.active is True
     # Chokepoint invariant: a blocked submit must NEVER reach the broker.
     assert broker.submit_calls == []
+    # R-P2-5: the risk-triggered activation path cancels open orders, same as
+    # the operator SIGINT path — "halt all trading" includes resting orders.
+    assert broker.cancel_all_calls == 1
+
+
+def test_risk_triggered_kill_switch_activates_even_when_cancel_fails(
+    tmp_path, risk_defaults_file, latest_bar, submitted_order
+):
+    # R-P2-5 fail-safe posture: a broker cancel failure must NEVER block kill
+    # switch activation. The switch engages regardless; the failure is logged.
+    class CancelFailingBroker(StubBroker):
+        def cancel_all_orders(self) -> list[Order]:
+            self.cancel_all_calls += 1
+            raise RuntimeError("broker connection lost")
+
+    account = AccountInfo(
+        equity=10_000.0,
+        cash=8_000.0,
+        buying_power=8_000.0,
+        portfolio_value=10_000.0,
+        daily_pnl=-1_500.0,
+    )
+    broker = CancelFailingBroker(account=account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert "kill_switch_threshold_breached" in result.risk_decision.reason_codes
+    assert broker.cancel_all_calls == 1
+    assert service.get_kill_switch_state().active is True
 
 
 def test_preview_and_submit_record_explanations_and_trades(

@@ -61,11 +61,19 @@ order_safety:
   max_data_staleness_seconds: 300
 
 exposure_policy:
+  # Declarative policy record; enforcement lives in src/milodex/risk/evaluator.py.
   # Exposure-increasing orders run the full risk/approval/kill-switch check set.
-  # Exposure-reducing orders use a more permissive policy because they move toward safety.
-  # Sells that close or shrink positions remain allowed even during an active kill switch.
+  # Exposure-reducing orders use a more permissive policy because they move
+  # toward safety: they are exempt from the max-order-value (fat-finger) cap
+  # and the reconciliation-readiness gate. See docs/RISK_POLICY.md
+  # "Reducing vs Increasing Exposure".
   reducing_orders_permissive: true
-  reducing_allowed_during_kill_switch: true
+  # DC-1 (2026-06-10): the kill switch is an ABSOLUTE halt — it blocks ALL
+  # orders, including reducing sells. The switch fires precisely when trust
+  # in execution/state is questionable, and a "reducing" order is only safe
+  # if the ledger it reduces against is truthful. The operator exits existing
+  # risk deliberately after manual reset.
+  reducing_allowed_during_kill_switch: false
 
 backtesting:
   # Minimum fraction of declared-universe symbols that must have bars in the
