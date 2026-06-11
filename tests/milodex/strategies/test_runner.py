@@ -815,10 +815,14 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
     """_build_entry_state() maps avg_entry_price and held_days for open positions."""
     event_store = EventStore(tmp_path / "data" / "milodex.db")
 
-    # Seed a paper BUY trade for SPY 7 days ago.  Anchor to date.today() so that
-    # _build_entry_state's (date.today() - trade.recorded_at.date()).days is
+    # Seed a paper BUY trade for SPY 7 days ago.  Anchor to UTC date so that
+    # _build_entry_state's (self._now().date() - opened_at.date()).days is
     # exactly 7 regardless of timezone offset between UTC and local time.
-    buy_date = datetime.combine(date.today() - timedelta(days=7), datetime.min.time(), tzinfo=UTC)
+    # Using date.today() (local) here would skew by 1 when the machine is past
+    # midnight UTC (e.g. UTC+1 or later).
+    buy_date = datetime.combine(
+        datetime.now(tz=UTC).date() - timedelta(days=7), datetime.min.time(), tzinfo=UTC
+    )
     explanation_id = event_store.append_explanation(
         ExplanationEvent(
             recorded_at=buy_date,
@@ -1088,7 +1092,7 @@ def test_runner_current_positions_uses_strategy_ledger_not_broker_net(
 
     entry_state = runner._build_entry_state()
     assert entry_state["SPY"]["entry_price"] == 590.0
-    assert entry_state["SPY"]["held_days"] == (date.today() - buy_at.date()).days
+    assert entry_state["SPY"]["held_days"] == (datetime.now(tz=UTC).date() - buy_at.date()).days
 
 
 def test_runner_evaluation_symbol_uses_resolved_context_universe(
