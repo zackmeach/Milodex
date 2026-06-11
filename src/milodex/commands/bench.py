@@ -29,6 +29,7 @@ Forbidden dependencies:
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, replace
@@ -68,6 +69,7 @@ from milodex.promotion.state_machine import demote as _governance_demote
 from milodex.risk.policy import RiskPolicy
 from milodex.strategies.loader import load_strategy_config
 from milodex.strategies.paper_runner_control import (
+    _INTERPRETER_PROBE_TIMEOUT_SECONDS,
     evaluation_symbol_for_config,
     live_runner_eval_symbols,
     runner_lock_name,
@@ -121,6 +123,12 @@ ACTION_FAMILIES: tuple[str, ...] = (
 
 # Demotion targets the existing ``promotion.state_machine.demote`` accepts.
 DEMOTION_TARGETS: frozenset[str] = frozenset({"idle", "backtest", "disabled"})
+
+# Poll interval for the audit-link retry in submit_start_paper_runner.
+# The retry budget matches _INTERPRETER_PROBE_TIMEOUT_SECONDS (also 15 s)
+# because the same interpreter import chain must complete before the runner
+# can write its strategy_runs row.
+_AUDIT_LINK_POLL_INTERVAL_SECONDS: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -523,6 +531,7 @@ class BenchCommandFacade:
         paper_runner_control: Any | None = None,
         workflow_readiness: Any | None = None,
         now: Callable[[], datetime] | None = None,
+        sleep: Callable[[float], None] | None = None,
     ) -> None:
         self._config_dir = Path(config_dir)
         self._locks_dir = Path(locks_dir)
@@ -535,6 +544,7 @@ class BenchCommandFacade:
             event_store_factory
         )
         self._now = now or (lambda: datetime.now(tz=UTC))
+        self._sleep = sleep or time.sleep
 
     # ------------------------------------------------------------------ #
     # Proposal methods
@@ -1884,7 +1894,16 @@ class BenchCommandFacade:
             "action": "start_paper_runner",
         }
         command = tuple(getattr(result, "command", ()))
-        session_id = self._latest_open_session_id(proposal.strategy_id)
+        # Retry _latest_open_session_id for up to the interpreter-probe budget
+        # (R-P2-6 / G-P2-4): the child needs several seconds of interpreter +
+        # pandas + alpaca imports before it can write its strategy_runs row, so
+        # a single immediate query reliably races against a healthy launch.
+        session_id: str | None = None
+        deadline = self._now().timestamp() + _INTERPRETER_PROBE_TIMEOUT_SECONDS
+        while session_id is None and self._now().timestamp() < deadline:
+            session_id = self._latest_open_session_id(proposal.strategy_id)
+            if session_id is None:
+                self._sleep(_AUDIT_LINK_POLL_INTERVAL_SECONDS)
         if not session_id:
             error_result = CommandResult(
                 proposal_id=proposal.proposal_id,
