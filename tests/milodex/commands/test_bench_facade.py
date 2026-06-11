@@ -43,18 +43,19 @@ from milodex.commands.bench import (
     ACTION_FAMILY_PROMOTE_TO_PAPER,
     ACTION_FAMILY_START_PAPER_RUNNER,
     ACTION_FAMILY_STOP_PAPER_RUNNER,
+    READINESS_KILL_SWITCH,
     BenchCommandFacade,
     Blocker,
     CommandProposal,
     CommandResult,
     Precondition,
-    READINESS_KILL_SWITCH,
     WorkflowReadinessIssue,
     WorkflowReadinessReport,
 )
 from milodex.core.event_store import (
     BacktestRunEvent,
     EventStore,
+    ExplanationEvent,
     ReconciliationRunEvent,
     StrategyRunEvent,
 )
@@ -595,6 +596,265 @@ def test_default_workflow_readiness_reads_durable_reconciliation(event_store: Ev
 
 
 # --------------------------------------------------------------------------- #
+# _DefaultWorkflowReadiness — data_freshness dimension (HR-9)
+# --------------------------------------------------------------------------- #
+
+_EXPLANATION_DEFAULTS = {
+    "decision_type": "preview",
+    "status": "preview",
+    "strategy_name": "test_strategy",
+    "strategy_stage": "paper",
+    "strategy_config_path": "configs/test.yaml",
+    "config_hash": None,
+    "symbol": "SPY",
+    "side": "buy",
+    "quantity": 1.0,
+    "order_type": "market",
+    "time_in_force": "day",
+    "submitted_by": "strategy_runner",
+    "market_open": True,
+    "latest_bar_close": 450.0,
+    "account_equity": 10_000.0,
+    "account_cash": 9_000.0,
+    "account_portfolio_value": 10_000.0,
+    "account_daily_pnl": 0.0,
+    "risk_allowed": True,
+    "risk_summary": "Allowed",
+    "reason_codes": [],
+    "risk_checks": [],
+    "context": {},
+    "session_id": "sess-freshness-test",
+}
+
+
+def _append_fresh_explanation(event_store: EventStore) -> None:
+    """Append an explanation row with a bar timestamp of *now* (fresh data)."""
+    event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=datetime.now(tz=UTC),
+            latest_bar_timestamp=datetime.now(tz=UTC),
+            **_EXPLANATION_DEFAULTS,
+        )
+    )
+
+
+def _append_stale_explanation(event_store: EventStore) -> None:
+    """Append an explanation row with a bar timestamp > 24 h ago (stale data)."""
+    from datetime import timedelta
+
+    event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=datetime.now(tz=UTC),
+            latest_bar_timestamp=datetime.now(tz=UTC) - timedelta(hours=48),
+            **_EXPLANATION_DEFAULTS,
+        )
+    )
+
+
+def _append_backtest_explanation(event_store: EventStore) -> None:
+    """Append a backtest-engine explanation with an ANCIENT bar timestamp.
+
+    Mirrors the simulation kernel's rows: ``backtest_run_id`` ancestor,
+    historical ``latest_bar_timestamp``. Such rows land with higher ids than
+    live rows whenever a backtest runs after the fleet's last evaluation —
+    they must never drive the freshness signal (same contamination family
+    as R-P0-1).
+    """
+    from datetime import timedelta
+
+    from milodex.core.event_store import BacktestRunEvent
+
+    now = datetime.now(tz=UTC)
+    run_row_id = event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="bt-freshness-test",
+            strategy_id="test.strategy.v1",
+            config_path=None,
+            config_hash=None,
+            start_date=now,
+            end_date=now,
+            started_at=now,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={},
+        )
+    )
+    overrides = dict(_EXPLANATION_DEFAULTS)
+    overrides["submitted_by"] = "backtest_engine"
+    event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=now,
+            latest_bar_timestamp=now - timedelta(days=365),
+            backtest_run_id=run_row_id,
+            **overrides,
+        )
+    )
+
+
+def test_default_workflow_readiness_data_freshness_ignores_backtest_rows(
+    event_store: EventStore,
+) -> None:
+    # Review F-1: a backtest run AFTER the last live evaluation writes
+    # explanations with historical bar timestamps at higher row ids. The
+    # freshness signal must come from live rows only — otherwise running a
+    # backtest before a promote false-blocks the GUI gate with a years-old
+    # "latest" bar.
+    _append_fresh_explanation(event_store)
+    _append_backtest_explanation(event_store)
+    readiness = facade_module._DefaultWorkflowReadiness(lambda: event_store)
+
+    report = readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({facade_module.READINESS_DATA_FRESHNESS}),
+        inspected_checks=frozenset(),
+    )
+
+    assert report.issues == (), f"Unexpected issues: {report.issues}"
+
+
+def test_default_workflow_readiness_data_freshness_fresh_data_no_issue(
+    event_store: EventStore,
+) -> None:
+    # Fresh bar → no data_stale issue; promote proposal becomes admissible
+    # (this is the "always blocked" behavior HR-9 replaces).
+    _append_fresh_explanation(event_store)
+    readiness = facade_module._DefaultWorkflowReadiness(lambda: event_store)
+
+    report = readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({facade_module.READINESS_DATA_FRESHNESS}),
+        inspected_checks=frozenset(),
+    )
+
+    assert report.issues == (), f"Unexpected issues: {report.issues}"
+
+
+def test_default_workflow_readiness_data_freshness_stale_data_blocks(
+    event_store: EventStore,
+) -> None:
+    # Stale bar (> 24 h old) → blocking data_stale issue.
+    _append_stale_explanation(event_store)
+    readiness = facade_module._DefaultWorkflowReadiness(lambda: event_store)
+
+    report = readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({facade_module.READINESS_DATA_FRESHNESS}),
+        inspected_checks=frozenset(),
+    )
+
+    assert len(report.issues) == 1
+    issue = report.issues[0]
+    assert issue.dimension == facade_module.READINESS_DATA_FRESHNESS
+    assert issue.reason_code == "data_stale"
+    assert issue.blocking is True
+    assert "age_hours" in issue.context
+    assert issue.context["threshold_hours"] == facade_module._DATA_FRESHNESS_STALE_HOURS
+
+
+def test_default_workflow_readiness_data_freshness_empty_store_blocks(
+    event_store: EventStore,
+) -> None:
+    # Empty store (no bar timestamps) → fail closed: blocking data_stale issue.
+    readiness = facade_module._DefaultWorkflowReadiness(lambda: event_store)
+
+    report = readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({facade_module.READINESS_DATA_FRESHNESS}),
+        inspected_checks=frozenset(),
+    )
+
+    assert len(report.issues) == 1
+    issue = report.issues[0]
+    assert issue.reason_code == "data_stale"
+    assert issue.blocking is True
+
+
+def test_default_workflow_readiness_data_freshness_no_store_blocks() -> None:
+    # No factory configured → fail closed: unreadable store blocks.
+    readiness = facade_module._DefaultWorkflowReadiness(event_store_factory=None)
+
+    report = readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({facade_module.READINESS_DATA_FRESHNESS}),
+        inspected_checks=frozenset(),
+    )
+
+    assert len(report.issues) == 1
+    assert report.issues[0].reason_code == "data_stale"
+    assert report.issues[0].blocking is True
+
+
+def test_default_workflow_readiness_single_event_store_per_evaluate(
+    event_store: EventStore,
+) -> None:
+    # G-P3-5: one EventStore construction per evaluate() call, regardless of how
+    # many dimensions are checked. The factory records each call; we assert exactly
+    # one call for an evaluate over all four dimensions.
+    calls: list[EventStore] = []
+
+    def _factory() -> EventStore:
+        calls.append(event_store)
+        return event_store
+
+    readiness = facade_module._DefaultWorkflowReadiness(_factory)
+    _append_fresh_explanation(event_store)
+
+    readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset(
+            {
+                facade_module.READINESS_DATA_FRESHNESS,
+                facade_module.READINESS_KILL_SWITCH,
+                facade_module.READINESS_RECONCILIATION,
+                facade_module.READINESS_BROKER_REACHABILITY,
+            }
+        ),
+        inspected_checks=frozenset(),
+    )
+
+    assert len(calls) == 1, (
+        f"Expected 1 EventStore construction for all four dimensions, got {len(calls)}"
+    )
+
+
+def test_propose_promote_to_paper_admissible_when_data_is_fresh(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    # End-to-end: fresh bar in the event store → promote proposal admissible
+    # (data_freshness dimension satisfied; no data_stale blocker).
+    _write_strategy(config_dir, stage="backtest")
+    _append_fresh_explanation(event_store)
+    # Use the real _DefaultWorkflowReadiness wired through the facade.
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=config_dir.parent / "locks",
+        get_trading_mode=lambda: "paper",
+        event_store_factory=lambda: event_store,
+    )
+    (config_dir.parent / "locks").mkdir(exist_ok=True)
+
+    proposal = facade.propose_promote_to_paper(
+        STRATEGY_ID,
+        recommendation="Fresh data confirmed.",
+        known_risks=["Paper risk."],
+        lifecycle_exempt=True,
+    )
+
+    # data_stale must NOT be a blocker.
+    data_stale_blockers = [b for b in proposal.blockers if b.reason_code == "data_stale"]
+    assert data_stale_blockers == [], (
+        f"Unexpected data_stale blocker with fresh data: {data_stale_blockers}"
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Demote proposals
 # --------------------------------------------------------------------------- #
 
@@ -1008,9 +1268,7 @@ def test_propose_stop_paper_runner_admissible_when_kill_switch_active(
     _write_strategy(config_dir, stage="paper")
     _seed_runner_lock(locks_dir)
     readiness = _FakeWorkflowReadiness(
-        WorkflowReadinessReport(
-            issues=(_readiness_issue("kill_switch_open"),)
-        )
+        WorkflowReadinessReport(issues=(_readiness_issue("kill_switch_open"),))
     )
     facade = make_facade(workflow_readiness=readiness)
 
