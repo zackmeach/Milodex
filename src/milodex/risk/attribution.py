@@ -19,11 +19,15 @@ counting it would misattribute the symbol to whichever strategy
 proposed the rejected trade. The reconstruction walk MUST exclude
 those rows.
 
-Source scoping (R-P0-1): only ``source="paper"`` rows participate in
-any fold or walk here. Backtest fills are written to the same
-``trades`` table with the same ``strategy_name``/``status`` vocabulary;
-without the source predicate every backtest run contaminates the live
-position view. The per-strategy fold additionally applies
+Source scoping (R-P0-1): every fold and walk here operates on a single
+``trades.source`` universe per call. The per-strategy folds are
+paper-only; the attribution walk defaults to paper and accepts
+``source="backtest"`` for the backtest structural evaluator, whose
+simulated positions were opened by backtest fills. Backtest fills are
+written to the same ``trades`` table with the same
+``strategy_name``/``status`` vocabulary; without the source predicate
+every backtest run contaminates the live position view. The
+per-strategy fold additionally applies
 latest-status-per-``broker_order_id`` reversal (mirroring
 ``fold_positions`` in operations/reconciliation.py) so corrective
 terminal rows appended by ``sync_local_only_orders`` close ledger lots.
@@ -357,7 +361,8 @@ def _fetch_submitted_trade_rows(
 ) -> list[dict]:
     """Fetch submitted-status trade rows for ``symbol`` from the event store.
 
-    Uses the ``idx_trades_symbol`` index. Filters to ``status="submitted"``
+    The planner may drive from ``idx_trades_symbol`` or
+    ``idx_trades_source``. Filters to ``status="submitted"``
     in SQL — Decision 2's requirement that blocked, preview, and
     cancelled rows are excluded from the walk — and to a single ``source``
     so backtest fills sharing the ``trades`` table never drive the live

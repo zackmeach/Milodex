@@ -787,15 +787,11 @@ def test_attribute_position_backtest_source_sees_backtest_universe_only(store):
     source='backtest' fills. Paper-only scoping made those invisible
     (owner -> 'operator'), silently disabling the per-strategy cap in
     ENFORCE-policy backtests. The two universes must be mutually invisible.
+
+    The backtest BUY is recorded FIRST (lower id) so the paper-direction
+    assertion discriminates: an unscoped walk would see the backtest row
+    open the chain and return 'backtest_owner'.
     """
-    _record_trade(
-        store,
-        symbol="SPY",
-        side="buy",
-        quantity=10,
-        strategy_name="paper_owner",
-        recorded_at=_NOW - timedelta(days=2),
-    )
     _record_trade(
         store,
         symbol="SPY",
@@ -803,13 +799,20 @@ def test_attribute_position_backtest_source_sees_backtest_universe_only(store):
         quantity=5,
         strategy_name="backtest_owner",
         source="backtest",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="paper_owner",
         recorded_at=_NOW - timedelta(days=1),
     )
 
     assert attribute_position(symbol="SPY", event_store=store) == "paper_owner"
     assert (
-        attribute_position(symbol="SPY", event_store=store, source="backtest")
-        == "backtest_owner"
+        attribute_position(symbol="SPY", event_store=store, source="backtest") == "backtest_owner"
     )
 
 
