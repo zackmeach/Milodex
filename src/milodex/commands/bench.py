@@ -267,8 +267,18 @@ class CommandResult:
         }
 
 
+# Freshness threshold shared with the CLI trust report (_data_freshness in
+# report.py).  A bar older than this is considered stale.
+_DATA_FRESHNESS_STALE_HOURS = 24.0
+
+
 class _DefaultWorkflowReadiness:
-    """Fail-closed production fallback for workflow-readiness verdicts."""
+    """Fail-closed production fallback for workflow-readiness verdicts.
+
+    One ``EventStore`` is constructed per :meth:`evaluate` call and shared
+    across all per-dimension helpers (G-P3-5 — avoids WAL/migration setup
+    overhead multiplied by dimension count on every GUI propose path).
+    """
 
     def __init__(self, event_store_factory: Callable[[], EventStore] | None) -> None:
         self._event_store_factory = event_store_factory
@@ -281,16 +291,21 @@ class _DefaultWorkflowReadiness:
         required_checks: frozenset[str],
         inspected_checks: frozenset[str],
     ) -> WorkflowReadinessReport:
+        # Construct one EventStore for the entire evaluate call (G-P3-5).
+        event_store: EventStore | None = (
+            self._event_store_factory() if self._event_store_factory is not None else None
+        )
         issues: list[WorkflowReadinessIssue] = []
         for dimension in sorted(required_checks | inspected_checks):
             blocking = dimension in required_checks
             if dimension == READINESS_KILL_SWITCH:
-                issue = self._kill_switch_issue(blocking=blocking)
+                issue = self._kill_switch_issue(event_store=event_store, blocking=blocking)
                 if issue is not None:
                     issues.append(issue)
                 continue
             if dimension == READINESS_RECONCILIATION:
                 issue = self._reconciliation_issue(
+                    event_store=event_store,
                     action_family=action_family,
                     strategy_id=strategy_id,
                     blocking=blocking,
@@ -299,21 +314,18 @@ class _DefaultWorkflowReadiness:
                     issues.append(issue)
                 continue
             if dimension == READINESS_DATA_FRESHNESS:
-                issues.append(
-                    WorkflowReadinessIssue(
-                        dimension=dimension,
-                        reason_code="data_stale",
-                        message=(
-                            "Workflow readiness cannot prove data freshness; "
-                            "submit-capable workflow actions fail closed."
-                        ),
-                        context={"action_family": action_family, "strategy_id": strategy_id},
-                        blocking=blocking,
-                    )
+                issue = self._data_freshness_issue(
+                    event_store=event_store,
+                    action_family=action_family,
+                    strategy_id=strategy_id,
+                    blocking=blocking,
                 )
+                if issue is not None:
+                    issues.append(issue)
                 continue
             if dimension == READINESS_BROKER_REACHABILITY:
                 issue = self._broker_reachability_issue(
+                    event_store=event_store,
                     action_family=action_family,
                     strategy_id=strategy_id,
                     blocking=blocking,
@@ -325,11 +337,12 @@ class _DefaultWorkflowReadiness:
     def _reconciliation_issue(
         self,
         *,
+        event_store: EventStore | None,
         action_family: str,
         strategy_id: str,
         blocking: bool,
     ) -> WorkflowReadinessIssue | None:
-        if self._event_store_factory is None:
+        if event_store is None:
             return WorkflowReadinessIssue(
                 dimension=READINESS_RECONCILIATION,
                 reason_code="reconciliation_required",
@@ -340,7 +353,7 @@ class _DefaultWorkflowReadiness:
                 context={"action_family": action_family, "strategy_id": strategy_id},
                 blocking=blocking,
             )
-        readiness = latest_readiness(self._event_store_factory())
+        readiness = latest_readiness(event_store)
         if readiness.ready:
             return None
         return WorkflowReadinessIssue(
@@ -358,11 +371,12 @@ class _DefaultWorkflowReadiness:
     def _broker_reachability_issue(
         self,
         *,
+        event_store: EventStore | None,
         action_family: str,
         strategy_id: str,
         blocking: bool,
     ) -> WorkflowReadinessIssue | None:
-        if self._event_store_factory is None:
+        if event_store is None:
             return WorkflowReadinessIssue(
                 dimension=READINESS_BROKER_REACHABILITY,
                 reason_code="broker_unreachable",
@@ -373,7 +387,7 @@ class _DefaultWorkflowReadiness:
                 context={"action_family": action_family, "strategy_id": strategy_id},
                 blocking=blocking,
             )
-        readiness = latest_readiness(self._event_store_factory())
+        readiness = latest_readiness(event_store)
         if readiness.ready and readiness.broker_connected:
             return None
         return WorkflowReadinessIssue(
@@ -392,8 +406,10 @@ class _DefaultWorkflowReadiness:
             blocking=blocking,
         )
 
-    def _kill_switch_issue(self, *, blocking: bool) -> WorkflowReadinessIssue | None:
-        if self._event_store_factory is None:
+    def _kill_switch_issue(
+        self, *, event_store: EventStore | None, blocking: bool
+    ) -> WorkflowReadinessIssue | None:
+        if event_store is None:
             return WorkflowReadinessIssue(
                 dimension=READINESS_KILL_SWITCH,
                 reason_code="kill_switch_open",
@@ -404,7 +420,7 @@ class _DefaultWorkflowReadiness:
                 context={},
                 blocking=blocking,
             )
-        event = self._event_store_factory().get_latest_kill_switch_event()
+        event = event_store.get_latest_kill_switch_event()
         if event is None or event.event_type == "reset":
             return None
         return WorkflowReadinessIssue(
@@ -417,6 +433,74 @@ class _DefaultWorkflowReadiness:
             },
             blocking=blocking,
         )
+
+    def _data_freshness_issue(
+        self,
+        *,
+        event_store: EventStore | None,
+        action_family: str,
+        strategy_id: str,
+        blocking: bool,
+    ) -> WorkflowReadinessIssue | None:
+        """Return a data-freshness issue, or ``None`` if data is fresh enough.
+
+        Threshold: ``_DATA_FRESHNESS_STALE_HOURS`` (24 h), matching the CLI
+        trust report's ``_data_freshness`` helper in ``report.py``.  Both call
+        ``EventStore.get_latest_bar_timestamp()`` — a bounded single-row query
+        that is safe on the GUI propose path.
+
+        Fail-closed cases (return a blocking issue):
+        - ``event_store`` is ``None`` (no factory configured)
+        - the event store has no explanation rows with a bar timestamp
+        - the latest bar timestamp is older than the threshold
+        """
+        if event_store is None:
+            return WorkflowReadinessIssue(
+                dimension=READINESS_DATA_FRESHNESS,
+                reason_code="data_stale",
+                message=(
+                    "Workflow readiness cannot read the event store; "
+                    "data freshness cannot be proven."
+                ),
+                context={"action_family": action_family, "strategy_id": strategy_id},
+                blocking=blocking,
+            )
+        latest_bar_ts = event_store.get_latest_bar_timestamp()
+        if latest_bar_ts is None:
+            return WorkflowReadinessIssue(
+                dimension=READINESS_DATA_FRESHNESS,
+                reason_code="data_stale",
+                message=(
+                    "No bar data found in the event store; "
+                    "run at least one strategy evaluation before promoting."
+                ),
+                context={"action_family": action_family, "strategy_id": strategy_id},
+                blocking=blocking,
+            )
+        age_hours = (
+            datetime.now(tz=UTC) - latest_bar_ts.replace(tzinfo=UTC)
+            if latest_bar_ts.tzinfo is None
+            else datetime.now(tz=UTC) - latest_bar_ts
+        ).total_seconds() / 3600.0
+        if age_hours > _DATA_FRESHNESS_STALE_HOURS:
+            return WorkflowReadinessIssue(
+                dimension=READINESS_DATA_FRESHNESS,
+                reason_code="data_stale",
+                message=(
+                    f"Market data is stale: latest bar is {age_hours:.1f} h old "
+                    f"(threshold {_DATA_FRESHNESS_STALE_HOURS:.0f} h). "
+                    "Verify the runner fleet is healthy and data is flowing."
+                ),
+                context={
+                    "action_family": action_family,
+                    "strategy_id": strategy_id,
+                    "latest_bar_timestamp": latest_bar_ts.isoformat(),
+                    "age_hours": round(age_hours, 2),
+                    "threshold_hours": _DATA_FRESHNESS_STALE_HOURS,
+                },
+                blocking=blocking,
+            )
+        return None
 
 
 class BenchCommandFacade:

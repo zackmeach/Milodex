@@ -628,6 +628,32 @@ class EventStore:
             rows = connection.execute("SELECT * FROM explanations ORDER BY id ASC").fetchall()
         return [_explanation_from_row(row) for row in rows]
 
+    def get_latest_bar_timestamp(self) -> datetime | None:
+        """Return the most recent non-null ``latest_bar_timestamp`` across all
+        explanation rows, or ``None`` if none exists.
+
+        Single-row aggregate — bounded by construction, safe to call on the
+        propose path. Avoids the full-table :meth:`list_explanations` load that
+        OOM-froze the workstation under concurrent runner launch
+        (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
+
+        Used by workflow-readiness data-freshness checks (bench.py) and the
+        CLI trust report (report.py) to derive bar age without loading all rows.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT latest_bar_timestamp
+                FROM explanations
+                WHERE latest_bar_timestamp IS NOT NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            return None
+        return _parse_datetime(row["latest_bar_timestamp"])
+
     def latest_reconcile_incident_hash(self) -> str | None:
         """Return the ``config_hash`` of the most recently recorded
         ``reconcile_incident`` explanation, or ``None`` if none exists.
@@ -934,9 +960,7 @@ class EventStore:
                 if not ids:
                     break
                 placeholders = ",".join("?" * len(ids))
-                connection.execute(
-                    f"DELETE FROM explanations WHERE id IN ({placeholders})", ids
-                )
+                connection.execute(f"DELETE FROM explanations WHERE id IN ({placeholders})", ids)
                 connection.commit()
                 total += len(ids)
         return total

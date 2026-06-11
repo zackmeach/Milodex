@@ -257,12 +257,7 @@ def _broker_info(ctx: CommandContext) -> dict[str, Any]:
 
 
 def _data_freshness(event_store: EventStore) -> dict[str, Any]:
-    explanations = event_store.list_explanations()
-    latest_bar_ts: datetime | None = None
-    for exp in reversed(explanations):
-        if exp.latest_bar_timestamp is not None:
-            latest_bar_ts = exp.latest_bar_timestamp
-            break
+    latest_bar_ts = event_store.get_latest_bar_timestamp()
     if latest_bar_ts is None:
         return {"latest_bar_timestamp": None, "stale": None}
     age_hours = (datetime.now(tz=UTC) - _aware(latest_bar_ts)).total_seconds() / 3600.0
