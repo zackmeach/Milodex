@@ -716,6 +716,40 @@ def test_corrective_cancelled_row_closes_strategy_ledger_lot(store):
     assert strategy_open_lots("strategy_a", store) == {}
 
 
+def test_attribute_position_backtest_source_sees_backtest_universe_only(store):
+    """The backtest structural evaluator attributes within source='backtest'.
+
+    Regression for the HR-1 consumer break: `BacktestStructuralRiskEvaluator`
+    runs `_check_strategy_concurrent_positions` over positions opened by
+    source='backtest' fills. Paper-only scoping made those invisible
+    (owner -> 'operator'), silently disabling the per-strategy cap in
+    ENFORCE-policy backtests. The two universes must be mutually invisible.
+    """
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="paper_owner",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=5,
+        strategy_name="backtest_owner",
+        source="backtest",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+
+    assert attribute_position(symbol="SPY", event_store=store) == "paper_owner"
+    assert (
+        attribute_position(symbol="SPY", event_store=store, source="backtest")
+        == "backtest_owner"
+    )
+
+
 def test_corrective_filled_row_counts_the_order_once(store):
     """submitted→filled must count once, with the original row's lot fields.
 

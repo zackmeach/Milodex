@@ -66,6 +66,7 @@ def attribute_position(
     *,
     symbol: str,
     event_store: EventStore,
+    source: str = "paper",
 ) -> str:
     """Return the strategy_id that owns the current position in ``symbol``.
 
@@ -85,13 +86,18 @@ def attribute_position(
         symbol: The position symbol to attribute. Compared case-insensitively
             (uppercase) since ``ExecutionRequest`` already normalizes.
         event_store: Source of truth for trade history.
+        source: Which trade universe to attribute within. ``"paper"``
+            (default) for live runners and the runtime risk gate;
+            ``"backtest"`` for the backtest structural evaluator, whose
+            simulated positions were opened by ``source='backtest'``
+            fills (R-P0-1 made the universes mutually invisible).
 
     Returns:
         The owning ``strategy_id`` as a string, or
         :data:`OPERATOR_ATTRIBUTION` per Decision 3.
     """
     normalized = symbol.strip().upper()
-    rows = _fetch_submitted_trade_rows(event_store, normalized)
+    rows = _fetch_submitted_trade_rows(event_store, normalized, source)
     if not rows:
         return OPERATOR_ATTRIBUTION
 
@@ -338,14 +344,18 @@ def _coerce_recorded_at(value: object) -> datetime:
     return datetime.fromisoformat(str(value))
 
 
-def _fetch_submitted_trade_rows(event_store: EventStore, symbol: str) -> list[dict]:
+def _fetch_submitted_trade_rows(
+    event_store: EventStore,
+    symbol: str,
+    source: str = "paper",
+) -> list[dict]:
     """Fetch submitted-status trade rows for ``symbol`` from the event store.
 
     Uses the ``idx_trades_symbol`` index. Filters to ``status="submitted"``
     in SQL — Decision 2's requirement that blocked, preview, and
-    cancelled rows are excluded from the walk — and to ``source="paper"``
-    so backtest fills sharing the ``trades`` table never drive the
-    attribution walk (R-P0-1).
+    cancelled rows are excluded from the walk — and to a single ``source``
+    so backtest fills sharing the ``trades`` table never drive the live
+    attribution walk and vice versa (R-P0-1).
 
     Returns a list of dicts (column -> value), ordered ascending by id.
     """
@@ -357,9 +367,9 @@ def _fetch_submitted_trade_rows(event_store: EventStore, symbol: str) -> list[di
             """
             SELECT id, recorded_at, side, quantity, strategy_name, submitted_by, status
             FROM trades
-            WHERE symbol = ? AND status = 'submitted' AND source = 'paper'
+            WHERE symbol = ? AND status = 'submitted' AND source = ?
             ORDER BY id ASC
             """,
-            (symbol,),
+            (symbol, source),
         ).fetchall()
     return [dict(row) for row in rows]

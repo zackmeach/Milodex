@@ -571,12 +571,21 @@ class RiskEvaluator:
         # Lazy import keeps this module importable without circular issues.
         from milodex.risk.attribution import attribute_position
 
+        # Attribution must walk the same trade universe that opened the
+        # positions under evaluation: backtest contexts (ADR 0030
+        # ``is_backtest``) opened theirs with source='backtest' fills,
+        # live contexts with source='paper'. R-P0-1 scoped the walk by
+        # source, making the two universes mutually invisible.
+        attribution_source = "backtest" if context.is_backtest else "paper"
+
         existing_symbols = {
             position.symbol.upper() for position in context.positions if position.quantity > 0
         }
         owned = 0
         for symbol in existing_symbols:
-            owner = attribute_position(symbol=symbol, event_store=context.event_store)
+            owner = attribute_position(
+                symbol=symbol, event_store=context.event_store, source=attribution_source
+            )
             if owner == proposing_strategy:
                 owned += 1
 
@@ -591,14 +600,18 @@ class RiskEvaluator:
             # A holds adds 1 (under per-strategy semantics).
             currently_owned_by_strategy = (
                 symbol in existing_symbols
-                and attribute_position(symbol=symbol, event_store=context.event_store)
+                and attribute_position(
+                    symbol=symbol, event_store=context.event_store, source=attribution_source
+                )
                 == proposing_strategy
             )
             if not currently_owned_by_strategy:
                 projected_count += 1
         elif context.intent.side == OrderSide.SELL and symbol in existing_symbols:
             position = next(pos for pos in context.positions if pos.symbol.upper() == symbol)
-            owner = attribute_position(symbol=symbol, event_store=context.event_store)
+            owner = attribute_position(
+                symbol=symbol, event_store=context.event_store, source=attribution_source
+            )
             if owner == proposing_strategy and context.intent.quantity >= position.quantity:
                 projected_count -= 1
 

@@ -854,9 +854,12 @@ class EventStore:
         (R-P1-4). Uses the ``idx_trades_symbol`` index; the ``side``/
         ``status``/``source``/time predicates filter the already-narrowed
         per-symbol partition. The time window is pushed into SQL via
-        ``datetime()`` normalization, matching the prior Python comparison
-        semantics: naive timestamps are treated as UTC and unparseable
-        ``recorded_at`` values are excluded.
+        ``datetime()`` normalization: naive timestamps are treated as UTC
+        and unparseable ``recorded_at`` values are excluded (as in the
+        prior Python comparison). ``datetime()`` truncates to whole
+        seconds, so the window is up to one second wider than the old
+        sub-second comparison — for a duplicate-order backstop that errs
+        toward vetoing, which is the fail-safe direction.
         """
         normalized_symbol = symbol.strip().upper()
         normalized_side = side.strip().lower()
