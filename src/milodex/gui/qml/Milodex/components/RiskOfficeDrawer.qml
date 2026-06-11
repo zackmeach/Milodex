@@ -1,9 +1,11 @@
 // RiskOfficeDrawer.qml — slide-in risk-office side drawer (PR-7c / ADR 0054).
 //
-// Three sections:
-//   RISK PROFILE  — inspect active profile; switch with confirmation gate
-//   TIME FORMAT   — toggle 24-HOUR / 12-HOUR display (Task 37)
-//   SYSTEM        — Quit handler (Task 37)
+// Four sections:
+//   KILL SWITCH        — reset affordance (HR-4, visible only when active)
+//   FLEET RECONCILIATION — run a live broker reconciliation (HR-10 / G-P2-2)
+//   RISK PROFILE       — inspect active profile; switch with confirmation gate
+//   TIME FORMAT        — toggle 24-HOUR / 12-HOUR display (Task 37)
+//   SYSTEM             — Quit handler (Task 37)
 //
 // Tokens consumed:
 //   color.surface.canvas / .base / .raised — backgrounds
@@ -98,10 +100,48 @@ Item {
     property string _typedToken: ""
     property string _errorMessage: ""
 
+    // ------------------------------------------------------------------
+    // Internal state — reconciliation run (HR-10 / G-P2-2)
+    // ------------------------------------------------------------------
+
+    // True while a reconciliation is running (button shows busy state).
+    property bool _reconcileBusy: false
+    // Last run result line shown below the button; "" = no result yet.
+    property string _reconcileResult: ""
+    // True when the last completed run was clean (controls result text color).
+    property bool _reconcileResultClean: true
+
     Timer {
         id: errorDismissTimer
         interval: 5000
         onTriggered: root._errorMessage = ""
+    }
+
+    // HR-10: receive reconciliation completion from the bridge.
+    // Guarded: if BenchCommandBridge is not registered (standalone load-smoke)
+    // the Connections target is null — the block is silently skipped.
+    Connections {
+        target: (typeof BenchCommandBridge !== "undefined") ? BenchCommandBridge : null
+        function onReconciliationCompleted(payload) {
+            root._reconcileBusy = false
+            var status = payload["status"] || "error"
+            var ts = payload["recorded_at"] || ""
+            var shortTs = ts.length >= 16 ? ts.substring(0, 16).replace("T", " ") : ts
+            var mismatches = payload["mismatch_count"] || 0
+            if (status === "clean") {
+                root._reconcileResultClean = true
+                root._reconcileResult = "Clean — " + shortTs + " UTC"
+            } else if (status === "dirty") {
+                root._reconcileResultClean = false
+                root._reconcileResult = "Dirty — " + mismatches + " mismatch(es)  " + shortTs + " UTC"
+            } else if (status === "incomplete") {
+                root._reconcileResultClean = false
+                root._reconcileResult = "Incomplete — broker unavailable  " + shortTs + " UTC"
+            } else {
+                root._reconcileResultClean = false
+                root._reconcileResult = "Error — " + (payload["error"] || "unknown")
+            }
+        }
     }
 
     function showError(msg) {
@@ -224,6 +264,106 @@ Item {
                 Layout.preferredHeight: 1
                 color: Theme.color.border.regular
                 visible: killSwitchSection.visible
+            }
+
+            // ==============================================================
+            // HR-10: FLEET RECONCILIATION section — always visible.
+            // Drawer button → BenchCommandBridge.runReconciliationAsync() →
+            // reconciliationCompleted signal → result line (clean/dirty +
+            // timestamp).  Guarded: standalone QML harnesses (load-smoke) do
+            // not register BenchCommandBridge — in that case the button is
+            // still rendered but the onClicked handler is a no-op.
+            // ==============================================================
+
+            ColumnLayout {
+                id: reconcileSection
+                Layout.fillWidth: true
+                spacing: Theme.space[2]
+
+                // Section eyebrow
+                Text {
+                    text: "FLEET RECONCILIATION"
+                    color: Theme.color.brand.primary
+                    font.family:        Theme.typography.label.xs.family
+                    font.pixelSize:     Theme.typography.label.xs.size
+                    font.weight:        Font.DemiBold
+                    font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.6
+                    font.capitalization: Font.AllUppercase
+                }
+
+                // Run button — busy while a run is in flight.
+                Rectangle {
+                    id: reconcileButton
+                    Layout.fillWidth: true
+                    implicitHeight: reconcileLabel.implicitHeight + Theme.space[2] * 2
+                    color: root._reconcileBusy
+                           ? Theme.color.surface.canvas
+                           : (reconcileMouse.containsMouse ? Theme.color.surface.raised
+                                                           : Theme.color.surface.canvas)
+                    border.color: root._reconcileBusy
+                                  ? Theme.color.border.regular
+                                  : Theme.color.brand.primary
+                    border.width: 1
+                    radius: Theme.radius.sm
+                    opacity: root._reconcileBusy ? 0.55 : 1.0
+
+                    Behavior on color {
+                        ColorAnimation { duration: Theme.motion.fast }
+                    }
+
+                    Text {
+                        id: reconcileLabel
+                        anchors.centerIn: parent
+                        text: root._reconcileBusy ? "RECONCILING…" : "RUN RECONCILIATION"
+                        color: root._reconcileBusy
+                               ? Theme.color.text.disabled
+                               : (reconcileMouse.containsMouse ? Theme.color.brand.primary
+                                                               : Theme.color.text.primary)
+                        font.family:        Theme.typography.label.xs.family
+                        font.pixelSize:     Theme.typography.label.xs.size
+                        font.weight:        Font.DemiBold
+                        font.letterSpacing: 0.6
+                        font.capitalization: Font.AllUppercase
+                        Behavior on color {
+                            ColorAnimation { duration: Theme.motion.fast }
+                        }
+                    }
+
+                    MouseArea {
+                        id: reconcileMouse
+                        anchors.fill: parent
+                        hoverEnabled: !root._reconcileBusy
+                        cursorShape: root._reconcileBusy ? Qt.ArrowCursor : Qt.PointingHandCursor
+                        enabled: !root._reconcileBusy
+                        onClicked: {
+                            if (typeof BenchCommandBridge === "undefined") return
+                            root._reconcileBusy = true
+                            root._reconcileResult = ""
+                            BenchCommandBridge.runReconciliationAsync()
+                        }
+                    }
+                }
+
+                // Result line — last run outcome + timestamp.
+                Text {
+                    id: reconcileResultText
+                    visible: root._reconcileResult !== ""
+                    text: root._reconcileResult
+                    color: root._reconcileResultClean
+                           ? Theme.color.text.secondary
+                           : Theme.status.negative
+                    font.family:    Theme.typography.body.md.family
+                    font.pixelSize: Theme.typography.body.md.size
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+            }
+
+            // Section divider
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.color.border.regular
             }
 
             // ==============================================================

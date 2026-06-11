@@ -3086,6 +3086,132 @@ def test__resolve_config_malformed_matched_yaml_returns_strategy_config_invalid(
     assert "ghost-config" in str(blocker.context.get("config_path", ""))
 
 
+# ---------------------------------------------------------------------------
+# HR-10: run_reconciliation_now — facade tests
+# ---------------------------------------------------------------------------
+
+
+class _FakeBroker:
+    """Minimal broker stub whose snapshot returns zero positions/orders."""
+
+    def get_positions(self):
+        return []
+
+    def get_open_orders(self):
+        return []
+
+    def get_account(self):
+        return None
+
+    @property
+    def connected(self):
+        return True
+
+
+class _ErrorBroker:
+    """Broker stub that raises on any call (simulates broker unreachable)."""
+
+    def get_positions(self):
+        raise RuntimeError("broker unreachable")
+
+    def get_open_orders(self):
+        raise RuntimeError("broker unreachable")
+
+    def get_account(self):
+        raise RuntimeError("broker unreachable")
+
+
+class TestRunReconciliationNow:
+    """BenchCommandFacade.run_reconciliation_now returns structured results (HR-10)."""
+
+    def _facade_with_broker(
+        self,
+        config_dir: Path,
+        locks_dir: Path,
+        event_store: EventStore,
+        broker_factory=None,
+    ) -> BenchCommandFacade:
+        return BenchCommandFacade(
+            config_dir=config_dir,
+            locks_dir=locks_dir,
+            get_trading_mode=lambda: "paper",
+            event_store_factory=lambda: event_store,
+            broker_factory=broker_factory,
+        )
+
+    def test_returns_structured_result_keys(
+        self, config_dir: Path, locks_dir: Path, event_store: EventStore
+    ) -> None:
+        """run_reconciliation_now always returns all required payload keys."""
+        facade = self._facade_with_broker(
+            config_dir, locks_dir, event_store, broker_factory=_FakeBroker
+        )
+        result = facade.run_reconciliation_now()
+        for key in ("status", "clean", "mismatch_count", "trading_day", "run_id",
+                    "run_db_id", "recorded_at", "error"):
+            assert key in result, f"Expected key {key!r} in run_reconciliation_now result"
+
+    def test_persists_reconciliation_run_row(
+        self, config_dir: Path, locks_dir: Path, event_store: EventStore
+    ) -> None:
+        """run_reconciliation_now with persist=True writes a run row to the event store."""
+        facade = self._facade_with_broker(
+            config_dir, locks_dir, event_store, broker_factory=_FakeBroker
+        )
+        result = facade.run_reconciliation_now()
+        assert result["status"] != "error", (
+            f"Expected a non-error result; got status={result['status']!r}, "
+            f"error={result['error']!r}"
+        )
+        # The run row must be retrievable via the event store.
+        latest = event_store.get_latest_reconciliation_run()
+        assert latest is not None, "run_reconciliation_now must persist a reconciliation run row"
+        assert result["run_id"] == latest.run_id
+
+    def test_broker_factory_none_returns_structured_error(
+        self, config_dir: Path, locks_dir: Path, event_store: EventStore
+    ) -> None:
+        """Without broker_factory, run_reconciliation_now returns status='error', never raises."""
+        facade = self._facade_with_broker(
+            config_dir, locks_dir, event_store, broker_factory=None
+        )
+        result = facade.run_reconciliation_now()
+        assert result["status"] == "error"
+        assert result["clean"] is False
+        assert result["error"] != ""
+
+    def test_event_store_factory_none_returns_structured_error(
+        self, config_dir: Path, locks_dir: Path
+    ) -> None:
+        """Without event_store_factory, run_reconciliation_now returns status='error'."""
+        facade = BenchCommandFacade(
+            config_dir=config_dir,
+            locks_dir=locks_dir,
+            get_trading_mode=lambda: "paper",
+            event_store_factory=None,
+            broker_factory=_FakeBroker,
+        )
+        result = facade.run_reconciliation_now()
+        assert result["status"] == "error"
+        assert result["clean"] is False
+        assert result["error"] != ""
+
+    def test_broker_raises_returns_structured_error(
+        self, config_dir: Path, locks_dir: Path, event_store: EventStore
+    ) -> None:
+        """When the broker factory raises, run_reconciliation_now returns status='error'."""
+        def _raise():
+            raise RuntimeError("network timeout")
+
+        facade = self._facade_with_broker(
+            config_dir, locks_dir, event_store, broker_factory=_raise
+        )
+        result = facade.run_reconciliation_now()
+        assert result["status"] == "error"
+        assert result["clean"] is False
+        assert "network timeout" in result["error"] or result["error"] != ""
+
+
 def test_gui_qml_files_still_forbid_submit_broker_eventstore() -> None:
     """ADR 0049 perimeter survives Bench command wiring.
 
