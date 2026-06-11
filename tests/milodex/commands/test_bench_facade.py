@@ -1025,7 +1025,11 @@ def test_propose_stop_paper_runner_admissible_when_kill_switch_active(
         if issue["reason_code"] == "kill_switch_open"
     ]
     assert len(readiness_issues) == 1
-    assert readiness_issues[0]["blocking"] is True  # evaluator marks it blocking; stop ignores it
+    # The FAKE evaluator hardcodes blocking=True here, which is deliberately
+    # adversarial: it proves the helper ignores blocking flags on dimensions
+    # outside required_checks. The REAL evaluator (_DefaultWorkflowReadiness)
+    # would set blocking=False for an inspected-only dimension.
+    assert readiness_issues[0]["blocking"] is True
 
 
 # --------------------------------------------------------------------------- #
