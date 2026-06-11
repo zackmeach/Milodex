@@ -651,6 +651,69 @@ def _append_stale_explanation(event_store: EventStore) -> None:
     )
 
 
+def _append_backtest_explanation(event_store: EventStore) -> None:
+    """Append a backtest-engine explanation with an ANCIENT bar timestamp.
+
+    Mirrors the simulation kernel's rows: ``backtest_run_id`` ancestor,
+    historical ``latest_bar_timestamp``. Such rows land with higher ids than
+    live rows whenever a backtest runs after the fleet's last evaluation —
+    they must never drive the freshness signal (same contamination family
+    as R-P0-1).
+    """
+    from datetime import timedelta
+
+    from milodex.core.event_store import BacktestRunEvent
+
+    now = datetime.now(tz=UTC)
+    run_row_id = event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="bt-freshness-test",
+            strategy_id="test.strategy.v1",
+            config_path=None,
+            config_hash=None,
+            start_date=now,
+            end_date=now,
+            started_at=now,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={},
+        )
+    )
+    overrides = dict(_EXPLANATION_DEFAULTS)
+    overrides["submitted_by"] = "backtest_engine"
+    event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=now,
+            latest_bar_timestamp=now - timedelta(days=365),
+            backtest_run_id=run_row_id,
+            **overrides,
+        )
+    )
+
+
+def test_default_workflow_readiness_data_freshness_ignores_backtest_rows(
+    event_store: EventStore,
+) -> None:
+    # Review F-1: a backtest run AFTER the last live evaluation writes
+    # explanations with historical bar timestamps at higher row ids. The
+    # freshness signal must come from live rows only — otherwise running a
+    # backtest before a promote false-blocks the GUI gate with a years-old
+    # "latest" bar.
+    _append_fresh_explanation(event_store)
+    _append_backtest_explanation(event_store)
+    readiness = facade_module._DefaultWorkflowReadiness(lambda: event_store)
+
+    report = readiness.evaluate(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=STRATEGY_ID,
+        required_checks=frozenset({facade_module.READINESS_DATA_FRESHNESS}),
+        inspected_checks=frozenset(),
+    )
+
+    assert report.issues == (), f"Unexpected issues: {report.issues}"
+
+
 def test_default_workflow_readiness_data_freshness_fresh_data_no_issue(
     event_store: EventStore,
 ) -> None:

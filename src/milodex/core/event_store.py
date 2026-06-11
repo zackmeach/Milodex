@@ -629,13 +629,19 @@ class EventStore:
         return [_explanation_from_row(row) for row in rows]
 
     def get_latest_bar_timestamp(self) -> datetime | None:
-        """Return the most recent non-null ``latest_bar_timestamp`` across all
-        explanation rows, or ``None`` if none exists.
+        """Return the most recent non-null ``latest_bar_timestamp`` across
+        live (non-backtest) explanation rows, or ``None`` if none exists.
 
         Single-row aggregate — bounded by construction, safe to call on the
         propose path. Avoids the full-table :meth:`list_explanations` load that
         OOM-froze the workstation under concurrent runner launch
         (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
+
+        Backtest rows are excluded (``backtest_run_id IS NULL``): the backtest
+        engine writes explanations with *historical* bar timestamps into the
+        same table, and a backtest run after the last live evaluation would
+        otherwise dominate ``ORDER BY id DESC`` and report a years-old bar
+        as the freshness signal (same contamination family as R-P0-1).
 
         Used by workflow-readiness data-freshness checks (bench.py) and the
         CLI trust report (report.py) to derive bar age without loading all rows.
@@ -646,6 +652,7 @@ class EventStore:
                 SELECT latest_bar_timestamp
                 FROM explanations
                 WHERE latest_bar_timestamp IS NOT NULL
+                  AND backtest_run_id IS NULL
                 ORDER BY id DESC
                 LIMIT 1
                 """
