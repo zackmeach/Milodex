@@ -22,6 +22,9 @@ Rectangle {
     property string activeProfileName: "conservative"  // PR-7c: drives badge copy
 
     signal badgeClicked()  // PR-7c: emitted when Risk Office badge is pressed
+    // HR-4: emitted when the kill-switch posture area is pressed while the
+    // kill switch is active. Main.qml opens KillSwitchResetModal in response.
+    signal killSwitchResetClicked()
 
     readonly property bool brokerConnected: root.brokerStatus === "connected"
     readonly property color postureColor: root.killSwitchActive ? Theme.status.negative : Theme.status.positive
@@ -91,15 +94,33 @@ Rectangle {
             color: Theme.color.border.regular
         }
 
-        Text {
-            id: riskCopy
-            text: root.postureCopy
-            color: root.killSwitchActive ? Theme.status.negative : Theme.color.text.secondary
-            font.family:        Theme.typography.label.xs.family
-            font.pixelSize:     Theme.typography.label.xs.size
-            font.weight:        Theme.typography.label.xs.weight
-            font.letterSpacing: 0.4
-            font.capitalization: Font.AllUppercase
+        // HR-4: posture text is clickable when kill switch is active —
+        // opens KillSwitchResetModal via killSwitchResetClicked signal.
+        Item {
+            implicitWidth: riskCopy.implicitWidth
+            implicitHeight: riskCopy.implicitHeight
+
+            Text {
+                id: riskCopy
+                text: root.postureCopy
+                color: root.killSwitchActive ? Theme.status.negative : Theme.color.text.secondary
+                font.family:        Theme.typography.label.xs.family
+                font.pixelSize:     Theme.typography.label.xs.size
+                font.weight:        Theme.typography.label.xs.weight
+                font.letterSpacing: 0.4
+                font.capitalization: Font.AllUppercase
+            }
+
+            MouseArea {
+                id: postureMouse
+                anchors.fill: parent
+                enabled: root.killSwitchActive
+                hoverEnabled: root.killSwitchActive
+                cursorShape: root.killSwitchActive ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: {
+                    if (root.killSwitchActive) root.killSwitchResetClicked()
+                }
+            }
         }
     }
 }

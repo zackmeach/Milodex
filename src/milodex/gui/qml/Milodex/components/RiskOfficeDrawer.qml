@@ -41,6 +41,9 @@ Item {
     signal timeFormatRequested(string format)
     // Operator-driven reap-interval change — Main.qml calls OrphanReaperController.persistInterval.
     signal reapIntervalRequested(int seconds)
+    // HR-4: emitted when the operator presses "Reset kill switch" in the drawer.
+    // Main.qml opens KillSwitchResetModal in response.
+    signal killSwitchResetRequested()
 
     // ------------------------------------------------------------------
     // Geometry — slides in from the right
@@ -135,6 +138,93 @@ Item {
             anchors.right: parent.right
             anchors.rightMargin: Theme.space[4]
             spacing: Theme.space[5]
+
+            // ==============================================================
+            // HR-4: KILL SWITCH section — only visible when active.
+            // The operator presses the button here; Main.qml opens
+            // KillSwitchResetModal in response to killSwitchResetRequested.
+            // Guarded: standalone QML harnesses (load-smoke) do not register
+            // OperationalState — in that case the section is hidden.
+            // ==============================================================
+
+            ColumnLayout {
+                id: killSwitchSection
+                Layout.fillWidth: true
+                spacing: Theme.space[2]
+                visible: {
+                    if (typeof OperationalState === "undefined") return false
+                    return OperationalState.killSwitchActive
+                }
+
+                // Section eyebrow
+                Text {
+                    text: "KILL SWITCH"
+                    color: Theme.status.negative
+                    font.family:        Theme.typography.label.xs.family
+                    font.pixelSize:     Theme.typography.label.xs.size
+                    font.weight:        Font.DemiBold
+                    font.letterSpacing: Theme.typography.label.xs.letterSpacing + 0.6
+                    font.capitalization: Font.AllUppercase
+                }
+
+                // Status line
+                Text {
+                    text: "Kill switch is ACTIVE — trading halted."
+                    color: Theme.status.negative
+                    font.family:    Theme.typography.body.md.family
+                    font.pixelSize: Theme.typography.body.md.size
+                    wrapMode: Text.WordWrap
+                    Layout.fillWidth: true
+                }
+
+                // Reset affordance button
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: ksResetLabel.implicitHeight + Theme.space[2] * 2
+                    color: ksResetMouse.containsMouse ? Theme.status.negativeHover
+                                                      : Theme.color.surface.raised
+                    border.color: Theme.status.negative
+                    border.width: 1
+                    radius: Theme.radius.sm
+
+                    Behavior on color {
+                        ColorAnimation { duration: Theme.motion.fast }
+                    }
+
+                    Text {
+                        id: ksResetLabel
+                        anchors.centerIn: parent
+                        text: "RESET KILL SWITCH"
+                        color: ksResetMouse.containsMouse
+                               ? Theme.color.text.onBrand
+                               : Theme.status.negative
+                        font.family:        Theme.typography.label.xs.family
+                        font.pixelSize:     Theme.typography.label.xs.size
+                        font.weight:        Font.DemiBold
+                        font.letterSpacing: 0.6
+                        font.capitalization: Font.AllUppercase
+                        Behavior on color {
+                            ColorAnimation { duration: Theme.motion.fast }
+                        }
+                    }
+
+                    MouseArea {
+                        id: ksResetMouse
+                        anchors.fill: parent
+                        hoverEnabled: true
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: root.killSwitchResetRequested()
+                    }
+                }
+            }
+
+            // Kill-switch section divider (only when section is visible)
+            Rectangle {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 1
+                color: Theme.color.border.regular
+                visible: killSwitchSection.visible
+            }
 
             // ==============================================================
             // RISK PROFILE section

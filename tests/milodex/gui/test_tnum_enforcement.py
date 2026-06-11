@@ -71,7 +71,6 @@ NUMERIC_QML_FILES: tuple[str, ...] = (
     "components/StrategyRow.qml",
     "components/TapeRow.qml",
     # Surfaces
-    "surfaces/AnchorSurface.qml",
     "surfaces/BenchSurface.qml",
     "surfaces/DeskSurface.qml",
     "surfaces/DesignSystemShowcase.qml",
