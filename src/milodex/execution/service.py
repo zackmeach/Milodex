@@ -530,6 +530,20 @@ class ExecutionService:
 
     def _maybe_activate_kill_switch(self, result: ExecutionResult) -> None:
         if "kill_switch_threshold_breached" in result.risk_decision.reason_codes:
+            # R-P2-5: "halt all trading" includes orders already resting at
+            # the broker. Cancel open orders before activating, mirroring the
+            # operator SIGINT path (StrategyRunner.shutdown mode="kill_switch").
+            # Fail-safe posture: a cancel failure must NEVER block activation —
+            # the switch engages regardless; the failure is logged for
+            # forensics.
+            try:
+                self._broker.cancel_all_orders()
+            except Exception:
+                _logger.warning(
+                    "Kill-switch activation: broker cancel_all_orders failed; "
+                    "activating the switch anyway.",
+                    exc_info=True,
+                )
             self.trigger_kill_switch("Daily loss exceeded kill switch threshold.")
 
     def _record_execution(

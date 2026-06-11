@@ -105,7 +105,7 @@ A kill switch creates a **reviewable incident state**, not just a temporary paus
 6. Require explicit review before any re-enable action (no auto-resume — per R-EXE-006).
 7. Create a governance event linking the halt to any later reversal or restart (per the promotion-log append-only pattern in `docs/PROMOTION_GOVERNANCE.md`).
 8. Continue allowing safe read-only inspection and reporting.
-9. Continue allowing **exposure-reducing** actions if policy permits (see next section).
+9. Block **exposure-reducing** orders too — the kill switch is an absolute halt (DC-1, 2026-06-10; see next section). The operator exits existing risk deliberately after manual reset.
 
 ---
 
@@ -114,11 +114,11 @@ A kill switch creates a **reviewable incident state**, not just a temporary paus
 Milodex treats order direction asymmetrically by its **effect on risk**, not by its side alone.
 
 - **Exposure-increasing orders** (new longs in Phase 1, adds to existing longs) pass the **full** set of risk, data, approval, and kill-switch checks. Any hard stop blocks them.
-- **Exposure-reducing orders** (sells that close or shrink an existing long, in Phase 1's long-only model) pass a **more permissive** policy, because they generally move the portfolio toward safety.
+- **Exposure-reducing orders** (sells that close or shrink an existing long, in Phase 1's long-only model) pass a **more permissive** policy, because they generally move the portfolio toward safety. Concretely (DC-1, 2026-06-10): a reducing order is exempt from the max-order-value (fat-finger) cap — that cap exists to stop oversized entries, and a held position must always be exitable — and the reconciliation-readiness gate does not block broker-grounded reducing sells (R-OPS-004). A sell with no covering broker position, or beyond the held quantity, is classified as exposure-increasing and gets no exemption.
 
-**Sell orders during an active kill switch:** ordinary exposure-reducing sells are still allowed, because they make the system safer. Any sell whose net effect would increase risk via more complex side effects (e.g., hypothetical short-side expansion in a future non-long-only phase) is blocked.
+**Sell orders during an active kill switch are blocked (DC-1, 2026-06-10).** The kill switch is an **absolute halt**: it blocks ALL orders, including exposure-reducing sells. The switch fires precisely when trust in execution or state has become questionable, and a "reducing" order is only safe if the position ledger it reduces against is truthful — the 2026-06-10 audit's phantom SELLs against a backtest-contaminated ledger (P0-1, `docs/reviews/2026-06-10-runner-process-audit.md`) are the live demonstration of "reducing" orders that were nothing of the kind. Exiting existing risk during an incident is a deliberate operator action taken after review and manual reset, not an automated path through an active halt.
 
-The guiding principle: a kill switch stops new risk from being added. It does not trap the system in existing risk.
+The guiding principle: a kill switch stops the system, full stop. The operator — not the system — decides how to exit existing risk, after reviewing the incident and resetting the switch.
 
 ---
 
@@ -245,4 +245,4 @@ These are deliberate Phase-1 gaps. Each is **acceptable for paper** but a **hard
 - `R-EXE-008` requires all thresholds to be sourced from `risk_defaults.yaml` (no hardcoded values in code).
 - `R-EXE-009` defines duplicate detection; this document fixes its key set and "block on uncertainty" policy.
 - `R-EXE-010` defines the kill-switch trigger set; this document is the authoritative enumeration.
-- `R-EXE-014` through `R-EXE-017` (new) encode the scope split, the post-trip requirements, the reducing-vs-increasing asymmetry, and the hard-stop vs warning classification.
+- `R-EXE-014` through `R-EXE-017` (new) encode the scope split, the post-trip requirements, the reducing-vs-increasing asymmetry, and the hard-stop vs warning classification. **DC-1 (2026-06-10) supersedes the kill-switch carve-out in R-EXE-016 and R-EXE-015(f):** reducing orders are NOT permitted while a kill switch is active (see "Reducing vs Increasing Exposure"); the reducing-order permissiveness applies to the order-value cap and the reconciliation gate, not the kill switch. The SRS text predates DC-1 — this document and the code are authoritative until the SRS is amended.

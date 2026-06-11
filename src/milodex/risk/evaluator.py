@@ -394,6 +394,27 @@ class RiskEvaluator:
         return RiskCheckResult("daily_loss", True, "Daily loss is within configured limits.")
 
     def _check_order_value(self, context: EvaluationContext) -> RiskCheckResult:
+        """Fat-finger cap on single-order notional value.
+
+        The cap exists to stop oversized ENTRIES — a fat-fingered quantity
+        opening or growing a position. Exposure-REDUCING orders are exempt
+        (DC-1, 2026-06-10): a held position must always be exitable in full,
+        even when its market value has grown past the cap (and the
+        conservative ``_estimate_unit_price`` max() would otherwise inflate
+        a legitimate exit toward the limit). Classification reuses
+        :func:`milodex.risk.exposure.is_exposure_increasing` — the same
+        plumbing as the reconciliation gate — so a sell with no covering
+        broker position (short-opening) or beyond the held quantity counts
+        as increasing and stays capped.
+        """
+        if not is_exposure_increasing(context.intent, context.positions):
+            return RiskCheckResult(
+                "order_value",
+                True,
+                "Exposure-reducing order is exempt from the max-order-value cap; "
+                "the cap targets oversized entries and a held position must "
+                "always be exitable.",
+            )
         max_value = context.account.portfolio_value * context.risk_defaults.max_order_value_pct
         if context.request.estimated_order_value > max_value:
             return RiskCheckResult(

@@ -7,9 +7,10 @@ total-exposure, concurrent-positions) had no direct assertions. The
 credible if every rule has a passing-case and a failing-case with an
 expected reason code. That is what this file provides.
 
-Rules exercised elsewhere (kill_switch, paper_mode, strategy_stage,
-market_hours, data_staleness, duplicate_order) keep their coverage in
-`tests/milodex/execution/test_service.py`.
+Rules exercised elsewhere (paper_mode, strategy_stage, market_hours,
+data_staleness, duplicate_order) keep their coverage in
+`tests/milodex/execution/test_service.py`. kill_switch is covered both
+there (activation path) and here (DC-1 absolute-halt semantics).
 """
 
 from __future__ import annotations
@@ -274,11 +275,70 @@ def test_order_value_passes_at_cap_exactly():
 
 
 def test_order_value_fails_above_cap():
+    # Default side is BUY (exposure-increasing): the cap binds.
     decision = RiskEvaluator().evaluate(make_context(estimated_order_value=1_500.01))
 
     result = check_result(decision, "order_value")
     assert result.passed is False
     assert result.reason_code == "max_order_value_exceeded"
+
+
+def test_order_value_reducing_sell_over_cap_is_exempt():
+    # DC-1 (2026-06-10): the fat-finger cap targets oversized ENTRIES. A sell
+    # covered by a broker-held long is exposure-reducing and bypasses the cap —
+    # a held position must always be exitable, even past the cap.
+    # cap = 10,000 * 0.15 = 1,500; full exit of 30 shares @ $100 = 3,000.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=30.0,
+            positions=[_position("SPY", quantity=30.0)],
+            estimated_order_value=3_000.0,
+        )
+    )
+
+    result = check_result(decision, "order_value")
+    assert result.passed is True
+    assert "exempt" in result.message
+
+
+def test_order_value_sell_without_position_is_still_capped():
+    # A sell with NO covering broker position is classified exposure-increasing
+    # (short-opening) by is_exposure_increasing — no exemption, cap binds.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=30.0,
+            positions=[],
+            estimated_order_value=3_000.0,
+        )
+    )
+
+    result = check_result(decision, "order_value")
+    assert result.passed is False
+    assert result.reason_code == "max_order_value_exceeded"
+
+
+# --- _check_kill_switch ------------------------------------------------------
+
+
+def test_kill_switch_blocks_reducing_sell():
+    # DC-1 (2026-06-10): the kill switch is an ABSOLUTE halt. The reducing-order
+    # permissiveness applies to the order-value cap and the reconciliation gate,
+    # NOT the kill switch — an active switch blocks even a covered reducing sell.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=10.0,
+            positions=[_position("SPY", quantity=30.0)],
+            kill_switch_active=True,
+        )
+    )
+
+    result = check_result(decision, "kill_switch")
+    assert result.passed is False
+    assert result.reason_code == "kill_switch_active"
+    assert decision.allowed is False
 
 
 # --- _check_single_position_limit ------------------------------------------
