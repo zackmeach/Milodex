@@ -1402,9 +1402,12 @@ def test_submit_start_paper_runner_errors_without_audit_linkage(
 
     _write_strategy(config_dir, stage="paper")
     control = _FakePaperRunnerControl(locks_dir)
-    # Fake clock: each call advances 20 s, so by the time the while condition
-    # is evaluated (call index 2), the clock is already past the 15 s deadline
-    # anchored at call index 1 — the loop body never executes.
+    # Fake clock: each call advances 20 s. Calls 0-1 are consumed by the
+    # proposal timestamp and the orchestration-job row; the deadline anchors
+    # at call index 2 and the while condition first evaluates at index 3 —
+    # 20 s later, already past the 15 s budget, so the loop body never
+    # executes. (The 20 s step is wide enough that exact indices don't
+    # matter.)
     t0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
     calls: list[int] = [0]
 
