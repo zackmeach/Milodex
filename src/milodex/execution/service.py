@@ -461,18 +461,9 @@ class ExecutionService:
         if intent.order_type is not OrderType.MARKET:
             raise UnsupportedOrderTypeError(intent.order_type)
 
-        if (
-            intent.order_type in {OrderType.LIMIT, OrderType.STOP_LIMIT}
-            and intent.limit_price is None
-        ):
-            msg = "Limit price is required for limit and stop-limit orders."
-            raise ValueError(msg)
-        if (
-            intent.order_type in {OrderType.STOP, OrderType.STOP_LIMIT}
-            and intent.stop_price is None
-        ):
-            msg = "Stop price is required for stop and stop-limit orders."
-            raise ValueError(msg)
+        # Note: the limit/stop price checks that previously followed here were
+        # unreachable — UnsupportedOrderTypeError fires first for any non-market
+        # type (Phase 1 is market-only per ADR 0013). Removed as dead code (HR-7).
 
         return TradeIntent(
             symbol=symbol,

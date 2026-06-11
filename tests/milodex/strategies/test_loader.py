@@ -523,3 +523,80 @@ def test_registry_excludes_foreign_strategy_subclasses():
             f"{cls.__module__!r} which is outside the milodex.strategies "
             "package — package-scoping guard is broken"
         )
+
+
+# ---------------------------------------------------------------------------
+# stop_loss_pct cross-check (HR-7 / R-P2-1)
+# ---------------------------------------------------------------------------
+
+
+def _make_stop_loss_config(
+    tmp_path: Path,
+    *,
+    risk_stop: object,
+    param_stop: object,
+) -> Path:
+    """Write a minimal strategy YAML with the given stop_loss_pct values.
+
+    ``risk_stop`` goes into ``strategy.risk.stop_loss_pct``;
+    ``param_stop`` goes into ``strategy.parameters.stop_loss_pct``.
+    Pass ``None`` to omit the field entirely (not write a YAML null).
+    """
+    risk_line = f"    stop_loss_pct: {risk_stop}" if risk_stop is not None else ""
+    param_line = f"    stop_loss_pct: {param_stop}" if param_stop is not None else ""
+
+    yaml_text = f"""
+strategy:
+  id: "dummy.daily.test.paper.v1"
+  family: "dummy"
+  template: "daily.test"
+  variant: "paper"
+  version: 1
+  description: "Dummy."
+  enabled: true
+  universe:
+    - "SPY"
+  parameters:
+    required_threshold: 10
+{param_line}
+  tempo:
+    bar_size: "1D"
+    min_hold_days: 1
+    max_hold_days: 5
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+{risk_line}
+  stage: "backtest"
+  backtest:
+    commission_per_trade: 0.00
+    min_trades_required: 30
+  disable_conditions_additional: []
+""".strip()
+    path = tmp_path / "stop_loss_test.yaml"
+    path.write_text(yaml_text, encoding="utf-8")
+    return path
+
+
+def test_stop_loss_cross_check_passes_when_both_match(tmp_path: Path):
+    """Matching values in both risk and parameters: config loads without error."""
+    path = _make_stop_loss_config(tmp_path, risk_stop=0.05, param_stop=0.05)
+    config = load_strategy_config(path)
+    assert config.risk["stop_loss_pct"] == 0.05
+    assert config.parameters["stop_loss_pct"] == 0.05
+
+
+def test_stop_loss_cross_check_raises_on_divergence(tmp_path: Path):
+    """risk.stop_loss_pct != parameters.stop_loss_pct → loud ValueError."""
+    path = _make_stop_loss_config(tmp_path, risk_stop=0.05, param_stop=0.03)
+    with pytest.raises(ValueError, match="stop_loss_pct.*does not match"):
+        load_strategy_config(path)
+
+
+def test_stop_loss_cross_check_no_error_when_only_risk_field_present(tmp_path: Path):
+    """Only risk.stop_loss_pct (no parameter twin) → no cross-check, loads fine."""
+    path = _make_stop_loss_config(tmp_path, risk_stop=0.05, param_stop=None)
+    config = load_strategy_config(path)
+    assert config.risk["stop_loss_pct"] == 0.05
+    assert "stop_loss_pct" not in config.parameters

@@ -226,6 +226,44 @@ This is warning-only. It diagnoses fetch completeness without changing provider 
 
 ---
 
+## Daily Loss Cap Semantics: Account-Wide Measurement
+
+`daily_loss_cap_pct` in a strategy YAML's `risk:` section is compared against the **account's** daily P&L, not the strategy's own P&L. The risk evaluator reads `account.daily_pnl` from the live broker (account equity minus start-of-day equity snapshot, realized + unrealized) and compares it to `min(global_cap, per_strategy_cap)`.
+
+**Practical consequence:** a strategy with a 2% daily loss cap is blocked when the *account* is down 2%, even if that specific strategy is flat. With N strategies running on one account, a loss from one strategy can activate another strategy's loss cap.
+
+**Why:** per-strategy P&L attribution (isolating exactly which P&L belongs to which strategy) is not implemented in Phase 1. The account-level measure is conservative in the safe direction — it under-permits rather than under-blocks. Per-strategy P&L attribution is a live-capital-gate item listed in "Known limitations" below.
+
+---
+
+## Stop-Loss Semantics: Bar-Cadence Check, No Broker-Side Orders
+
+Milodex strategies check their stop-loss condition **once per bar** against the bar's close price. For daily strategies, this means the stop is evaluated **once per trading day** on the end-of-day close. Intraday drawdown through a stop level during the trading day is invisible to the strategy until the next bar closes.
+
+**Phase 1 has no broker-side stop orders.** ADR 0013 restricts all Phase 1 submissions to market orders; no stop or stop-limit orders are submitted to the broker. The stop-loss logic is entirely in-strategy evaluation at bar cadence — not a resting broker order that would fill on an intraday print.
+
+This is acceptable Phase-1 policy for the strategies currently in the bank (daily and intraday round-trips with managed hold periods), but it is a documented semantics gap between the stop as described and the stop as enforced. It is on the live-capital-gate checklist.
+
+**`risk.stop_loss_pct` cross-check (HR-7):** each strategy YAML that declares *both* `risk.stop_loss_pct` and `parameters.stop_loss_pct` must have matching values — `load_strategy_config` raises `ValueError` if they diverge. Strategies with only `risk.stop_loss_pct` (no parameter twin) are not checked: `risk.stop_loss_pct` is currently unconsumed at runtime (the live stop fires from `parameters.stop_loss_pct`).
+
+---
+
+## Daily Trade Limit: Account-Wide Enforcement
+
+`max_trades_per_day` in `configs/risk_defaults.yaml` is enforced account-wide by the `_check_max_trades_per_day` risk check. It counts **all paper-submitted trades** since UTC midnight of the current day, across all strategies running on the account.
+
+**Account-wide (not per-strategy):** the rationale is "prevents runaway logic" — an account-level count is conservative and attribution-free. A strategy submitting at high frequency counts toward the shared quota; when the combined fleet reaches the limit, every strategy is blocked until UTC midnight.
+
+**Strict semantics:** the Nth trade is allowed; the (N+1)th is blocked. The count is queried before the submission is written, so a count of exactly `max_trades_per_day` blocks the next attempt.
+
+**Exits count toward the limit — deliberately.** Unlike the order-value cap (DC-1: exposure-reducing orders exempt, "a held position must always be exitable"), this is a halt-style runaway circuit-breaker, like the daily-loss check and the kill switch: a fleet that has exhausted its daily budget is presumed misbehaving, and per the kill-switch precedent its exits are not trusted either. The operator exits existing risk manually.
+
+**Day boundary:** UTC midnight. Simple and unambiguous; no DST sensitivity.
+
+**Fail-closed:** a database query error blocks the trade rather than silently allowing an uncountable submission.
+
+---
+
 ## Known limitations (live-capital-gate checklist)
 
 These are deliberate Phase-1 gaps. Each is **acceptable for paper** but a **hard gate before micro_live / live capital**. Tracked here so they are not mistaken for enforced invariants.
@@ -235,6 +273,7 @@ These are deliberate Phase-1 gaps. Each is **acceptable for paper** but a **hard
 3. **In-flight order accounting is same-process and account-scoped only.** `_check_total_exposure` / `_check_concurrent_positions` now count open BUYs from `context.recent_orders` (ADR 0024), which closes the same-process burst-before-fill overshoot. It does **not** close the **cross-process** evaluate→submit race (two runners' intents both passing against a stale position snapshot and both filling) — that needs per-account read→submit serialization, a micro_live hard gate (see [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md) addendum 2026-05-30). Paper stays lock-free.
 4. **`recent_orders` is broker-truncated (`get_orders(limit=100)`) with no durable backstop for the cap checks.** Unlike `_check_duplicate_order` (which falls back to the event store), the exposure/slot checks consume only the truncated list, so >100 in-window orders could drop a pending BUY (undercount). Bounded in Phase 1; add an event-store-backed open-order query at the live gate.
 5. **The per-strategy concurrent cap does not count in-flight orders.** `_check_strategy_concurrent_positions` attributes positions via `attribute_position(...)`, which reconstructs ownership from the durable *trades* history; a pending (unfilled) order has no trade record and broker orders carry no strategy attribution, so in-flight orders are invisible to the per-strategy cap. A single strategy can briefly overshoot its own `max_positions` via in-flight orders. Closing this needs an event-store "open-orders-by-strategy" query — deferred to the live gate.
+6. **Per-strategy `daily_loss_cap_pct` measures account P&L, not strategy P&L.** See "Daily Loss Cap Semantics" above. Per-strategy P&L attribution is deferred to the live-capital gate.
 
 ---
 

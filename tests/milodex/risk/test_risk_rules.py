@@ -2055,8 +2055,230 @@ def test_remaining_notional_overfill_clamps_to_zero():
 
 
 def test_checks_registry_is_account_complete():
-    """Guard against doc/code drift: the enforced-check registry stays at 14 and
-    never silently lists a sector/correlation cap that the code does not
-    implement (RISK_POLICY.md / SRS.md advertise those as planned only)."""
-    assert len(RiskEvaluator._CHECKS) == 14
+    """Guard against doc/code drift: the enforced-check registry stays at 15
+    (HR-7 added _check_max_trades_per_day) and never silently lists a
+    sector/correlation cap that the code does not implement
+    (RISK_POLICY.md / SRS.md advertise those as planned only)."""
+    assert len(RiskEvaluator._CHECKS) == 15
     assert not any("sector" in name or "correlat" in name for name in RiskEvaluator._CHECKS)
+
+
+# --- _check_max_trades_per_day (HR-7) ----------------------------------------
+#
+# Enforce that the account-wide paper-submitted trade count since UTC midnight
+# is checked before every submission. Semantics: >= limit blocks (N+1th trade);
+# < limit passes (Nth trade is the last allowed one).
+
+
+def _store_with_today_trades(tmp_path, *, count: int, source: str = "paper") -> object:
+    """Return an EventStore with ``count`` submitted trades recorded at 'now'."""
+    from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+
+    store = EventStore(tmp_path / "milodex_trades_today.db")
+    now = datetime.now(tz=UTC)
+    for idx in range(count):
+        explanation_id = store.append_explanation(
+            ExplanationEvent(
+                recorded_at=now + timedelta(seconds=idx),
+                decision_type="submit",
+                status="submitted",
+                strategy_name="test_strategy",
+                strategy_stage="paper",
+                strategy_config_path=None,
+                config_hash=None,
+                symbol="SPY",
+                side="buy",
+                quantity=1.0,
+                order_type="market",
+                time_in_force="day",
+                submitted_by="strategy_runner",
+                market_open=True,
+                latest_bar_timestamp=None,
+                latest_bar_close=None,
+                account_equity=10_000.0,
+                account_cash=10_000.0,
+                account_portfolio_value=10_000.0,
+                account_daily_pnl=0.0,
+                risk_allowed=True,
+                risk_summary="Allowed",
+                reason_codes=[],
+                risk_checks=[],
+                context={},
+                session_id="test-session-mtpd",
+            )
+        )
+        store.append_trade(
+            TradeEvent(
+                explanation_id=explanation_id,
+                recorded_at=now + timedelta(seconds=idx),
+                status="submitted",
+                source=source,
+                symbol="SPY",
+                side="buy",
+                quantity=1.0,
+                order_type="market",
+                time_in_force="day",
+                estimated_unit_price=100.0,
+                estimated_order_value=100.0,
+                strategy_name="test_strategy",
+                strategy_stage="paper",
+                strategy_config_path=None,
+                submitted_by="strategy_runner",
+                broker_order_id=f"broker-{idx}",
+                broker_status=None,
+                message=None,
+                session_id="test-session-mtpd",
+            )
+        )
+    return store
+
+
+def test_max_trades_per_day_passes_when_below_limit(tmp_path):
+    """Under the limit (19 of 20) — the check passes."""
+    store = _store_with_today_trades(tmp_path, count=19)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            event_store=store,
+            risk_defaults=_with_overrides(max_trades_per_day=20),
+        )
+    )
+    result = check_result(decision, "max_trades_per_day")
+    assert result.passed is True
+
+
+def test_max_trades_per_day_blocks_at_limit(tmp_path):
+    """At the limit (20 of 20) — the (N+1)th trade is blocked.
+
+    Strict semantics: ``today_count >= limit`` blocks; so a count of exactly
+    ``max_trades_per_day`` must refuse the next submission.
+    """
+    store = _store_with_today_trades(tmp_path, count=20)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            event_store=store,
+            risk_defaults=_with_overrides(max_trades_per_day=20),
+        )
+    )
+    result = check_result(decision, "max_trades_per_day")
+    assert result.passed is False
+    assert result.reason_code == "max_trades_per_day_exceeded"
+    assert "20" in result.message
+
+
+def test_max_trades_per_day_excludes_backtest_source_rows(tmp_path):
+    """Backtest-source rows must not count toward the daily paper limit.
+
+    Seeds 20 source='backtest' rows (which would hit limit=20 if counted)
+    plus 1 source='paper' row. The check must pass because only the paper
+    row is counted (today_count=1 < limit=20).
+
+    Uses _store_with_today_trades with source='backtest' to create the
+    20 rows, then manually appends one source='paper' row.
+    """
+    from milodex.core.event_store import ExplanationEvent, TradeEvent
+
+    # Seed 20 source='backtest' rows into the store returned by the helper.
+    # _store_with_today_trades uses session_id="test-session-mtpd" (no FK issue).
+    store = _store_with_today_trades(tmp_path, count=20, source="backtest")
+
+    now = datetime.now(tz=UTC)
+    explanation_id = store.append_explanation(
+        ExplanationEvent(
+            recorded_at=now + timedelta(seconds=500),
+            decision_type="submit",
+            status="submitted",
+            strategy_name="paper_strategy",
+            strategy_stage="paper",
+            strategy_config_path=None,
+            config_hash=None,
+            symbol="QQQ",
+            side="buy",
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=None,
+            latest_bar_close=None,
+            account_equity=10_000.0,
+            account_cash=10_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="Allowed",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id="paper-session-bt-excl",
+        )
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=now + timedelta(seconds=500),
+            status="submitted",
+            source="paper",
+            symbol="QQQ",
+            side="buy",
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=100.0,
+            estimated_order_value=100.0,
+            strategy_name="paper_strategy",
+            strategy_stage="paper",
+            strategy_config_path=None,
+            submitted_by="strategy_runner",
+            broker_order_id="paper-excl-1",
+            broker_status=None,
+            message=None,
+            session_id="paper-session-bt-excl",
+        )
+    )
+
+    # 20 backtest rows present + 1 paper row; limit=20. Paper count is 1 → pass.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            event_store=store,
+            risk_defaults=_with_overrides(max_trades_per_day=20),
+        )
+    )
+    result = check_result(decision, "max_trades_per_day")
+    assert result.passed is True, (
+        "20 source='backtest' rows must not count toward the paper daily limit; "
+        "only 1 source='paper' row → today_count=1 < limit=20 must pass"
+    )
+
+
+def test_max_trades_per_day_fails_closed_on_query_error(tmp_path, monkeypatch):
+    """Query error → fail closed (blocks the trade, cannot verify)."""
+    from milodex.core.event_store import EventStore
+
+    store = EventStore(tmp_path / "milodex_err.db")
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("simulated DB error")
+
+    monkeypatch.setattr(store, "count_submitted_trades_today", _raise)
+
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            event_store=store,
+            risk_defaults=_with_overrides(max_trades_per_day=20),
+        )
+    )
+    result = check_result(decision, "max_trades_per_day")
+    assert result.passed is False
+    assert result.reason_code == "max_trades_per_day_exceeded"
+
+
+def test_max_trades_per_day_skipped_when_no_event_store():
+    """``event_store=None`` → check is a no-op pass (legacy/manual-trade callers)."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            event_store=None,
+            risk_defaults=_with_overrides(max_trades_per_day=0),  # limit=0 → would block
+        )
+    )
+    result = check_result(decision, "max_trades_per_day")
+    assert result.passed is True

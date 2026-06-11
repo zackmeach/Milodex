@@ -232,6 +232,30 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     )
 
     parameters = _mapping(strategy.get("parameters"), "strategy.parameters", path)
+
+    # Cross-check: when both risk.stop_loss_pct and parameters.stop_loss_pct are
+    # present and numeric they must agree within floating-point tolerance (1e-9).
+    # Silent divergence of two identically-named fields is the failure mode this
+    # guards: the strategy code uses parameters.stop_loss_pct for the live stop;
+    # risk.stop_loss_pct is currently unconsumed at runtime (HR-7 / R-P2-1). If
+    # they diverge, the operator has mis-specified the config — refuse loudly
+    # rather than silently running with a wrong stop.
+    # Strategies with only risk.stop_loss_pct (no parameter twin): no cross-check.
+    _risk_stop = risk.get("stop_loss_pct")
+    _param_stop = parameters.get("stop_loss_pct")
+    if (
+        _risk_stop is not None
+        and _param_stop is not None
+        and abs(float(_risk_stop) - float(_param_stop)) > 1e-9
+    ):
+        msg = (
+            f"{path}: risk.stop_loss_pct ({_risk_stop}) does not match "
+            f"parameters.stop_loss_pct ({_param_stop}). "
+            "Both fields are present; they must agree. "
+            "Update one field so they match, or remove the one you do not intend to use."
+        )
+        raise ValueError(msg)
+
     display_name = strategy.get("display_name")
     if display_name is not None:
         if not isinstance(display_name, str) or not display_name.strip():
