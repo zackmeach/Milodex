@@ -703,6 +703,46 @@ def test_risk_triggered_kill_switch_activates_even_when_cancel_fails(
     assert service.get_kill_switch_state().active is True
 
 
+def test_risk_triggered_kill_switch_no_duplicate_cancel_when_already_active(
+    tmp_path, risk_defaults_file, latest_bar, submitted_order
+):
+    """HR-13 item 9: _maybe_activate_kill_switch must be a no-op when the switch is already active.
+
+    Pre-fix: every blocked submit after the first threshold breach would re-call
+    cancel_all_orders() and re-write the activated event (sustained-breach
+    repeat-cancel on every blocked submit).  The fix returns early when the store
+    already shows active=True.
+    """
+    account = AccountInfo(
+        equity=10_000.0,
+        cash=8_000.0,
+        buying_power=8_000.0,
+        portfolio_value=10_000.0,
+        daily_pnl=-1_500.0,
+    )
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        account,
+        submitted_order,
+    )
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    # First submit trips the threshold and activates.
+    result1 = service.submit_paper(intent)
+    assert "kill_switch_threshold_breached" in result1.risk_decision.reason_codes
+    assert service.get_kill_switch_state().active is True
+    assert broker.cancel_all_calls == 1
+
+    # Subsequent submits while already-active must NOT re-call cancel_all_orders.
+    service.submit_paper(intent)
+    service.submit_paper(intent)
+    assert broker.cancel_all_calls == 1, (
+        "cancel_all_orders must not be called again after the kill switch is already active"
+    )
+
+
 def test_preview_and_submit_record_explanations_and_trades(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):

@@ -78,7 +78,8 @@ def live_runner_eval_symbols(
     for path in sorted(Path(config_dir).glob("*.yaml")):
         try:
             config = load_strategy_config(path)
-        except ValueError:
+        except ValueError as exc:
+            logger.debug("Skipping invalid config %s: %s", path, exc)
             continue
         if exclude_strategy_id is not None and config.strategy_id == exclude_strategy_id:
             continue
@@ -87,7 +88,8 @@ def live_runner_eval_symbols(
             continue
         try:
             eval_symbol = evaluation_symbol_for_config(config)
-        except ValueError:
+        except ValueError as exc:
+            logger.debug("No eval symbol for %s: %s", config.strategy_id, exc)
             continue
         live_by_symbol[eval_symbol] = config.strategy_id
     return live_by_symbol

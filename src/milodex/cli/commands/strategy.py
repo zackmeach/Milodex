@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 
 from milodex.cli._shared import CommandContext, add_global_flags
@@ -19,6 +20,8 @@ from milodex.strategies.paper_runner_control import (
     runner_lock_name,
 )
 from milodex.strategies.runner_status import collect_runner_statuses
+
+logger = logging.getLogger(__name__)
 
 
 def register(subparsers: argparse._SubParsersAction) -> None:
@@ -51,7 +54,8 @@ def _resolve_config_path(strategy_id: str, config_dir: Path) -> Path:
     for path in sorted(config_dir.glob("*.yaml")):
         try:
             cfg = load_strategy_config(path)
-        except ValueError:
+        except ValueError as exc:
+            logger.debug("Skipping invalid config %s: %s", path, exc)
             continue
         if cfg.strategy_id == strategy_id:
             return path

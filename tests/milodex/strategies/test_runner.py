@@ -95,6 +95,13 @@ class StubBroker:
         return []
 
 
+class CancelFailingStubBroker(StubBroker):
+    """Broker stub whose cancel_all_orders raises (simulates broker outage at shutdown)."""
+
+    def cancel_all_orders(self) -> list[Order]:
+        raise RuntimeError("broker unreachable")
+
+
 class RejectingStubBroker(StubBroker):
     """Broker stub that raises OrderRejectedError on submit."""
 
@@ -543,6 +550,57 @@ def test_runner_kill_switch_shutdown_cancels_orders_and_activates_halt(
 
     assert broker.cancel_all_orders_calls == 1
     assert kill_switch_store.get_state().active is True
+    assert event_store.list_strategy_runs()[0].exit_reason == "kill_switch"
+
+
+def test_runner_kill_switch_shutdown_activates_even_if_cancel_all_fails(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """HR-13 item 8: a broker failure in cancel_all_orders must not block kill-switch activation.
+
+    The pre-fix code called cancel_all_orders() bare (no try/except) — a broker
+    outage at shutdown would raise before trigger_kill_switch(), leaving the switch
+    inactive (fail-open).  The fix wraps the cancel in try/except and activates
+    unconditionally.
+    """
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = CancelFailingStubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, kill_switch_store = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+
+    # Must not raise even though cancel_all_orders raises.
+    runner.shutdown(mode="kill_switch")
+
+    assert kill_switch_store.get_state().active is True, (
+        "Kill switch must activate even when cancel_all_orders raises"
+    )
     assert event_store.list_strategy_runs()[0].exit_reason == "kill_switch"
 
 

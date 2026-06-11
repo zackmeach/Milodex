@@ -405,7 +405,17 @@ class StrategyRunner:
         if mode in ("controlled", "controlled_stop"):
             exit_reason = "controlled_stop"
         elif mode == "kill_switch":
-            self._broker.cancel_all_orders()
+            # Mirror the service path (HR-6 / R-P2-5): a broker failure must
+            # NEVER block kill-switch activation — cancel best-effort, engage
+            # unconditionally.
+            try:
+                self._broker.cancel_all_orders()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Kill-switch shutdown: cancel_all_orders failed; "
+                    "activating the switch anyway.",
+                    exc_info=True,
+                )
             self._execution_service.trigger_kill_switch("Operator requested kill switch.")
             exit_reason = "kill_switch"
         elif mode == "interrupted":
@@ -572,7 +582,8 @@ class StrategyRunner:
         for path in sorted(self._config_dir.glob("*.yaml")):
             try:
                 config = load_strategy_config(path)
-            except ValueError:
+            except ValueError as exc:
+                logger.debug("Skipping invalid config %s: %s", path, exc)
                 continue
             if config.strategy_id == self._strategy_id:
                 return path
