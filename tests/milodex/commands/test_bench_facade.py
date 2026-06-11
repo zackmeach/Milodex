@@ -276,6 +276,7 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
         backtest_engine_factory=None,
         paper_runner_control=None,
         workflow_readiness=None,
+        now=None,
         sleep=None,
     ) -> BenchCommandFacade:
         return BenchCommandFacade(
@@ -286,6 +287,7 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
             backtest_engine_factory=backtest_engine_factory,
             paper_runner_control=paper_runner_control,
             workflow_readiness=workflow_readiness or _healthy_readiness(),
+            now=now,
             sleep=sleep,
         )
 
