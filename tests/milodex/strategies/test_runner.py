@@ -1959,13 +1959,17 @@ def test_intraday_closed_market_early_out_after_session_drained(
     assert len(provider.get_bars_calls) == 1
     assert runner._last_processed_bar_at is not None
 
-    runner.run_cycle()  # already_seen while closed → arms the early-out
+    runner.run_cycle()  # quiet cycle 1 — straggler grace, must NOT arm yet
     assert len(provider.get_bars_calls) == 2
+    assert runner._intraday_session_drained is False
+
+    runner.run_cycle()  # quiet cycle 2 + wall-clock margin → arms the early-out
+    assert len(provider.get_bars_calls) == 3
     assert runner._intraday_session_drained is True
 
     for _ in range(3):
         assert runner.run_cycle() == []
-    assert len(provider.get_bars_calls) == 2, (
+    assert len(provider.get_bars_calls) == 3, (
         "closed-market cycles after the session is drained must not fetch"
     )
     assert len(event_store.list_explanations()) == 1, (
@@ -1974,8 +1978,57 @@ def test_intraday_closed_market_early_out_after_session_drained(
 
     broker._market_open = True
     runner.run_cycle()
-    assert len(provider.get_bars_calls) == 3, "the first open-market cycle resumes fetching"
+    assert len(provider.get_bars_calls) == 4, "the first open-market cycle resumes fetching"
     assert runner._intraday_session_drained is False
+    assert runner._intraday_quiet_closed_cycles == 0
+
+
+def test_intraday_drained_flag_waits_for_late_published_final_bar(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Round-2 regression: the session's final bar can publish AFTER the first
+    closed-market cycle (feed aggregate lag). The drained flag must not arm on
+    the first quiet cycle — the straggler must still be fetched and evaluated
+    by a later cycle, and only then may the early-out arm."""
+    make_regime_config_intraday(strategy_config_dir)
+    base_end = datetime(2026, 6, 10, 19, 50, tzinfo=UTC)
+    straggler_end = base_end + timedelta(minutes=1)
+    runner, broker, provider, event_store = _build_hr2_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        bars_by_symbol={
+            "SPY": build_intraday_barset([10.0, 10.0], end=base_end, freq="1min"),
+            "SHY": build_intraday_barset([10.0, 10.0], end=base_end, freq="1min"),
+        },
+        market_open=False,
+    )
+    pinned = straggler_end.replace(tzinfo=UTC) + timedelta(hours=1)
+    runner._now = lambda: pinned
+
+    runner.run_cycle()  # evaluates the latest published completed bar
+    assert len(provider.get_bars_calls) == 1
+
+    runner.run_cycle()  # quiet cycle 1: straggler not yet published — no arm
+    assert runner._intraday_session_drained is False
+
+    # The feed publishes the session's true final bar late (aggregate lag).
+    provider._bars_by_symbol = {
+        "SPY": build_intraday_barset([10.0, 10.0, 10.0], end=straggler_end, freq="1min"),
+        "SHY": build_intraday_barset([10.0, 10.0, 10.0], end=straggler_end, freq="1min"),
+    }
+
+    runner.run_cycle()  # straggler is new → evaluated, quiet count restarts
+    assert runner._last_processed_bar_at is not None
+    assert runner._last_processed_bar_at == straggler_end
+    assert runner._intraday_session_drained is False
+
+    runner.run_cycle()  # quiet cycle 1 (post-straggler)
+    assert runner._intraday_session_drained is False
+    runner.run_cycle()  # quiet cycle 2 + margin → arm
+    assert runner._intraday_session_drained is True
 
 
 def test_intraday_processed_intent_keys_remain_submission_backstop(

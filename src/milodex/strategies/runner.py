@@ -97,11 +97,22 @@ class StrategyRunner:
         self._session_id = str(uuid4())
         self._started_at = datetime.now(tz=UTC)
         self._last_processed_bar_at: datetime | None = None
-        # Intraday only (HR-2): set when a closed-market cycle confirms no
+        # Intraday only (HR-2): set when closed-market cycles confirm no
         # unprocessed completed bar remains, so subsequent closed-market
         # cycles skip the fetch entirely. Reset on the first open-market
         # cycle. Never set on the 1D path (daily uses the lockin watermark).
+        #
+        # Arming is deliberately conservative (review finding): the feed
+        # publishes a bar's aggregate with lag (seconds routinely, longer on
+        # hiccups), so the first quiet closed-market cycle may simply predate
+        # the session's final bar appearing. Arming requires BOTH two
+        # consecutive quiet closed-market fetches (a straggler published
+        # within one poll interval is caught by the next cycle) AND a
+        # wall-clock margin of 3 bar-widths past the newest processed bar
+        # (covers hiccup-scale lag, calendar-free). Cost: at most ~3
+        # bar-widths of extra post-close polling before going quiet.
         self._intraday_session_drained = False
+        self._intraday_quiet_closed_cycles = 0
         self._pending_lockin_signature: tuple[float, float, float, float, int] | None = None
         self._pending_lockin_seen_at: datetime | None = None
         self._lockin_started_at: datetime | None = None
@@ -255,8 +266,9 @@ class StrategyRunner:
         if not is_daily_bar:
             if market_open:
                 self._intraday_session_drained = False
+                self._intraday_quiet_closed_cycles = 0
             elif self._intraday_session_drained:
-                # Market is closed and a prior closed-market cycle confirmed
+                # Market is closed and prior closed-market cycles confirmed
                 # the session's last completed bar is already processed.
                 # Nothing new can appear until the next open — skip the fetch.
                 return []
@@ -275,9 +287,17 @@ class StrategyRunner:
         )
         if already_seen:
             if not is_daily_bar and not market_open:
-                # The session's last completed bar is processed and the
-                # market is closed: arm the closed-market early-out above.
-                self._intraday_session_drained = True
+                # A quiet closed-market fetch: the newest completed bar is
+                # already processed. Arm the early-out only once no straggler
+                # can plausibly still be pending publication — two consecutive
+                # quiet fetches AND 3 bar-widths of wall clock past the newest
+                # bar (see __init__ comment; review finding on feed lag).
+                self._intraday_quiet_closed_cycles += 1
+                if (
+                    self._intraday_quiet_closed_cycles >= 2
+                    and self._now() - latest_bar.timestamp >= 3 * self._bar_duration()
+                ):
+                    self._intraday_session_drained = True
             return []
 
         if is_daily_bar and not market_open and not self._is_current_session_bar(latest_bar):
@@ -309,8 +329,10 @@ class StrategyRunner:
             # evaluated — the already_seen short-circuit above then suppresses
             # re-evaluation on every later poll of the same bar. The
             # _processed_intent_keys dedup below remains the submission
-            # backstop.
+            # backstop. A new bar restarts the quiet-cycle count (a straggler
+            # arriving post-close proves the session was not yet drained).
             self._last_processed_bar_at = latest_bar.timestamp
+            self._intraday_quiet_closed_cycles = 0
 
         if not intents:
             if self._processed_intent_bar_at != latest_bar.timestamp:
