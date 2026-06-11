@@ -281,6 +281,12 @@ def _fetch_submitted_trade_rows_for_strategy(
       query — a strategy-name-filtered fetch alone can never see them. The
       original strategy row (its id-position, price, timestamp) is what the
       fold consumes; the corrective row only decides whether it counts.
+      (``fold_positions`` folds the corrective row itself instead — equal
+      outcomes because ``sync_local_only_orders`` copies the local order's
+      side/quantity onto the corrective row; they diverge only if a
+      corrective row is written with an empty local fold, i.e. corruption.
+      The original-row choice is deliberate: corrective rows carry
+      ``estimated_unit_price=0.0``, which would corrupt open-lot pricing.)
     - Rows without a ``broker_order_id`` are counted individually, as before.
     - Only position-affecting statuses count as fills (Decision 2's exclusion
       of preview/blocked/cancelled rows, extended to the corrective-row

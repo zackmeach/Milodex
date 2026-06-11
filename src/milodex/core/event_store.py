@@ -851,15 +851,17 @@ class EventStore:
         Only ``source="paper"`` rows count: backtest fills are stamped
         ``recorded_at = wall-clock now``, so a concurrent backtest on the
         same symbol would otherwise spuriously veto live paper submissions
-        (R-P1-4). Uses the ``idx_trades_symbol`` index; the ``side``/
-        ``status``/``source``/time predicates filter the already-narrowed
-        per-symbol partition. The time window is pushed into SQL via
-        ``datetime()`` normalization: naive timestamps are treated as UTC
-        and unparseable ``recorded_at`` values are excluded (as in the
-        prior Python comparison). ``datetime()`` truncates to whole
-        seconds, so the window is up to one second wider than the old
-        sub-second comparison — for a duplicate-order backstop that errs
-        toward vetoing, which is the fail-safe direction.
+        (R-P1-4). The planner may drive from ``idx_trades_symbol`` or
+        ``idx_trades_source``; either way the predicates filter a narrow
+        partition. The time window is pushed into SQL via ``datetime()``
+        normalization. Two deliberate semantic shifts from the prior
+        Python comparison: (a) ``datetime()`` truncates to whole seconds,
+        so the window is up to one second wider — more-veto, the
+        fail-safe direction for a dedup backstop; (b) an unparseable
+        ``recorded_at`` is excluded (NULL) where the prior code raised
+        from ``fromisoformat`` and the evaluator's fail-closed wrapper
+        vetoed — reachable only via DB corruption (0 such rows observed
+        live), accepted to keep the count total-function.
         """
         normalized_symbol = symbol.strip().upper()
         normalized_side = side.strip().lower()

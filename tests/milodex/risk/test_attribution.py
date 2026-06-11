@@ -716,6 +716,69 @@ def test_corrective_cancelled_row_closes_strategy_ledger_lot(store):
     assert strategy_open_lots("strategy_a", store) == {}
 
 
+def test_corrective_cancelled_then_filled_pair_counts_the_order(store):
+    """Multiple corrective rows for one order: the LAST (by id) wins.
+
+    The broker-purge-then-backstop path can write cancelled first and a
+    later filled correction; latest-status-per-order must follow the
+    final word, mirroring ``fold_positions``'s dict-overwrite semantics.
+    """
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        broker_order_id="order-flip",
+        recorded_at=_NOW - timedelta(days=2),
+    )
+    _record_corrective_row(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        status="cancelled",
+        broker_order_id="order-flip",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+    _record_corrective_row(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        status="filled",
+        broker_order_id="order-flip",
+    )
+
+    assert strategy_positions("strategy_a", store) == {"SPY": 10.0}
+
+
+def test_corrective_canceled_single_l_spelling_also_reverses(store):
+    """The one-'l' 'canceled' spelling (raw broker string; 64 live rows)
+    is terminal-non-affecting under the allowlist design and must reverse
+    the lot exactly like 'cancelled'."""
+    _record_trade(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        strategy_name="strategy_a",
+        broker_order_id="order-one-l",
+        recorded_at=_NOW - timedelta(days=1),
+    )
+    _record_corrective_row(
+        store,
+        symbol="SPY",
+        side="buy",
+        quantity=10,
+        status="canceled",
+        broker_order_id="order-one-l",
+    )
+
+    assert strategy_positions("strategy_a", store) == {}
+    assert strategy_open_lots("strategy_a", store) == {}
+
+
 def test_attribute_position_backtest_source_sees_backtest_universe_only(store):
     """The backtest structural evaluator attributes within source='backtest'.
 
