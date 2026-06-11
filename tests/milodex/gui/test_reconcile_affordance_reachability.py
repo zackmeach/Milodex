@@ -86,7 +86,7 @@ class TestDrawerReconcileWiring:
         src = _DRAWER_QML.read_text(encoding="utf-8")
         assert "onReconciliationCompleted" in src, (
             "RiskOfficeDrawer.qml must handle BenchCommandBridge.onReconciliationCompleted "
-            "to update the result line"
+            "via a Connections block to update the result line"
         )
 
     def test_busy_cleared_in_completion_handler(self) -> None:

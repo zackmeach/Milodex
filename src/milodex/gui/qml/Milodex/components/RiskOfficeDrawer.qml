@@ -118,10 +118,14 @@ Item {
     }
 
     // HR-10: receive reconciliation completion from the bridge.
-    // Guarded: if BenchCommandBridge is not registered (standalone load-smoke)
-    // the Connections target is null — the block is silently skipped.
+    // Guarded: standalone QML harnesses (load-smoke) that do not register
+    // BenchCommandBridge leave the target as null — Qt silently skips a null
+    // Connections target without warning.  All production and test harnesses
+    // that load the drawer register BenchCommandBridge, so the handler fires
+    // in every wired context.
     Connections {
         target: (typeof BenchCommandBridge !== "undefined") ? BenchCommandBridge : null
+        ignoreUnknownSignals: true
         function onReconciliationCompleted(payload) {
             root._reconcileBusy = false
             var status = payload["status"] || "error"
@@ -133,7 +137,8 @@ Item {
                 root._reconcileResult = "Clean — " + shortTs + " UTC"
             } else if (status === "dirty") {
                 root._reconcileResultClean = false
-                root._reconcileResult = "Dirty — " + mismatches + " mismatch(es)  " + shortTs + " UTC"
+                root._reconcileResult = "Dirty — " + mismatches + " mismatch(es)  "
+                    + shortTs + " UTC"
             } else if (status === "incomplete") {
                 root._reconcileResultClean = false
                 root._reconcileResult = "Incomplete — broker unavailable  " + shortTs + " UTC"
