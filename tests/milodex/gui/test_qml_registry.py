@@ -46,10 +46,8 @@ _skip_no_qt = pytest.mark.skipif(not _PYSIDE6_AVAILABLE, reason="PySide6 not ins
 _EXPECTED_REGISTRATION_ORDER: tuple[str, ...] = (
     "ThemeManager",
     "OperationalState",
-    "StrategyBankState",
     "FrontPageState",
     "BenchState",
-    "KanbanState",
     "LedgerState",
     "PerformanceState",
     "RiskThroughputState",
@@ -68,10 +66,8 @@ _EXPECTED_REGISTRATION_ORDER: tuple[str, ...] = (
 # orphan_reaper_controller must be LAST.
 _EXPECTED_LIFECYCLE_ORDER: tuple[str, ...] = (
     "OperationalState",
-    "StrategyBankState",
     "FrontPageState",
     "BenchState",
-    "KanbanState",
     "LedgerState",
     "PerformanceState",
     "RiskThroughputState",
@@ -93,10 +89,8 @@ def _sentinel_kwargs() -> dict[str, object]:
     keys = (
         "theme_manager",
         "operational_state",
-        "strategy_bank_state",
         "front_page_state",
         "bench_state",
-        "kanban_state",
         "ledger_state",
         "performance_state",
         "risk_throughput_state",
@@ -297,10 +291,8 @@ def test_registry_spec_and_build_qml_registry_are_in_sync() -> None:
     sentinel_keys = (
         "theme_manager",
         "operational_state",
-        "strategy_bank_state",
         "front_page_state",
         "bench_state",
-        "kanban_state",
         "ledger_state",
         "performance_state",
         "risk_throughput_state",

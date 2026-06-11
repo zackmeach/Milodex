@@ -257,8 +257,7 @@ from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
-from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState
+from milodex.gui.read_models import FrontPageState, BenchState, LedgerState
 from milodex.gui.performance_state import PerformanceState
 from milodex.gui.risk_throughput_state import RiskThroughputState
 from milodex.gui.active_ops_state import ActiveOpsState
@@ -287,10 +286,8 @@ op = OperationalState(
 )
 
 _ne = Path("/__nonexistent_surface_content_test__")
-sb = StrategyBankState(db_path=_ne)
 front = FrontPageState(db_path=_ne, configs_dir=Path("configs"))
 bench = BenchState(db_path=_ne, configs_dir=Path("configs"))
-kanban = KanbanState(db_path=_ne, configs_dir=Path("configs"))
 ledger = LedgerState(db_path=_ne)
 performance = PerformanceState(db_path=_ne, cache_dir=_ne)
 risk_throughput = RiskThroughputState(db_path=_ne)
@@ -312,10 +309,8 @@ bridge = BenchCommandBridge(facade, bench_state=bench)
 register_qml_types(
     theme_manager=tm,
     operational_state=op,
-    strategy_bank_state=sb,
     front_page_state=front,
     bench_state=bench,
-    kanban_state=kanban,
     ledger_state=ledger,
     performance_state=performance,
     risk_throughput_state=risk_throughput,
