@@ -12,7 +12,7 @@ Surfaced bugs this catches:
 Approach: each parametrized case spawns a fresh subprocess that:
   1. Sets QT_QPA_PLATFORM=offscreen so no display server is needed.
   2. Registers all Milodex QML types via the production qml_setup path
-     (ThemeManager, OperationalState stub, StrategyBankState with
+     (ThemeManager, OperationalState stub, and the State models with
      nonexistent db_path — the surface renders to "error" state but loads
      cleanly, which is the path we need to validate).
   3. Loads the target .qml file via QQmlApplicationEngine.

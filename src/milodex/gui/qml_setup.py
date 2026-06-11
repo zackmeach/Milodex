@@ -65,7 +65,7 @@ class QmlSingleton:
     """
 
     qml_name: str
-    """QML type name, e.g. ``"StrategyBankState"`` — the ``import Milodex 1.0``
+    """QML type name, e.g. ``"OperationalState"`` — the ``import Milodex 1.0``
     handle QML files reference."""
 
     qml_type: type
