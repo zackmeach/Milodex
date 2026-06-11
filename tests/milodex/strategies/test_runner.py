@@ -2944,3 +2944,290 @@ strategy:
         f"tempo.poll_interval_seconds=42.0 in YAML should override bar_size default; "
         f"got {runner._poll_interval_seconds}"
     )
+
+
+# ---------------------------------------------------------------------------
+# HR-3 (R-P1-3): NY-day rollover re-reconciliation
+# ---------------------------------------------------------------------------
+#
+# Four pins:
+#   (a) Same-NY-day cycles do not re-reconcile (call-count pin).
+#   (b) NY-day rollover triggers exactly one re-reconcile on the next cycle.
+#   (c) Rollover during closed market + intraday_session_drained: the
+#       re-reconcile fires on the FIRST cycle of the new NY day, even though
+#       the drained early-out fires immediately after.
+#   (d) Reconcile failure on rollover preserves the startup-path posture
+#       (exception propagates; _last_reconcile_ny_day is NOT advanced).
+# ---------------------------------------------------------------------------
+
+
+def _build_hr3_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    market_open: bool = True,
+    bar_size: str = "1Min",
+):
+    """Intraday runner wired for HR-3 tests; clock is always monkey-patchable."""
+    make_regime_config_intraday(strategy_config_dir, bar_size=bar_size)
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=market_open,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+    pin_clock_after_latest_bar(runner, provider)
+    return runner, broker, provider, event_store
+
+
+def test_hr3_same_ny_day_cycles_do_not_re_reconcile(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """(a) Multiple run_cycle calls on the same NY trading day must not
+    trigger a rollover re-reconcile; the startup reconcile is the only one.
+
+    Pin: run_reconciliation call count stays at 1 (startup) across N cycles.
+    """
+    from milodex.strategies import runner as runner_module
+
+    call_count = {"n": 0}
+    original = runner_module.run_reconciliation
+
+    def counting_reconcile(**kwargs):
+        call_count["n"] += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner_module, "run_reconciliation", counting_reconcile)
+
+    runner, _, _, _ = _build_hr3_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=True,
+    )
+    # startup reconcile fires on first run_cycle
+    runner.run_cycle()
+    assert call_count["n"] == 1, "startup reconcile must fire on the first cycle"
+
+    # Same NY day — additional cycles must not re-reconcile
+    runner.run_cycle()
+    runner.run_cycle()
+    assert call_count["n"] == 1, (
+        "same-NY-day cycles must not trigger rollover re-reconciliation"
+    )
+
+
+def test_hr3_ny_day_rollover_triggers_exactly_one_re_reconcile(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """(b) When the NY trading day advances between cycles, exactly one
+    additional reconciliation run is triggered on the first post-rollover cycle.
+    Subsequent same-day cycles do not re-reconcile again.
+
+    Technique: pin the runner clock to a specific ET date (day 1), run a cycle
+    to complete startup reconcile, then advance the clock to the next ET day
+    (day 2) and verify one additional call fires — then verify no further calls
+    on day 2.
+    """
+    from zoneinfo import ZoneInfo
+
+    from milodex.strategies import runner as runner_module
+
+    call_count = {"n": 0}
+    original = runner_module.run_reconciliation
+
+    def counting_reconcile(**kwargs):
+        call_count["n"] += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner_module, "run_reconciliation", counting_reconcile)
+
+    runner, _, _, _ = _build_hr3_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=True,
+    )
+    # Day 1: 14:00 ET on an arbitrary Tuesday → NY trading day = "2026-06-09"
+    et_tz = ZoneInfo("America/New_York")
+    day1 = datetime(2026, 6, 9, 14, 0, 0, tzinfo=et_tz).astimezone(UTC)
+    day2 = datetime(2026, 6, 10, 14, 0, 0, tzinfo=et_tz).astimezone(UTC)
+
+    runner._now = lambda: day1
+    runner.run_cycle()
+    assert call_count["n"] == 1, "startup reconcile must fire on the first cycle"
+    assert runner._last_reconcile_ny_day == "2026-06-09"
+
+    # Same day: no extra reconcile
+    runner.run_cycle()
+    assert call_count["n"] == 1
+
+    # Day 2: first cycle of the new NY trading day
+    runner._now = lambda: day2
+    runner.run_cycle()
+    assert call_count["n"] == 2, (
+        "first cycle on a new NY trading day must trigger exactly one rollover reconcile"
+    )
+    assert runner._last_reconcile_ny_day == "2026-06-10"
+
+    # Day 2: subsequent cycles must not re-reconcile
+    runner.run_cycle()
+    runner.run_cycle()
+    assert call_count["n"] == 2, (
+        "subsequent same-day cycles after rollover must not reconcile again"
+    )
+
+
+def test_hr3_rollover_during_closed_market_drained_flag(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """(c) An intraday runner idling overnight behind the drained flag still
+    re-reconciles when the NY day rolls. The re-reconcile fires here and then
+    the drained early-out returns [] — the reconciliation row is fresh before
+    the next open-market evaluation cycle.
+
+    Ordering: _maybe_rollover_reconciliation() is called BEFORE every
+    early-out, so the reconcile happens on the first cycle of the new NY day
+    regardless of the drained flag.
+    """
+    from zoneinfo import ZoneInfo
+
+    from milodex.strategies import runner as runner_module
+
+    call_count = {"n": 0}
+    original = runner_module.run_reconciliation
+
+    def counting_reconcile(**kwargs):
+        call_count["n"] += 1
+        return original(**kwargs)
+
+    monkeypatch.setattr(runner_module, "run_reconciliation", counting_reconcile)
+
+    runner, broker, _, _ = _build_hr3_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    et_tz = ZoneInfo("America/New_York")
+    day1_night = datetime(2026, 6, 9, 22, 0, 0, tzinfo=et_tz).astimezone(UTC)
+    day2_night = datetime(2026, 6, 10, 22, 0, 0, tzinfo=et_tz).astimezone(UTC)
+
+    runner._now = lambda: day1_night
+
+    # Startup reconcile fires on first cycle; session gets drained after 3 cycles
+    # (already_seen → arm the early-out) — force the drained state directly
+    # to avoid depending on the quiet-cycle count / margin wall-clock logic.
+    runner.run_cycle()
+    assert call_count["n"] == 1
+    runner._intraday_session_drained = True
+    runner._last_reconcile_ny_day = "2026-06-09"
+
+    # Drained overnight cycle on day 1: early-out, no re-reconcile
+    result = runner.run_cycle()
+    assert result == []
+    assert call_count["n"] == 1, "drained cycle on same day must not reconcile"
+
+    # NY day rolls to day 2 while still drained and market closed
+    runner._now = lambda: day2_night
+    result_day2 = runner.run_cycle()
+    assert result_day2 == [], "drained early-out still fires (market closed, session drained)"
+    assert call_count["n"] == 2, (
+        "rollover reconcile must fire BEFORE the drained early-out on the "
+        "first cycle of the new NY day"
+    )
+    assert runner._last_reconcile_ny_day == "2026-06-10"
+
+    # Subsequent closed-market drained cycles on day 2: no further reconcile
+    runner.run_cycle()
+    assert call_count["n"] == 2, "no further reconcile on same day after rollover"
+
+
+def test_hr3_reconcile_failure_on_rollover_preserves_startup_posture(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """(d) If run_reconciliation raises on a rollover attempt, the exception
+    propagates from run_cycle — same posture as a startup reconcile failure
+    (no try/except wrapping). _last_reconcile_ny_day is NOT advanced.
+
+    A subsequent cycle on the same new NY day will retry the reconcile
+    (since _last_reconcile_ny_day still holds the prior day).
+    """
+    from zoneinfo import ZoneInfo
+
+    from milodex.strategies import runner as runner_module
+
+    original = runner_module.run_reconciliation
+    attempt = {"n": 0}
+
+    def failing_on_rollover(**kwargs):
+        attempt["n"] += 1
+        # Allow the startup reconcile (first call) to succeed; fail on rollover
+        if attempt["n"] == 1:
+            return original(**kwargs)
+        raise RuntimeError("simulated DB failure on rollover reconcile")
+
+    monkeypatch.setattr(runner_module, "run_reconciliation", failing_on_rollover)
+
+    runner, _, _, _ = _build_hr3_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=True,
+    )
+    et_tz = ZoneInfo("America/New_York")
+    day1 = datetime(2026, 6, 9, 14, 0, 0, tzinfo=et_tz).astimezone(UTC)
+    day2 = datetime(2026, 6, 10, 14, 0, 0, tzinfo=et_tz).astimezone(UTC)
+
+    runner._now = lambda: day1
+    runner.run_cycle()
+    assert runner._last_reconcile_ny_day == "2026-06-09"
+
+    # Day 2: rollover reconcile fails → exception propagates from run_cycle
+    runner._now = lambda: day2
+    with pytest.raises(RuntimeError, match="simulated DB failure on rollover reconcile"):
+        runner.run_cycle()
+
+    # _last_reconcile_ny_day is NOT advanced — the runner still thinks it's on
+    # day 1, so the next cycle will retry the reconcile.
+    assert runner._last_reconcile_ny_day == "2026-06-09", (
+        "a failed rollover reconcile must not advance _last_reconcile_ny_day; "
+        "the next cycle must retry"
+    )

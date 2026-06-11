@@ -21,7 +21,7 @@ from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_f
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
-from milodex.operations.reconciliation import run_reconciliation
+from milodex.operations.reconciliation import local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, load_strategy_config
@@ -126,6 +126,11 @@ class StrategyRunner:
         self._processed_intent_bar_at: datetime | None = None
         self._requested_shutdown: str | None = None
         self._startup_reconciled = False
+        # NY trading day string (ISO date, ET) of the most recent reconciliation
+        # run this session completed. Set by _ensure_startup_reconciliation on
+        # first run; reset by _maybe_rollover_reconciliation on day rollover.
+        # None until the first reconciliation completes.
+        self._last_reconcile_ny_day: str | None = None
         self._closed = False
         self._dialog_open = False
         # Reconcile any prior strategy_runs row for this strategy still left
@@ -261,6 +266,7 @@ class StrategyRunner:
         fetch until the next open.
         """
         self._ensure_startup_reconciliation()
+        self._maybe_rollover_reconciliation()
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
         if is_daily_bar and market_open:
@@ -436,6 +442,45 @@ class StrategyRunner:
             broker=self._broker,
         )
         self._startup_reconciled = True
+        self._last_reconcile_ny_day = local_trading_day(self._now())
+
+    def _maybe_rollover_reconciliation(self) -> None:
+        """Re-run reconciliation when the NY trading day has rolled over.
+
+        HR-3 / R-P1-3: the runner reconciles once at startup; on day 2 of any
+        multi-day session ``latest_readiness`` sees a stale reconciliation row
+        and blocks every BUY with ``reconciliation_stale``. This method checks
+        cheaply (one in-memory string compare, no broker call, no DB query) at
+        the top of each cycle. When the NY day differs from the day of the last
+        reconcile, it re-runs reconciliation — same ``run_reconciliation`` call,
+        same failure posture as startup (no try/except: a raised exception
+        propagates to run_cycle and then to the caller, matching the behaviour
+        that a startup-reconcile failure would produce).
+
+        Placement: called AFTER ``_ensure_startup_reconciliation`` (so
+        ``_last_reconcile_ny_day`` is always set first) and BEFORE every
+        early-out in run_cycle. An intraday runner idling overnight behind the
+        ``_intraday_session_drained`` flag will still re-reconcile on the first
+        cycle of the new NY day — the re-reconcile fires here and then the
+        drained-flag early-out returns [], so the reconciliation row is fresh
+        before the next open-market evaluation cycle.
+        """
+        if self._last_reconcile_ny_day is None:
+            # Startup reconcile has not completed yet — nothing to roll over.
+            return
+        current_ny_day = local_trading_day(self._now())
+        if current_ny_day == self._last_reconcile_ny_day:
+            return
+        logger.info(
+            "NY trading day rolled over (%s → %s): re-running reconciliation.",
+            self._last_reconcile_ny_day,
+            current_ny_day,
+        )
+        run_reconciliation(
+            event_store=self._event_store,
+            broker=self._broker,
+        )
+        self._last_reconcile_ny_day = current_ny_day
 
     def _now(self) -> datetime:
         return datetime.now(tz=UTC)
