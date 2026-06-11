@@ -319,6 +319,25 @@ def test_order_value_sell_without_position_is_still_capped():
     assert result.reason_code == "max_order_value_exceeded"
 
 
+def test_order_value_oversized_sell_beyond_held_is_still_capped():
+    # A sell EXCEEDING the held quantity (sell-side fat-finger: 10,000 vs 100
+    # held) is classified exposure-increasing (exposure.py: quantity > held) —
+    # the exemption is unreachable and the cap binds. Pins the doctrine claim
+    # "beyond the held quantity counts as increasing" to the code.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=10_000.0,
+            positions=[_position("SPY", quantity=100.0)],
+            estimated_order_value=1_000_000.0,
+        )
+    )
+
+    result = check_result(decision, "order_value")
+    assert result.passed is False
+    assert result.reason_code == "max_order_value_exceeded"
+
+
 # --- _check_kill_switch ------------------------------------------------------
 
 
