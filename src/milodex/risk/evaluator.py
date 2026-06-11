@@ -104,6 +104,7 @@ class RiskEvaluator:
         "_check_market_open",
         "_check_data_staleness",
         "_check_daily_loss",
+        "_check_max_trades_per_day",
         "_check_order_value",
         "_check_single_position_limit",
         "_check_total_exposure",
@@ -392,6 +393,65 @@ class RiskEvaluator:
             )
 
         return RiskCheckResult("daily_loss", True, "Daily loss is within configured limits.")
+
+    def _check_max_trades_per_day(self, context: EvaluationContext) -> RiskCheckResult:
+        """Guard against runaway submission logic by counting today's paper trades.
+
+        Counts ACCOUNT-WIDE submitted paper trades since UTC midnight today.
+        Using a per-account count (rather than per-strategy) is the conservative,
+        attribution-free reading of the "prevents runaway logic" rationale in
+        ``configs/risk_defaults.yaml``: each strategy contributing toward a shared
+        daily quota errs toward blocking when the fleet approaches the limit.
+
+        Day boundary: UTC midnight (simplest; no DST ambiguity).
+
+        Strict semantics: the check fires BEFORE the N+1th trade is written —
+        i.e. when ``today_count >= limit`` the (N+1)th trade is blocked. So the
+        Nth trade is the last one allowed; the (N+1)th is the first one blocked.
+
+        Skipped gracefully (returns passing) when ``context.event_store`` is None
+        (legacy callers / operator manual trades not routed through the execution
+        service). This mirrors the skip pattern in
+        :meth:`_check_strategy_concurrent_positions`.
+
+        Fail-closed: a query error blocks the trade rather than silently allowing
+        an uncountable submission, consistent with the duplicate-order backstop.
+        """
+        if context.event_store is None:
+            return RiskCheckResult(
+                "max_trades_per_day",
+                True,
+                "No event store available; skipping max-trades-per-day check.",
+            )
+        limit = context.risk_defaults.max_trades_per_day
+        try:
+            today_count = context.event_store.count_submitted_trades_today()
+        except Exception:
+            return RiskCheckResult(
+                name="max_trades_per_day",
+                passed=False,
+                message=(
+                    "Daily trade count query failed; failing closed "
+                    "(cannot verify the daily trade limit)."
+                ),
+                reason_code="max_trades_per_day_exceeded",
+            )
+        if today_count >= limit:
+            return RiskCheckResult(
+                name="max_trades_per_day",
+                passed=False,
+                message=(
+                    f"Account-wide paper trades today ({today_count}) has reached or "
+                    f"exceeded the daily limit ({limit}). "
+                    "Day resets at UTC midnight."
+                ),
+                reason_code="max_trades_per_day_exceeded",
+            )
+        return RiskCheckResult(
+            "max_trades_per_day",
+            True,
+            f"Daily trade count ({today_count}) is within the limit ({limit}).",
+        )
 
     def _check_order_value(self, context: EvaluationContext) -> RiskCheckResult:
         """Fat-finger cap on single-order notional value.

@@ -879,6 +879,39 @@ class EventStore:
             ).fetchone()
         return int(row[0])
 
+    def count_submitted_trades_today(self) -> int:
+        """Count account-wide paper submitted trades since UTC midnight today.
+
+        Used by the risk layer's ``max_trades_per_day`` guard to detect
+        runaway submission logic. Counts ACCOUNT-WIDE (not per-strategy):
+        the YAML rationale is "prevents runaway logic" — an account-level
+        count is the conservative, attribution-free interpretation, and
+        errs toward blocking when concurrent strategies each approach
+        the limit independently.
+
+        Day boundary: **UTC midnight** (simplest, unambiguous, no DST).
+        Only ``status='submitted'`` rows count (``preview``/``blocked``
+        never reached the broker). Only ``source='paper'`` rows count:
+        backtest fills must not veto live paper submissions (same
+        scoping rationale as :meth:`count_recent_submitted_orders`).
+        Query-error is handled by the evaluator's fail-closed wrapper —
+        this method raises normally on DB error.
+        """
+        now_utc = datetime.now(tz=UTC)
+        # UTC midnight of the current day — simple date truncation.
+        midnight_utc = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COUNT(*)
+                FROM trades
+                WHERE status = 'submitted' AND source = 'paper'
+                  AND datetime(recorded_at) >= datetime(?)
+                """,
+                (midnight_utc.isoformat(),),
+            ).fetchone()
+        return int(row[0])
+
     # ------------------------------------------------------------------
     # Maintenance / compaction (operator-run; see operations/maintenance.py)
     # ------------------------------------------------------------------
