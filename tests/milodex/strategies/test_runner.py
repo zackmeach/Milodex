@@ -235,13 +235,31 @@ def build_service(
     return service, event_store, kill_switch_store
 
 
-def make_regime_config_intraday(config_dir: Path) -> Path:
+def make_regime_config_intraday(config_dir: Path, bar_size: str = "1Min") -> Path:
     config_path = config_dir / "regime_runner.yaml"
     config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace('bar_size: "1D"', 'bar_size: "1Min"'),
+        config_path.read_text(encoding="utf-8").replace(
+            'bar_size: "1D"', f'bar_size: "{bar_size}"'
+        ),
         encoding="utf-8",
     )
     return config_path
+
+
+def pin_clock_after_latest_bar(
+    runner: StrategyRunner, provider: StubProvider, symbol: str = "SPY"
+) -> None:
+    """Pin the runner clock just past the latest fixture bar's window close.
+
+    HR-2's completed-bar rule evaluates only bars with
+    ``timestamp + bar_size <= now``. ``build_barset`` ends its bars at today
+    21:00 UTC, which is in the future for most of the trading day — without a
+    pinned clock the latest fixture bar would count as still-forming and be
+    truncated, making intraday tests time-of-day dependent.
+    """
+    latest_ts = provider._bars_by_symbol[symbol].latest().timestamp
+    pinned = latest_ts.to_pydatetime() + timedelta(hours=1)
+    runner._now = lambda: pinned
 
 
 def test_runner_submits_regime_signal_through_execution_service(
@@ -295,6 +313,7 @@ def test_runner_submits_regime_signal_through_execution_service(
     from tests.milodex._helpers.promotion import seed_frozen_manifest
 
     seed_frozen_manifest(event_store, config_path)
+    pin_clock_after_latest_bar(runner, provider)
 
     results = runner.run_cycle()
     runner.shutdown(mode="controlled")
@@ -354,6 +373,7 @@ def test_runner_run_cycle_survives_broker_order_rejection(
     from tests.milodex._helpers.promotion import seed_frozen_manifest
 
     seed_frozen_manifest(event_store, config_path)
+    pin_clock_after_latest_bar(runner, provider)
 
     results = runner.run_cycle()
     runner.shutdown(mode="controlled")
@@ -469,6 +489,8 @@ def test_runner_records_no_action_explanation_when_strategy_holds_target(
         event_store=event_store,
     )
 
+    pin_clock_after_latest_bar(runner, provider)
+
     results = runner.run_cycle()
     runner.shutdown(mode="controlled")
 
@@ -567,6 +589,7 @@ kill_switch:
         execution_service=service,
         event_store=event_store,
     )
+    pin_clock_after_latest_bar(runner, provider)
 
     assert runner.run_cycle()
 
@@ -715,6 +738,8 @@ def test_runner_meanrev_fires_entry_signal_via_bars_by_symbol(
         execution_service=service,
         event_store=event_store,
     )
+
+    pin_clock_after_latest_bar(runner, provider, symbol="AAPL")
 
     results = runner.run_cycle()
     runner.shutdown(mode="controlled")
@@ -1720,6 +1745,8 @@ def test_runner_suppresses_duplicate_same_bar_intents(
         event_store=event_store,
     )
 
+    pin_clock_after_latest_bar(runner, provider)
+
     first_results = runner.run_cycle()
     second_results = runner.run_cycle()
 
@@ -1734,13 +1761,265 @@ def test_runner_suppresses_duplicate_same_bar_intents(
 
     # Simulate stale state from an older bar: keys for a prior timestamp must
     # be cleared on the next cycle so the set cannot grow without bound.
+    # Clear the HR-2 intraday watermark so the cycle re-evaluates the bar and
+    # reaches the rollover-clear (otherwise already_seen short-circuits first).
     stale_ts = runner._processed_intent_bar_at - timedelta(days=1)
     runner._processed_intent_bar_at = stale_ts
     runner._processed_intent_keys = {(stale_ts, "OLD", "buy")}
+    runner._last_processed_bar_at = None
     runner.run_cycle()
     assert all(ts != stale_ts for ts, _, _ in runner._processed_intent_keys), (
         "Dedup set must not retain keys from prior bars."
     )
+
+
+# ---------------------------------------------------------------------------
+# HR-2 (R-P1-1, R-P1-2): intraday bar watermark, completed-bar-only
+# evaluation, and the closed-market early-out for intraday runners.
+# Daily-path behavior is pinned by the lockin tests above and must not change.
+# ---------------------------------------------------------------------------
+
+
+def build_intraday_barset(closes: list[float], *, end: datetime, freq: str = "5min"):
+    """Intraday-spaced sibling of build_barset with an explicit end timestamp."""
+    from milodex.data.models import BarSet
+
+    timestamps = pd.date_range(end=end, periods=len(closes), freq=freq)
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": timestamps,
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "close": closes,
+                "volume": [1_000_000] * len(closes),
+                "vwap": closes,
+            }
+        )
+    )
+
+
+def _build_hr2_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    bars_by_symbol: dict,
+    market_open: bool,
+):
+    provider = StubProvider(bars_by_symbol)
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=market_open,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+    return runner, broker, provider, event_store
+
+
+def test_intraday_watermark_advances_and_short_circuits_repeat_cycles(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """R-P1-1: the intraday path advances _last_processed_bar_at after each
+    evaluation, so re-polling the same bar is already_seen — no re-evaluation,
+    no second explanation. The fetch itself still happens while the market is
+    open (new bars can only be discovered by fetching).
+
+    Two bars < ma_filter_length=3 gives a deterministic no_signal evaluation
+    that records exactly one no_trade explanation per evaluated bar — the
+    pre-fix behavior wrote one per 10s poll cycle, 24/7.
+    """
+    make_regime_config_intraday(strategy_config_dir)
+    runner, _, provider, event_store = _build_hr2_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        bars_by_symbol={
+            "SPY": build_barset([10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0]),
+        },
+        market_open=True,
+    )
+    pin_clock_after_latest_bar(runner, provider)
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+
+    first = runner.run_cycle()
+
+    no_trade = [e for e in event_store.list_explanations() if e.decision_type == "no_trade"]
+    assert first == []
+    assert len(no_trade) == 1
+    assert runner._last_processed_bar_at == latest_ts, (
+        "intraday evaluation must advance the watermark to the evaluated bar"
+    )
+
+    second = runner.run_cycle()
+
+    no_trade_after = [e for e in event_store.list_explanations() if e.decision_type == "no_trade"]
+    assert second == []
+    assert len(no_trade_after) == 1, (
+        "re-polling the same bar must short-circuit via already_seen — no new explanation"
+    )
+    assert len(provider.get_bars_calls) == 2, "open-market intraday cycles still fetch"
+
+
+def test_intraday_forming_bar_not_evaluated_until_window_closes(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """R-P1-2: mid-window, the still-forming bar is invisible to the strategy;
+    the cycle evaluates the last COMPLETED bar instead. Once the window closes
+    (timestamp + bar_size <= now), the same bar becomes the evaluation target
+    — matching the backtest contract (decision_time = bar_ts + bar_size)."""
+    config_path = make_regime_config_intraday(strategy_config_dir, bar_size="5Min")
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "allocation_pct: 1.0", "allocation_pct: 0.80"
+        ),
+        encoding="utf-8",
+    )
+    # Anchor near the real clock so the risk layer's data-staleness check
+    # (which compares against the real now) stays satisfied.
+    end = datetime.now(tz=UTC).replace(second=0, microsecond=0) - timedelta(hours=1)
+    runner, broker, _, event_store = _build_hr2_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        bars_by_symbol={
+            "SPY": build_intraday_barset([10.0, 10.0, 10.0], end=end),
+            "SHY": build_intraday_barset([10.0, 10.0, 10.0], end=end),
+        },
+        market_open=True,
+    )
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, config_path)
+    fake_now = [end + timedelta(minutes=2)]  # latest bar's [end, end+5Min) window still open
+    runner._now = lambda: fake_now[0]
+
+    mid_window = runner.run_cycle()
+
+    assert mid_window == []
+    assert broker.submit_calls == [], "a still-forming bar must never fire a submission"
+    # Only two completed bars were visible (< ma_filter_length=3 → no_signal),
+    # and the watermark sits on the last COMPLETED bar, not the forming one.
+    assert runner._last_processed_bar_at == end - timedelta(minutes=5)
+
+    fake_now[0] = end + timedelta(minutes=5)  # the latest bar's window has now closed
+    closed = runner.run_cycle()
+
+    assert len(closed) == 1, "the same bar must be evaluated once its window closes"
+    assert broker.submit_calls[0]["symbol"] == "SHY"
+    assert runner._last_processed_bar_at == end
+
+
+def test_intraday_closed_market_early_out_after_session_drained(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """R-P1-1: once a closed-market cycle confirms the session's last completed
+    bar is processed, later closed-market cycles skip the fetch entirely and
+    write no explanations. The first open-market cycle resumes fetching."""
+    make_regime_config_intraday(strategy_config_dir)
+    runner, broker, provider, event_store = _build_hr2_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        bars_by_symbol={
+            "SPY": build_barset([10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0]),
+        },
+        market_open=False,
+    )
+    pin_clock_after_latest_bar(runner, provider)
+
+    runner.run_cycle()  # evaluates the session's final completed bar
+    assert len(provider.get_bars_calls) == 1
+    assert runner._last_processed_bar_at is not None
+
+    runner.run_cycle()  # already_seen while closed → arms the early-out
+    assert len(provider.get_bars_calls) == 2
+    assert runner._intraday_session_drained is True
+
+    for _ in range(3):
+        assert runner.run_cycle() == []
+    assert len(provider.get_bars_calls) == 2, (
+        "closed-market cycles after the session is drained must not fetch"
+    )
+    assert len(event_store.list_explanations()) == 1, (
+        "overnight/weekend polling must not write no-signal explanations"
+    )
+
+    broker._market_open = True
+    runner.run_cycle()
+    assert len(provider.get_bars_calls) == 3, "the first open-market cycle resumes fetching"
+    assert runner._intraday_session_drained is False
+
+
+def test_intraday_processed_intent_keys_remain_submission_backstop(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """HR-2 keeps _processed_intent_keys as the submission backstop: even if
+    the watermark is lost and the same bar re-evaluates, an intent already
+    submitted for that bar is not re-submitted."""
+    config_path = make_regime_config_intraday(strategy_config_dir)
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "allocation_pct: 1.0", "allocation_pct: 0.80"
+        ),
+        encoding="utf-8",
+    )
+    runner, broker, provider, event_store = _build_hr2_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        bars_by_symbol={
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        },
+        market_open=True,
+    )
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, config_path)
+    pin_clock_after_latest_bar(runner, provider)
+
+    first = runner.run_cycle()
+    assert len(first) == 1
+    assert len(broker.submit_calls) == 1
+
+    runner._last_processed_bar_at = None  # simulate watermark loss → same bar re-evaluates
+
+    second = runner.run_cycle()
+    assert second == []
+    assert len(broker.submit_calls) == 1, (
+        "the per-bar intent-key dedup must block a duplicate submission"
+    )
+    assert len(event_store.list_trades()) == 1
 
 
 # ---------------------------------------------------------------------------

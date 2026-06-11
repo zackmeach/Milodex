@@ -16,7 +16,8 @@ from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
 from milodex.core.event_store import EventStore, StrategyRunEvent
 from milodex.data import DataProvider
-from milodex.data.timeframes import timeframe_from_bar_size
+from milodex.data.models import BarSet
+from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
@@ -96,6 +97,11 @@ class StrategyRunner:
         self._session_id = str(uuid4())
         self._started_at = datetime.now(tz=UTC)
         self._last_processed_bar_at: datetime | None = None
+        # Intraday only (HR-2): set when a closed-market cycle confirms no
+        # unprocessed completed bar remains, so subsequent closed-market
+        # cycles skip the fetch entirely. Reset on the first open-market
+        # cycle. Never set on the 1D path (daily uses the lockin watermark).
+        self._intraday_session_drained = False
         self._pending_lockin_signature: tuple[float, float, float, float, int] | None = None
         self._pending_lockin_seen_at: datetime | None = None
         self._lockin_started_at: datetime | None = None
@@ -209,13 +215,22 @@ class StrategyRunner:
             self.shutdown(mode=_exit_mode)
 
     def run_cycle(self) -> list[ExecutionResult]:
-        """Process one new daily close when available.
+        """Process one new completed bar when available.
 
-        Only records ``_last_processed_bar_at`` when the market is closed: a
-        1D bar fetched while the market is open is still in-progress and
-        shares its timestamp with the post-close finalized bar, so advancing
-        the watermark mid-session would suppress the authoritative close
-        evaluation via the same-timestamp ``already_seen`` check.
+        Daily (1D) path: only records ``_last_processed_bar_at`` when the
+        market is closed: a 1D bar fetched while the market is open is still
+        in-progress and shares its timestamp with the post-close finalized
+        bar, so advancing the watermark mid-session would suppress the
+        authoritative close evaluation via the same-timestamp
+        ``already_seen`` check.
+
+        Intraday path (HR-2): bars are truncated to those whose window has
+        closed (``timestamp + bar_size <= now``) before evaluation — the
+        provider returns the still-forming bar mid-window, and firing on it
+        diverges from the completed-bar contract the strategies were
+        promoted on. The watermark advances immediately after each
+        evaluation: a completed bar is final by construction, so no lockin
+        stability window is needed.
 
         Market-hours gate (Spec B): if the market is closed AND the lockin
         watermark has advanced (i.e. today's close bar is confirmed final),
@@ -223,18 +238,35 @@ class StrategyRunner:
         polling all benefit — no Alpaca call is made until the next session
         opens.  The gate checks ``is_market_open()`` FIRST, before any network
         I/O, so closed-market cycles are cheap regardless of fetch cost.
+        Intraday arms its own variant: once a closed-market cycle confirms
+        the session's last completed bar is processed
+        (``_intraday_session_drained``), later closed-market cycles skip the
+        fetch until the next open.
         """
         self._ensure_startup_reconciliation()
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
         if is_daily_bar and market_open:
             return []
-        if not market_open and self._last_processed_bar_at is not None:
+        if is_daily_bar and not market_open and self._last_processed_bar_at is not None:
             # Market is closed and today's close has been confirmed via the
             # lockin stability window.  Nothing new to process until open.
             return []
+        if not is_daily_bar:
+            if market_open:
+                self._intraday_session_drained = False
+            elif self._intraday_session_drained:
+                # Market is closed and a prior closed-market cycle confirmed
+                # the session's last completed bar is already processed.
+                # Nothing new can appear until the next open — skip the fetch.
+                return []
 
         bars_by_symbol = self._fetch_bars_by_symbol()
+        if not is_daily_bar:
+            bars_by_symbol = self._truncate_to_completed_bars(bars_by_symbol)
+            if len(bars_by_symbol[self._evaluation_symbol()]) == 0:
+                # Every fetched bar is still forming — nothing evaluable yet.
+                return []
         primary_bars = bars_by_symbol[self._evaluation_symbol()]
         latest_bar = primary_bars.latest()
         already_seen = (
@@ -242,6 +274,10 @@ class StrategyRunner:
             and latest_bar.timestamp <= self._last_processed_bar_at
         )
         if already_seen:
+            if not is_daily_bar and not market_open:
+                # The session's last completed bar is processed and the
+                # market is closed: arm the closed-market early-out above.
+                self._intraday_session_drained = True
             return []
 
         if is_daily_bar and not market_open and not self._is_current_session_bar(latest_bar):
@@ -267,6 +303,14 @@ class StrategyRunner:
             and not self._maybe_advance_lockin_watermark(latest_bar)
         ):
             return []
+        if not is_daily_bar:
+            # HR-2: a completed intraday bar is final by construction (its
+            # window has closed), so it is marked processed the moment it is
+            # evaluated — the already_seen short-circuit above then suppresses
+            # re-evaluation on every later poll of the same bar. The
+            # _processed_intent_keys dedup below remains the submission
+            # backstop.
+            self._last_processed_bar_at = latest_bar.timestamp
 
         if not intents:
             if self._processed_intent_bar_at != latest_bar.timestamp:
@@ -465,6 +509,32 @@ class StrategyRunner:
         end = date.today()
         start = end - timedelta(days=self._history_window_days())
         return self._data_provider.get_bars(universe, timeframe, start, end)
+
+    def _bar_duration(self) -> timedelta:
+        """Return the bar window length for this strategy's intraday bar size.
+
+        Intraday only — ``bar_size_minutes_from_timeframe`` raises on ``1D``,
+        and the daily path never calls this.
+        """
+        timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
+        return timedelta(minutes=bar_size_minutes_from_timeframe(timeframe))
+
+    def _truncate_to_completed_bars(self, bars_by_symbol: dict[str, Any]) -> dict[str, Any]:
+        """Drop bars whose window has not closed yet (HR-2 / R-P1-2).
+
+        The provider re-fetches today on every call, so mid-window the latest
+        bar is the still-forming one (start-of-bar timestamped, mutating until
+        the window closes). The backtest contract the strategies were promoted
+        on decides strictly on completed bars — decision_time = bar_ts +
+        bar_size (backtesting/intraday_simulation.py) — so live evaluation
+        keeps only bars with ``timestamp + bar_size <= now``.
+        """
+        cutoff = self._now() - self._bar_duration()
+        truncated: dict[str, Any] = {}
+        for symbol, bars in bars_by_symbol.items():
+            frame = bars.to_dataframe()
+            truncated[symbol] = BarSet(frame.loc[frame["timestamp"] <= cutoff])
+        return truncated
 
     def _evaluation_symbol(self) -> str:
         if self._loaded.context.universe:
