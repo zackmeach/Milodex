@@ -49,8 +49,7 @@ from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
-from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState
+from milodex.gui.read_models import FrontPageState, BenchState, LedgerState
 from milodex.gui.performance_state import PerformanceState
 from milodex.gui.risk_throughput_state import RiskThroughputState
 from milodex.gui.active_ops_state import ActiveOpsState
@@ -72,10 +71,8 @@ op = OperationalState(
     kill_switch_poll_seconds=9999.0, broker_poll_seconds=9999.0,
 )
 _ne = Path("/__nonexistent_smoke_test__")
-sb = StrategyBankState(db_path=_ne)
 front = FrontPageState(db_path=_ne, configs_dir=Path("configs"))
 bench = BenchState(db_path=_ne, configs_dir=Path("configs"))
-kanban = KanbanState(db_path=_ne, configs_dir=Path("configs"))
 ledger = LedgerState(db_path=_ne)
 perf = PerformanceState(db_path=_ne, cache_dir=_ne)
 rt = RiskThroughputState(db_path=_ne)
@@ -93,8 +90,8 @@ facade = BenchCommandFacade(
 bcb = BenchCommandBridge(facade, bench_state=bench)
 rpb = RiskProfileBridge(db_path=_ne)
 register_qml_types(
-    theme_manager=tm, operational_state=op, strategy_bank_state=sb,
-    front_page_state=front, bench_state=bench, kanban_state=kanban, ledger_state=ledger,
+    theme_manager=tm, operational_state=op,
+    front_page_state=front, bench_state=bench, ledger_state=ledger,
     performance_state=perf, risk_throughput_state=rt, active_ops_state=ao,
     attention_state=att, market_tape_state=mt, activity_feed_state=af,
     bench_command_bridge=bcb, risk_profile_bridge=rpb,

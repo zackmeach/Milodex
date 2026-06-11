@@ -103,10 +103,8 @@ def _build_qml_registry(
     *,
     theme_manager: object,
     operational_state: object,
-    strategy_bank_state: object,
     front_page_state: object,
     bench_state: object,
-    kanban_state: object,
     ledger_state: object,
     performance_state: object,
     risk_throughput_state: object,
@@ -153,21 +151,17 @@ def _build_qml_registry(
     from milodex.gui.read_models import (
         BenchState,
         FrontPageState,
-        KanbanState,
         LedgerState,
     )
     from milodex.gui.risk_profile_bridge import RiskProfileBridge
     from milodex.gui.risk_throughput_state import RiskThroughputState
-    from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
 
     return [
         QmlSingleton("ThemeManager", ThemeManager, theme_manager, lifecycle=False),
         QmlSingleton("OperationalState", OperationalState, operational_state, lifecycle=True),
-        QmlSingleton("StrategyBankState", StrategyBankState, strategy_bank_state, lifecycle=True),
         QmlSingleton("FrontPageState", FrontPageState, front_page_state, lifecycle=True),
         QmlSingleton("BenchState", BenchState, bench_state, lifecycle=True),
-        QmlSingleton("KanbanState", KanbanState, kanban_state, lifecycle=True),
         QmlSingleton("LedgerState", LedgerState, ledger_state, lifecycle=True),
         QmlSingleton("PerformanceState", PerformanceState, performance_state, lifecycle=True),
         QmlSingleton(
@@ -306,12 +300,10 @@ def run_app() -> int:
     from milodex.gui.read_models import (
         BenchState,
         FrontPageState,
-        KanbanState,
         LedgerState,
     )
     from milodex.gui.risk_profile_bridge import RiskProfileBridge, record_startup_default
     from milodex.gui.risk_throughput_state import RiskThroughputState
-    from milodex.gui.strategy_bank_state import StrategyBankState
     from milodex.gui.theme_manager import ThemeManager
     from milodex.strategies.loader import StrategyLoader
     from milodex.strategies.paper_runner_control import PaperRunnerControl
@@ -376,10 +368,6 @@ def run_app() -> int:
         trading_mode=trading_mode,
     )
 
-    # StrategyBankState polls data/milodex.db every 30s for the canonical
-    # strategy bank state.  Uses the same get_data_dir() resolution as the
-    # CLI and the kill-switch store above.  Graceful if the DB is absent on
-    # a fresh checkout — the surface renders the loading-then-error state.
     data_dir = get_data_dir()
     db_path = data_dir / "milodex.db"
     configs_dir = get_bundled_resource_dir() / "configs"
@@ -423,10 +411,8 @@ def run_app() -> int:
         interval_seconds=read_reap_interval_seconds(),
     )
 
-    strategy_bank_state = StrategyBankState(db_path=db_path)
     front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
     bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
-    kanban_state = KanbanState(db_path=db_path, configs_dir=configs_dir)
     ledger_state = LedgerState(db_path=db_path, configs_dir=configs_dir)
 
     # Trading Desk read-models (spec §3 IA→read-model map). PerformanceState
@@ -486,10 +472,8 @@ def run_app() -> int:
     registry = _build_qml_registry(
         theme_manager=theme_manager,
         operational_state=operational_state,
-        strategy_bank_state=strategy_bank_state,
         front_page_state=front_page_state,
         bench_state=bench_state,
-        kanban_state=kanban_state,
         ledger_state=ledger_state,
         performance_state=performance_state,
         risk_throughput_state=risk_throughput_state,

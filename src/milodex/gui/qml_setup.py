@@ -2,20 +2,16 @@
 
 Bridges Python-side ``QObject`` types into QML.  Registers
 :class:`~milodex.gui.theme_manager.ThemeManager`,
-:class:`~milodex.gui.operational_state.OperationalState`, and
-:class:`~milodex.gui.strategy_bank_state.StrategyBankState` as QML
-*singleton instances* under the ``Milodex`` import URI, which makes the
-Python-owned objects visible to every QML file (including the ``Theme``
-singleton).
+:class:`~milodex.gui.operational_state.OperationalState`, and the
+remaining read models as QML *singleton instances* under the ``Milodex``
+import URI, which makes the Python-owned objects visible to every QML
+file (including the ``Theme`` singleton).
 
 QML singletons are the right shape for these objects because the
 ``Theme`` singleton itself needs to reach the ``ThemeManager`` during
 its own property bindings — context properties on the root context are
 not visible to QML singletons, so a registered singleton is the
-load-bearing mechanism.  ``OperationalState`` and ``StrategyBankState``
-follow the same pattern so multiple surfaces (Anchor, Strategy Bank,
-future Attribution) can bind to the same live state without each
-receiving its own copy.
+load-bearing mechanism.
 
 Production startup (``milodex.gui.app.run_app``) builds an ordered
 :class:`QmlSingleton` registry via ``_build_qml_registry`` and calls
@@ -42,12 +38,10 @@ from milodex.gui.performance_state import PerformanceState
 from milodex.gui.read_models import (
     BenchState,
     FrontPageState,
-    KanbanState,
     LedgerState,
 )
 from milodex.gui.risk_profile_bridge import RiskProfileBridge
 from milodex.gui.risk_throughput_state import RiskThroughputState
-from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
 #: QML import URI under which Milodex types and QML files live.  Matches
@@ -71,7 +65,7 @@ class QmlSingleton:
     """
 
     qml_name: str
-    """QML type name, e.g. ``"StrategyBankState"`` — the ``import Milodex 1.0``
+    """QML type name, e.g. ``"OperationalState"`` — the ``import Milodex 1.0``
     handle QML files reference."""
 
     qml_type: type
@@ -138,10 +132,8 @@ def register_qml_singletons(registry: Sequence[QmlSingleton]) -> None:
 # it defaults to a fresh ``ThemeManager()`` and is the return value.
 _REGISTRY_SPEC: tuple[tuple[str, str, type, bool], ...] = (
     ("operational_state", "OperationalState", OperationalState, True),
-    ("strategy_bank_state", "StrategyBankState", StrategyBankState, True),
     ("front_page_state", "FrontPageState", FrontPageState, True),
     ("bench_state", "BenchState", BenchState, True),
-    ("kanban_state", "KanbanState", KanbanState, True),
     ("ledger_state", "LedgerState", LedgerState, True),
     ("performance_state", "PerformanceState", PerformanceState, True),
     ("risk_throughput_state", "RiskThroughputState", RiskThroughputState, True),
@@ -158,10 +150,8 @@ _REGISTRY_SPEC: tuple[tuple[str, str, type, bool], ...] = (
 def register_qml_types(
     theme_manager: ThemeManager | None = None,
     operational_state: OperationalState | None = None,
-    strategy_bank_state: StrategyBankState | None = None,
     front_page_state: FrontPageState | None = None,
     bench_state: BenchState | None = None,
-    kanban_state: KanbanState | None = None,
     ledger_state: LedgerState | None = None,
     performance_state: PerformanceState | None = None,
     risk_throughput_state: RiskThroughputState | None = None,
@@ -178,12 +168,11 @@ def register_qml_types(
     Registers the *theme_manager* (or a freshly constructed instance
     when *None*) as the QML singleton ``Milodex.ThemeManager``.  When
     *operational_state* is provided, it is registered as
-    ``Milodex.OperationalState``.  When *strategy_bank_state* is
-    provided, it is registered as ``Milodex.StrategyBankState``.
+    ``Milodex.OperationalState``.  Additional kwargs are registered in
+    the canonical order defined by :data:`_REGISTRY_SPEC`.
 
     After this call any QML file can ``import Milodex 1.0`` and reference
-    ``ThemeManager.theme``, ``OperationalState.*``,
-    ``StrategyBankState.*`` etc.
+    ``ThemeManager.theme``, ``OperationalState.*`` etc.
 
     Calling this function more than once with different instances is a
     Qt-level error; the first registration wins.  Tests that need to
@@ -201,11 +190,6 @@ def register_qml_types(
         QML singleton.  When omitted (e.g. for tests that only exercise
         Theme), the singleton is not registered and QML surfaces that
         depend on it will not load.
-    strategy_bank_state
-        Optional pre-constructed :class:`StrategyBankState`.  When
-        provided, it is registered as the ``Milodex.StrategyBankState``
-        QML singleton.  When omitted, the Strategy Bank surface will not
-        load.
 
     Returns
     -------
@@ -235,10 +219,8 @@ def register_qml_types(
 
     provided = {
         "operational_state": operational_state,
-        "strategy_bank_state": strategy_bank_state,
         "front_page_state": front_page_state,
         "bench_state": bench_state,
-        "kanban_state": kanban_state,
         "ledger_state": ledger_state,
         "performance_state": performance_state,
         "risk_throughput_state": risk_throughput_state,

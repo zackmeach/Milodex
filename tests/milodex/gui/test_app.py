@@ -244,7 +244,6 @@ from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
-from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.read_models import FrontPageState, BenchState, LedgerState
 from milodex.gui.performance_state import PerformanceState
 from milodex.gui.risk_throughput_state import RiskThroughputState
@@ -280,7 +279,6 @@ op_state = OperationalState(
 )
 db_path = Path('/__nonexistent_app_test__')
 configs_dir = Path('configs')
-strategy_bank_state = StrategyBankState(db_path=db_path)
 front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
 bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
 ledger_state = LedgerState(db_path=db_path)
@@ -294,7 +292,6 @@ risk_profile_bridge = RiskProfileBridge(db_path=db_path)
 register_qml_types(
     theme_manager=tm,
     operational_state=op_state,
-    strategy_bank_state=strategy_bank_state,
     front_page_state=front_page_state,
     bench_state=bench_state,
     ledger_state=ledger_state,

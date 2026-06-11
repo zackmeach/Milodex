@@ -43,8 +43,7 @@ from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.risk_profile_bridge import RiskProfileBridge
 from milodex.gui.theme_manager import ThemeManager
 from milodex.gui.operational_state import OperationalState
-from milodex.gui.strategy_bank_state import StrategyBankState
-from milodex.gui.read_models import FrontPageState, BenchState, KanbanState, LedgerState
+from milodex.gui.read_models import FrontPageState, BenchState, LedgerState
 from milodex.gui.performance_state import PerformanceState
 from milodex.gui.risk_throughput_state import RiskThroughputState
 from milodex.gui.active_ops_state import ActiveOpsState
@@ -69,10 +68,8 @@ op = OperationalState(
 )
 
 _nonexistent = Path("/__nonexistent_smoke_test__")
-sb = StrategyBankState(db_path=_nonexistent)
 front = FrontPageState(db_path=_nonexistent, configs_dir=Path("configs"))
 bench = BenchState(db_path=_nonexistent, configs_dir=Path("configs"))
-kanban = KanbanState(db_path=_nonexistent, configs_dir=Path("configs"))
 ledger = LedgerState(db_path=_nonexistent)
 performance = PerformanceState(db_path=_nonexistent, cache_dir=_nonexistent)
 risk_throughput = RiskThroughputState(db_path=_nonexistent)
@@ -99,10 +96,8 @@ risk_profile_bridge = RiskProfileBridge(db_path=_nonexistent)
 register_qml_types(
     theme_manager=tm,
     operational_state=op,
-    strategy_bank_state=sb,
     front_page_state=front,
     bench_state=bench,
-    kanban_state=kanban,
     ledger_state=ledger,
     performance_state=performance,
     risk_throughput_state=risk_throughput,

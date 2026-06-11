@@ -9,10 +9,11 @@ classes are the *same* class objects wherever imported (app.py and qml_setup.py
 both import them here), which keeps ``test_qml_registry`` in sync.
 
 The classes re-exported here expose *read-only* state to QML. They follow the
-same lifecycle contract as ``OperationalState`` and ``StrategyBankState``:
-periodic refresh on a per-instance worker pool, main-thread Q_PROPERTY
-updates, and graceful degradation that preserves last-known data after a
-successful refresh.
+same lifecycle contract as ``OperationalState``: periodic refresh on a
+per-instance worker pool, main-thread Q_PROPERTY updates, and graceful
+degradation that preserves last-known data after a successful refresh.
+(``KanbanState`` is re-exported for the shim contract but is no longer
+registered as a QML singleton — HR-12 deregistered the consumer-less models.)
 
 No code reachable from here runs backtests, promotes, demotes, edits configs,
 or resets risk state. The GUI surfaces that bind to these models remain
