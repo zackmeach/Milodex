@@ -11,10 +11,9 @@
 //   space[3]/[5]/[6]      -- tab padding / vertical gap
 //
 // Wires:
-//   - top-bar tabs to switch between operational surfaces (Anchor first)
+//   - top-bar tabs to switch between FRONT / BENCH / LEDGER / DESK surfaces
 //     and the design-system showcase
-//   - AnchorSurface is the FIRST surface shown so the operator sees
-//     operational state before anything else (per PR D.6 brief)
+//   - FRONT is the first surface shown (calm digest / front-porch view)
 //   - Component.onCompleted logs Qt+QML+ThemeManager connectivity
 //   - engine.quit is connected to app.quit by the Python shell
 //

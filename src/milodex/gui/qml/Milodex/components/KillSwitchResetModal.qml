@@ -35,10 +35,16 @@ Item {
     anchors.fill: parent
     visible: root.open
 
-    // Clear the confirmation input each time the dialog closes so a
-    // re-open always starts empty (no lingering text from a prior attempt).
+    // Track an inline error from a failed reset attempt.
+    property string _resetError: ""
+
+    // Clear the confirmation input and any prior error each time the dialog
+    // closes so a re-open always starts fresh.
     onOpenChanged: {
-        if (!root.open) confirmInput.text = ""
+        if (!root.open) {
+            confirmInput.text = ""
+            root._resetError = ""
+        }
     }
 
     // ------------------------------------------------------------------
@@ -138,6 +144,17 @@ Item {
                 }
             }
 
+            // Inline error — shown only when a reset attempt was rejected.
+            Text {
+                width: parent.width
+                visible: root._resetError !== ""
+                text:    root._resetError
+                color:   Theme.status.negative
+                font.family:    Theme.typography.body.sm.family
+                font.pixelSize: Theme.typography.body.sm.size
+                wrapMode:       Text.WordWrap
+            }
+
             Row {
                 spacing: Theme.space[3]
                 anchors.right: parent.right
@@ -160,8 +177,15 @@ Item {
                     // visually present but clearly inactive.
                     opacity: enabled ? 1.0 : 0.5
                     onClicked: {
-                        OperationalState.reset_kill_switch(OperationalState.resetKillSwitchToken)
-                        root.closeRequested()
+                        var ok = OperationalState.reset_kill_switch(
+                            OperationalState.resetKillSwitchToken
+                        )
+                        if (ok) {
+                            root.closeRequested()
+                        } else {
+                            root._resetError =
+                                "Reset failed — check logs; the kill switch is still active."
+                        }
                     }
                 }
             }

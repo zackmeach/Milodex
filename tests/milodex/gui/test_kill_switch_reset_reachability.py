@@ -101,11 +101,13 @@ class TestModalStructure:
     def test_modal_passes_token_to_slot(self) -> None:
         """The reset slot must be called with the token value, not a bare string."""
         src = _MODAL_QML.read_text(encoding="utf-8")
-        assert (
-            "OperationalState.reset_kill_switch(OperationalState.resetKillSwitchToken)" in src
-        ), (
-            "KillSwitchResetModal.qml must call reset_kill_switch with the token value from "
-            "OperationalState.resetKillSwitchToken"
+        # The call may span lines (e.g. wrapped in a var ok = ... assignment).
+        assert "OperationalState.reset_kill_switch(" in src, (
+            "KillSwitchResetModal.qml must call OperationalState.reset_kill_switch"
+        )
+        assert "OperationalState.resetKillSwitchToken" in src, (
+            "KillSwitchResetModal.qml must pass OperationalState.resetKillSwitchToken "
+            "as the argument to reset_kill_switch"
         )
 
     def test_modal_clears_input_on_close(self) -> None:
@@ -113,6 +115,44 @@ class TestModalStructure:
         src = _MODAL_QML.read_text(encoding="utf-8")
         assert "confirmInput.text" in src and "onOpenChanged" in src, (
             "KillSwitchResetModal.qml must clear confirmInput.text in an onOpenChanged handler"
+        )
+
+    def test_modal_reset_checks_return_value(self) -> None:
+        """Reset button must branch on the slot's return value, not close unconditionally."""
+        src = _MODAL_QML.read_text(encoding="utf-8")
+        # The slot is @Slot(str, result=bool); QML must capture the bool and branch.
+        assert "var ok = OperationalState.reset_kill_switch(" in src, (
+            "KillSwitchResetModal.qml reset button onClicked must capture the bool return "
+            "value of reset_kill_switch into a local variable"
+        )
+        assert "if (ok)" in src, (
+            "KillSwitchResetModal.qml reset button onClicked must branch on the return value"
+        )
+
+    def test_modal_keeps_open_on_failure(self) -> None:
+        """On reset failure the modal must NOT emit closeRequested (error path omits it)."""
+        src = _MODAL_QML.read_text(encoding="utf-8")
+        # The 'if (ok)' branch holds the only closeRequested() call in the reset handler;
+        # the else branch must set the error property rather than closing.
+        assert "_resetError" in src, (
+            "KillSwitchResetModal.qml must declare a _resetError property to surface "
+            "the failure message inline"
+        )
+
+    def test_modal_has_error_text_element(self) -> None:
+        """An inline error Text element must exist and be bound to _resetError."""
+        src = _MODAL_QML.read_text(encoding="utf-8")
+        assert "root._resetError" in src, (
+            "KillSwitchResetModal.qml must bind an inline Text element to root._resetError "
+            "to display reset-failure feedback"
+        )
+
+    def test_modal_clears_error_on_reopen(self) -> None:
+        """Error state must clear in onOpenChanged so a re-open starts clean."""
+        src = _MODAL_QML.read_text(encoding="utf-8")
+        assert '_resetError = ""' in src, (
+            "KillSwitchResetModal.qml onOpenChanged must clear _resetError alongside the "
+            "input text so a re-opened modal starts with no stale error"
         )
 
     def test_modal_registered_in_qmldir(self) -> None:
@@ -233,6 +273,10 @@ class TestMainQmlWiring:
         assert "onKillSwitchResetRequested" in src, (
             "Main.qml must handle RiskOfficeDrawer.onKillSwitchResetRequested "
             "to open the reset modal"
+        )
+        assert "killSwitchResetModal.open = true" in src, (
+            "Main.qml onKillSwitchResetRequested handler must set "
+            "killSwitchResetModal.open = true"
         )
 
     def test_anchor_surface_route_deleted(self) -> None:
