@@ -276,6 +276,8 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
         backtest_engine_factory=None,
         paper_runner_control=None,
         workflow_readiness=None,
+        now=None,
+        sleep=None,
     ) -> BenchCommandFacade:
         return BenchCommandFacade(
             config_dir=config_dir,
@@ -285,6 +287,8 @@ def make_facade(config_dir: Path, locks_dir: Path, event_store: EventStore):
             backtest_engine_factory=backtest_engine_factory,
             paper_runner_control=paper_runner_control,
             workflow_readiness=workflow_readiness or _healthy_readiness(),
+            now=now,
+            sleep=sleep,
         )
 
     return _make
@@ -1389,9 +1393,32 @@ def test_submit_start_paper_runner_launches_control_and_returns_refs(
 def test_submit_start_paper_runner_errors_without_audit_linkage(
     make_facade, config_dir: Path, locks_dir: Path
 ) -> None:
+    """Row never appears → runner_audit_link_missing after the budget.
+
+    Uses a fast-expiring fake clock so the retry loop exits after one probe
+    without sleeping 15 s in CI (injection seam: ``now`` + ``sleep``).
+    """
+    from datetime import UTC, datetime, timedelta
+
     _write_strategy(config_dir, stage="paper")
     control = _FakePaperRunnerControl(locks_dir)
-    facade = make_facade(paper_runner_control=control)
+    # Fake clock: each call advances 20 s. Calls 0-1 are consumed by the
+    # proposal timestamp and the orchestration-job row; the deadline anchors
+    # at call index 2 and the while condition first evaluates at index 3 —
+    # 20 s later, already past the 15 s budget, so the loop body never
+    # executes. (The 20 s step is wide enough that exact indices don't
+    # matter.)
+    t0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    calls: list[int] = [0]
+
+    def _fast_now() -> datetime:
+        n = calls[0]
+        calls[0] += 1
+        return t0 + timedelta(seconds=n * 20)
+
+    facade = make_facade(
+        paper_runner_control=control, now=_fast_now, sleep=lambda _: None
+    )
     proposal = facade.propose_start_paper_runner(STRATEGY_ID)
 
     result = facade.submit_start_paper_runner(proposal)
@@ -1401,6 +1428,117 @@ def test_submit_start_paper_runner_errors_without_audit_linkage(
     assert result.audit_event_id is None
     assert result.durable_refs["runner_pid"] == "4242"
     assert result.blockers[0].reason_code == "runner_audit_link_missing"
+
+
+def test_submit_start_paper_runner_succeeds_when_session_row_appears_on_third_poll(
+    make_facade, config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """Row appears on the 3rd probe → status submitted, no error, elapsed < budget.
+
+    The first two _latest_open_session_id calls return None (child hasn't
+    written the row yet); the third returns the session id. A monotonically
+    advancing fake clock tracks elapsed polls; we assert the result is
+    submitted and the fake deadline was not exhausted.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+
+    # Fake clock: advances 1 s per call so the full 15 s budget is not
+    # exhausted by 3 probe rounds (propose uses call 0; deadline uses call 1;
+    # the while-condition calls are 2, 4, 6; the session-lookup calls 3, 5
+    # return None then "active-session" via the event-store).
+    t0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    calls: list[int] = [0]
+
+    def _slow_now() -> datetime:
+        n = calls[0]
+        calls[0] += 1
+        return t0 + timedelta(seconds=n)
+
+    # Simulate the child writing its row on the 3rd _latest_open_session_id call.
+    probe_count: list[int] = [0]
+    original_store = event_store
+
+    def _counting_factory():
+        probe_count[0] += 1
+        if probe_count[0] >= 3:
+            _append_open_strategy_run(original_store, session_id="active-session")
+        return original_store
+
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=_counting_factory,
+        paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
+        now=_slow_now,
+        sleep=lambda _: None,
+    )
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_start_paper_runner(proposal)
+
+    assert result.status == "submitted", result.blockers
+    assert control.starts == [STRATEGY_ID]
+    assert result.durable_refs["session_id"] == "active-session"
+    assert result.audit_event_id == "active-session"
+    # Budget was not exhausted: fake clock advanced only a few seconds.
+    assert calls[0] < 20  # well under the 15 s budget boundary
+
+
+def test_submit_start_paper_runner_retries_then_errors_when_budget_exhausted(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    """Row never appears → runner_audit_link_missing after budget is exhausted.
+
+    Distinct from the pin test above: this one asserts the retry loop actually
+    runs multiple probes before giving up, rather than the loop body never
+    executing (the pin test uses a large time-step to skip the loop entirely;
+    this test uses a small step and counts probes).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    _write_strategy(config_dir, stage="paper")
+    control = _FakePaperRunnerControl(locks_dir)
+
+    # Fake clock: advances 6 s per call; deadline = t0+6+15 = t0+21.
+    # While-condition checks at t0+12, t0+18 (both < t0+21 → loop runs twice),
+    # then t0+24 (> t0+21 → exits).
+    t0 = datetime(2026, 1, 1, 0, 0, 0, tzinfo=UTC)
+    calls: list[int] = [0]
+
+    def _stepped_now() -> datetime:
+        n = calls[0]
+        calls[0] += 1
+        return t0 + timedelta(seconds=n * 6)
+
+    probe_count: list[int] = [0]
+
+    def _counting_factory_no_row():
+        probe_count[0] += 1
+        return EventStore(":memory:")
+
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=_counting_factory_no_row,
+        paper_runner_control=control,
+        workflow_readiness=_healthy_readiness(),
+        now=_stepped_now,
+        sleep=lambda _: None,
+    )
+    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
+
+    result = facade.submit_start_paper_runner(proposal)
+
+    assert result.status == "error"
+    assert result.blockers[0].reason_code == "runner_audit_link_missing"
+    # The loop ran at least twice (not a single immediate failure).
+    assert probe_count[0] >= 2
 
 
 def test_submit_start_paper_runner_blocks_when_revalidation_fails(
