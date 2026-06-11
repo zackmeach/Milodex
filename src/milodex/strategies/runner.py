@@ -7,7 +7,7 @@ import signal
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -405,7 +405,17 @@ class StrategyRunner:
         if mode in ("controlled", "controlled_stop"):
             exit_reason = "controlled_stop"
         elif mode == "kill_switch":
-            self._broker.cancel_all_orders()
+            # Mirror the service path (HR-6 / R-P2-5): a broker failure must
+            # NEVER block kill-switch activation — cancel best-effort, engage
+            # unconditionally.
+            try:
+                self._broker.cancel_all_orders()
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Kill-switch shutdown: cancel_all_orders failed; "
+                    "activating the switch anyway.",
+                    exc_info=True,
+                )
             self._execution_service.trigger_kill_switch("Operator requested kill switch.")
             exit_reason = "kill_switch"
         elif mode == "interrupted":
@@ -572,7 +582,8 @@ class StrategyRunner:
         for path in sorted(self._config_dir.glob("*.yaml")):
             try:
                 config = load_strategy_config(path)
-            except ValueError:
+            except ValueError as exc:
+                logger.debug("Skipping invalid config %s: %s", path, exc)
                 continue
             if config.strategy_id == self._strategy_id:
                 return path
@@ -583,7 +594,7 @@ class StrategyRunner:
         """Fetch bars for every universe symbol over the history window."""
         universe = list(self._loaded.context.universe)
         timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
-        end = date.today()
+        end = self._now().date()  # UTC, consistent with session-bar checks
         start = end - timedelta(days=self._history_window_days())
         return self._data_provider.get_bars(universe, timeframe, start, end)
 
@@ -625,7 +636,7 @@ class StrategyRunner:
         if not open_lots:
             return {}
 
-        today = date.today()
+        today = self._now().date()  # UTC, consistent with session-bar checks
         entry_state: dict[str, dict[str, Any]] = {}
         for sym, lot in open_lots.items():
             opened_at = lot["opened_at"]

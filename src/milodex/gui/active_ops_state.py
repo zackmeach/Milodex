@@ -249,23 +249,19 @@ def _query_active_ops(
 
 
 def _load_config(strategy_id: str, configs_dir: Path | None) -> dict[str, Any] | None:
-    """Load a strategy YAML by strategy_id; return None on any failure."""
+    """Load a strategy YAML by strategy_id; return None on any failure.
+
+    Strategy config filenames do not correspond predictably to strategy IDs
+    (e.g. ``meanrev_daily_rsi2pullback_v1.yaml`` holds id
+    ``meanrev.daily.pullback_rsi2.curated_largecap.v1``), so this always
+    performs a glob-and-match scan rather than a slug-derived fast path.
+    """
     if configs_dir is None:
         return None
     try:
         import yaml  # type: ignore[import-untyped]
     except ImportError:
         return None
-
-    slug = strategy_id.replace(".", "_")
-    candidate = configs_dir / f"{slug}.yaml"
-    if candidate.exists():
-        try:
-            with candidate.open(encoding="utf-8") as fh:
-                return yaml.safe_load(fh)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("ActiveOpsState: failed to load config %s: %s", candidate, exc)
-            return None
 
     try:
         for yaml_path in configs_dir.glob("*.yaml"):

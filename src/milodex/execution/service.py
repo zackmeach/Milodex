@@ -521,6 +521,14 @@ class ExecutionService:
 
     def _maybe_activate_kill_switch(self, result: ExecutionResult) -> None:
         if "kill_switch_threshold_breached" in result.risk_decision.reason_codes:
+            # Sustained-breach guard: if the switch is already active (e.g.
+            # another strategy on the same account tripped it first, or this
+            # strategy is looping while blocked) skip the duplicate cancel +
+            # activation sequence.  The switch is already engaged; no state
+            # change is needed and cancel_all_orders would be a redundant
+            # broker round-trip per blocked submit.
+            if self._kill_switch_store.get_state().active:
+                return
             # R-P2-5: "halt all trading" includes orders already resting at
             # the broker. Cancel open orders before activating, mirroring the
             # operator SIGINT path (StrategyRunner.shutdown mode="kill_switch").

@@ -47,8 +47,28 @@ SurfaceBase {
     readonly property int liveCount: summary.liveCount || 0
     readonly property var stageTally: summary.stageTally || ({ backtest: 0, paper: 0, micro_live: 0, live: 0 })
     readonly property var feature: summary.feature || ({})
-    readonly property var market: summary.market || ({ spyPct: 0, qqqPct: 0, iwmPct: 0, weatherLine: "" })
-    readonly property bool marketKnown: (market.regime || "UNKNOWN") !== "UNKNOWN"
+    // Market tape: read directly from MarketTapeState.rows (same data DESK uses).
+    // Helper to find a symbol's pctChange from the tape rows list.
+    function tapeRowPct(symbol) {
+        var rows = MarketTapeState.rows
+        for (var i = 0; i < rows.length; i++) {
+            if (rows[i].symbol === symbol && rows[i].pctChange !== null)
+                return rows[i].pctChange * 100
+        }
+        return null
+    }
+    readonly property var _tapeSpy: tapeRowPct("SPY")
+    readonly property var _tapeQqq: tapeRowPct("QQQ")
+    readonly property var _tapeIwm: tapeRowPct("IWM")
+    // marketKnown: true when MarketTapeState has at least one valid pctChange row
+    readonly property bool marketKnown: (_tapeSpy !== null || _tapeQqq !== null || _tapeIwm !== null)
+    readonly property var market: ({
+        spyPct: _tapeSpy !== null ? _tapeSpy : 0,
+        qqqPct: _tapeQqq !== null ? _tapeQqq : 0,
+        iwmPct: _tapeIwm !== null ? _tapeIwm : 0,
+        weatherLine: MarketTapeState.dataStatus === "ok" ? "" : "Market tape pending.",
+        regime: marketKnown ? "live" : "UNKNOWN",
+    })
     readonly property string sessionLine: "Today | Market "
                                           + (OperationalState.marketOpen ? "open" : "closed")
                                           + " | " + OperationalState.tradingMode

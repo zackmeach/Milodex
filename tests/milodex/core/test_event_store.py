@@ -1647,3 +1647,86 @@ def test_count_recent_submitted_orders_treats_naive_timestamps_as_utc(tmp_path):
 
     since = now - timedelta(seconds=60)
     assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_get_latest_open_session_id_returns_none_when_no_open_run(tmp_path):
+    """HR-13 item 14: returns None when no open run exists for the strategy."""
+    store = EventStore(tmp_path / "milodex.db")
+    result = store.get_latest_open_session_id("regime.daily.sma200_rotation.spy_shy.v1")
+    assert result is None
+
+
+def test_get_latest_open_session_id_returns_open_session(tmp_path):
+    """HR-13 item 14: returns the session_id of the latest open run."""
+    store = EventStore(tmp_path / "milodex.db")
+    t0 = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="session-open",
+            strategy_id=strategy_id,
+            started_at=t0,
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    result = store.get_latest_open_session_id(strategy_id)
+    assert result == "session-open"
+
+
+def test_get_latest_open_session_id_ignores_closed_runs(tmp_path):
+    """HR-13 item 14: closed runs are excluded; None returned when all runs are closed."""
+    store = EventStore(tmp_path / "milodex.db")
+    t0 = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="session-closed",
+            strategy_id=strategy_id,
+            started_at=t0,
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    store.update_strategy_run_end(
+        session_id="session-closed",
+        ended_at=t0,
+        exit_reason="controlled_stop",
+    )
+    result = store.get_latest_open_session_id(strategy_id)
+    assert result is None
+
+
+def test_get_latest_open_session_id_returns_latest_of_multiple_open(tmp_path):
+    """HR-13 item 14: when multiple open runs exist (e.g. post-crash orphans), return the latest."""
+    store = EventStore(tmp_path / "milodex.db")
+    t0 = datetime(2026, 6, 10, 12, 0, tzinfo=UTC)
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+
+    # Two open runs; the second (session-b) was inserted later → higher id.
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="session-a",
+            strategy_id=strategy_id,
+            started_at=t0,
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="session-b",
+            strategy_id=strategy_id,
+            started_at=t0,
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    result = store.get_latest_open_session_id(strategy_id)
+    assert result == "session-b"

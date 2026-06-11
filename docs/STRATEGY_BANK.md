@@ -215,6 +215,8 @@ On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exem
 
 **Note for analytics:** a running knowingly-losing strategy produces losing paper fills. When per-strategy P&L attribution is built (backlog #6), ensure these canaries are attributed to themselves and excluded from any aggregate "edge" performance read.
 
+**IEX data-fidelity caveat for intraday promotion cases:** All live bars and cached bars for intraday strategies ride the IEX feed (`DataFeed.IEX` in `alpaca_provider.py`), which represents approximately 2–3% of consolidated tape volume. Volume-derived signals — including session VWAP (computed from typical-price × volume) and volume-weighted indicators in the VWAP strategies — systematically deviate from consolidated-tape values. Backtest evidence produced from the historical IEX-sourced cache is internally consistent, but the bar-by-bar VWAP and volume figures do not match SIP consolidated data. This fidelity gap is acceptable for paper-stage validation; it is a hard gate before any intraday strategy is considered for micro_live or live promotion. An SIP-grade data feed or a cross-validation against consolidated data is required before any intraday strategy exits paper.
+
 ---
 
 ## Idle-stage strategies — demoted from active rotation

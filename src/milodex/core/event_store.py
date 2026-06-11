@@ -1064,6 +1064,27 @@ class EventStore:
             rows = connection.execute("SELECT * FROM strategy_runs ORDER BY id ASC").fetchall()
         return [_strategy_run_from_row(row) for row in rows]
 
+    def get_latest_open_session_id(self, strategy_id: str) -> str | None:
+        """Return the session_id of the most-recently-opened open run for *strategy_id*.
+
+        Bounded single-row query — safe to call in the polling retry loop of
+        ``BenchCommandFacade._latest_open_session_id`` (up to ~60 calls per
+        start attempt) without loading the full strategy_runs table.
+
+        Returns ``None`` when no open run exists for the strategy.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT session_id FROM strategy_runs
+                WHERE strategy_id = ? AND ended_at IS NULL
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (strategy_id,),
+            ).fetchone()
+        return None if row is None else str(row[0])
+
     def create_orchestration_batch(self, event: OrchestrationBatchEvent) -> int:
         """Insert an ADR 0040 orchestration batch row and return its id."""
         with self._connect() as connection:

@@ -656,7 +656,14 @@ class BenchCommandBridge(QObject):
 
     @Slot(str, result="QVariantMap")
     def submitStartPaperRunner(self, proposal_id: str) -> dict[str, Any]:  # noqa: N802
-        """Submit a previously-proposed start-paper-runner request."""
+        """Submit a previously-proposed start-paper-runner request (sync variant).
+
+        WARNING: This slot blocks the main thread for up to ~15 s while the
+        spawned child boots (interpreter + pandas + alpaca imports) and the
+        audit-link polling retry loop runs (HR-11 / R-P2-6).  QML callers
+        MUST use ``submitStartPaperRunnerAsync`` instead — the sync slot is
+        retained only for test-harness use where the async pool is not running.
+        """
         return self._submit_sync(
             proposal_id,
             action_family=ACTION_FAMILY_START_PAPER_RUNNER,

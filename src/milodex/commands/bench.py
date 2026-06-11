@@ -2642,16 +2642,18 @@ class BenchCommandFacade:
         )
 
     def _latest_open_session_id(self, strategy_id: str) -> str | None:
+        """Return the session_id of the latest open run for *strategy_id*.
+
+        Uses a bounded single-row query (HR-13 item 14) — safe to call in the
+        audit-link polling retry loop (up to ~60× per start attempt, per HR-11)
+        without loading the full strategy_runs table.
+        """
         if self._event_store_factory is None:
             return None
         try:
-            runs = self._event_store_factory().list_strategy_runs()
+            return self._event_store_factory().get_latest_open_session_id(strategy_id)
         except Exception:  # noqa: BLE001 - best-effort durable ref enrichment.
             return None
-        open_runs = [run for run in runs if run.strategy_id == strategy_id and run.ended_at is None]
-        if not open_runs:
-            return None
-        return str(open_runs[-1].session_id)
 
     def _blocked_proposal(
         self,

@@ -50,12 +50,10 @@ strategy:
     daily_loss_cap_pct: 0.02
     stop_loss_pct: 0.05
 
-  # Demoted from paper -> backtest for the universe migration to
-  # universe.curated_largecap.v2 (ex-ante survivorship correction). The
-  # frozen v1 manifest in the event store still references
-  # universe.phase1.curated.v1 — re-promotion to paper requires a fresh
-  # backtest run on the v2 universe and a new evidence package per
-  # docs/PROMOTION_GOVERNANCE.md.
+  # Re-promoted to paper on 2026-05-07 on the corrected v2 universe
+  # (run 5210be26, Sharpe 0.73). The frozen v1 manifest in the event store
+  # was re-frozen at that promotion; the DB hash matches the current config.
+  # See docs/STRATEGY_BANK.md "meanrev.daily.pullback_rsi2" for the audit trail.
   stage: "paper"
 
   backtest:

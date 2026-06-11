@@ -25,7 +25,7 @@
 //   - LedgerSurface.formatTs (returns "" for empty, not "—" — diverged sentinel)
 //   - Main.qml.formatTimestamp (returns "" for empty — diverged sentinel)
 //   - BenchSurface.formattedTrades (returns "—" for 0 — diverged from count's "0")
-//   - AnchorSurface._formatMoney (CLI-contract, single-site)
+//   - KillSwitchResetModal._formatMoney (CLI-contract, single-site)
 //   - BenchEvidenceModal._fmtList/_fmtBool (single-site)
 //   - Various single-site domain-specific color cascades (see report)
 

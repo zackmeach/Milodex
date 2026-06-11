@@ -298,7 +298,8 @@ def _config_for(strategy_id: str, config_dir: Path) -> StrategyConfig | None:
         for path in sorted(Path(config_dir).glob("*.yaml")):
             try:
                 config = load_strategy_config(path)
-            except ValueError:
+            except ValueError as exc:
+                logger.debug("Skipping invalid config %s: %s", path, exc)
                 continue
             if config.strategy_id == strategy_id:
                 return config

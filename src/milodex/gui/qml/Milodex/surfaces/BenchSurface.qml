@@ -295,7 +295,7 @@ Item {
             // when the modal listener missed it. Read-only: the dismiss control
             // only removes the display notice, it does not ack/re-issue a command.
             //
-            // Visual pattern mirrors the AnchorSurface broker-error banner
+            // Visual pattern mirrors the KillSwitchResetModal broker-error banner
             // (border + status color + glyph; collapsed when empty).
             Column {
                 id: completionBanner

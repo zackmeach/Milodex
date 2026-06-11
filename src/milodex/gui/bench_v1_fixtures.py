@@ -1,4 +1,4 @@
-"""Bench v1 demo fixture rows — curated state-space coverage.
+"""Bench v1 demo fixture rows — curated state-space coverage for test assertions.
 
 ADR-0049-era visual-prototype demo data only. Not a production path.
 
@@ -14,11 +14,10 @@ branch and models a believable strategy/state combination.
 
 Consumers:
 
-- The Bench surface (PR F/G) renders these rows directly when no real
-  data is available, giving the operator a feel-validation surface
-  that spans every menu state without requiring a populated event store.
-- Tests assert that the curated set covers every menu rule branch
-  defined in :mod:`milodex.gui.bench_v1`.
+- ``tests/milodex/gui/test_bench_v1_fixtures.py`` asserts the curated set
+  covers every menu rule branch defined in :mod:`milodex.gui.bench_v1`.
+  No production surface or Bench GUI surface reads this module; the Bench
+  GUI renders live data from the event store exclusively.
 
 This module contains no side effects, no event-store reads, no broker
 calls, and no QML wiring — it is pure data, declared inline.

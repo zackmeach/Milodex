@@ -1,4 +1,4 @@
-# RSI(2) Intraday Mean-Reversion SPY — v1  (BACKTEST-ONLY CANDIDATE)
+# RSI(2) Intraday Mean-Reversion SPY — v1
 #
 # Overnight intraday-expansion candidate (2026-05-28). Long-only, single-name
 # SPY, 5-minute bars, intraday round-trip. The intraday sibling of the daily
@@ -11,8 +11,9 @@
 # filter; this oscillator is intraday and self-contained). Honest benchmark:
 # benchmark.unconditional_intraday_long.spy.v1 on identical universe + friction.
 #
-# STAGE = backtest. NOT a paper candidate. Promotion is a manual operator
-# decision after reviewing the AAR (docs/overnight/INTRADAY_STRATEGY_EXPANSION_AAR.md).
+# Promoted to paper 2026-05-29 via lifecycle_exempt (OOS Sharpe -7.96) as a
+# deliberate intraday-harness validation canary. Knowingly-losing; kept at paper
+# to exercise the intraday runner. See docs/STRATEGY_BANK.md "Intraday canaries".
 #
 # Rules in code: src/milodex/strategies/meanrev_rsi2_intraday.py
 # Session helpers: src/milodex/strategies/_session_intraday.py
