@@ -256,6 +256,8 @@ This is acceptable Phase-1 policy for the strategies currently in the bank (dail
 
 **Strict semantics:** the Nth trade is allowed; the (N+1)th is blocked. The count is queried before the submission is written, so a count of exactly `max_trades_per_day` blocks the next attempt.
 
+**Exits count toward the limit — deliberately.** Unlike the order-value cap (DC-1: exposure-reducing orders exempt, "a held position must always be exitable"), this is a halt-style runaway circuit-breaker, like the daily-loss check and the kill switch: a fleet that has exhausted its daily budget is presumed misbehaving, and per the kill-switch precedent its exits are not trusted either. The operator exits existing risk manually.
+
 **Day boundary:** UTC midnight. Simple and unambiguous; no DST sensitivity.
 
 **Fail-closed:** a database query error blocks the trade rather than silently allowing an uncountable submission.
