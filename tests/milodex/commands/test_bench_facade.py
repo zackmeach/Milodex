@@ -48,6 +48,7 @@ from milodex.commands.bench import (
     CommandProposal,
     CommandResult,
     Precondition,
+    READINESS_KILL_SWITCH,
     WorkflowReadinessIssue,
     WorkflowReadinessReport,
 )
@@ -917,7 +918,8 @@ def test_submit_start_paper_runner_blocked_by_eval_symbol_collision_at_revalidat
     [
         "reconciliation_drift",
         "kill_switch_open",
-        "data_stale",
+        # data_freshness is NOT in _WORKFLOW_REQUIRED_START_RUNNER — omitted intentionally.
+        # The real evaluator never generates a data_stale issue for start_paper_runner.
         "broker_unreachable",
     ],
 )
@@ -960,9 +962,13 @@ def test_propose_stop_paper_runner_admissible_with_active_runner(
     assert proposal.projected_outcome["kill_switch"] is False
 
 
-def test_propose_stop_paper_runner_blocks_only_required_kill_switch_readiness(
+def test_propose_stop_paper_runner_has_no_required_readiness_checks(
     make_facade, config_dir: Path, locks_dir: Path
 ) -> None:
+    # READINESS_KILL_SWITCH was moved to inspected_checks for the stop family (HR-5).
+    # A controlled stop submits no trades; the risk layer blocks anything a still-running
+    # runner attempts. Gating a de-risking action on the kill switch inverts the asymmetry
+    # principle and wedges the GUI during a safety event.
     _write_strategy(config_dir, stage="paper")
     _seed_runner_lock(locks_dir)
     readiness = _FakeWorkflowReadiness(
@@ -979,7 +985,8 @@ def test_propose_stop_paper_runner_blocks_only_required_kill_switch_readiness(
 
     proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
 
-    assert {b.reason_code for b in proposal.blockers} == {"kill_switch_open"}
+    # Kill-switch is now inspected, not required — no blockers from readiness.
+    assert proposal.blockers == []
     readiness_issues = {
         issue["reason_code"] for issue in proposal.projected_outcome["workflow_readiness"]["issues"]
     }
@@ -989,7 +996,40 @@ def test_propose_stop_paper_runner_blocks_only_required_kill_switch_readiness(
         "data_stale",
         "broker_unreachable",
     }
-    assert readiness.calls[0]["required_checks"] == frozenset({"kill_switch"})
+    assert readiness.calls[0]["required_checks"] == frozenset()
+    assert READINESS_KILL_SWITCH in readiness.calls[0]["inspected_checks"]
+
+
+def test_propose_stop_paper_runner_admissible_when_kill_switch_active(
+    make_facade, config_dir: Path, locks_dir: Path
+) -> None:
+    # HR-5: with the kill switch ACTIVE the stop proposal must be admissible, and the
+    # kill-switch state must appear as an inspected/warning entry, not a blocker.
+    _write_strategy(config_dir, stage="paper")
+    _seed_runner_lock(locks_dir)
+    readiness = _FakeWorkflowReadiness(
+        WorkflowReadinessReport(
+            issues=(_readiness_issue("kill_switch_open"),)
+        )
+    )
+    facade = make_facade(workflow_readiness=readiness)
+
+    proposal = facade.propose_stop_paper_runner(STRATEGY_ID)
+
+    assert proposal.admissible, proposal.blockers
+    assert proposal.blockers == []
+    # The kill-switch issue is present in the readiness payload as a warning.
+    readiness_issues = [
+        issue
+        for issue in proposal.projected_outcome["workflow_readiness"]["issues"]
+        if issue["reason_code"] == "kill_switch_open"
+    ]
+    assert len(readiness_issues) == 1
+    # The FAKE evaluator hardcodes blocking=True here, which is deliberately
+    # adversarial: it proves the helper ignores blocking flags on dimensions
+    # outside required_checks. The REAL evaluator (_DefaultWorkflowReadiness)
+    # would set blocking=False for an inspected-only dimension.
+    assert readiness_issues[0]["blocking"] is True
 
 
 # --------------------------------------------------------------------------- #

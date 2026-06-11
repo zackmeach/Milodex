@@ -1141,9 +1141,15 @@ class BenchCommandFacade:
                 self._evaluate_workflow_readiness(
                     action_family=ACTION_FAMILY_STOP_PAPER_RUNNER,
                     strategy_id=strategy_id,
-                    required_checks=frozenset({READINESS_KILL_SWITCH}),
+                    required_checks=frozenset(),
+                    # READINESS_KILL_SWITCH is inspected, not required: a controlled stop
+                    # writes a request file and closes a session — it submits no trades.
+                    # The risk layer independently blocks anything a still-running runner
+                    # attempts. Gating a de-risking action on the kill switch being inactive
+                    # inverts the asymmetry principle and wedges the GUI during a safety event.
                     inspected_checks=frozenset(
                         {
+                            READINESS_KILL_SWITCH,
                             READINESS_RECONCILIATION,
                             READINESS_DATA_FRESHNESS,
                             READINESS_BROKER_REACHABILITY,
@@ -2000,7 +2006,13 @@ class BenchCommandFacade:
             required_checks=required_checks,
             inspected_checks=inspected_checks,
         )
-        blockers = [issue.to_blocker() for issue in report.issues if issue.blocking]
+        # Only issues in required_checks dimensions can block; inspected-only
+        # issues surface as informational payload but never gate admissibility.
+        blockers = [
+            issue.to_blocker()
+            for issue in report.issues
+            if issue.blocking and issue.dimension in required_checks
+        ]
         preconditions = [
             Precondition(
                 f"workflow_readiness_{dimension}",
