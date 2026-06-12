@@ -602,6 +602,37 @@ def _seed_running_backtest_run(
     )
 
 
+def test_finalize_backtest_run_writes_status_ended_at_and_metadata_together(tmp_path):
+    """Terminal close-out is a single transaction (P1-03).
+
+    Status, ``ended_at``, and ``metadata_json`` all land together — there is
+    no intermediate commit where the row is 'completed' but the evidence
+    metrics (which live only in ``metadata_json``) are missing.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    started_at = datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+    _seed_running_backtest_run(
+        store,
+        run_id="finalize-run",
+        strategy_id="test.strat.v1",
+        started_at=started_at,
+    )
+    ended_at = datetime(2026, 6, 1, 15, 0, tzinfo=UTC)
+
+    store.finalize_backtest_run(
+        "finalize-run",
+        status="completed",
+        metadata={"initial_equity": 100_000.0, "trade_count": 7},
+        ended_at=ended_at,
+    )
+
+    run = store.get_backtest_run("finalize-run")
+    assert run is not None
+    assert run.status == "completed"
+    assert run.ended_at == ended_at
+    assert run.metadata == {"initial_equity": 100_000.0, "trade_count": 7}
+
+
 def test_reconcile_orphan_backtest_runs_closes_running_rows_for_same_strategy(tmp_path):
     """A backtest_runs row left in ``status='running'`` with ``ended_at IS NULL``
     is the database-side fingerprint of a process that died mid-run (machine

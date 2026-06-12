@@ -1161,3 +1161,101 @@ def test_backtest_run_config_hash_reflects_invocation_yaml_not_frozen():
         "tested, not a shared frozen-manifest hash. An operator iterating on "
         "parameters mid-paper must see distinct config_hash values per run."
     )
+
+
+# ---------------------------------------------------------------------------
+# Terminal close-out atomicity (P1-03) and snapshot-failure audit (P2-02)
+# ---------------------------------------------------------------------------
+
+
+def _engine_with_spy_bars(store: EventStore) -> BacktestEngine:
+    loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))
+    loaded.strategy.evaluate.return_value = _decision([])
+    provider = MagicMock()
+    provider.get_bars.return_value = {
+        "SPY": _make_barset([100.0, 101.0, 102.0, 103.0], start=date(2024, 1, 2))
+    }
+    return BacktestEngine(
+        loaded=loaded,
+        data_provider=provider,
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+
+def test_engine_terminal_closeout_fails_closed_when_metadata_write_fails(monkeypatch):
+    """A close-out failure must never leave a completed row without metadata.
+
+    The old two-step close-out (status commit, then metadata commit) could
+    mark a run 'completed' and then die before the metadata landed — a
+    terminal row with NULL metrics that the orphan sweep never recovers.
+    With the atomic close-out, a metadata serialization failure aborts the
+    whole terminal write: the call raises and the row stays 'running'
+    (sweepable), never 'completed'.
+    """
+    import milodex.core.event_store as event_store_module
+
+    store = _make_event_store()
+    engine = _engine_with_spy_bars(store)
+
+    real_dump_json = event_store_module._dump_json
+
+    def _boom_on_final_metadata(payload):
+        # Only the terminal close-out metadata carries `final_equity`.
+        if isinstance(payload, dict) and "final_equity" in payload:
+            raise RuntimeError("metadata serialization boom")
+        return real_dump_json(payload)
+
+    monkeypatch.setattr(event_store_module, "_dump_json", _boom_on_final_metadata)
+
+    with pytest.raises(RuntimeError, match="metadata serialization boom"):
+        engine.run(date(2024, 1, 2), date(2024, 1, 5), run_id="atomic-closeout-run")
+
+    run_record = store.get_backtest_run("atomic-closeout-run")
+    assert run_record is not None
+    assert run_record.status == "running"  # not 'completed' — still sweepable
+    assert run_record.ended_at is None
+    assert "final_equity" not in run_record.metadata
+
+
+def test_engine_surfaces_snapshot_write_failure_in_run_metadata(monkeypatch, caplog):
+    """P2-02: a failed final equity snapshot is logged and lands in metadata."""
+    import logging
+
+    import milodex.backtesting.simulation_kernel as kernel_module
+
+    def _boom(**_kwargs):
+        raise RuntimeError("snapshot table unavailable")
+
+    monkeypatch.setattr(kernel_module, "record_backtest_equity_snapshot", _boom)
+
+    store = _make_event_store()
+    engine = _engine_with_spy_bars(store)
+
+    with caplog.at_level(logging.WARNING, logger="milodex.backtesting.simulation_kernel"):
+        result = engine.run(date(2024, 1, 2), date(2024, 1, 5), run_id="snapshot-error-run")
+
+    # The run still completes — snapshot persistence is best-effort by design.
+    run_record = store.get_backtest_run("snapshot-error-run")
+    assert run_record is not None
+    assert run_record.status == "completed"
+    assert result.snapshot_write_error == "RuntimeError: snapshot table unavailable"
+    assert run_record.metadata["snapshot_write_error"] == (
+        "RuntimeError: snapshot table unavailable"
+    )
+    assert any(
+        "Final backtest equity snapshot write failed" in record.message for record in caplog.records
+    )
+
+
+def test_engine_omits_snapshot_write_error_key_on_healthy_run():
+    store = _make_event_store()
+    engine = _engine_with_spy_bars(store)
+
+    result = engine.run(date(2024, 1, 2), date(2024, 1, 5), run_id="healthy-snapshot-run")
+
+    assert result.snapshot_write_error is None
+    run_record = store.get_backtest_run("healthy-snapshot-run")
+    assert run_record is not None
+    assert "snapshot_write_error" not in run_record.metadata

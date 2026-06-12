@@ -244,6 +244,7 @@ def run_walk_forward(
     db_run_id = run_handle.db_id
 
     windows: list[WalkForwardWindow] = []
+    snapshot_write_errors: dict[str, str] = {}
     try:
         data_quality = engine.scan_backtest_data_quality(all_bars, start_date, end_date)
         for index, (tr_start, tr_end, te_start, te_end) in enumerate(window_dates):
@@ -282,9 +283,12 @@ def run_walk_forward(
                     round_trip_count=output.round_trip_count,
                 )
             )
+            if output.snapshot_write_error is not None:
+                snapshot_write_errors[str(index)] = output.snapshot_write_error
     except DataQualityError as exc:
         data_quality = exc.report.to_dict()
-        engine.update_backtest_run_metadata(
+        # Status flip + metadata land in one transaction via the engine helper.
+        engine.mark_backtest_run_failed(
             effective_run_id,
             metadata=engine.backtest_run_metadata_with_manifest(
                 effective_run_id,
@@ -294,7 +298,6 @@ def run_walk_forward(
                 data_quality=data_quality,
             ),
         )
-        engine.mark_backtest_run_failed(effective_run_id)
         raise
     except Exception:
         engine.mark_backtest_run_failed(effective_run_id)
@@ -339,6 +342,7 @@ def run_walk_forward(
             "risk_policy": engine.risk_policy.value,
             "data_quality": data_quality,
             "run_manifest": run_manifest,
+            **({"snapshot_write_errors": snapshot_write_errors} if snapshot_write_errors else {}),
         },
     )
 

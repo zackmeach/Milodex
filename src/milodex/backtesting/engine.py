@@ -117,6 +117,7 @@ class BacktestResult:
     skipped_count: int = 0
     data_quality: dict = field(default_factory=dict)
     run_manifest: dict = field(default_factory=dict)
+    snapshot_write_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +146,7 @@ class _SimulationOutput:
     final_equity: float
     round_trip_count: int = 0
     skipped_count: int = 0
+    snapshot_write_error: str | None = None
 
 
 def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -> bool:
@@ -376,8 +378,27 @@ class BacktestEngine:
         merged_metadata = {**persisted.metadata, **updates}
         self._event_store.update_backtest_run_metadata(run_id, metadata=merged_metadata)
 
-    def mark_backtest_run_failed(self, run_id: str, *, ended_at: datetime | None = None) -> None:
-        """Mark a durable backtest run as failed."""
+    def mark_backtest_run_failed(
+        self,
+        run_id: str,
+        *,
+        ended_at: datetime | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Mark a durable backtest run as failed.
+
+        When ``metadata`` is provided the status flip and metadata write share
+        a single transaction, so a crash mid-close-out can never leave a
+        terminal-status row without its metadata.
+        """
+        if metadata is not None:
+            self._event_store.finalize_backtest_run(
+                run_id,
+                status="failed",
+                metadata=metadata,
+                ended_at=ended_at or datetime.now(tz=UTC),
+            )
+            return
         self._event_store.update_backtest_run_status(
             run_id,
             status="failed",
@@ -391,13 +412,18 @@ class BacktestEngine:
         metadata: dict[str, Any],
         ended_at: datetime | None = None,
     ) -> None:
-        """Mark a walk-forward parent run complete and persist final metadata."""
-        self._event_store.update_backtest_run_status(
+        """Mark a walk-forward parent run complete and persist final metadata.
+
+        Status, ``ended_at``, and metadata land in one transaction — a crash
+        mid-close-out leaves the row ``'running'`` (sweepable), never
+        ``'completed'`` with missing metadata.
+        """
+        self._event_store.finalize_backtest_run(
             run_id,
             status="completed",
+            metadata=metadata,
             ended_at=ended_at or datetime.now(tz=UTC),
         )
-        self._event_store.update_backtest_run_metadata(run_id, metadata=metadata)
 
     def run(
         self,
@@ -455,8 +481,9 @@ class BacktestEngine:
             )
         except DataQualityError as exc:
             data_quality = exc.report.to_dict()
-            self._event_store.update_backtest_run_metadata(
+            self._event_store.finalize_backtest_run(
                 effective_run_id,
+                status="failed",
                 metadata=self._metadata_with_run_manifest(
                     effective_run_id,
                     start_date=start_date,
@@ -464,10 +491,6 @@ class BacktestEngine:
                     initial_equity=self._initial_equity,
                     data_quality=data_quality,
                 ),
-            )
-            self._event_store.update_backtest_run_status(
-                effective_run_id,
-                status="failed",
                 ended_at=datetime.now(tz=UTC),
             )
             raise
@@ -479,25 +502,25 @@ class BacktestEngine:
             )
             raise
 
-        self._event_store.update_backtest_run_status(
+        final_metadata: dict[str, Any] = {
+            "initial_equity": result.initial_equity,
+            "final_equity": result.final_equity,
+            "total_return_pct": result.total_return_pct,
+            "trade_count": result.trade_count,
+            "skipped_count": result.skipped_count,
+            "trading_days": result.trading_days,
+            "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
+            "risk_policy": self._risk_policy.value,
+            "data_quality": result.data_quality,
+            "run_manifest": result.run_manifest,
+        }
+        if result.snapshot_write_error is not None:
+            final_metadata["snapshot_write_error"] = result.snapshot_write_error
+        self._event_store.finalize_backtest_run(
             effective_run_id,
             status="completed",
+            metadata=final_metadata,
             ended_at=datetime.now(tz=UTC),
-        )
-        self._event_store.update_backtest_run_metadata(
-            effective_run_id,
-            metadata={
-                "initial_equity": result.initial_equity,
-                "final_equity": result.final_equity,
-                "total_return_pct": result.total_return_pct,
-                "trade_count": result.trade_count,
-                "skipped_count": result.skipped_count,
-                "trading_days": result.trading_days,
-                "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
-                "risk_policy": self._risk_policy.value,
-                "data_quality": result.data_quality,
-                "run_manifest": result.run_manifest,
-            },
         )
         return result
 
@@ -766,6 +789,7 @@ class BacktestEngine:
             skipped_count=output.skipped_count,
             data_quality=data_quality,
             run_manifest=run_manifest,
+            snapshot_write_error=output.snapshot_write_error,
         )
 
     def _scan_data_quality(
@@ -1062,6 +1086,7 @@ class BacktestEngine:
             final_equity=final_equity,
             round_trip_count=round_trip_count,
             skipped_count=skipped_count,
+            snapshot_write_error=kernel.snapshot_write_error,
         )
 
     def _simulate_intraday(
@@ -1300,6 +1325,7 @@ class BacktestEngine:
             final_equity=final_equity,
             round_trip_count=round_trip_count,
             skipped_count=skipped_count,
+            snapshot_write_error=kernel.snapshot_write_error,
         )
 
     def _build_risk_evaluator(self):

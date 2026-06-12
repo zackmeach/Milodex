@@ -1415,6 +1415,37 @@ class EventStore:
             )
             connection.commit()
 
+    def finalize_backtest_run(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        metadata: dict[str, Any],
+        ended_at: datetime,
+    ) -> None:
+        """Write terminal status, ``ended_at``, and metadata in one transaction.
+
+        A two-step close-out (status flip then metadata write as separate
+        commits) can die between commits and leave a terminal-status row with
+        no final metadata — invisible to
+        :meth:`reconcile_orphan_backtest_runs`, which only sweeps
+        ``status='running'`` rows, while ``metadata_json`` is the sole home of
+        the evidence metrics. Serializing the metadata up front and sharing a
+        single ``_connect()`` context makes the close-out all-or-nothing: on
+        any failure the row stays ``'running'`` and remains sweepable.
+        """
+        metadata_json = _dump_json(metadata)
+        with self._connect() as connection:
+            connection.execute(
+                """
+                UPDATE backtest_runs
+                SET status = ?, ended_at = ?, metadata_json = ?
+                WHERE run_id = ?
+                """,
+                (status, _dt(ended_at), metadata_json, run_id),
+            )
+            connection.commit()
+
     def list_backtest_runs(self) -> list[BacktestRunEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM backtest_runs ORDER BY id ASC").fetchall()
