@@ -32,6 +32,7 @@ from __future__ import annotations
 import bisect
 import math
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -147,6 +148,76 @@ class _SimulationOutput:
     round_trip_count: int = 0
     skipped_count: int = 0
     snapshot_write_error: str | None = None
+
+
+def _finalize_simulation(
+    *,
+    kernel: BacktestSimulationKernel,
+    equity_curve: list[tuple[date, float]],
+    trading_days: list[date],
+    pending: list[PendingOrder | IntradayPendingOrder],
+    initial_equity: float,
+    trade_count: int,
+    buy_count: int,
+    sell_count: int,
+    skipped_count: int,
+    session_id: str,
+    db_run_id: int,
+    latest_closes_fn: Callable[[], dict[str, float]],
+) -> _SimulationOutput:
+    """Shared end-of-simulation choreography for the daily and intraday paths.
+
+    The order is load-bearing and identical in both paths:
+
+    1. Record stranded pending orders — orders with no next bar to fill at —
+       as skipped backtest audit rows (Correction 5).
+    2. Final broker re-sync so the simulated account reflects post-fill state.
+    3. Record one ``backtest_equity_snapshots`` row per simulation (ADR 0053).
+       The snapshot is keyed on ``session_id`` (= run_id for whole-period,
+       window-id for walk-forward), so analytics can read snapshots
+       independently of the trade ledger. Closes the runner/engine half of
+       the ``analytics/snapshots.py`` scaffolded surface (R-XC-016).
+    4. Assemble the :class:`_SimulationOutput`.
+
+    ``latest_closes_fn`` is the only path-specific step: the daily path slices
+    bars to the last trading day; the intraday path reads the last visible
+    close per symbol. It is invoked once per step that needs closes, matching
+    the previously-inlined call counts.
+    """
+    final_equity = equity_curve[-1][1] if equity_curve else initial_equity
+
+    if pending and trading_days:
+        skipped_count += kernel.record_stranded_orders(
+            pending=pending,
+            day=trading_days[-1],
+            latest_closes=latest_closes_fn(),
+            session_id=session_id,
+            db_run_id=db_run_id,
+        )
+
+    if trading_days:
+        last_day = trading_days[-1]
+        kernel.sync_broker_state(
+            day=last_day,
+            closes=latest_closes_fn(),
+            equity=final_equity,
+        )
+        kernel.record_final_snapshot(
+            session_id=session_id,
+            db_run_id=db_run_id,
+            recorded_at=_day_to_dt(last_day),
+        )
+
+    return _SimulationOutput(
+        equity_curve=equity_curve,
+        trade_count=trade_count,
+        buy_count=buy_count,
+        sell_count=sell_count,
+        final_equity=final_equity,
+        round_trip_count=kernel.round_trip_count(),
+        skipped_count=skipped_count,
+        snapshot_write_error=kernel.snapshot_write_error,
+    )
 
 
 def _barset_has_bar_in_range(barset: BarSet, start_date: date, end_date: date) -> bool:
@@ -1041,52 +1112,26 @@ class BacktestEngine:
             # position movement happens between decision and end of day.
             equity_curve.append((day, equity))
 
-        final_equity = equity_curve[-1][1] if equity_curve else initial_equity
+        # Shared tail (P3-03): stranded-order audit, final sync, ADR 0053
+        # snapshot, output assembly. See _finalize_simulation for the ordering
+        # contract. Daily closes = latest closes after slicing to the last day.
+        def _closes_at_end() -> dict[str, float]:
+            last_bars = _slice_bars_to_day(all_bars, trading_days[-1], ts_index)
+            return _latest_closes(last_bars)
 
-        if pending and trading_days:
-            last_day = trading_days[-1]
-            last_bars = _slice_bars_to_day(all_bars, last_day, ts_index)
-            last_closes = _latest_closes(last_bars)
-            skipped_count += kernel.record_stranded_orders(
-                pending=pending,
-                day=last_day,
-                latest_closes=last_closes,
-                session_id=session_id,
-                db_run_id=db_run_id,
-            )
-            pending = []
-
-        # Final broker re-sync so the simulated account reflects post-buy state,
-        # then record one backtest_equity_snapshots row per simulation (ADR 0053).
-        # The snapshot is keyed on `session_id` (= run_id for whole-period,
-        # window-id for walk-forward), so analytics can read snapshots
-        # independently of the trade ledger. Closes the runner/engine half of
-        # the `analytics/snapshots.py` scaffolded surface (R-XC-016).
-        if trading_days:
-            last_day = trading_days[-1]
-            last_bars = _slice_bars_to_day(all_bars, last_day, ts_index)
-            last_closes = _latest_closes(last_bars)
-            kernel.sync_broker_state(
-                day=last_day,
-                closes=last_closes,
-                equity=final_equity,
-            )
-            kernel.record_final_snapshot(
-                session_id=session_id,
-                db_run_id=db_run_id,
-                recorded_at=_day_to_dt(last_day),
-            )
-
-        round_trip_count = kernel.round_trip_count()
-        return _SimulationOutput(
+        return _finalize_simulation(
+            kernel=kernel,
             equity_curve=equity_curve,
+            trading_days=trading_days,
+            pending=pending,
+            initial_equity=initial_equity,
             trade_count=trade_count,
             buy_count=buy_count,
             sell_count=sell_count,
-            final_equity=final_equity,
-            round_trip_count=round_trip_count,
             skipped_count=skipped_count,
-            snapshot_write_error=kernel.snapshot_write_error,
+            session_id=session_id,
+            db_run_id=db_run_id,
+            latest_closes_fn=_closes_at_end,
         )
 
     def _simulate_intraday(
@@ -1273,59 +1318,30 @@ class BacktestEngine:
             )
             equity_curve.append((day, eod_equity))
 
-        # ------------------------------------------------------------------
-        # Post-loop: handle stranded pending orders (mirrors daily path).
-        # Per Correction 5: every stranded order is a skipped-audit row.
-        # ------------------------------------------------------------------
-        final_equity = equity_curve[-1][1] if equity_curve else initial_equity
-
-        if pending and trading_days:
-            last_day = trading_days[-1]
-            latest_closes_end = _latest_close_at_ts(
-                per_symbol_df=per_symbol_df,
-                per_symbol_ts_utc=per_symbol_ts_utc,
-                ts=None,  # None sentinel → latest close across all time
-            )
-            skipped_count += kernel.record_stranded_orders(
-                pending=pending,
-                day=last_day,
-                latest_closes=latest_closes_end,
-                session_id=session_id,
-                db_run_id=db_run_id,
-            )
-            pending = []
-
-        # ------------------------------------------------------------------
-        # Per Correction 5: final broker sync + ADR 0053 snapshot policy.
-        # ------------------------------------------------------------------
-        if trading_days:
-            last_day = trading_days[-1]
-            latest_closes_end = _latest_close_at_ts(
+        # Shared tail (P3-03, mirrors daily path): stranded-order audit
+        # (Correction 5), final sync, ADR 0053 snapshot, output assembly. See
+        # _finalize_simulation for the ordering contract. Intraday closes =
+        # latest close across all time (`ts=None` sentinel).
+        def _closes_at_end() -> dict[str, float]:
+            return _latest_close_at_ts(
                 per_symbol_df=per_symbol_df,
                 per_symbol_ts_utc=per_symbol_ts_utc,
                 ts=None,
             )
-            kernel.sync_broker_state(
-                day=last_day,
-                closes=latest_closes_end,
-                equity=final_equity,
-            )
-            kernel.record_final_snapshot(
-                session_id=session_id,
-                db_run_id=db_run_id,
-                recorded_at=_day_to_dt(last_day),
-            )
 
-        round_trip_count = kernel.round_trip_count()
-        return _SimulationOutput(
+        return _finalize_simulation(
+            kernel=kernel,
             equity_curve=equity_curve,
+            trading_days=trading_days,
+            pending=pending,
+            initial_equity=initial_equity,
             trade_count=trade_count,
             buy_count=buy_count,
             sell_count=sell_count,
-            final_equity=final_equity,
-            round_trip_count=round_trip_count,
             skipped_count=skipped_count,
-            snapshot_write_error=kernel.snapshot_write_error,
+            session_id=session_id,
+            db_run_id=db_run_id,
+            latest_closes_fn=_closes_at_end,
         )
 
     def _build_risk_evaluator(self):
