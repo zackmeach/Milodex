@@ -1393,6 +1393,57 @@ class BenchCommandFacade:
             progress_label="running backtest",
         )
 
+        # ADR 0050 Decision 6: IDLE -> BACKTEST is system-driven at backtest
+        # job acceptance, not at completion. The governance write (YAML stage
+        # update + stage_return promotion event) lands here, before the engine
+        # runs, and a failed run does NOT roll it back — a strategy at BACKTEST
+        # with failed (or no fresh) evidence is a legitimate state. The
+        # promotion event records the *requested* run_id (None when the engine
+        # will generate one); the completed run is journaled post-run.
+        stage_return_refs: dict[str, str] = {}
+        from_stage = str(revalidation.state_snapshot.get("stage") or "")
+        if from_stage == "idle":
+            config_path = Path(str(revalidation.state_snapshot.get("config_path") or ""))
+            try:
+                _governance_update_stage(config_path, "idle", "backtest")
+            except ValueError as exc:
+                error_result = CommandResult(
+                    proposal_id=proposal.proposal_id,
+                    action_family=ACTION_FAMILY_BACKTEST,
+                    status="error",
+                    blockers=[
+                        Blocker(
+                            reason_code="idle_to_backtest_stage_update_failed",
+                            message=str(exc),
+                            context={"config_path": str(config_path)},
+                        )
+                    ],
+                    submitted_at=self._now(),
+                )
+                return self._finish_orchestration_job(job_ref, error_result)
+            stage_return_id = required_store.append_promotion(
+                PromotionEvent(
+                    strategy_id=proposal.strategy_id,
+                    from_stage="idle",
+                    to_stage="backtest",
+                    promotion_type="stage_return",
+                    approved_by="bench_gui",
+                    recorded_at=self._now(),
+                    backtest_run_id=run_id,
+                    notes="Initiate Backtest via Bench GUI",
+                    evidence_json={
+                        "proposal_id": proposal.proposal_id,
+                        "action_family": proposal.action_family,
+                        "run_id": run_id,
+                    },
+                )
+            )
+            stage_return_refs = {
+                "from_stage": "idle",
+                "to_stage": "backtest",
+                "stage_return_promotion_id": str(stage_return_id),
+            }
+
         try:
             engine = self._backtest_engine_factory(proposal.strategy_id, **engine_kwargs)
             if walk_forward:
@@ -1417,6 +1468,7 @@ class BenchCommandFacade:
                 proposal_id=proposal.proposal_id,
                 action_family=ACTION_FAMILY_BACKTEST,
                 status="error",
+                durable_refs=dict(stage_return_refs),
                 blockers=[
                     Blocker(
                         reason_code="backtest_failed",
@@ -1429,47 +1481,7 @@ class BenchCommandFacade:
             return self._finish_orchestration_job(job_ref, error_result)
 
         durable_refs = self._backtest_durable_refs(result, walk_forward=walk_forward)
-        from_stage = str(revalidation.state_snapshot.get("stage") or "")
-        if from_stage == "idle":
-            config_path = Path(str(revalidation.state_snapshot.get("config_path") or ""))
-            try:
-                _governance_update_stage(config_path, "idle", "backtest")
-            except ValueError as exc:
-                error_result = CommandResult(
-                    proposal_id=proposal.proposal_id,
-                    action_family=ACTION_FAMILY_BACKTEST,
-                    status="error",
-                    durable_refs=durable_refs,
-                    blockers=[
-                        Blocker(
-                            reason_code="idle_to_backtest_stage_update_failed",
-                            message=str(exc),
-                            context={"config_path": str(config_path)},
-                        )
-                    ],
-                    submitted_at=self._now(),
-                )
-                return self._finish_orchestration_job(job_ref, error_result)
-            stage_return_id = required_store.append_promotion(
-                PromotionEvent(
-                    strategy_id=proposal.strategy_id,
-                    from_stage="idle",
-                    to_stage="backtest",
-                    promotion_type="stage_return",
-                    approved_by="bench_gui",
-                    recorded_at=self._now(),
-                    backtest_run_id=str(result.run_id),
-                    notes="Initiate Backtest via Bench GUI",
-                    evidence_json={
-                        "proposal_id": proposal.proposal_id,
-                        "action_family": proposal.action_family,
-                        "run_id": str(result.run_id),
-                    },
-                )
-            )
-            durable_refs["from_stage"] = "idle"
-            durable_refs["to_stage"] = "backtest"
-            durable_refs["stage_return_promotion_id"] = str(stage_return_id)
+        durable_refs.update(stage_return_refs)
 
         submit_result = CommandResult(
             proposal_id=proposal.proposal_id,
