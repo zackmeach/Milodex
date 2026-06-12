@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 from milodex.broker.models import OrderSide, OrderStatus
 from milodex.risk.config import RiskDefaults
+from milodex.risk.disable_conditions import effective_disable_conditions
 from milodex.risk.exposure import is_exposure_increasing
 from milodex.risk.models import ReconciliationReadiness, RiskCheckResult, RiskDecision
 
@@ -101,6 +102,7 @@ class RiskEvaluator:
         "_check_reconciliation_readiness",
         "_check_strategy_stage",
         "_check_manifest_drift",
+        "_check_disable_conditions",
         "_check_market_open",
         "_check_data_staleness",
         "_check_daily_loss",
@@ -341,6 +343,85 @@ class RiskEvaluator:
             "manifest_drift",
             True,
             "Runtime config matches frozen manifest.",
+        )
+
+    def _check_disable_conditions(self, context: EvaluationContext) -> RiskCheckResult:
+        """SRS R-STR-014: halt the strategy when any active disable condition is true.
+
+        The effective catalog is the strategy family's defaults (per
+        ``docs/strategy-families.md``, mirrored in
+        :mod:`milodex.risk.disable_conditions`) plus the config's
+        ``disable_conditions_additional`` strings. Only the auto-evaluable
+        subset can veto; declared-only conditions (no signal available in
+        this context) are surfaced in the passing message but never block —
+        see the module-level triage table in
+        :mod:`milodex.risk.disable_conditions`.
+
+        Fail-closed per evaluator: an evaluator that raises is treated as
+        ACTIVE (veto) with the error in the message — a broken safety
+        evaluator must not silently pass. This is deliberately stricter than
+        the generic ``_run_check`` wrapper: the reason code stays
+        ``disable_condition_active`` and names the condition, so the
+        explanation record attributes the halt to the catalog rather than a
+        generic ``risk_check_error``.
+
+        Exemptions: manual operator trades carry no strategy and therefore
+        no catalog; backtests sit below the risk layer by design (ADR 0030)
+        and never reach this check via the production evaluator either —
+        the ``is_backtest`` short-circuit mirrors ``_check_manifest_drift``
+        as defense in depth for future research-mode contexts.
+        """
+        if context.is_backtest:
+            return RiskCheckResult(
+                "disable_conditions",
+                True,
+                "backtest mode — disable conditions not enforced (ADR 0030)",
+            )
+        if context.strategy_config is None:
+            return RiskCheckResult(
+                "disable_conditions",
+                True,
+                "Manual trade; no strategy disable-condition catalog applies.",
+            )
+        conditions = effective_disable_conditions(
+            context.strategy_config.family,
+            context.strategy_config.disable_conditions_additional,
+        )
+        active_details: list[str] = []
+        evaluated = 0
+        declared_only = 0
+        for condition in conditions:
+            if condition.evaluator is None:
+                declared_only += 1
+                continue
+            evaluated += 1
+            try:
+                outcome = condition.evaluator(context)
+            except Exception as exc:  # noqa: BLE001 — fail-closed by design
+                active_details.append(
+                    f"{condition.condition_id}: evaluator raised {exc!r}; "
+                    "failing closed (a broken safety evaluator must not silently pass)"
+                )
+                continue
+            if outcome.active:
+                active_details.append(f"{condition.condition_id}: {outcome.detail}")
+        if active_details:
+            return RiskCheckResult(
+                name="disable_conditions",
+                passed=False,
+                message=(
+                    f"Active disable condition(s) for strategy "
+                    f"'{context.strategy_config.name}': " + "; ".join(active_details)
+                ),
+                reason_code="disable_condition_active",
+            )
+        return RiskCheckResult(
+            "disable_conditions",
+            True,
+            (
+                f"No active disable conditions ({evaluated} auto-evaluated inactive; "
+                f"{declared_only} declared-only, not auto-evaluable)."
+            ),
         )
 
     def _check_market_open(self, context: EvaluationContext) -> RiskCheckResult:

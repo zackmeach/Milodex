@@ -22,6 +22,8 @@ Each section below defines one family with a fixed structure:
 7. **Ranking rule** — how to pick among qualifying candidates when position limits bind
 8. **Default disable conditions** — environments that invalidate the family's evidence
 
+**Disable-condition enforcement status (P2-07, 2026-06-12).** The catalogs below are mirrored as a structured registry in `src/milodex/risk/disable_conditions.py` and enforced by the risk layer's `disable_conditions` check (SRS R-STR-014). Only the subset whose signal the risk-evaluation context already carries **auto-evaluates** and can halt a strategy: *Major unresolved data-quality issues* (`data_quality_issue` — missing/stale latest bar), *Breach of drawdown or risk-budget limits* (`drawdown_risk_budget_breach` — daily loss vs the kill-switch and daily-loss caps), and *Operator-declared pause after unusual market events* (`operator_declared_pause` — kill switch active). The remaining conditions (abnormal regime/volatility, spread/liquidity deterioration, corporate-action uncertainty, broker/execution instability, fill divergence, exchange-calendar uncertainty) are **declared-only pending signal availability** — visible and non-removable in the catalog, but not auto-evaluated until the risk context carries the required signal. `disable_conditions_additional` strings that match a registry id resolve to that entry; free-form strings remain declared-only.
+
 ---
 
 ## Family: `meanrev` — Daily Mean-Reversion Swing

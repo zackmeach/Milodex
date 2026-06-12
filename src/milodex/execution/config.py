@@ -16,7 +16,15 @@ import yaml
 
 @dataclass(frozen=True)
 class StrategyExecutionConfig:
-    """Execution-relevant strategy settings."""
+    """Execution-relevant strategy settings.
+
+    ``family`` and ``disable_conditions_additional`` feed the risk layer's
+    disable-condition halt (SRS R-STR-014,
+    :mod:`milodex.risk.disable_conditions`). They default leniently (empty)
+    because this loader is intentionally more permissive than the strict
+    strategy loader — legacy fixtures and manual-trade paths may omit them.
+    An empty family resolves to the universal disable-condition subset.
+    """
 
     name: str
     enabled: bool
@@ -25,6 +33,8 @@ class StrategyExecutionConfig:
     max_positions: int
     daily_loss_cap_pct: float
     path: Path
+    family: str = ""
+    disable_conditions_additional: tuple[str, ...] = ()
 
 
 def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
@@ -32,6 +42,13 @@ def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
     data = _load_yaml(path)
     strategy = _mapping(data.get("strategy"), "strategy", path)
     risk = _mapping(strategy.get("risk"), "strategy.risk", path)
+
+    raw_additional = strategy.get("disable_conditions_additional")
+    additional: tuple[str, ...] = ()
+    if isinstance(raw_additional, list):
+        additional = tuple(
+            item.strip() for item in raw_additional if isinstance(item, str) and item.strip()
+        )
 
     return StrategyExecutionConfig(
         name=str(strategy.get("name") or strategy.get("id")),
@@ -41,6 +58,8 @@ def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
         max_positions=int(risk["max_positions"]),
         daily_loss_cap_pct=float(risk["daily_loss_cap_pct"]),
         path=path,
+        family=str(strategy.get("family") or ""),
+        disable_conditions_additional=additional,
     )
 
 

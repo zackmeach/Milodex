@@ -52,11 +52,26 @@ from milodex.commands.bench import (
     CommandProposal,
     CommandResult,
 )
+from milodex.gui.bench_actions import submit_capable_action_families
 
 if TYPE_CHECKING:
     from milodex.gui.read_models import BenchState, LedgerState
 
 logger = logging.getLogger(__name__)
+
+# Canonical Bench backtest evidence parameters (P2-12): the walk-forward
+# evidence shape the strategy bank uses — 2020-01-01 → 2024-12-31, $100,000
+# initial equity, raw research risk policy ("bypass"). Single Python owner:
+# the QML confirmation modal submits only ``{"strategy_id": ...}`` and
+# ``proposeBacktest`` fills the rest from this table, so the canonical
+# literal lives in exactly one place.
+CANONICAL_BACKTEST_PARAMS: dict[str, Any] = {
+    "start": date(2020, 1, 1),
+    "end": date(2024, 12, 31),
+    "walk_forward": True,
+    "initial_equity": 100_000.0,
+    "risk_policy": "bypass",
+}
 
 # Upper bound on the read-only recent-completion display record. The sink is a
 # fallback banner, not an audit log — durable history lives in the event store.
@@ -560,12 +575,19 @@ class BenchCommandBridge(QObject):
 
     @Slot("QVariantMap", result="QVariantMap")
     def proposeBacktest(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
-        """Build a canonical Bench backtest proposal and cache it by id."""
+        """Build a canonical Bench backtest proposal and cache it by id.
+
+        Unspecified parameters fall back to ``CANONICAL_BACKTEST_PARAMS`` —
+        the QML modal submits only the strategy id and Python fills the
+        canonical walk-forward evidence shape (P2-12).
+        """
         strategy_id = str(inputs.get("strategy_id", ""))
-        start = _date_from_qvariant(inputs.get("start"), date(2020, 1, 1))
-        end = _date_from_qvariant(inputs.get("end"), date(2024, 12, 31))
-        walk_forward = bool(inputs.get("walk_forward", True))
-        initial_equity = float(inputs.get("initial_equity", 100_000.0))
+        start = _date_from_qvariant(inputs.get("start"), CANONICAL_BACKTEST_PARAMS["start"])
+        end = _date_from_qvariant(inputs.get("end"), CANONICAL_BACKTEST_PARAMS["end"])
+        walk_forward = bool(inputs.get("walk_forward", CANONICAL_BACKTEST_PARAMS["walk_forward"]))
+        initial_equity = float(
+            inputs.get("initial_equity", CANONICAL_BACKTEST_PARAMS["initial_equity"])
+        )
         slippage_raw = inputs.get("slippage")
         slippage = float(slippage_raw) if slippage_raw not in (None, "") else None
         run_id_raw = inputs.get("run_id")
@@ -579,7 +601,7 @@ class BenchCommandBridge(QObject):
             initial_equity=initial_equity,
             slippage=slippage,
             run_id=run_id,
-            risk_policy=str(inputs.get("risk_policy", "bypass")),
+            risk_policy=str(inputs.get("risk_policy", CANONICAL_BACKTEST_PARAMS["risk_policy"])),
         )
         self._proposals[proposal.proposal_id] = proposal
         return proposal.to_dict()
@@ -758,17 +780,13 @@ class BenchCommandBridge(QObject):
     def submitCapableActionFamilies(self) -> list[str]:  # noqa: N802
         """Return the list of action families this bridge can submit.
 
-        Bench submit-capable families are exposed here so QML can keep its
-        modal affordances in sync with the bridge.
+        Derived from the canonical action-kind spec
+        (``bench_actions.ACTION_KIND_SPECS``) so this introspection surface
+        and the read model's submit-capability flags can never drift apart
+        (P2-12). Tests pin the derived list against the ACTION_FAMILY_*
+        constants.
         """
-        return [
-            ACTION_FAMILY_DEMOTE,
-            ACTION_FAMILY_FREEZE_MANIFEST,
-            ACTION_FAMILY_BACKTEST,
-            ACTION_FAMILY_PROMOTE_TO_PAPER,
-            ACTION_FAMILY_START_PAPER_RUNNER,
-            ACTION_FAMILY_STOP_PAPER_RUNNER,
-        ]
+        return submit_capable_action_families()
 
 
 def _date_from_qvariant(value: Any, default: date) -> date:
