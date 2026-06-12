@@ -218,7 +218,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     risk = _mapping(strategy.get("risk"), "strategy.risk", path)
     _require_keys(
         risk,
-        {"max_position_pct", "max_positions", "daily_loss_cap_pct", "stop_loss_pct"},
+        {"max_position_pct", "max_positions", "daily_loss_cap_pct"},
         "strategy.risk",
         path,
     )
@@ -237,10 +237,11 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     # present and numeric they must agree within floating-point tolerance (1e-9).
     # Silent divergence of two identically-named fields is the failure mode this
     # guards: the strategy code uses parameters.stop_loss_pct for the live stop;
-    # risk.stop_loss_pct is currently unconsumed at runtime (HR-7 / R-P2-1). If
-    # they diverge, the operator has mis-specified the config — refuse loudly
-    # rather than silently running with a wrong stop.
-    # Strategies with only risk.stop_loss_pct (no parameter twin): no cross-check.
+    # risk.stop_loss_pct is OPTIONAL and inert — unconsumed at runtime (HR-7 /
+    # R-P2-1 / P2-03). If both are present and they diverge, the operator has
+    # mis-specified the config — refuse loudly rather than silently running with
+    # a wrong stop. Absent risk.stop_loss_pct, or only one twin present: no
+    # cross-check, no error.
     _risk_stop = risk.get("stop_loss_pct")
     _param_stop = parameters.get("stop_loss_pct")
     if (

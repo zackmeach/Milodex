@@ -600,3 +600,19 @@ def test_stop_loss_cross_check_no_error_when_only_risk_field_present(tmp_path: P
     config = load_strategy_config(path)
     assert config.risk["stop_loss_pct"] == 0.05
     assert "stop_loss_pct" not in config.parameters
+
+
+def test_risk_stop_loss_pct_is_optional(tmp_path: Path):
+    """risk.stop_loss_pct absent (parameters twin present) → loads fine (P2-03)."""
+    path = _make_stop_loss_config(tmp_path, risk_stop=None, param_stop=0.05)
+    config = load_strategy_config(path)
+    assert "stop_loss_pct" not in config.risk
+    assert config.parameters["stop_loss_pct"] == 0.05
+
+
+def test_risk_stop_loss_pct_absent_in_both_sections_loads(tmp_path: Path):
+    """Neither risk.stop_loss_pct nor parameters.stop_loss_pct → loads fine (P2-03)."""
+    path = _make_stop_loss_config(tmp_path, risk_stop=None, param_stop=None)
+    config = load_strategy_config(path)
+    assert "stop_loss_pct" not in config.risk
+    assert "stop_loss_pct" not in config.parameters

@@ -243,7 +243,6 @@ def test_daily_loss_cap_tightened_by_strategy_config():
         max_position_pct=0.20,
         max_positions=3,
         daily_loss_cap_pct=0.005,  # 0.5% — much tighter than 3%
-        stop_loss_pct=None,
         path=None,  # type: ignore[arg-type]
     )
     # Loss of $100 ≈ 0.99% of base — under global 3% cap but over the
@@ -401,7 +400,6 @@ def test_single_position_cap_tightened_by_strategy_config():
         max_position_pct=0.05,  # 5% → $500 cap
         max_positions=3,
         daily_loss_cap_pct=0.05,
-        stop_loss_pct=None,
         path=None,  # type: ignore[arg-type]
     )
     decision = RiskEvaluator().evaluate(
@@ -560,7 +558,6 @@ def test_concurrent_positions_cap_tightened_by_strategy_config():
         max_position_pct=1.0,
         max_positions=1,
         daily_loss_cap_pct=0.05,
-        stop_loss_pct=None,
         path=None,  # type: ignore[arg-type]
     )
     held = [_position("QQQ", 5.0)]
@@ -763,7 +760,6 @@ def _strategy_config(
         max_position_pct=max_position_pct,
         max_positions=max_positions,
         daily_loss_cap_pct=daily_loss_cap_pct,
-        stop_loss_pct=None,
         path=_Path("configs/demo.yaml"),
     )
 

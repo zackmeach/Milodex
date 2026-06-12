@@ -244,7 +244,9 @@ Milodex strategies check their stop-loss condition **once per bar** against the 
 
 This is acceptable Phase-1 policy for the strategies currently in the bank (daily and intraday round-trips with managed hold periods), but it is a documented semantics gap between the stop as described and the stop as enforced. It is on the live-capital-gate checklist.
 
-**`risk.stop_loss_pct` cross-check (HR-7):** each strategy YAML that declares *both* `risk.stop_loss_pct` and `parameters.stop_loss_pct` must have matching values — `load_strategy_config` raises `ValueError` if they diverge. Strategies with only `risk.stop_loss_pct` (no parameter twin) are not checked: `risk.stop_loss_pct` is currently unconsumed at runtime (the live stop fires from `parameters.stop_loss_pct`).
+**Stop-loss ownership: strategy, not risk layer.** Stop-losses are **strategy signal logic** — each strategy evaluates its own `parameters.stop_loss_pct` against bar closes and emits an exit intent when breached. The risk layer enforces no stop of any kind: its protections are the position-size caps, exposure caps, daily loss caps, duplicate-order policy, and kill switch described above. There is no risk-side stop plumbing — `rg stop_loss_pct src/milodex/risk` returns nothing by design. A strategy whose stop logic fails is therefore backstopped by the daily loss cap and kill switch, not by a redundant stop.
+
+**`risk.stop_loss_pct` is inert and optional (HR-7 / P2-03):** the field is unconsumed at runtime (the live stop fires from `parameters.stop_loss_pct`) and is no longer required by `load_strategy_config` — legacy configs that still carry it continue to load. The HR-7 cross-check remains: a strategy YAML that declares *both* `risk.stop_loss_pct` and `parameters.stop_loss_pct` must have matching values — `load_strategy_config` raises `ValueError` if they diverge (it defends against editing one field and not the other). A config with only one twin, or neither, is not checked.
 
 ---
 
