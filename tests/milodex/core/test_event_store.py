@@ -1894,20 +1894,31 @@ def test_count_recent_submitted_orders_does_not_double_count_attempt_with_trade(
     assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
 
 
-def test_count_recent_submitted_orders_ignores_terminal_failure_attempts(tmp_path):
-    """'rejected'/'error' attempts never reached (or were refused by) the
-    broker as live orders — they do not feed the dedup count."""
+def test_count_recent_submitted_orders_ignores_rejected_attempts(tmp_path):
+    """A broker rejection is a definitive no-order outcome — the only
+    attempt state excluded from the dedup count."""
     store = EventStore(tmp_path / "milodex.db")
     now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
     store.append_execution_attempt(
         _attempt_event(client_order_id="coid-r", status="rejected", created_at=now)
     )
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 0
+
+
+def test_count_recent_submitted_orders_counts_error_attempts(tmp_path):
+    """An 'error' attempt (unexpected broker exception, e.g. a timeout) can
+    fire AFTER the order reached the broker — delivery is unknown, so the
+    fail-safe is to veto."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
     store.append_execution_attempt(
         _attempt_event(client_order_id="coid-e", status="error", created_at=now)
     )
 
     since = now - timedelta(seconds=60)
-    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 0
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
 
 
 def test_count_recent_submitted_orders_filters_attempts_by_symbol_side_window(tmp_path):

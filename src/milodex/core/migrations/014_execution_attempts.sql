@@ -15,8 +15,10 @@
 --
 -- A row stuck at 'pending' means a crash between steps 2 and 4 — the order
 -- may or may not exist at the broker. The duplicate-order check counts
--- 'pending' and 'submitted' attempts alongside trades (fail-safe: veto),
--- and reconciliation surfaces stale 'pending' rows as informational WARNs.
+-- 'pending', 'submitted', and 'error' attempts alongside trades (anything
+-- whose broker-side delivery is not definitively "no order" — fail-safe:
+-- veto; only 'rejected' is a definitive no-order outcome), and
+-- reconciliation surfaces stale 'pending' rows as informational WARNs.
 
 CREATE TABLE IF NOT EXISTS execution_attempts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

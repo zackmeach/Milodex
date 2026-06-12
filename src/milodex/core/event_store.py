@@ -1107,18 +1107,21 @@ class EventStore:
 
         P1-02 hardening: the count also includes recent ``execution_attempts``
         outbox rows (written BEFORE the broker call, paper path only) in
-        states ``'pending'``/``'submitted'``, so a crash after broker success
-        but before the trade row committed still blocks a duplicate.
-        Double-count avoidance: a fully-recorded submit produces BOTH an
-        attempt (``status='submitted'``, ``broker_order_id`` set) and a
-        ``trades`` row carrying the same ``broker_order_id`` — the trades
+        states ``'pending'``/``'submitted'``/``'error'``, so a crash after
+        broker success but before the trade row committed still blocks a
+        duplicate. Double-count avoidance: a fully-recorded submit produces
+        BOTH an attempt (``status='submitted'``, ``broker_order_id`` set) and
+        a ``trades`` row carrying the same ``broker_order_id`` — the trades
         subquery already counts those, so the attempts subquery excludes any
         attempt whose ``broker_order_id`` matches an existing submitted paper
-        trade. What remains countable is exactly the recovery surface:
-        ``'pending'`` attempts (in-flight, or crashed mid-submit — the order
-        may exist at the broker; fail-safe is to veto) and ``'submitted'``
-        attempts with no trade row (crash between broker ack and the atomic
-        explanation+trade write). Note over-counting can only widen the veto,
+        trade. What remains countable is exactly the unknown-delivery
+        surface: ``'pending'`` attempts (in-flight, or crashed mid-submit),
+        ``'submitted'`` attempts with no trade row (crash between broker ack
+        and the atomic explanation+trade write), and ``'error'`` attempts (an
+        unexpected broker exception — e.g. a timeout — can fire AFTER the
+        order reached the broker, so delivery is unknown and the fail-safe is
+        to veto). Only ``'rejected'`` is excluded: a broker rejection is a
+        definitive no-order outcome. Over-counting can only widen the veto,
         never narrow it — the check blocks on count > 0.
         """
         normalized_symbol = symbol.strip().upper()
@@ -1140,7 +1143,7 @@ class EventStore:
                         SELECT COUNT(*)
                         FROM execution_attempts a
                         WHERE a.symbol = :symbol AND lower(a.side) = :side
-                          AND a.status IN ('pending', 'submitted')
+                          AND a.status IN ('pending', 'submitted', 'error')
                           AND datetime(a.created_at) >= datetime(:since)
                           AND (
                               a.broker_order_id IS NULL

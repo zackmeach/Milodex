@@ -220,9 +220,10 @@ class ExecutionService:
             # Unexpected broker failure (connection drop, timeout, vendor
             # bug): record the outcome on the attempt row, then re-raise —
             # this path was always fail-loud. NOTE a timeout can occur after
-            # the order reached the broker; the client_order_id stored here
-            # lets the operator/reconcile match the broker's order list
-            # exactly when investigating an 'error' attempt.
+            # the order reached the broker, so delivery is unknown: 'error'
+            # attempts count toward the duplicate-order veto (fail-closed),
+            # and the client_order_id stored here lets the operator/reconcile
+            # match the broker's order list exactly when investigating.
             if client_order_id is not None:
                 self._event_store.finalize_execution_attempt(
                     client_order_id=client_order_id,
