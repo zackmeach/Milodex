@@ -195,12 +195,12 @@ def facade(config_dir: Path, locks_dir: Path, event_store: EventStore) -> BenchC
 
 
 class _FakeBenchState:
-    """Records refresh kicks so tests can assert the bridge requests one."""
+    """Records refresh requests so tests can assert the bridge requests one."""
 
     def __init__(self) -> None:
         self.refresh_kicks = 0
 
-    def _kick_refresh(self) -> None:  # noqa: N802 — mirrors _PollingReadModel
+    def request_refresh(self, reason: str) -> None:  # mirrors PollingReadModel
         self.refresh_kicks += 1
 
 
@@ -1049,19 +1049,19 @@ def test_facade_module_remains_pyside_free_after_phase_c2() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Phase C2 review F3 — _kick_refresh contract pin
+# Phase C2 review F3 — post-submit refresh contract pin
 # --------------------------------------------------------------------------- #
 
 
 class _RaisingBenchState:
-    """BenchState double whose ``_kick_refresh`` always raises.
+    """BenchState double whose ``request_refresh`` always raises.
 
     The bridge must log via ``logger.exception`` and still return the
     submit result so the operator's signal handler sees ``status="submitted"``
     even when the read-model refresh is unavailable.
     """
 
-    def _kick_refresh(self) -> None:  # noqa: N802 — mirrors _PollingReadModel
+    def request_refresh(self, reason: str) -> None:  # mirrors PollingReadModel
         raise RuntimeError("boom")
 
 
@@ -1070,8 +1070,8 @@ def test_submit_demote_logs_when_kick_refresh_raises(
     config_dir: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Phase C2 review F3: the bridge's single permitted private reach into
-    ``BenchState._kick_refresh`` must be guarded — a refresh exception is
+    """Phase C2 review F3: the bridge's post-submit reach into
+    ``BenchState.request_refresh`` must be guarded — a refresh exception is
     logged via ``logger.exception`` and the submit result is still emitted.
     """
     _write_strategy(config_dir, stage="paper")
@@ -1095,7 +1095,7 @@ def test_submit_demote_logs_when_kick_refresh_raises(
         if "BenchState refresh after submit_demote failed" in rec.getMessage()
     ]
     assert matching, (
-        "Expected a logger.exception record when _kick_refresh raises; "
+        "Expected a logger.exception record when request_refresh raises; "
         f"got {[r.getMessage() for r in caplog.records]!r}"
     )
     assert any(rec.exc_info is not None for rec in matching), (
@@ -1349,7 +1349,7 @@ def test_submit_freeze_manifest_logs_when_kick_refresh_raises(
     config_dir: Path,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Refresh-guard parity with demote: a ``_kick_refresh`` exception is
+    """Refresh-guard parity with demote: a ``request_refresh`` exception is
     logged via ``logger.exception`` and the submit result is still emitted.
     """
     _write_strategy(config_dir, stage="paper")
@@ -1367,7 +1367,7 @@ def test_submit_freeze_manifest_logs_when_kick_refresh_raises(
         if "BenchState refresh after submit_freeze_manifest failed" in rec.getMessage()
     ]
     assert matching, (
-        "Expected a logger.exception record when _kick_refresh raises for "
+        "Expected a logger.exception record when request_refresh raises for "
         f"freeze_manifest; got {[r.getMessage() for r in caplog.records]!r}"
     )
     assert any(rec.exc_info is not None for rec in matching)
@@ -1869,10 +1869,11 @@ def test_stop_makes_late_async_completion_a_noop(
     QueuedConnection metacall that can be delivered after the slot returns — and
     Qt does NOT reliably cancel an already-queued metacall on disconnect(). If
     delivered, _on_async_submit_completed would (a) call _refresh_after_submit ->
-    _kick_refresh() on a stopped BenchState/LedgerState (PollingReadModel
-    ._kick_refresh has no stopped-guard), restarting pool work on a torn-down
-    model, and (b) record/emit completion state on the half-torn bridge. stop()
-    sets a _stopped flag and _on_async_submit_completed early-returns when set.
+    request_refresh() on a stopped BenchState/LedgerState, and (b) record/emit
+    completion state on the half-torn bridge. stop() sets a _stopped flag and
+    _on_async_submit_completed early-returns when set; PollingReadModel
+    .request_refresh additionally no-ops on a stopped model, but the bridge
+    guard must hold on its own (the doubles here have no stopped state).
 
     The slot is invoked directly here (bypassing the signal) to simulate Qt
     delivering the queued metacall despite stop()'s best-effort disconnect — the

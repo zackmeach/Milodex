@@ -207,6 +207,58 @@ def test_builder_result_without_lastRefreshedAt_falls_back_to_now_iso() -> None:
     assert state.applied_results == [{"payload": "no_ts"}]
 
 
+def test_request_refresh_triggers_refresh_while_running() -> None:
+    """`request_refresh()` behaves like a timer-driven kick on a running model."""
+    call_count = {"n": 0}
+
+    def builder() -> dict[str, Any]:
+        call_count["n"] += 1
+        return {"lastRefreshedAt": f"2026-06-12T00:00:{call_count['n']:02d}+00:00"}
+
+    state = _FakeState(builder=builder, refresh_interval_ms=30_000)
+    state.start()
+    assert _spin_until(lambda: state.dataStatus == "ready", timeout_ms=2_000)
+    settled = call_count["n"]
+
+    state.request_refresh("post-submit")
+    assert _spin_until(lambda: call_count["n"] > settled, timeout_ms=2_000), (
+        "request_refresh on a running model did not deliver a fresh refresh"
+    )
+    state.stop()
+
+
+def test_request_refresh_after_stop_starts_no_worker() -> None:
+    """`request_refresh()` after `stop()` is a complete no-op — no worker starts.
+
+    This is the public replacement for the bridge's prior private
+    `_kick_refresh` reach: a late post-submit refresh request delivered during
+    shutdown must not restart pool work on a torn-down read model.
+    """
+    call_count = {"n": 0}
+
+    def builder() -> dict[str, Any]:
+        call_count["n"] += 1
+        return {"lastRefreshedAt": f"2026-06-12T00:01:{call_count['n']:02d}+00:00"}
+
+    state = _FakeState(builder=builder, refresh_interval_ms=30_000)
+    state.start()
+    assert _spin_until(lambda: state.dataStatus == "ready", timeout_ms=2_000)
+    state.stop()
+    drained = call_count["n"]
+
+    state.request_refresh("late-after-stop")
+    # Give a (wrongly started) worker time to run; the count must not move.
+    _spin_until(lambda: call_count["n"] > drained, timeout_ms=300)
+    assert call_count["n"] == drained, (
+        "request_refresh after stop() started a worker on a stopped read model"
+    )
+
+    # A restart re-arms the model: request_refresh works again.
+    state.start()
+    assert _spin_until(lambda: call_count["n"] > drained, timeout_ms=2_000)
+    state.stop()
+
+
 def test_restart_after_stop_resumes_polling() -> None:
     """A `start() → stop() → start()` cycle must resume delivering refreshes.
 

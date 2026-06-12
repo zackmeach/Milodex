@@ -14,7 +14,8 @@ a plain method that raises ``NotImplementedError`` rather than an
 Public surface:
 - ``PollingReadModel`` (QObject) — base class with ``dataStatus``,
   ``dataErrorMessage``, ``lastRefreshedAt`` Q_PROPERTYs; ``start()`` /
-  ``stop()`` lifecycle methods.
+  ``stop()`` lifecycle methods; ``request_refresh(reason)`` for
+  out-of-band refresh requests (no-op once stopped).
 - ``RefreshSignals`` (QObject) — ``completed: Signal(dict)``,
   ``failed: Signal(str)``. Exposed for callers who need to construct
   custom runnables.
@@ -88,6 +89,7 @@ class PollingReadModel(QObject):
         self._last_refreshed_at = ""
         self._refresh_in_flight = False
         self._signals_connected = False
+        self._stopped = False
 
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(1)
@@ -134,15 +136,33 @@ class PollingReadModel(QObject):
     def start(self) -> None:
         # Re-arm signal connections in case a prior stop() disconnected them.
         # No-op when this is the initial start (already connected by __init__).
+        self._stopped = False
         self._connect_signals()
         self._kick_refresh()
         if not self._timer.isActive():
             self._timer.start()
 
     def stop(self) -> None:
+        self._stopped = True
         self._timer.stop()
         self._thread_pool.waitForDone(2000)
         self._disconnect_signals()
+
+    def request_refresh(self, reason: str) -> None:
+        """Public out-of-band refresh request (e.g. after a command submit).
+
+        Safe to call at any point in the lifecycle: a request arriving after
+        ``stop()`` is a logged no-op — it must not start a fresh worker on a
+        torn-down model (the shutdown sequence stops read models before
+        draining command bridges, and a late async completion may still try
+        to refresh). While running it behaves exactly like an internal
+        timer-driven refresh kick (in-flight requests are not stacked).
+        """
+        if self._stopped:
+            logger.debug("request_refresh(%s) ignored: read model is stopped", reason)
+            return
+        logger.debug("request_refresh(%s)", reason)
+        self._kick_refresh()
 
     def _kick_refresh(self) -> None:
         if self._refresh_in_flight:
