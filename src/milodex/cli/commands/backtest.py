@@ -332,12 +332,16 @@ def _risk_policy_label(policy: RiskPolicy) -> str:
 
 
 def _data_quality_payload(data_quality: dict | None) -> dict[str, Any]:
+    # Absent/empty scanner output means no verdict exists — report
+    # "not_recorded" rather than fabricating a clean pass (legacy runs
+    # predate the scanner). Mirrors run_manifest._data_quality_summary,
+    # which reports None counts when no scan ran.
     if data_quality:
         return dict(data_quality)
     return {
-        "status": "pass",
-        "blocker_count": 0,
-        "warning_count": 0,
+        "status": "not_recorded",
+        "blocker_count": None,
+        "warning_count": None,
         "issues": [],
         "issue_codes": [],
     }
@@ -345,7 +349,9 @@ def _data_quality_payload(data_quality: dict | None) -> dict[str, Any]:
 
 def _data_quality_label(data_quality: dict | None) -> str:
     payload = _data_quality_payload(data_quality)
-    status = str(payload.get("status", "pass"))
+    # Never default a missing status to "pass" — only a scanner verdict
+    # may render as pass.
+    status = str(payload.get("status") or "not_recorded")
     warning_count = int(payload.get("warning_count", 0) or 0)
     if status == "pass_with_warnings":
         return f"pass with warnings ({warning_count} warning(s))"

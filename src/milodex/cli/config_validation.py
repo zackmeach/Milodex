@@ -9,29 +9,6 @@ import yaml
 
 from milodex.strategies.loader import load_strategy_config
 
-_STRATEGY_REQUIRED_KEYS: dict[str, set[str]] = {
-    "strategy": {
-        "name",
-        "version",
-        "description",
-        "enabled",
-        "universe",
-        "parameters",
-        "tempo",
-        "risk",
-        "stage",
-        "backtest",
-    },
-    "strategy.tempo": {"bar_size", "min_hold_days", "max_hold_days"},
-    "strategy.risk": {
-        "max_position_pct",
-        "max_positions",
-        "daily_loss_cap_pct",
-        "stop_loss_pct",
-    },
-    "strategy.backtest": {"slippage_pct", "commission_per_trade", "min_trades_required"},
-}
-
 _RISK_REQUIRED_KEYS: dict[str, set[str]] = {
     "kill_switch": {"enabled", "max_drawdown_pct", "require_manual_reset"},
     "portfolio": {
@@ -46,9 +23,6 @@ _RISK_REQUIRED_KEYS: dict[str, set[str]] = {
         "max_data_staleness_seconds",
     },
 }
-
-_VALID_STAGES = {"idle", "backtest", "paper", "micro_live", "live"}
-_VALID_BAR_SIZES = {"1D", "1H", "30Min", "15Min", "5Min", "1Min"}
 
 
 def validate_config_file(path: Path, kind: str | None = None) -> list[str]:
