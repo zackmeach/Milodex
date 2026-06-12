@@ -900,6 +900,7 @@ def build_warnings(result: ReconciliationResult, event_store: EventStore) -> lis
         )
     warnings.extend(per_strategy_ledger_warnings(event_store, result))
     warnings.extend(stale_pending_attempt_warnings(event_store))
+    warnings.extend(risk_profile_audit_warnings(event_store))
     return warnings
 
 
@@ -921,6 +922,24 @@ def stale_pending_attempt_warnings(event_store: EventStore) -> list[str]:
         "(client_order_id matches exactly); informational only."
         for attempt in event_store.list_stale_pending_execution_attempts()
     ]
+
+
+def risk_profile_audit_warnings(event_store: EventStore) -> list[str]:
+    """Informational WARN when ``data/risk_profile.txt`` diverges from the audit trail.
+
+    P2-06: a hand-edit of the profile file changes runtime behavior with no
+    ``risk_profile_changes`` row. Does not feed ``incident_reason_codes`` or
+    readiness — surfaced exactly like the per-strategy ledger WARNs above.
+    """
+    # Imported lazily: profile_activation imports execution.state, whose package
+    # __init__ pulls ExecutionService, which imports this module. A module-level
+    # import here would close that cycle.
+    from milodex.risk.profile_activation import reconcile_profile_against_audit
+
+    divergence = reconcile_profile_against_audit(
+        event_store._path  # noqa: SLF001 — same private-access seam as _connect (ADR 0029)
+    )
+    return [] if divergence is None else [divergence.message]
 
 
 def per_strategy_ledger_warnings(
@@ -1024,6 +1043,12 @@ def human_lines(result: ReconciliationResult, event_store: EventStore) -> list[s
         lines.append("")
         lines.append("Per-strategy ledger (informational, ADR 0055):")
         for warning in ledger_warnings:
+            lines.append(f"  WARN  {warning}")
+    profile_warnings = risk_profile_audit_warnings(event_store)
+    if profile_warnings:
+        lines.append("")
+        lines.append("Risk profile (informational, P2-06):")
+        for warning in profile_warnings:
             lines.append(f"  WARN  {warning}")
     lines.append("")
     order_mismatch_count = sum(1 for r in result.order_rows if r.kind != "ok")

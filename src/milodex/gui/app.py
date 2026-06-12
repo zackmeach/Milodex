@@ -467,6 +467,19 @@ def run_app() -> int:
     except Exception:
         logger.exception("PR-7c: record_startup_default failed; continuing")
 
+    # P2-06: informational reconcile of data/risk_profile.txt against the
+    # risk_profile_changes audit trail. A hand-edit of the file changes runtime
+    # behavior with no audit row; surface that as a WARN at startup. Never
+    # blocks the GUI, never changes enforcement.
+    try:
+        from milodex.risk.profile_activation import reconcile_profile_against_audit
+
+        divergence = reconcile_profile_against_audit(db_path)
+        if divergence is not None:
+            logger.warning("Risk-profile audit divergence: %s", divergence.message)
+    except Exception:
+        logger.exception("P2-06: risk-profile audit reconcile failed; continuing")
+
     # Single ordered registry — the one source of truth for QML registration
     # order AND (filtered by .lifecycle) the polling start/stop order. See
     # _build_qml_registry for the Windows-shutdown teardown contract.

@@ -197,6 +197,77 @@ class RiskProfileActivationService:
         )
 
 
+@dataclass(frozen=True)
+class ProfileAuditDivergence:
+    """Informational divergence between the profile file and the audit trail (P2-06)."""
+
+    file_profile: str
+    latest_audit_profile: str | None
+    file_profile_known: bool
+    message: str
+
+
+def reconcile_profile_against_audit(db_path: Path) -> ProfileAuditDivergence | None:
+    """Compare ``data/risk_profile.txt`` against the latest successful audit row.
+
+    P2-06: a hand-edit of the profile file changes runtime behavior with no
+    audit row; this surfaces the divergence so it is no longer invisible.
+    Informational ONLY — no incident row, no blocking, no enforcement change.
+    The runtime fallback semantics in ``risk/config.py`` (missing/unreadable/
+    unknown name → conservative) are untouched.
+
+    Returns ``None`` when the file's profile name matches the most recent
+    *successful* ``risk_profile_changes.to_profile``, or when neither a file
+    nor any audit history exists (the implicit Conservative default).
+    """
+    file_profile = get_active_profile_name()
+    file_profile_known = file_profile in KNOWN_PROFILES
+    latest = _latest_successful_audit_to_profile(db_path)
+
+    if latest is None:
+        if file_profile_known and file_profile == "conservative":
+            # Implicit default: no selector edits, no audit history required.
+            return None
+        message = (
+            f"Active risk-profile file resolves to {file_profile!r} but no successful "
+            "activation has ever been audited in risk_profile_changes."
+        )
+    elif file_profile_known and file_profile == latest:
+        return None
+    else:
+        message = (
+            f"Active risk-profile file resolves to {file_profile!r} but the latest "
+            f"successful activation audit row says {latest!r}."
+        )
+
+    if not file_profile_known:
+        message += (
+            f" {file_profile!r} is not a known profile; runtime falls back to "
+            "'conservative' (ADR 0054 §2)."
+        )
+    message += (
+        " The file was likely hand-edited outside the audited activation path. Informational only."
+    )
+    return ProfileAuditDivergence(
+        file_profile=file_profile,
+        latest_audit_profile=latest,
+        file_profile_known=file_profile_known,
+        message=message,
+    )
+
+
+def _latest_successful_audit_to_profile(db_path: Path) -> str | None:
+    conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+    try:
+        cur = conn.execute(
+            "SELECT to_profile FROM risk_profile_changes WHERE success = 1 ORDER BY id DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        return None if row is None else str(row[0])
+    finally:
+        conn.close()
+
+
 def record_startup_default(db_path: Path) -> None:
     """Audit the implicit Conservative default only when no selector exists."""
     if (get_data_dir() / "risk_profile.txt").exists():
