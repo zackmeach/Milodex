@@ -37,6 +37,7 @@ from milodex.strategies.base import (
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+    relation_at_least,
 )
 from milodex.strategies.daily_cross_sectional import (
     market_regime_is_bullish as _market_regime_is_bullish,
@@ -52,20 +53,35 @@ class MomentumXsecRotationStrategy(Strategy):
     family = "momentum"
     template = "daily.xsec_rotation"
     parameter_specs = (
-        StrategyParameterSpec("ranking_lookback", expected_types=(int,)),
-        StrategyParameterSpec("target_positions", expected_types=(int,)),
+        StrategyParameterSpec("ranking_lookback", expected_types=(int,), minimum=2),
+        StrategyParameterSpec("target_positions", expected_types=(int,), minimum=1),
         StrategyParameterSpec("exit_outside_top_n", expected_types=(int,)),
-        StrategyParameterSpec("rebalance_weekday", expected_types=(int,)),
-        StrategyParameterSpec("ma_filter_length", expected_types=(int,)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("max_hold_days", expected_types=(int,)),
+        StrategyParameterSpec("rebalance_weekday", expected_types=(int,), minimum=0, maximum=4),
+        StrategyParameterSpec("ma_filter_length", expected_types=(int,), minimum=0),
+        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float), exclusive_minimum=0),
+        StrategyParameterSpec("max_hold_days", expected_types=(int,), minimum=1),
         StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("sizing_rule", expected_types=(str,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=tuple(sorted(_VALID_SIZING_RULES))
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
         StrategyParameterSpec("ranking_enabled", expected_types=(bool,)),
-        StrategyParameterSpec("ranking_metric", expected_types=(str,)),
+        StrategyParameterSpec(
+            "ranking_metric", expected_types=(str,), choices=tuple(sorted(_VALID_RANKING_METRICS))
+        ),
         StrategyParameterSpec("market_regime_symbol", expected_types=(str,), required=False),
-        StrategyParameterSpec("market_regime_ma_length", expected_types=(int,), required=False),
+        StrategyParameterSpec(
+            "market_regime_ma_length", expected_types=(int,), required=False, minimum=1
+        ),
+    )
+    parameter_relations = (
+        relation_at_least("exit_outside_top_n", "target_positions"),
+        relation_at_least("max_concurrent_positions", "target_positions"),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

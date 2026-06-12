@@ -11,7 +11,12 @@ from typing import Any
 
 import yaml
 
-from milodex.strategies.base import Strategy, StrategyContext, StrategyParameterSpec
+from milodex.strategies.base import (
+    Strategy,
+    StrategyContext,
+    StrategyParameterRelation,
+    StrategyParameterSpec,
+)
 
 _VALID_STAGES = {"idle", "backtest", "paper", "micro_live", "live"}
 _VALID_BAR_SIZES = {"1D", "1H", "30Min", "15Min", "5Min", "1Min"}
@@ -80,7 +85,12 @@ class StrategyLoader:
                 f"(strategy.id='{config.strategy_id}')."
             )
             raise ValueError(msg)
-        validate_strategy_parameters(config.parameters, strategy_cls.parameter_specs, path)
+        validate_strategy_parameters(
+            config.parameters,
+            strategy_cls.parameter_specs,
+            path,
+            relations=strategy_cls.parameter_relations,
+        )
         strategy = strategy_cls()
         resolved_universe = config.universe
         if config.universe_ref is not None and not resolved_universe:
@@ -309,8 +319,15 @@ def validate_strategy_parameters(
     parameters: dict[str, Any],
     specs: Iterable[StrategyParameterSpec],
     path: Path,
+    relations: Iterable[StrategyParameterRelation] = (),
 ) -> None:
-    """Validate parameters against the strategy-declared parameter spec."""
+    """Validate parameters against the strategy-declared parameter spec.
+
+    Enforces presence, type, declared value bounds/choices, and named
+    cross-parameter ``relations`` at config-load time (P2-04), so a bad
+    config fails here — naming the file, the parameter, and the violated
+    constraint — instead of at first evaluation.
+    """
     for spec in specs:
         if spec.name not in parameters:
             if spec.required:
@@ -327,6 +344,35 @@ def validate_strategy_parameters(
             expected = ", ".join(type_.__name__ for type_ in spec.expected_types)
             msg = f"{path}: parameter '{spec.name}' must be one of ({expected})"
             raise ValueError(msg)
+        _validate_parameter_constraints(spec, value, path)
+    for relation in relations:
+        detail = relation.check(parameters)
+        if detail is not None:
+            msg = f"{path}: parameter constraint '{relation.name}' violated: {detail}"
+            raise ValueError(msg)
+
+
+def _validate_parameter_constraints(spec: StrategyParameterSpec, value: Any, path: Path) -> None:
+    """Enforce one spec's declared bounds/choices against a type-valid value."""
+    if spec.choices is not None and value not in spec.choices:
+        allowed = ", ".join(repr(choice) for choice in spec.choices)
+        msg = f"{path}: parameter '{spec.name}' must be one of ({allowed}), got {value!r}"
+        raise ValueError(msg)
+    if not isinstance(value, int | float):
+        return
+    number = float(value)
+    if spec.minimum is not None and number < spec.minimum:
+        msg = f"{path}: parameter '{spec.name}' must be >= {spec.minimum}, got {value!r}"
+        raise ValueError(msg)
+    if spec.maximum is not None and number > spec.maximum:
+        msg = f"{path}: parameter '{spec.name}' must be <= {spec.maximum}, got {value!r}"
+        raise ValueError(msg)
+    if spec.exclusive_minimum is not None and number <= spec.exclusive_minimum:
+        msg = f"{path}: parameter '{spec.name}' must be > {spec.exclusive_minimum}, got {value!r}"
+        raise ValueError(msg)
+    if spec.exclusive_maximum is not None and number >= spec.exclusive_maximum:
+        msg = f"{path}: parameter '{spec.name}' must be < {spec.exclusive_maximum}, got {value!r}"
+        raise ValueError(msg)
 
 
 def compute_config_hash(path: Path) -> str:

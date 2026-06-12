@@ -60,10 +60,21 @@ class BreakoutOrbIntradayStrategy(Strategy):
     family = "breakout"
     template = "orb.intraday"
     parameter_specs = (
-        StrategyParameterSpec("opening_range_minutes", expected_types=(int,)),
-        StrategyParameterSpec("entry_window_minutes", expected_types=(int,)),
-        StrategyParameterSpec("exit_minutes_before_close", expected_types=(int,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec(
+            "opening_range_minutes", expected_types=(int,), minimum=5, maximum=120
+        ),
+        StrategyParameterSpec(
+            "entry_window_minutes", expected_types=(int,), minimum=5, maximum=240
+        ),
+        StrategyParameterSpec(
+            "exit_minutes_before_close", expected_types=(int,), minimum=0, maximum=60
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

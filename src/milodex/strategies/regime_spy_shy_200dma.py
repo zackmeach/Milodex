@@ -23,10 +23,10 @@ class RegimeSpyShy200DmaStrategy(Strategy):
     family = "regime"
     template = "daily.sma200_rotation"
     parameter_specs = (
-        StrategyParameterSpec("ma_filter_length", expected_types=(int,)),
+        StrategyParameterSpec("ma_filter_length", expected_types=(int,), minimum=1),
         StrategyParameterSpec("risk_on_symbol", expected_types=(str,)),
         StrategyParameterSpec("risk_off_symbol", expected_types=(str,)),
-        StrategyParameterSpec("allocation_pct", expected_types=(int, float)),
+        StrategyParameterSpec("allocation_pct", expected_types=(int, float), exclusive_minimum=0),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

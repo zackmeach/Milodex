@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import MISSING, asdict, dataclass, field, fields
 from typing import TYPE_CHECKING, Any
 
@@ -15,12 +15,70 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class StrategyParameterSpec:
-    """Declares one allowed strategy parameter."""
+    """Declares one allowed strategy parameter.
+
+    Beyond name/type/presence, a spec may declare value constraints —
+    inclusive numeric bounds (``minimum``/``maximum``), exclusive numeric
+    bounds (``exclusive_minimum``/``exclusive_maximum``), and an
+    allowed-values enum (``choices``). The loader enforces declared
+    constraints at config-load time (P2-04), so an out-of-range or
+    unknown-enum value fails when the YAML is loaded — with the file
+    named — instead of at first evaluation. Constraints left ``None``
+    are not checked.
+    """
 
     name: str
     expected_types: tuple[type[Any], ...]
     required: bool = True
     allow_none: bool = False
+    minimum: float | None = None
+    maximum: float | None = None
+    exclusive_minimum: float | None = None
+    exclusive_maximum: float | None = None
+    choices: tuple[Any, ...] | None = None
+
+
+@dataclass(frozen=True)
+class StrategyParameterRelation:
+    """Named cross-parameter constraint enforced at config-load time.
+
+    ``check`` receives the raw ``strategy.parameters`` mapping (after
+    every per-parameter presence/type/bound check has passed) and returns
+    ``None`` when the relation is satisfied, or a human-readable violation
+    detail when it is not. Strategies declare relations on the class-level
+    ``parameter_relations`` tuple, mirroring the ``parameter_specs`` idiom.
+    """
+
+    name: str
+    check: Callable[[Mapping[str, Any]], str | None]
+
+
+def relation_less_than(lesser: str, greater: str) -> StrategyParameterRelation:
+    """Relation requiring ``parameters[lesser] < parameters[greater]``."""
+
+    def check(parameters: Mapping[str, Any]) -> str | None:
+        if float(parameters[lesser]) < float(parameters[greater]):
+            return None
+        return (
+            f"require {lesser} < {greater}, got "
+            f"{lesser}={parameters[lesser]!r}, {greater}={parameters[greater]!r}"
+        )
+
+    return StrategyParameterRelation(name=f"{lesser} < {greater}", check=check)
+
+
+def relation_at_least(left: str, right: str) -> StrategyParameterRelation:
+    """Relation requiring ``parameters[left] >= parameters[right]``."""
+
+    def check(parameters: Mapping[str, Any]) -> str | None:
+        if float(parameters[left]) >= float(parameters[right]):
+            return None
+        return (
+            f"require {left} >= {right}, got "
+            f"{left}={parameters[left]!r}, {right}={parameters[right]!r}"
+        )
+
+    return StrategyParameterRelation(name=f"{left} >= {right}", check=check)
 
 
 @dataclass(frozen=True)
@@ -167,6 +225,7 @@ class Strategy(ABC):
     family: str
     template: str
     parameter_specs: Sequence[StrategyParameterSpec] = ()
+    parameter_relations: Sequence[StrategyParameterRelation] = ()
 
     def max_lookback_periods(self) -> int:
         """Return the maximum number of trading-day bars this strategy needs to

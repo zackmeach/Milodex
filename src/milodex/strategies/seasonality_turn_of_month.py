@@ -24,7 +24,8 @@ class SeasonalityTurnOfMonthStrategy(Strategy):
     template = "daily.turn_of_month"
     parameter_specs = (
         StrategyParameterSpec("target_symbol", expected_types=(str,)),
-        StrategyParameterSpec("entry_trading_day_offset", expected_types=(int,)),
+        # Only offset 0 is supported in v1 (see _is_entry_day).
+        StrategyParameterSpec("entry_trading_day_offset", expected_types=(int,), choices=(0,)),
         StrategyParameterSpec("exit_trading_day_of_month", expected_types=(int,)),
         StrategyParameterSpec("allocation_pct", expected_types=(int, float)),
         StrategyParameterSpec("sizing_rule", expected_types=(str,)),

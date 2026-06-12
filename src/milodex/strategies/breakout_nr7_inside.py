@@ -30,14 +30,23 @@ class BreakoutNr7InsideStrategy(Strategy):
     family = "breakout"
     template = "daily.nr7_inside"
     parameter_specs = (
-        StrategyParameterSpec("range_lookback", expected_types=(int,)),
-        StrategyParameterSpec("ma_filter_length", expected_types=(int,)),
-        StrategyParameterSpec("max_hold_days", expected_types=(int,)),
-        StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("sizing_rule", expected_types=(str,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec("range_lookback", expected_types=(int,), minimum=2),
+        StrategyParameterSpec("ma_filter_length", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("max_hold_days", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("max_concurrent_positions", expected_types=(int,), minimum=1),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=tuple(sorted(_VALID_SIZING_RULES))
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
         StrategyParameterSpec("ranking_enabled", expected_types=(bool,)),
-        StrategyParameterSpec("ranking_metric", expected_types=(str,)),
+        StrategyParameterSpec(
+            "ranking_metric", expected_types=(str,), choices=tuple(sorted(_VALID_RANKING_METRICS))
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

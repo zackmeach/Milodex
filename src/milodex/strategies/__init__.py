@@ -6,7 +6,14 @@ files and must earn promotion through the validation pipeline before
 touching live capital.
 """
 
-from milodex.strategies.base import Strategy, StrategyContext, StrategyParameterSpec
+from milodex.strategies.base import (
+    Strategy,
+    StrategyContext,
+    StrategyParameterRelation,
+    StrategyParameterSpec,
+    relation_at_least,
+    relation_less_than,
+)
 from milodex.strategies.breakout_atr_channel import BreakoutAtrChannelStrategy
 from milodex.strategies.breakout_donchian import BreakoutDonchianStrategy
 from milodex.strategies.breakout_nr7_inside import BreakoutNr7InsideStrategy
@@ -49,11 +56,14 @@ __all__ = [
     "StrategyConfig",
     "StrategyContext",
     "StrategyLoader",
+    "StrategyParameterRelation",
     "StrategyParameterSpec",
     "StrategyRegistry",
     "build_default_registry",
     "compute_config_hash",
     "load_strategy_config",
+    "relation_at_least",
+    "relation_less_than",
     "resolve_universe_ref",
     "validate_strategy_parameters",
 ]

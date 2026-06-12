@@ -27,6 +27,7 @@ result; this is not tuned for return.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from milodex.broker.models import OrderSide, OrderType
@@ -45,12 +46,30 @@ from milodex.strategies.base import (
     Strategy,
     StrategyContext,
     StrategyDecision,
+    StrategyParameterRelation,
     StrategyParameterSpec,
+    relation_at_least,
 )
 from milodex.strategies.daily_cross_sectional import normalize_universe_and_positions
 
 _FEATURE_KEYS = ("momentum", "rsi", "ma_distance", "realized_vol")
 _DECIDER_KIND = "scored"
+
+
+def _feature_weights_constraint(parameters: Mapping[str, Any]) -> str | None:
+    """Mirror of the runtime feature_weights structure checks, for load time."""
+    feature_weights = parameters["feature_weights"]
+    if not isinstance(feature_weights, dict) or not feature_weights:
+        return "feature_weights must be a non-empty mapping"
+    unknown = set(feature_weights) - set(_FEATURE_KEYS)
+    if unknown:
+        return f"feature_weights has unknown feature(s): {sorted(unknown)}; allowed {_FEATURE_KEYS}"
+    for key, value in feature_weights.items():
+        if not isinstance(value, int | float) or isinstance(value, bool):
+            return f"feature_weights[{key!r}] must be numeric, got {value!r}"
+    if all(float(value) == 0.0 for value in feature_weights.values()):
+        return "feature_weights must have at least one non-zero weight"
+    return None
 
 
 class ScoredLinearFeaturesStrategy(Strategy):
@@ -59,17 +78,28 @@ class ScoredLinearFeaturesStrategy(Strategy):
     family = "scored"
     template = "daily.linear_features"
     parameter_specs = (
-        StrategyParameterSpec("momentum_lookback", expected_types=(int,)),
-        StrategyParameterSpec("rsi_lookback", expected_types=(int,)),
-        StrategyParameterSpec("ma_length", expected_types=(int,)),
-        StrategyParameterSpec("vol_lookback", expected_types=(int,)),
+        StrategyParameterSpec("momentum_lookback", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("rsi_lookback", expected_types=(int,), minimum=2),
+        StrategyParameterSpec("ma_length", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("vol_lookback", expected_types=(int,), minimum=2),
         StrategyParameterSpec("feature_weights", expected_types=(dict,)),
-        StrategyParameterSpec("target_positions", expected_types=(int,)),
-        StrategyParameterSpec("exit_rank_buffer", expected_types=(int,)),
+        StrategyParameterSpec("target_positions", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("exit_rank_buffer", expected_types=(int,), minimum=0),
         StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("max_hold_days", expected_types=(int,)),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
+        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float), exclusive_minimum=0),
+        StrategyParameterSpec("max_hold_days", expected_types=(int,), minimum=1),
+    )
+    parameter_relations = (
+        relation_at_least("max_concurrent_positions", "target_positions"),
+        StrategyParameterRelation(
+            name="feature_weights structure", check=_feature_weights_constraint
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

@@ -38,10 +38,14 @@ class MeanrevBbandsLowerbandStrategy(Strategy):
         StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
         StrategyParameterSpec("max_hold_days", expected_types=(int,)),
         StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("sizing_rule", expected_types=(str,)),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=tuple(sorted(_VALID_SIZING_RULES))
+        ),
         StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
         StrategyParameterSpec("ranking_enabled", expected_types=(bool,)),
-        StrategyParameterSpec("ranking_metric", expected_types=(str,)),
+        StrategyParameterSpec(
+            "ranking_metric", expected_types=(str,), choices=tuple(sorted(_VALID_RANKING_METRICS))
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

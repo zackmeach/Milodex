@@ -63,12 +63,27 @@ class MeanrevVwapReversionIntradayStrategy(Strategy):
     family = "meanrev"
     template = "vwap_reversion.intraday"
     parameter_specs = (
-        StrategyParameterSpec("opening_range_minutes", expected_types=(int,)),
-        StrategyParameterSpec("entry_window_minutes", expected_types=(int,)),
-        StrategyParameterSpec("entry_deviation_pct", expected_types=(int, float)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("exit_minutes_before_close", expected_types=(int,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec(
+            "opening_range_minutes", expected_types=(int,), minimum=5, maximum=120
+        ),
+        StrategyParameterSpec(
+            "entry_window_minutes", expected_types=(int,), minimum=5, maximum=360
+        ),
+        StrategyParameterSpec(
+            "entry_deviation_pct", expected_types=(int, float), exclusive_minimum=0, maximum=0.2
+        ),
+        StrategyParameterSpec(
+            "stop_loss_pct", expected_types=(int, float), exclusive_minimum=0, maximum=0.5
+        ),
+        StrategyParameterSpec(
+            "exit_minutes_before_close", expected_types=(int,), minimum=0, maximum=60
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

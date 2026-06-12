@@ -31,6 +31,7 @@ not alpha". Negative / random performance is the expected, correct result.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from milodex.broker.models import OrderSide, OrderType
@@ -43,12 +44,36 @@ from milodex.strategies.base import (
     Strategy,
     StrategyContext,
     StrategyDecision,
+    StrategyParameterRelation,
     StrategyParameterSpec,
+    relation_at_least,
 )
 from milodex.strategies.daily_cross_sectional import normalize_universe_and_positions
 
 _DECIDER_KIND = "tree"
 _LEAVES = ("strong_buy", "trend_follow", "dip_buy", "neutral_skip")
+
+
+def _leaf_actions_constraint(parameters: Mapping[str, Any]) -> str | None:
+    """Mirror of the runtime leaf_actions structure checks, for load time."""
+    leaf_actions = parameters["leaf_actions"]
+    if not isinstance(leaf_actions, dict):
+        return "leaf_actions must be a mapping of leaf-name -> {action, priority}"
+    missing = set(_LEAVES) - set(leaf_actions)
+    if missing:
+        return f"leaf_actions must define every leaf {_LEAVES}; missing {sorted(missing)}"
+    saw_enter = False
+    for leaf in _LEAVES:
+        spec = leaf_actions[leaf]
+        if not isinstance(spec, dict) or "action" not in spec or "priority" not in spec:
+            return f"leaf_actions[{leaf!r}] must be a mapping with 'action' and 'priority'"
+        action = str(spec["action"])
+        if action not in {"enter", "skip"}:
+            return f"leaf_actions[{leaf!r}].action must be 'enter' or 'skip', got {action!r}"
+        saw_enter = saw_enter or action == "enter"
+    if not saw_enter:
+        return "leaf_actions must mark at least one leaf as 'enter'"
+    return None
 
 
 class TreeBucketedLookupStrategy(Strategy):
@@ -57,17 +82,36 @@ class TreeBucketedLookupStrategy(Strategy):
     family = "tree"
     template = "daily.bucketed_lookup"
     parameter_specs = (
-        StrategyParameterSpec("momentum_lookback", expected_types=(int,)),
-        StrategyParameterSpec("rsi_lookback", expected_types=(int,)),
+        StrategyParameterSpec("momentum_lookback", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("rsi_lookback", expected_types=(int,), minimum=2),
         StrategyParameterSpec("momentum_split", expected_types=(int, float)),
-        StrategyParameterSpec("rsi_split_strong", expected_types=(int, float)),
-        StrategyParameterSpec("rsi_split_dip", expected_types=(int, float)),
+        StrategyParameterSpec(
+            "rsi_split_strong",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            exclusive_maximum=100,
+        ),
+        StrategyParameterSpec(
+            "rsi_split_dip",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            exclusive_maximum=100,
+        ),
         StrategyParameterSpec("leaf_actions", expected_types=(dict,)),
-        StrategyParameterSpec("target_positions", expected_types=(int,)),
+        StrategyParameterSpec("target_positions", expected_types=(int,), minimum=1),
         StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("max_hold_days", expected_types=(int,)),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
+        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float), exclusive_minimum=0),
+        StrategyParameterSpec("max_hold_days", expected_types=(int,), minimum=1),
+    )
+    parameter_relations = (
+        relation_at_least("max_concurrent_positions", "target_positions"),
+        StrategyParameterRelation(name="leaf_actions structure", check=_leaf_actions_constraint),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

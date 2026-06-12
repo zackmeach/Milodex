@@ -35,10 +35,14 @@ class BreakoutAtrChannelStrategy(Strategy):
         StrategyParameterSpec("atr_stop_multiplier", expected_types=(int, float)),
         StrategyParameterSpec("max_hold_days", expected_types=(int,)),
         StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("sizing_rule", expected_types=(str,)),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=("equal_notional", "fixed_notional")
+        ),
         StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
         StrategyParameterSpec("ranking_enabled", expected_types=(bool,)),
-        StrategyParameterSpec("ranking_metric", expected_types=(str,)),
+        StrategyParameterSpec(
+            "ranking_metric", expected_types=(str,), choices=("atr_channel_strength_descending",)
+        ),
         StrategyParameterSpec("market_regime_symbol", expected_types=(str,)),
         StrategyParameterSpec("market_regime_ma_length", expected_types=(int,)),
     )

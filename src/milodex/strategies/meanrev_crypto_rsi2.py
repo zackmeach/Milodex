@@ -54,6 +54,7 @@ from milodex.strategies.base import (
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+    relation_less_than,
 )
 
 
@@ -63,13 +64,23 @@ class MeanrevCryptoRsi2Strategy(Strategy):
     family = "meanrev"
     template = "crypto.rsi2"
     parameter_specs = (
-        StrategyParameterSpec("rsi_lookback", expected_types=(int,)),
-        StrategyParameterSpec("rsi_entry_threshold", expected_types=(int, float)),
-        StrategyParameterSpec("rsi_exit_threshold", expected_types=(int, float)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("max_hold_days", expected_types=(int,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec("rsi_lookback", expected_types=(int,), minimum=2, maximum=50),
+        StrategyParameterSpec(
+            "rsi_entry_threshold", expected_types=(int, float), exclusive_minimum=0
+        ),
+        StrategyParameterSpec("rsi_exit_threshold", expected_types=(int, float), maximum=100),
+        StrategyParameterSpec(
+            "stop_loss_pct", expected_types=(int, float), exclusive_minimum=0, maximum=0.5
+        ),
+        StrategyParameterSpec("max_hold_days", expected_types=(int,), minimum=1),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
     )
+    parameter_relations = (relation_less_than("rsi_entry_threshold", "rsi_exit_threshold"),)
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         _ = bars  # primary barset is read via context.bars_by_symbol below

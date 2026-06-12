@@ -42,6 +42,7 @@ from milodex.strategies.base import (
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+    relation_less_than,
 )
 
 
@@ -51,11 +52,19 @@ class MomentumCryptoEmaCrossStrategy(Strategy):
     family = "momentum"
     template = "crypto.ema_cross"
     parameter_specs = (
-        StrategyParameterSpec("fast_ema_period", expected_types=(int,)),
+        StrategyParameterSpec("fast_ema_period", expected_types=(int,), minimum=1),
         StrategyParameterSpec("slow_ema_period", expected_types=(int,)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec(
+            "stop_loss_pct", expected_types=(int, float), exclusive_minimum=0, maximum=0.5
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
     )
+    parameter_relations = (relation_less_than("fast_ema_period", "slow_ema_period"),)
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         _ = bars  # primary barset is read via context.bars_by_symbol below
