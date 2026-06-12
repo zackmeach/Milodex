@@ -26,6 +26,7 @@ less than it would affect a momentum-continuation signal.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
@@ -39,10 +40,17 @@ from milodex.strategies.base import (
     Strategy,
     StrategyContext,
     StrategyDecision,
+    StrategyParameterRelation,
     StrategyParameterSpec,
 )
 
 _VALID_SIZING_RULES = {"single_asset_full_allocation"}
+
+
+def _risk_off_symbol_non_empty(parameters: Mapping[str, Any]) -> str | None:
+    if str(parameters["risk_off_symbol"]).upper():
+        return None
+    return "risk_off_symbol must be a non-empty string"
 
 
 class MomentumDualAbsoluteGemStrategy(Strategy):
@@ -52,10 +60,19 @@ class MomentumDualAbsoluteGemStrategy(Strategy):
     template = "daily.dual_absolute"
     parameter_specs = (
         StrategyParameterSpec("risk_off_symbol", expected_types=(str,)),
-        StrategyParameterSpec("momentum_lookback", expected_types=(int,)),
-        StrategyParameterSpec("rebalance_weekday", expected_types=(int,)),
-        StrategyParameterSpec("allocation_pct", expected_types=(int, float)),
-        StrategyParameterSpec("sizing_rule", expected_types=(str,)),
+        StrategyParameterSpec("momentum_lookback", expected_types=(int,), minimum=2),
+        StrategyParameterSpec("rebalance_weekday", expected_types=(int,), minimum=0, maximum=4),
+        StrategyParameterSpec(
+            "allocation_pct", expected_types=(int, float), exclusive_minimum=0, maximum=1
+        ),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=tuple(sorted(_VALID_SIZING_RULES))
+        ),
+    )
+    parameter_relations = (
+        StrategyParameterRelation(
+            name="risk_off_symbol non-empty", check=_risk_off_symbol_non_empty
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

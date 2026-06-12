@@ -10,7 +10,12 @@ import yaml
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
-from milodex.strategies.base import Strategy, StrategyContext, StrategyParameterSpec
+from milodex.strategies.base import (
+    Strategy,
+    StrategyContext,
+    StrategyParameterSpec,
+    relation_less_than,
+)
 from milodex.strategies.loader import (
     StrategyConfig,
     StrategyLoader,
@@ -616,3 +621,136 @@ def test_risk_stop_loss_pct_absent_in_both_sections_loads(tmp_path: Path):
     config = load_strategy_config(path)
     assert "stop_loss_pct" not in config.risk
     assert "stop_loss_pct" not in config.parameters
+
+
+# ---------------------------------------------------------------------------
+# Declarative parameter constraints enforced at config load (P2-04)
+# ---------------------------------------------------------------------------
+
+
+class ConstrainedDummyStrategy(Strategy):
+    """Dummy strategy declaring bounds, an enum, and a cross-field relation."""
+
+    family = "dummy"
+    template = "daily.constrained"
+    parameter_specs = (
+        StrategyParameterSpec("lookback", expected_types=(int,), minimum=2, maximum=50),
+        StrategyParameterSpec("entry_threshold", expected_types=(int, float), exclusive_minimum=0),
+        StrategyParameterSpec("exit_threshold", expected_types=(int, float), maximum=100),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=("equal_notional", "fixed_notional")
+        ),
+    )
+    parameter_relations = (relation_less_than("entry_threshold", "exit_threshold"),)
+
+    def evaluate(self, bars: BarSet, context: StrategyContext):  # pragma: no cover
+        raise NotImplementedError
+
+
+def _constrained_config(tmp_path: Path, parameter_overrides: dict[str, object]) -> Path:
+    parameters: dict[str, object] = {
+        "lookback": 10,
+        "entry_threshold": 5,
+        "exit_threshold": 60,
+        "sizing_rule": "equal_notional",
+    }
+    parameters.update(parameter_overrides)
+    data = {
+        "strategy": {
+            "id": "dummy.daily.constrained.paper.v1",
+            "family": "dummy",
+            "template": "daily.constrained",
+            "variant": "paper",
+            "version": 1,
+            "description": "Constrained dummy strategy for P2-04 tests.",
+            "enabled": True,
+            "universe": ["SPY"],
+            "parameters": parameters,
+            "tempo": {"bar_size": "1D", "min_hold_days": 1, "max_hold_days": 5},
+            "risk": {"max_position_pct": 0.10, "max_positions": 1, "daily_loss_cap_pct": 0.02},
+            "stage": "backtest",
+            "backtest": {"commission_per_trade": 0.0, "min_trades_required": 30},
+            "disable_conditions_additional": [],
+        }
+    }
+    path = tmp_path / "constrained_dummy.yaml"
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+    return path
+
+
+@pytest.fixture()
+def constrained_registry() -> StrategyRegistry:
+    registry = StrategyRegistry()
+    registry.register(ConstrainedDummyStrategy)
+    return registry
+
+
+def test_load_accepts_in_range_parameters(tmp_path: Path, constrained_registry: StrategyRegistry):
+    loaded = StrategyLoader(registry=constrained_registry).load(_constrained_config(tmp_path, {}))
+    assert loaded.config.parameters["lookback"] == 10
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"lookback": 1}, "parameter 'lookback' must be >= 2"),
+        ({"lookback": 51}, "parameter 'lookback' must be <= 50"),
+        ({"entry_threshold": 0}, "parameter 'entry_threshold' must be > 0"),
+        ({"exit_threshold": 101}, "parameter 'exit_threshold' must be <= 100"),
+    ],
+)
+def test_load_rejects_valid_type_invalid_range(
+    tmp_path: Path,
+    constrained_registry: StrategyRegistry,
+    overrides: dict[str, object],
+    match: str,
+):
+    path = _constrained_config(tmp_path, overrides)
+    with pytest.raises(ValueError, match=match):
+        StrategyLoader(registry=constrained_registry).load(path)
+
+
+def test_load_rejects_enum_violation(tmp_path: Path, constrained_registry: StrategyRegistry):
+    path = _constrained_config(tmp_path, {"sizing_rule": "bogus"})
+    with pytest.raises(ValueError, match="parameter 'sizing_rule' must be one of"):
+        StrategyLoader(registry=constrained_registry).load(path)
+
+
+def test_load_rejects_cross_field_violation(tmp_path: Path, constrained_registry: StrategyRegistry):
+    path = _constrained_config(tmp_path, {"entry_threshold": 80, "exit_threshold": 40})
+    with pytest.raises(
+        ValueError, match="parameter constraint 'entry_threshold < exit_threshold' violated"
+    ):
+        StrategyLoader(registry=constrained_registry).load(path)
+
+
+def test_real_strategy_cross_field_violation_fails_at_load(tmp_path: Path):
+    """A real shipped strategy class rejects an inverted RSI pair at load time."""
+    source = _CONFIGS_DIR / "meanrev_daily_rsi2pullback_v1.yaml"
+    with source.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle)
+    data["strategy"]["parameters"]["rsi_entry_threshold"] = 90.0
+    data["strategy"]["parameters"]["rsi_exit_threshold"] = 40.0
+    path = tmp_path / source.name
+    path.write_text(yaml.safe_dump(data), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError, match="parameter constraint 'rsi_entry_threshold < rsi_exit_threshold'"
+    ):
+        StrategyLoader().load(path)
+
+
+def test_every_shipped_config_loads_through_strategy_loader():
+    """Every real configs/*.yaml must pass the declared load-time constraints.
+
+    The fleet is manifest-pinned: declaring constraints (P2-04) must never
+    reject a shipped config. This loads each one through the full
+    ``StrategyLoader.load`` path — presence, types, bounds, enums, and
+    cross-field relations included.
+    """
+    loader = StrategyLoader()
+    strategy_paths = _strategy_yaml_paths()
+    assert strategy_paths, "No strategy config files found under configs/ — check test helper"
+    for path in strategy_paths:
+        loaded = loader.load(path)
+        assert loaded.strategy is not None, f"{path.name}: loader returned no strategy"

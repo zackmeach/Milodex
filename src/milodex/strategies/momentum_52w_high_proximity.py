@@ -26,16 +26,32 @@ class Momentum52wHighProximityStrategy(Strategy):
     family = "momentum"
     template = "daily.52w_high_proximity"
     parameter_specs = (
-        StrategyParameterSpec("lookback_days", expected_types=(int,)),
-        StrategyParameterSpec("proximity_threshold", expected_types=(int, float)),
-        StrategyParameterSpec("sma_exit_length", expected_types=(int,)),
-        StrategyParameterSpec("max_hold_days", expected_types=(int,)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("max_concurrent_positions", expected_types=(int,)),
-        StrategyParameterSpec("sizing_rule", expected_types=(str,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec("lookback_days", expected_types=(int,), minimum=2),
+        StrategyParameterSpec(
+            "proximity_threshold", expected_types=(int, float), exclusive_minimum=0, maximum=1
+        ),
+        StrategyParameterSpec("sma_exit_length", expected_types=(int,), minimum=1),
+        StrategyParameterSpec("max_hold_days", expected_types=(int,), minimum=1),
+        StrategyParameterSpec(
+            "stop_loss_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            exclusive_maximum=1,
+        ),
+        StrategyParameterSpec("max_concurrent_positions", expected_types=(int,), minimum=1),
+        StrategyParameterSpec(
+            "sizing_rule", expected_types=(str,), choices=tuple(sorted(_VALID_SIZING_RULES))
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
         StrategyParameterSpec("ranking_enabled", expected_types=(bool,)),
-        StrategyParameterSpec("ranking_metric", expected_types=(str,)),
+        StrategyParameterSpec(
+            "ranking_metric", expected_types=(str,), choices=tuple(sorted(_VALID_RANKING_METRICS))
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:

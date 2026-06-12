@@ -62,14 +62,31 @@ class MomentumVwapTrendIntradayStrategy(Strategy):
     family = "momentum"
     template = "vwap_trend.intraday"
     parameter_specs = (
-        StrategyParameterSpec("opening_range_minutes", expected_types=(int,)),
-        StrategyParameterSpec("entry_window_minutes", expected_types=(int,)),
-        StrategyParameterSpec("min_above_vwap_pct", expected_types=(int, float)),
-        StrategyParameterSpec("momentum_lookback_bars", expected_types=(int,)),
-        StrategyParameterSpec("volume_factor", expected_types=(int, float)),
-        StrategyParameterSpec("stop_loss_pct", expected_types=(int, float)),
-        StrategyParameterSpec("exit_minutes_before_close", expected_types=(int,)),
-        StrategyParameterSpec("per_position_notional_pct", expected_types=(int, float)),
+        StrategyParameterSpec(
+            "opening_range_minutes", expected_types=(int,), minimum=5, maximum=120
+        ),
+        StrategyParameterSpec(
+            "entry_window_minutes", expected_types=(int,), minimum=5, maximum=360
+        ),
+        StrategyParameterSpec(
+            "min_above_vwap_pct", expected_types=(int, float), exclusive_minimum=0, maximum=0.2
+        ),
+        StrategyParameterSpec(
+            "momentum_lookback_bars", expected_types=(int,), minimum=1, maximum=78
+        ),
+        StrategyParameterSpec("volume_factor", expected_types=(int, float), exclusive_minimum=0),
+        StrategyParameterSpec(
+            "stop_loss_pct", expected_types=(int, float), exclusive_minimum=0, maximum=0.5
+        ),
+        StrategyParameterSpec(
+            "exit_minutes_before_close", expected_types=(int,), minimum=0, maximum=60
+        ),
+        StrategyParameterSpec(
+            "per_position_notional_pct",
+            expected_types=(int, float),
+            exclusive_minimum=0,
+            maximum=1,
+        ),
     )
 
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
