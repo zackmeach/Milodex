@@ -9,12 +9,16 @@ The only reference to ``_StrategyRow`` in this module is in type hints; the
 runtime edge is one-way (``strategy_row`` imports this module lazily, never the
 reverse) so the module graph stays an acyclic DAG.
 
-Extracted verbatim from ``read_models.py`` (PR12 decompose). No behavior
-changed — definitions were moved, not rewritten.
+Extracted verbatim from ``read_models.py`` (PR12 decompose). P2-12 then
+consolidated the per-action-kind tables (intent copy, future-record label,
+submit-capability) into the single ``ACTION_KIND_SPECS`` table below — the
+canonical Python owner the QML confirmation modal and the Bench command
+bridge both consume.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from milodex.gui.bench_v1 import (
@@ -128,41 +132,145 @@ def _bench_runs_in_flight(job: dict[str, Any]) -> dict[Stage, bool]:
 # and `wired` are both False in v1; ADR 0049 Decision 2 holds.
 # ---------------------------------------------------------------------------
 
-# Plain-language intent copy, keyed by action_kind. The exact wording matches
-# the PR L QML _intentCopy() helper so the confirmation modal's prose remains
-# identical whether read from the preview or the QML fallback.
-_ACTION_INTENT_COPY: dict[str, str] = {
-    "promote": (
-        "Move this strategy forward from its current stage to the next stage "
-        "after evidence and policy gates are satisfied."
+# ---------------------------------------------------------------------------
+# Canonical action-kind spec (P2-12).
+#
+# Single Python owner for everything per-action-kind the GUI previously
+# duplicated: plain-language intent copy, the future-record display label,
+# the submit-capability rule, and the bridge action family a submit routes
+# through. ``_action_intent_preview`` stamps every menu item with this data,
+# so QML consumes the spec instead of re-declaring it; the command bridge's
+# ``submitCapableActionFamilies()`` derives from the same table via
+# ``submit_capable_action_families()``.
+#
+# ``bridge_family`` values are the ACTION_FAMILY_* strings declared in
+# ``milodex.commands.bench``. They are restated as literals here because the
+# ADR 0051 import perimeter reserves facade imports for the bridge module;
+# tests cross-check that the two vocabularies stay in sync
+# (tests/milodex/gui/test_bench_command_bridge.py).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ActionKindSpec:
+    """Per-action-kind descriptor consumed by the preview and the bridge.
+
+    ``submit_capable`` is the base flag; the two ``submit_requires_*`` fields
+    narrow it (promote → paper target only, return → idle target only,
+    start/stop trading → paper stage only). ``bridge_family`` names the
+    command-bridge action family a submit-capable kind routes through —
+    display vocabulary ≠ bridge vocabulary: initiate/refresh backtest both
+    submit through ``backtest``; return-to-idle routes through ``demote``.
+    """
+
+    intent_copy: str
+    future_record: str
+    bridge_family: str | None = None
+    submit_capable: bool = False
+    submit_requires_target_stage: str | None = None
+    submit_requires_current_stage: str | None = None
+
+
+# Insertion order is load-bearing for submit_capable_action_families(): the
+# derived family list must stay [demote, freeze_manifest, backtest,
+# promote_to_paper, start_paper_runner, stop_paper_runner] — the order the
+# bridge has exposed since Phase F.
+ACTION_KIND_SPECS: dict[str, ActionKindSpec] = {
+    "demote": ActionKindSpec(
+        intent_copy=(
+            "Move this strategy backward to an earlier stage and remove it from "
+            "its current operating stage."
+        ),
+        future_record="demotion_event",
+        bridge_family="demote",
+        submit_capable=True,
     ),
-    "demote": (
-        "Move this strategy backward to an earlier stage and remove it from "
-        "its current operating stage."
+    "return": ActionKindSpec(
+        intent_copy=(
+            "Restore this strategy to a previously eligible stage or return it to the idle shelf."
+        ),
+        future_record="stage_return_event",
+        bridge_family="demote",
+        submit_capable=True,
+        submit_requires_target_stage="idle",
     ),
-    "return": (
-        "Restore this strategy to a previously eligible stage or return it to the idle shelf."
+    "freeze_manifest": ActionKindSpec(
+        intent_copy=(
+            "Freeze the current strategy config as the active promotion manifest. "
+            "Required before promoting to the next stage."
+        ),
+        future_record="manifest_freeze_event",
+        bridge_family="freeze_manifest",
+        submit_capable=True,
     ),
-    "start_trading": (
-        "Start a paper trading session for this strategy through the controlled runner boundary."
+    "initiate_backtest": ActionKindSpec(
+        intent_copy="Run canonical walk-forward backtest evidence for this strategy.",
+        future_record="backtest_run",
+        bridge_family="backtest",
+        submit_capable=True,
     ),
-    "stop_trading": (
-        "Request a controlled stop for the current paper session. This is not the kill switch."
+    "refresh_backtest": ActionKindSpec(
+        intent_copy=("Refresh aging or stale evidence with the canonical walk-forward backtest."),
+        future_record="backtest_run",
+        bridge_family="backtest",
+        submit_capable=True,
     ),
-    "initiate_backtest": ("Run canonical walk-forward backtest evidence for this strategy."),
-    "refresh_backtest": (
-        "Refresh aging or stale evidence with the canonical walk-forward backtest."
+    "promote": ActionKindSpec(
+        intent_copy=(
+            "Move this strategy forward from its current stage to the next stage "
+            "after evidence and policy gates are satisfied."
+        ),
+        future_record="promotion_event",
+        bridge_family="promote_to_paper",
+        submit_capable=True,
+        submit_requires_target_stage="paper",
     ),
-    "open_evidence": (
-        "Open the read-only Evidence snapshot for this strategy. "
-        "Informational only — no state changes."
+    "start_trading": ActionKindSpec(
+        intent_copy=(
+            "Start a paper trading session for this strategy through the "
+            "controlled runner boundary."
+        ),
+        future_record="session_start_event",
+        bridge_family="start_paper_runner",
+        submit_capable=True,
+        submit_requires_current_stage="paper",
     ),
-    "freeze_manifest": (
-        "Freeze the current strategy config as the active promotion manifest. "
-        "Required before promoting to the next stage."
+    "stop_trading": ActionKindSpec(
+        intent_copy=(
+            "Request a controlled stop for the current paper session. This is not the kill switch."
+        ),
+        future_record="session_stop_event",
+        bridge_family="stop_paper_runner",
+        submit_capable=True,
+        submit_requires_current_stage="paper",
     ),
-    "unknown": "Action not recognised by the intent preview.",
+    "open_evidence": ActionKindSpec(
+        intent_copy=(
+            "Open the read-only Evidence snapshot for this strategy. "
+            "Informational only — no state changes."
+        ),
+        future_record="evidence_view",
+    ),
+    "unknown": ActionKindSpec(
+        intent_copy="Action not recognised by the intent preview.",
+        future_record="—",
+    ),
 }
+
+
+def submit_capable_action_families() -> list[str]:
+    """Ordered, de-duplicated bridge action families with a submit-capable kind.
+
+    Consumed by ``BenchCommandBridge.submitCapableActionFamilies()`` so the
+    bridge introspection and the preview's submit-capability flags can never
+    drift apart (P2-12).
+    """
+    families: list[str] = []
+    for spec in ACTION_KIND_SPECS.values():
+        if spec.submit_capable and spec.bridge_family and spec.bridge_family not in families:
+            families.append(spec.bridge_family)
+    return families
+
 
 # Static enumeration of what a future Milodex would validate before this
 # action could proceed. Copy-only — no real check is performed by including
@@ -175,23 +283,6 @@ _ACTION_REQUIREMENTS: tuple[str, ...] = (
     "Risk guard check",
     "Event write after confirmation",
 )
-
-# Display string identifying the kind of record a future event-store would
-# write. NOT a class name, NOT a function, NOT a payload — purely a label
-# for operator orientation.
-_ACTION_FUTURE_RECORD: dict[str, str] = {
-    "promote": "promotion_event",
-    "demote": "demotion_event",
-    "return": "stage_return_event",
-    "start_trading": "session_start_event",
-    "stop_trading": "session_stop_event",
-    "initiate_backtest": "backtest_run",
-    "refresh_backtest": "backtest_run",
-    "open_evidence": "evidence_view",
-    "freeze_manifest": "manifest_freeze_event",
-    "unknown": "—",
-}
-
 
 # Verbatim source-note string for every actionIntentPreview. Single-line
 # literal so static grep-based safety tests can match substring-exactly.
@@ -271,20 +362,21 @@ def _safety_copy(label: str, current_stage: str, capital_bearing: bool) -> str:
 
 
 def _is_submit_capable_action(kind: str, target_stage: str, current_stage: str) -> bool:
-    if kind in {
-        "demote",
-        "freeze_manifest",
-        "initiate_backtest",
-        "refresh_backtest",
-    }:
-        return True
-    if kind == "promote":
-        return target_stage == "paper"
-    if kind == "return":
-        return target_stage == "idle"
-    if kind in {"start_trading", "stop_trading"}:
-        return current_stage == "paper"
-    return False
+    """Evaluate the spec's submit-capability rule for *kind* in context."""
+    spec = ACTION_KIND_SPECS.get(kind)
+    if spec is None or not spec.submit_capable:
+        return False
+    if (
+        spec.submit_requires_target_stage is not None
+        and target_stage != spec.submit_requires_target_stage
+    ):
+        return False
+    if (
+        spec.submit_requires_current_stage is not None
+        and current_stage != spec.submit_requires_current_stage
+    ):
+        return False
+    return True
 
 
 def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
@@ -303,6 +395,7 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
     label = item.label
     target_stage = item.target_stage or ""
     kind = _action_kind(label)
+    spec = ACTION_KIND_SPECS.get(kind, ACTION_KIND_SPECS["unknown"])
     capital_bearing = _is_capital_bearing(label, target_stage, row.stage)
     submit_capable = _is_submit_capable_action(kind, target_stage, row.stage)
     return {
@@ -319,9 +412,9 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
         "verbClass": item.verb_class,
         "currentStage": row.stage,
         "targetStage": target_stage,
-        "intentCopy": _ACTION_INTENT_COPY.get(kind, _ACTION_INTENT_COPY["unknown"]),
+        "intentCopy": spec.intent_copy,
         "requirements": list(_ACTION_REQUIREMENTS),
-        "futureRecord": _ACTION_FUTURE_RECORD.get(kind, "—"),
+        "futureRecord": spec.future_record,
         "capitalBearing": capital_bearing,
         "safetyCopy": _safety_copy(label, row.stage, capital_bearing),
         "executable": submit_capable,

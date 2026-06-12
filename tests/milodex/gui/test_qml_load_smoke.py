@@ -910,81 +910,49 @@ def test_bench_pr_k_bleed_through_guards() -> None:
 # behaviorally, so the brittle raw-source pin is removed.
 
 
-def test_bench_pr_l_safety_boundary_wording() -> None:
-    """PR L: SAFETY BOUNDARY verbatim sentence and its three sub-clauses are present."""
+def test_bench_safety_and_capital_copy_is_python_owned() -> None:
+    """P2-12: the safety-boundary / capital-lock / paper-start operator copy
+    has ONE owner — bench_actions.py. The modal renders the preview's
+    pre-rendered ``safetyCopy`` verbatim and carries no fallback copy of its
+    own.
+
+    Supersedes the former PR L pins (test_bench_pr_l_safety_boundary_wording,
+    test_bench_pr_l_capital_live_precision, test_bench_pr_l_future_record_
+    strings): the QML fallback tables those tests grepped were removed; the
+    copy and the kind→record / capital-bearing classifications are pinned at
+    the Python owner here and in tests/milodex/gui/test_read_models.py
+    (PR N block: kind classification, futureRecord strings, capital-bearing
+    paper-start refinement, safetyCopy content).
+    """
+    from milodex.gui.bench_actions import (
+        _COPY_CAPITAL_LOCK_SHORT,
+        _COPY_PAPER_START,
+        _COPY_SAFETY_BOUNDARY,
+    )
+
+    # The operator-facing strings are the product — pinned verbatim at the owner.
+    assert _COPY_SAFETY_BOUNDARY == (
+        "Bench renders this intent packet for review before any submit-capable action "
+        "is validated through the command bridge."
+    )
+    assert _COPY_CAPITAL_LOCK_SHORT == (
+        "Capital-bearing transitions remain locked while ADR 0004 is in force."
+    )
+    assert _COPY_PAPER_START == (
+        "Paper-stage sessions use live feed with no capital exposure. "
+        "Capital-bearing stages remain locked while ADR 0004 is in force."
+    )
+
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
         encoding="utf-8"
     )
-
-    verbatim = (
-        "Bench v1 renders this intent packet for review only. "
-        "No command is submitted, no event is written, and no state is changed."
+    # The modal renders the Python-owned copy via the preview...
+    assert "_preview.safetyCopy" in modal_src, (
+        "BenchConfirmationModal.qml must render the preview's safetyCopy (P2-12)"
     )
-    assert verbatim in modal_src, (
-        "BenchConfirmationModal.qml _COPY_SAFETY_BOUNDARY must match verbatim"
-    )
-    # Defense-in-depth: individual clauses checked separately.
-    assert "No command is submitted" in modal_src
-    assert "no event is written" in modal_src
-    assert "no state is changed" in modal_src
-
-
-def test_bench_pr_l_future_record_strings() -> None:
-    """PR L: all seven non-executable record label strings appear in _futureRecord."""
-    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
-        encoding="utf-8"
-    )
-
-    for record_label in (
-        "promotion_event",
-        "demotion_event",
-        "stage_return_event",
-        "session_start_event",
-        "session_stop_event",
-        "backtest_run",
-    ):
-        assert record_label in modal_src, (
-            f"BenchConfirmationModal.qml _futureRecord must contain {record_label!r} (PR L)"
-        )
-
-
-def test_bench_pr_l_capital_live_precision() -> None:
-    """PR L: capital-lock-short, paper-start copy, and paper-stage guard are all present."""
-    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
-        encoding="utf-8"
-    )
-
-    assert ("Capital-bearing transitions remain locked while ADR 0004 is in force.") in modal_src, (
-        "BenchConfirmationModal.qml _COPY_CAPITAL_LOCK_SHORT must match verbatim"
-    )
-    assert ("Paper-stage sessions use live feed with no capital exposure.") in modal_src, (
-        "BenchConfirmationModal.qml _COPY_PAPER_START must contain paper-start sentence"
-    )
-    # _isCapitalBoundary Start Trading guard: paper stage is excluded from capital-bearing.
-    assert 'stage === "micro_live" || stage === "live"' in modal_src, (
-        "BenchConfirmationModal.qml _isCapitalBoundary must exclude paper stage "
-        "from Start Trading capital classification (PR L refinement)"
-    )
-
-
-def test_bench_pr_l_intent_copy_helpers() -> None:
-    """PR L: all five Intent Packet helpers are declared in BenchConfirmationModal.qml."""
-    modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
-        encoding="utf-8"
-    )
-
-    # Functions declared with `function` keyword.
-    for fn_decl in (
-        "function _actionKind(",
-        "function _intentCopy(",
-        "function _futureRecord(",
-        "function _safetyCopy(",
-    ):
-        assert fn_decl in modal_src, f"BenchConfirmationModal.qml must declare {fn_decl!r} (PR L)"
-
-    # _requirements is a readonly property var, not a function.
-    assert "readonly property var _requirements" in modal_src, (
-        "BenchConfirmationModal.qml must declare `readonly property var _requirements` (PR L)"
+    # ...and must not regrow a local fallback copy of the boundary sentence.
+    assert "Capital-bearing stages remain locked" not in modal_src, (
+        "BenchConfirmationModal.qml must not duplicate the Python-owned safety copy (P2-12)"
     )
 
 
@@ -1069,28 +1037,43 @@ def test_bench_pr_m_no_authoritative_freshness_claims() -> None:
 
 
 def test_bench_pr_n_confirmation_modal_prefers_action_preview() -> None:
-    """BenchConfirmationModal must read actionData.actionIntentPreview (PR N)."""
+    """BenchConfirmationModal must read actionData.actionIntentPreview (PR N).
+
+    P2-12 tightened the contract: the preview is the ONLY source — Python
+    guarantees it on every menu item, the QML fallback classifiers were
+    removed, and every per-kind field binds straight off ``_preview``.
+    """
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
         encoding="utf-8"
     )
     assert "actionIntentPreview" in modal_src, (
         "BenchConfirmationModal.qml must reference actionIntentPreview (PR N)"
     )
-    for helper in ("_preview", "_previewAvailable"):
-        assert helper in modal_src, (
-            f"BenchConfirmationModal.qml must declare {helper!r} helper (PR N)"
-        )
 
-    # Each PR L helper must now consult the preview before falling back.
+    # Every per-kind field must bind off the normalized preview.
     for needle in (
-        "_preview.capitalBearing",
-        "action.actionIntentPreview.actionKind",
-        "action.actionIntentPreview.intentCopy",
+        "_preview.actionKind",
+        "_preview.intentCopy",
         "_preview.requirements",
-        "action.actionIntentPreview.futureRecord",
-        "action.actionIntentPreview.safetyCopy",
+        "_preview.futureRecord",
+        "_preview.safetyCopy",
+        "_preview.capitalBearing",
+        "_preview.executable",
     ):
-        assert needle in modal_src, f"BenchConfirmationModal.qml must read {needle!r} (PR N)"
+        assert needle in modal_src, f"BenchConfirmationModal.qml must read {needle!r} (P2-12)"
+
+    # The removed fallback classifiers must not regrow (P2-12).
+    for forbidden in (
+        "function _actionKind(",
+        "function _intentCopy(",
+        "function _futureRecord(",
+        "function _safetyCopy(",
+        "_submitCapableKinds",
+    ):
+        assert forbidden not in modal_src, (
+            f"BenchConfirmationModal.qml must not redeclare {forbidden!r} — the "
+            "action-kind spec is Python-owned (bench_actions.ACTION_KIND_SPECS, P2-12)"
+        )
 
 
 def test_bench_pr_n_no_executable_or_wired_truth_in_qml() -> None:
@@ -1406,16 +1389,16 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     names proposeBacktest / submitBacktestAsync and the submitBacktest-
     without-Async negation are the socket contract and stay pinned here.
 
-    The canonical-param substrings ("initial_equity": 100000, the 2020/2024
-    spread, walk_forward, risk_policy) and the backtest intent copy were
-    CONVERTED to behavioral checks (PR 13 re-aim). Behavioral coverage in
+    P2-12: the canonical walk-forward params are Python-owned
+    (CANONICAL_BACKTEST_PARAMS in bench_command_bridge.py — pinned in
+    tests/milodex/gui/test_bench_command_bridge.py). QML submits only the
+    strategy id, so the param literals must NOT reappear in the modal.
+    Behavioral coverage in
     tests/milodex/gui/test_bench_confirmation_modal_behavior.py:
-    test_backtest_submit_proposes_canonical_params drives a backtest submit
-    and asserts the full proposed payload (initial_equity=100000, start/end,
-    walk_forward, risk_policy) by dict-equality; and
-    test_canonical_backtest_params_property_is_single_source reads the live
-    _canonicalBacktestParams off an instantiated modal. The intent copy is
-    asserted rendered in test_modal_renders_labelled_sections.
+    test_backtest_submit_proposes_strategy_id_only drives a backtest submit
+    and asserts the proposed payload is exactly {"strategy_id": ...}. The
+    intent copy renders via the Python-owned preview
+    (test_modal_renders_labelled_sections).
     """
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
         encoding="utf-8"
@@ -1426,6 +1409,12 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
     assert "BenchCommandBridge.proposeBacktest(" in modal_src
     assert "BenchCommandBridge.submitBacktestAsync(" in modal_src
     assert "BenchCommandBridge.submitBacktest(" not in modal_src
+    # P2-12: no local canonical-param table in QML.
+    for forbidden in ('"initial_equity"', "_canonicalBacktestParams", "2020-01-01"):
+        assert forbidden not in modal_src, (
+            f"BenchConfirmationModal.qml must not carry {forbidden!r} — canonical "
+            "backtest params are Python-owned (CANONICAL_BACKTEST_PARAMS, P2-12)"
+        )
 
 
 def test_bench_modal_long_running_submits_use_async_bridge_slots() -> None:
@@ -1487,24 +1476,25 @@ def test_bench_modal_promote_to_paper_prefills_operator_evidence() -> None:
 def test_bench_pr_d1_other_action_families_remain_not_wired() -> None:
     """ADR 0051: demote, freeze_manifest, backtest, and Promote to Paper are
     submit-capable. The modal must still render the inert "Not wired in v1"
-    primary for every other action family. The boolean gate that selects
-    which primary renders must look at the action kind, not at a global
-    flag.
+    primary for every other action family.
+
+    P2-12: the submit-capable predicate is no longer a QML kind table — it
+    binds off the Python-owned preview flag (``_preview.executable``, derived
+    from bench_actions.ACTION_KIND_SPECS). The behavioral proof that
+    submit-capable actions show the submit affordance and non-capable ones
+    show the inert placeholder lives in
+    tests/milodex/gui/test_bench_confirmation_modal_behavior.py.
     """
     modal_src = (_MILODEX_QML_DIR / "components" / "BenchConfirmationModal.qml").read_text(
         encoding="utf-8"
     )
 
-    # The submit-capable predicate must be derived from a fixed set of
-    # action kinds, not from a hardcoded "always submit" flag.
-    assert "_submitCapableKinds" in modal_src, (
-        "The submit-capable branch must be gated on a fixed set of action "
-        "kinds. Other action families remain preview-only."
+    # Submit-capability must come from the Python spec via the preview, not
+    # from a local QML kind table.
+    assert "readonly property bool _isSubmitCapable: !!_preview.executable" in modal_src, (
+        "The submit-capable predicate must bind off the Python-owned preview "
+        "flag (P2-12). Other action families remain preview-only."
     )
-    assert '"demote": true' in modal_src
-    assert '"freeze_manifest": true' in modal_src
-    assert '"initiate_backtest": true' in modal_src
-    assert '"refresh_backtest": true' in modal_src
     assert "_isReturnToIdleSubmit" in modal_src
     assert "_isPromoteToPaperSubmit" in modal_src
 

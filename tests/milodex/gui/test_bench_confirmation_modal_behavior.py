@@ -15,9 +15,18 @@ The command bridge is a RECORD-ONLY fake registered under the
 ``Milodex.BenchCommandBridge`` singleton name. It executes nothing -- every
 ``propose*`` slot appends its argument to a JSON sink and returns a benign,
 unblocked proposal; every ``submit*`` slot records and returns a benign
-result. This lets the canonical-backtest-params guarantee be asserted
-behaviorally (the modal PROPOSES ``initial_equity=100000`` etc.) regardless
-of where the literal lives in source.
+result. This lets dispatch payloads be asserted behaviorally -- e.g. that a
+backtest submit proposes exactly ``{"strategy_id": ...}`` (the canonical
+walk-forward params are Python-owned per P2-12: CANONICAL_BACKTEST_PARAMS
+in bench_command_bridge.py, pinned in test_bench_command_bridge.py).
+
+P2-12: the action fixtures carry the ``actionIntentPreview`` object the
+production read model stamps on every menu item
+(``bench_actions._compute_bench_action_menu``) -- the modal consumes the
+Python-owned action-kind spec via the preview and carries no fallback
+classifiers. Preview CONTENT (kind classification, submit-capability,
+copy, capital flags) is pinned Python-side in
+tests/milodex/gui/test_read_models.py.
 
 Each non-vacuous assertion was confirmed to FAIL when the corresponding
 behavior is broken (mutate -> watch fail -> revert); see the test docstrings.
@@ -256,14 +265,37 @@ def _build(body_row: str, body_action: str, assertions: str, records_path: Path)
     )
 
 
-# Reusable rowData / actionData literals (QML object-literal bodies).
+# Reusable rowData / actionData literals (QML object-literal bodies). Each
+# action carries the actionIntentPreview the production read model stamps on
+# every menu item (P2-12: the modal consumes the Python-owned spec via the
+# preview; there is no QML fallback classifier).
 _ROW_PAPER = '{ "strategyId": "regime.daily.x.spy.v1", "name": "Regime", "stage": "backtest" }'
-_ACTION_BACKTEST = '{ "label": "Initiate Backtest", "verbClass": "invocation" }'
+_ACTION_BACKTEST = (
+    '{ "label": "Initiate Backtest", "verbClass": "invocation", '
+    '"actionIntentPreview": { '
+    '"actionKind": "initiate_backtest", "executable": true, "wired": true, '
+    '"capitalBearing": false, "futureRecord": "backtest_run", '
+    '"intentCopy": "Run canonical walk-forward backtest evidence for this strategy." } }'
+)
 _ACTION_DEMOTE = (
-    '{ "label": "Demote to backtest", "verbClass": "directional", "targetStage": "backtest" }'
+    '{ "label": "Demote to backtest", "verbClass": "directional", "targetStage": "backtest", '
+    '"actionIntentPreview": { '
+    '"actionKind": "demote", "executable": true, "wired": true, '
+    '"capitalBearing": false, "futureRecord": "demotion_event" } }'
 )
 _ACTION_PROMOTE_PAPER = (
-    '{ "label": "Promote to paper", "verbClass": "directional", "targetStage": "paper" }'
+    '{ "label": "Promote to paper", "verbClass": "directional", "targetStage": "paper", '
+    '"actionIntentPreview": { '
+    '"actionKind": "promote", "executable": true, "wired": true, '
+    '"capitalBearing": false, "futureRecord": "promotion_event" } }'
+)
+# Non-submit-capable, capital-bearing action (Promote to micro_live).
+_ACTION_PROMOTE_MICRO_LIVE = (
+    '{ "label": "Promote to micro_live", "verbClass": "directional", '
+    '"targetStage": "micro_live", '
+    '"actionIntentPreview": { '
+    '"actionKind": "promote", "executable": false, "wired": false, '
+    '"capitalBearing": true, "futureRecord": "promotion_event" } }'
 )
 _ROW_BACKTEST_STAGE = (
     '{ "strategyId": "regime.daily.x.spy.v1", "name": "Regime", "stage": "backtest", '
@@ -272,23 +304,25 @@ _ROW_BACKTEST_STAGE = (
 
 
 # ===========================================================================
-# Canonical backtest params -- the headline conversion (was: grep for
-# `"initial_equity": 100000`). Now: drive a backtest submit and assert the
-# modal PROPOSES the canonical evidence shape through the bridge.
+# Canonical backtest params -- Python-owned (P2-12). The modal proposes ONLY
+# the strategy id; CANONICAL_BACKTEST_PARAMS in bench_command_bridge.py fills
+# the canonical walk-forward shape (pinned in test_bench_command_bridge.py::
+# test_canonical_backtest_params_are_python_owned and
+# test_propose_backtest_returns_dict_and_caches_proposal, which proposes with
+# only a strategy_id and asserts the canonical defaults).
 # ===========================================================================
 
 
 @_skip_no_qt
-def test_backtest_submit_proposes_canonical_params(tmp_path) -> None:
+def test_backtest_submit_proposes_strategy_id_only(tmp_path) -> None:
     """Driving the submit dispatch for a backtest action makes the modal call
-    proposeBacktest with the canonical walk-forward evidence shape:
-    initial_equity=100000, start=2020-01-01, end=2024-12-31,
-    walk_forward=true, risk_policy=bypass, plus the row's strategy_id.
+    proposeBacktest with EXACTLY {"strategy_id": ...} -- the canonical
+    walk-forward evidence shape is Python-owned (P2-12), so QML must not
+    spread a local param table into the proposal.
 
-    NON-VACUOUS: if the canonical params drift (e.g. initial_equity changes
-    or the spread is dropped), the recorded proposeBacktest payload no longer
-    matches and the assertion below fails. Verified by mutating
-    _canonicalBacktestParams.initial_equity to 50000 -> test failed; reverted.
+    NON-VACUOUS: if QML regrows a local canonical-param table (or drops the
+    strategy id), the recorded proposeBacktest payload stops matching the
+    exact single-key dict below and this fails.
     """
     records = tmp_path / "records.json"
     assertions = (
@@ -300,14 +334,7 @@ def test_backtest_submit_proposes_canonical_params(tmp_path) -> None:
         "    print('expected exactly 1 proposeBacktest, got ' + str(len(proposes)) "
         "+ ' records=' + json.dumps(recs), file=sys.stderr); sys.exit(5)\n"
         "payload = proposes[0]['args'][0]\n"
-        "expected = {\n"
-        "    'strategy_id': 'regime.daily.x.spy.v1',\n"
-        "    'start': '2020-01-01',\n"
-        "    'end': '2024-12-31',\n"
-        "    'walk_forward': True,\n"
-        "    'initial_equity': 100000,\n"
-        "    'risk_policy': 'bypass',\n"
-        "}\n"
+        "expected = {'strategy_id': 'regime.daily.x.spy.v1'}\n"
         "if payload != expected:\n"
         "    print('PAYLOAD MISMATCH expected=' + json.dumps(expected) "
         "+ ' got=' + json.dumps(payload), file=sys.stderr); sys.exit(6)\n"
@@ -315,49 +342,14 @@ def test_backtest_submit_proposes_canonical_params(tmp_path) -> None:
         "if len(subs) != 1:\n"
         "    print('expected exactly 1 submitBacktestAsync, got ' + str(len(subs)), "
         "file=sys.stderr); sys.exit(7)\n"
-        "print('CANONICAL_PARAMS_OK')\n"
+        "print('STRATEGY_ID_ONLY_OK')\n"
         "sys.exit(0)\n"
     )
     out = _run(
         _build(_ROW_PAPER, _ACTION_BACKTEST, assertions, records),
-        "backtest canonical params",
+        "backtest proposes strategy id only",
     )
-    assert "CANONICAL_PARAMS_OK" in out
-
-
-@_skip_no_qt
-def test_canonical_backtest_params_property_is_single_source(tmp_path) -> None:
-    """The hoisted _canonicalBacktestParams property carries the exact
-    canonical evidence shape -- a behavioral read of the single source of
-    truth, independent of where any literal is grepped.
-
-    NON-VACUOUS: reads the live property off the instantiated modal; if the
-    property is renamed/removed or a value drifts, the read mismatches.
-    """
-    records = tmp_path / "records.json"
-    assertions = (
-        "params = _to_py(modal.property('_canonicalBacktestParams'))\n"
-        "if params is None:\n"
-        "    print('_canonicalBacktestParams is None', file=sys.stderr); sys.exit(5)\n"
-        "params = dict(params)\n"
-        "expected = {\n"
-        "    'start': '2020-01-01',\n"
-        "    'end': '2024-12-31',\n"
-        "    'walk_forward': True,\n"
-        "    'initial_equity': 100000,\n"
-        "    'risk_policy': 'bypass',\n"
-        "}\n"
-        "if params != expected:\n"
-        "    print('PROPERTY MISMATCH expected=' + json.dumps(expected) "
-        "+ ' got=' + json.dumps(params), file=sys.stderr); sys.exit(6)\n"
-        "print('CANONICAL_PROPERTY_OK')\n"
-        "sys.exit(0)\n"
-    )
-    out = _run(
-        _build(_ROW_PAPER, _ACTION_BACKTEST, assertions, records),
-        "canonical params property",
-    )
-    assert "CANONICAL_PROPERTY_OK" in out
+    assert "STRATEGY_ID_ONLY_OK" in out
 
 
 # ===========================================================================
@@ -419,10 +411,7 @@ def test_command_draft_preview_renders_state_and_blockers(tmp_path) -> None:
     """
     records = tmp_path / "records.json"
     row = '{ "strategyId": "edge.x.y.z.v1", "name": "Edge", "stage": "paper" }'
-    action = (
-        '{ "label": "Promote to micro_live", "verbClass": "directional", '
-        '"targetStage": "micro_live" }'
-    )
+    action = _ACTION_PROMOTE_MICRO_LIVE
     assertions = (
         "texts = _texts()\n"
         "required = ['COMMAND DRAFT PREVIEW', 'NOT SUBMITTABLE', "
@@ -483,10 +472,7 @@ def test_non_submit_capable_action_shows_inert_placeholder(tmp_path) -> None:
     """
     records = tmp_path / "records.json"
     row = '{ "strategyId": "edge.x.y.z.v1", "name": "Edge", "stage": "paper" }'
-    action = (
-        '{ "label": "Promote to micro_live", "verbClass": "directional", '
-        '"targetStage": "micro_live" }'
-    )
+    action = _ACTION_PROMOTE_MICRO_LIVE
     assertions = (
         "if modal.property('_isSubmitCapable') is not False:\n"
         "    print('expected _isSubmitCapable False for micro_live promote', "

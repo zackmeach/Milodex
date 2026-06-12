@@ -24,7 +24,7 @@ import json
 import os
 import textwrap
 import threading
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
@@ -501,6 +501,61 @@ def test_submit_capable_action_families_returns_wired_families(
         ACTION_FAMILY_START_PAPER_RUNNER,
         ACTION_FAMILY_STOP_PAPER_RUNNER,
     ]
+
+
+def test_action_kind_spec_families_match_bridge_constants() -> None:
+    """P2-12 cross-check: the spec's ``bridge_family`` literals must stay in
+    lockstep with the ACTION_FAMILY_* constants in ``milodex.commands.bench``.
+
+    The spec (``bench_actions.ACTION_KIND_SPECS``) restates the family
+    strings as literals because the ADR 0051 import perimeter reserves
+    facade imports for the bridge module — this test is the drift guard.
+    """
+    from milodex.gui.bench_actions import ACTION_KIND_SPECS, submit_capable_action_families
+
+    assert submit_capable_action_families() == [
+        ACTION_FAMILY_DEMOTE,
+        ACTION_FAMILY_FREEZE_MANIFEST,
+        ACTION_FAMILY_BACKTEST,
+        ACTION_FAMILY_PROMOTE_TO_PAPER,
+        ACTION_FAMILY_START_PAPER_RUNNER,
+        ACTION_FAMILY_STOP_PAPER_RUNNER,
+    ]
+    known_families = {
+        None,
+        ACTION_FAMILY_DEMOTE,
+        ACTION_FAMILY_FREEZE_MANIFEST,
+        ACTION_FAMILY_BACKTEST,
+        ACTION_FAMILY_PROMOTE_TO_PAPER,
+        ACTION_FAMILY_START_PAPER_RUNNER,
+        ACTION_FAMILY_STOP_PAPER_RUNNER,
+    }
+    unknown = {
+        kind: spec.bridge_family
+        for kind, spec in ACTION_KIND_SPECS.items()
+        if spec.bridge_family not in known_families
+    }
+    assert not unknown, (
+        f"ACTION_KIND_SPECS carries bridge_family values with no matching "
+        f"ACTION_FAMILY_* constant: {unknown}"
+    )
+
+
+def test_canonical_backtest_params_are_python_owned() -> None:
+    """P2-12: the canonical Bench walk-forward evidence shape has ONE owner.
+
+    QML submits only ``{"strategy_id": ...}``; ``proposeBacktest`` fills the
+    rest from this table (proven end-to-end by
+    test_propose_backtest_returns_dict_and_caches_proposal, which proposes
+    with only a strategy id and reads the canonical defaults back).
+    """
+    assert bridge_module.CANONICAL_BACKTEST_PARAMS == {
+        "start": date(2020, 1, 1),
+        "end": date(2024, 12, 31),
+        "walk_forward": True,
+        "initial_equity": 100_000.0,
+        "risk_policy": "bypass",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -1497,9 +1552,7 @@ def test_blocked_and_error_submits_are_both_recorded(
     assert all(r["message"] for r in bridge.recentCompletions)
 
 
-def test_unknown_proposal_error_path_records(
-    facade: BenchCommandFacade, config_dir: Path
-) -> None:
+def test_unknown_proposal_error_path_records(facade: BenchCommandFacade, config_dir: Path) -> None:
     """The sync unknown-proposal-id branch must also record (third emit site)."""
     _write_strategy(config_dir, stage="paper")
     bridge = BenchCommandBridge(facade)
@@ -1689,9 +1742,7 @@ def test_async_completion_emits_submit_completed_exactly_once_and_records_exactl
 
     assert _process_qt_until(lambda: len(payloads) == 1)
 
-    assert len(payloads) == 1, (
-        f"Expected exactly 1 submitCompleted emission; got {len(payloads)}"
-    )
+    assert len(payloads) == 1, f"Expected exactly 1 submitCompleted emission; got {len(payloads)}"
     assert len(bridge.recentCompletions) == 1, (
         f"Expected exactly 1 recentCompletions entry; got {len(bridge.recentCompletions)}"
     )
@@ -2008,8 +2059,16 @@ class TestRunReconciliationAsync:
             "reconciliationCompleted was not emitted within 2 s"
         )
         payload = completed_payloads[0]
-        for key in ("status", "clean", "mismatch_count", "trading_day", "run_id",
-                    "run_db_id", "recorded_at", "error"):
+        for key in (
+            "status",
+            "clean",
+            "mismatch_count",
+            "trading_day",
+            "run_id",
+            "run_db_id",
+            "recorded_at",
+            "error",
+        ):
             assert key in payload, f"Expected key {key!r} in reconciliationCompleted payload"
         assert payload["status"] == "clean"
         assert payload["clean"] is True
@@ -2024,9 +2083,7 @@ class TestRunReconciliationAsync:
             f"Expected bridge_status='stopped' after bridge.stop(); got {result!r}"
         )
 
-    def test_stopped_bridge_suppresses_late_completion(
-        self, facade: BenchCommandFacade
-    ) -> None:
+    def test_stopped_bridge_suppresses_late_completion(self, facade: BenchCommandFacade) -> None:
         """After stop(), _on_reconciliation_completed must not emit reconciliationCompleted."""
         bridge = BenchCommandBridge(facade)
         emitted: list[dict] = []
@@ -2035,10 +2092,15 @@ class TestRunReconciliationAsync:
         bridge.stop()
         # Simulate late delivery of a completion after stop()
         bridge._on_reconciliation_completed(  # noqa: SLF001
-            {"status": "clean", "clean": True, "mismatch_count": 0,
-             "trading_day": "", "run_id": "", "run_db_id": None,
-             "recorded_at": "", "error": ""}
+            {
+                "status": "clean",
+                "clean": True,
+                "mismatch_count": 0,
+                "trading_day": "",
+                "run_id": "",
+                "run_db_id": None,
+                "recorded_at": "",
+                "error": "",
+            }
         )
-        assert len(emitted) == 0, (
-            "reconciliationCompleted must not be emitted after bridge.stop()"
-        )
+        assert len(emitted) == 0, "reconciliationCompleted must not be emitted after bridge.stop()"
