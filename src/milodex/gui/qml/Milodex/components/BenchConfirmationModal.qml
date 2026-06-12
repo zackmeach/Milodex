@@ -16,11 +16,19 @@
 // SectionRule, SafetyBanner, ProseBlock, RequirementRow, DetailRow) and the
 // three repeated operator-input fields (LabeledTextField) were extracted to
 // shared components/ files. The seven section INSTANCES (their literal
-// labels/copy) and every bridge socket call + canonical backtest payload
-// stay INLINE here — those substrings are the doctrine perimeter the smoke
-// tests pin. The seven dispatch functions share a propose→validate→route
-// skeleton via _validateProposal / _finishSyncSubmit / _handleQueuedSubmit,
-// keeping each family's bridge method names inline.
+// labels/copy) and every bridge socket call stay INLINE here — those
+// substrings are the doctrine perimeter the smoke tests pin. The seven
+// dispatch functions share a propose→validate→route skeleton via
+// _validateProposal / _finishSyncSubmit / _handleQueuedSubmit, keeping each
+// family's bridge method names inline.
+//
+// P2-12: the per-action-kind SPEC (submit-capable kinds, intent copy,
+// future-record labels, safety copy, capital classification, canonical
+// backtest params) is Python-owned. The read model stamps every menu item
+// with an actionIntentPreview built from bench_actions.ACTION_KIND_SPECS;
+// the bridge fills canonical backtest params (CANONICAL_BACKTEST_PARAMS).
+// This file consumes the preview and routes to explicit bridge sockets —
+// it declares no kind tables and no fallback classifiers of its own.
 //
 // Layered on top of BenchModal.qml (the shared modal chrome) — this file
 // adds the four things BenchModal does not provide:
@@ -32,9 +40,8 @@
 //
 // Visual treatment selection:
 //   - Pattern B (oxblood, brand.accent top rule) for capital-bearing
-//     transitions: when `actionData.targetStage` or `actionData.label`
-//     references "micro_live" / "live" / "Micro Live" / "Live", or when
-//     the label is "Start Trading" (capital becomes deployable).
+//     transitions, as classified Python-side by the preview's
+//     `capitalBearing` flag (bench_actions._is_capital_bearing).
 //   - Pattern C (rust, status.negative top rule) for ordinary directional
 //     / invocation previews.
 //
@@ -72,20 +79,14 @@ Item {
     // and human messages without parsing free text.
     signal submitBlocked(var blockers)
 
-    // Submit affordance is enabled for demote, freeze-manifest, and
-    // canonical backtest evidence action families. Every other action
-    // family still routes to the inert "Not wired in v1" primary button
-    // below. The kind comes from the action-intent preview when present,
-    // otherwise from the action label's prefix.
-    readonly property var _submitCapableKinds: ({
-        "demote": true,
-        "freeze_manifest": true,
-        "initiate_backtest": true,
-        "refresh_backtest": true,
-        "start_trading": true,
-        "stop_trading": true
-    })
-    readonly property string _currentActionKind: _actionKind(actionData)
+    // Submit-capability is Python-owned (P2-12): the read model stamps every
+    // menu item's actionIntentPreview with `actionKind` and the spec-derived
+    // submit-capability flag (`executable`, from
+    // bench_actions.ACTION_KIND_SPECS via _is_submit_capable_action). QML
+    // only ROUTES — the per-family booleans below pick which explicit bridge
+    // socket the submit button dispatches to. Every non-submit-capable
+    // action family still gets the inert "Not wired in v1" primary below.
+    readonly property string _currentActionKind: _preview.actionKind || "unknown"
     readonly property bool _isDemoteSubmit: _currentActionKind === "demote"
     readonly property bool _isReturnToIdleSubmit: _currentActionKind === "return"
                                                   && ((actionData && actionData.targetStage) || "") === "idle"
@@ -99,13 +100,7 @@ Item {
                                                      && ((rowData && rowData.stage) || "") === "paper"
     readonly property bool _isPromoteToPaperSubmit: _currentActionKind === "promote"
                                                   && ((actionData && actionData.targetStage) || "") === "paper"
-    readonly property bool _isSubmitCapable: (!!_submitCapableKinds[_currentActionKind]
-                                             && (_currentActionKind !== "start_trading"
-                                                 || _isStartPaperRunnerSubmit)
-                                             && (_currentActionKind !== "stop_trading"
-                                                 || _isStopPaperRunnerSubmit))
-                                             || _isReturnToIdleSubmit
-                                             || _isPromoteToPaperSubmit
+    readonly property bool _isSubmitCapable: !!_preview.executable
 
     // Reason text the operator types into the inline input when the action
     // is submit-capable. The submit button is gated on non-blank reason so
@@ -125,31 +120,14 @@ Item {
     readonly property var _pktEvidence: _packet.evidence || ({})
     readonly property var _pktStatus:   _packet.status   || ({})
 
-    // PR N (ADR 0049): prefer the normalized actionIntentPreview carried on
-    // the menu item dict when present. The QML helpers below remain as a
-    // fallback path so the modal survives a future read-model rebuild that
-    // temporarily omits the preview. Read-only; never mutated here.
-    readonly property var  _preview:           (actionData && actionData.actionIntentPreview) || ({})
-    readonly property bool _previewAvailable:  !!(actionData && actionData.actionIntentPreview)
-
-    // ------------------------------------------------------------------
-    // Canonical backtest evidence parameters (PR 13).
-    //
-    // Single source of truth for the walk-forward evidence shape the
-    // strategy bank uses: 2020-01-01 → 2024-12-31, $100,000 initial equity,
-    // and raw research risk policy (`bypass`). `_dispatchBacktestSubmit`
-    // spreads this into `proposeBacktest(...)` so the literal lives in
-    // exactly one place AND is behaviorally testable (a test can read this
-    // property off an instantiated modal). The canonical-evidence guarantee
-    // therefore survives regardless of where the literal is grepped.
-    // ------------------------------------------------------------------
-    readonly property var _canonicalBacktestParams: ({
-        "start": "2020-01-01",
-        "end": "2024-12-31",
-        "walk_forward": true,
-        "initial_equity": 100000,
-        "risk_policy": "bypass"
-    })
+    // PR N (ADR 0049) / P2-12: the normalized actionIntentPreview carried on
+    // the menu item dict is the single source for the action kind, intent
+    // copy, requirements, future-record label, safety copy, capital
+    // classification, and submit-capability. Python guarantees the preview
+    // on every menu item (bench_actions._compute_bench_action_menu); the
+    // former QML fallback classifiers were removed. Read-only; never
+    // mutated here.
+    readonly property var _preview: (actionData && actionData.actionIntentPreview) || ({})
 
     // ------------------------------------------------------------------
     // PR O (ADR 0049): local command-draft preview
@@ -433,15 +411,14 @@ Item {
     }
 
     // ------------------------------------------------------------------
-    // Canonical backtest submit (PR 13).
+    // Canonical backtest submit (PR 13 / P2-12).
     //
-    // Runs the evidence shape used by the strategy bank: walk-forward,
-    // 2020-01-01 through 2024-12-31, $100,000 initial equity, and raw
-    // research risk policy (`bypass`). QML supplies only the strategy id
-    // and the canonical run settings; all validation and execution stays
-    // behind the Python command bridge. The canonical settings come from
-    // the single readonly _canonicalBacktestParams source spread into the
-    // proposeBacktest call below.
+    // Runs the evidence shape used by the strategy bank. QML supplies ONLY
+    // the strategy id: the canonical walk-forward parameters are
+    // Python-owned — CANONICAL_BACKTEST_PARAMS in bench_command_bridge.py
+    // fills the proposal defaults, so the literal lives in exactly one
+    // place. All validation and execution stays behind the Python command
+    // bridge.
     // ------------------------------------------------------------------
     function _dispatchBacktestSubmit() {
         if (!root._isBacktestSubmit) return
@@ -456,10 +433,9 @@ Item {
         root._submitErrorMessage = ""
         root._submitInFlight = true
 
-        var proposal = BenchCommandBridge.proposeBacktest(Object.assign(
-            { "strategy_id": strategyId },
-            root._canonicalBacktestParams
-        ))
+        var proposal = BenchCommandBridge.proposeBacktest({
+            "strategy_id": strategyId
+        })
         if (!root._validateProposal(proposal)) return
 
         root._pendingProposalId = proposal.proposal_id
@@ -560,8 +536,8 @@ Item {
 
     // Top-level dispatcher: routes the submit button click to the right
     // action-family dispatch function. Adding a new submit-capable action
-    // family means adding one branch here and one entry in
-    // `_submitCapableKinds` above.
+    // family means adding one branch here and one spec entry in
+    // bench_actions.ACTION_KIND_SPECS (Python owns submit-capability).
     function _dispatchSubmit() {
         if (root._isDemoteSubmit || root._isReturnToIdleSubmit) {
             _dispatchDemoteSubmit()
@@ -598,29 +574,11 @@ Item {
     // Helpers — visual classification + copy selection
     // ------------------------------------------------------------------
 
-    // PR L: paper-stage Start Trading is NOT a capital-bearing transition
-    // (live feed, no capital exposure). Only flag capital-bearing when
-    // either the targetStage explicitly lands on micro_live/live, the label
-    // mentions Live/Micro Live, OR Start Trading is invoked while already
-    // at micro_live/live. See _safetyCopy for the matching prose branches.
-    readonly property bool _isCapitalBoundary: {
-        // PR N: prefer the normalized preview's capitalBearing flag.
-        if (_previewAvailable && _preview.capitalBearing !== undefined) {
-            return !!_preview.capitalBearing
-        }
-        // Fallback (matches PR L semantics, including paper-stage Start
-        // Trading refinement).
-        var label = (actionData && actionData.label) ? actionData.label : ""
-        var target = (actionData && actionData.targetStage) ? actionData.targetStage : ""
-        var stage = (rowData && rowData.stage) ? rowData.stage : ""
-        if (target === "micro_live" || target === "live") return true
-        if (label.indexOf("Micro Live") >= 0) return true
-        if (label.indexOf("Live") >= 0) return true
-        if (label === "Start Trading") {
-            return stage === "micro_live" || stage === "live"
-        }
-        return false
-    }
+    // Capital-bearing classification is Python-owned (P2-12):
+    // bench_actions._is_capital_bearing stamps the preview's capitalBearing
+    // flag, including the PR L refinement that paper-stage Start Trading is
+    // NOT capital-bearing (live feed, no capital exposure).
+    readonly property bool _isCapitalBoundary: !!_preview.capitalBearing
 
     readonly property string _verbClass: {
         if (actionData && actionData.verbClass) return actionData.verbClass
@@ -661,132 +619,21 @@ Item {
         _isCapitalBoundary ? (_proseBase + "\n\n" + _COPY_CAPITAL_LOCK) : _proseBase
 
     // ------------------------------------------------------------------
-    // PR L: Intent Packet helpers
+    // PR L / P2-12: Intent Packet content.
     //
-    // Pure presentational copy selection. No side effects, no I/O, no
-    // event-store calls, no eligibility computation. The strings below
-    // describe what a future Milodex *would* validate / record — they are
-    // never evidence that a strategy actually passes or that an event has
-    // been written. Wording must not imply real freshness, real gate
-    // evaluation, real risk approval, or command readiness.
+    // All per-action-kind copy (intent prose, requirements enumeration,
+    // future-record label, safety-boundary copy) is Python-owned —
+    // bench_actions.ACTION_KIND_SPECS et al. pre-render it onto the
+    // actionIntentPreview. The strings describe what a future Milodex
+    // *would* validate / record — they are never evidence that a strategy
+    // actually passes or that an event has been written. The sections
+    // below bind `_preview.*` directly; no QML fallback tables remain.
     // ------------------------------------------------------------------
 
-    // Coarse verb classification from the action label. Promote/Demote/
-    // Return are prefix-matched (multiple target-stage suffixes exist);
-    // the four invocation labels are fixed strings.
-    //
-    // PR N: when an `actionIntentPreview` is available on the action dict,
-    // prefer its normalized `actionKind`. The fallback path below preserves
-    // PR L semantics for any future read-model rebuild that omits the
-    // preview.
-    function _actionKind(action) {
-        if (action && action.actionIntentPreview && action.actionIntentPreview.actionKind) {
-            return action.actionIntentPreview.actionKind
-        }
-        var label = (action && action.label) ? action.label : ""
-        if (label.indexOf("Promote to ") === 0)  return "promote"
-        if (label.indexOf("Demote to ") === 0)   return "demote"
-        if (label.indexOf("Return to ") === 0)   return "return"
-        if (label === "Start Trading")           return "start_trading"
-        if (label === "Stop Trading")            return "stop_trading"
-        if (label === "Initiate Backtest")       return "initiate_backtest"
-        if (label === "Refresh Backtest")        return "refresh_backtest"
-        if (label === "Freeze Manifest")         return "freeze_manifest"
-        return "unknown"
-    }
-
-    // Plain-language explanation of what the selected action means.
-    // PR N: prefer `actionIntentPreview.intentCopy` when present.
-    function _intentCopy(action) {
-        if (action && action.actionIntentPreview && action.actionIntentPreview.intentCopy) {
-            return action.actionIntentPreview.intentCopy
-        }
-        var kind = _actionKind(action)
-        if (kind === "promote")
-            return "Move this strategy forward from its current stage to the next stage after evidence and policy gates are satisfied."
-        if (kind === "demote")
-            return "Move this strategy backward to an earlier stage and remove it from its current operating stage."
-        if (kind === "return")
-            return "Restore this strategy to a previously eligible stage or return it to the idle shelf."
-        if (kind === "start_trading")
-            return "Start a paper trading session for this strategy through the controlled runner boundary."
-        if (kind === "stop_trading")
-            return "Request a controlled stop for the current paper session. This is not the kill switch."
-        if (kind === "initiate_backtest")
-            return "Run canonical walk-forward backtest evidence for this strategy."
-        if (kind === "refresh_backtest")
-            return "Refresh aging or stale evidence with the canonical walk-forward backtest."
-        if (kind === "freeze_manifest")
-            return "Snapshot this strategy's current YAML config and stage into the event store as an auditable manifest."
-        return "Action not recognised by the intent packet renderer."
-    }
-
     // Static enumeration of what a future Milodex would validate before
-    // this action could proceed. Copy-only — no real check is performed here.
-    //
-    // PR N: when the preview carries a `requirements` list, prefer it. The
-    // QML literal below remains as a fallback path.
-    readonly property var _requirements: {
-        if (_previewAvailable
-                && _preview.requirements
-                && _preview.requirements.length !== undefined) {
-            return _preview.requirements
-        }
-        return [
-            "Evidence gate check",
-            "Freshness check",
-            "Operator confirmation",
-            "Policy lock check",
-            "Risk guard check",
-            "Event write after confirmation"
-        ]
-    }
-
-    // Non-executable display string identifying the kind of record the
-    // future event-store will write. NOT a class name, NOT a function,
-    // NOT a payload — purely a label for operator orientation.
-    // PR N: prefer the preview's `futureRecord` field when present.
-    function _futureRecord(action) {
-        if (action && action.actionIntentPreview && action.actionIntentPreview.futureRecord) {
-            return action.actionIntentPreview.futureRecord
-        }
-        var kind = _actionKind(action)
-        if (kind === "promote")            return "promotion_event"
-        if (kind === "demote")             return "demotion_event"
-        if (kind === "return")             return "stage_return_event"
-        if (kind === "start_trading")      return "session_start_event"
-        if (kind === "stop_trading")       return "session_stop_event"
-        if (kind === "initiate_backtest")  return "backtest_run"
-        if (kind === "refresh_backtest")   return "backtest_run"
-        return "—"
-    }
-
-    // SAFETY BOUNDARY copy. Always opens with the boundary sentence; appends
-    // capital-bearing language when the action crosses ADR 0004 territory.
-    // Three branches:
-    //   1. capital-bearing transition (target or label implies live capital)
-    //   2. Start Trading at paper stage (live feed, no capital exposure)
-    //   3. everything else — bare boundary sentence
-    readonly property string _COPY_SAFETY_BOUNDARY: "Bench v1 renders this intent packet for review only. No command is submitted, no event is written, and no state is changed."
-    readonly property string _COPY_CAPITAL_LOCK_SHORT: "Capital-bearing transitions remain locked while ADR 0004 is in force."
-    readonly property string _COPY_PAPER_START: "Paper-stage sessions use live feed with no capital exposure. Capital-bearing stages remain locked while ADR 0004 is in force."
-
-    function _safetyCopy(rowDataIn, action) {
-        // PR N: prefer the preview's pre-rendered safety copy when present.
-        if (action && action.actionIntentPreview && action.actionIntentPreview.safetyCopy) {
-            return action.actionIntentPreview.safetyCopy
-        }
-        var base = _COPY_SAFETY_BOUNDARY
-        var label = (action && action.label) ? action.label : ""
-        var stage = (rowDataIn && rowDataIn.stage) ? rowDataIn.stage : ""
-        if (label === "Start Trading" && stage === "paper") {
-            return base + "\n\n" + _COPY_PAPER_START
-        }
-        if (_isCapitalBoundary) {
-            return base + "\n\n" + _COPY_CAPITAL_LOCK_SHORT
-        }
-        return base
-    }
+    // this action could proceed. Copy-only — rendered verbatim from the
+    // Python-owned preview (bench_actions._ACTION_REQUIREMENTS).
+    readonly property var _requirements: _preview.requirements || []
 
     // ------------------------------------------------------------------
     // Formatting helpers — delegate to Formatters singleton (PR10).
@@ -845,7 +692,7 @@ Item {
             // ============================================================
             SectionLabel { label: "INTENT PACKET"; ordinal: "02" }
 
-            ProseBlock { text: root._intentCopy(root.actionData) }
+            ProseBlock { text: root._preview.intentCopy || "" }
 
             SectionRule {}
 
@@ -927,7 +774,7 @@ Item {
             // ============================================================
             SectionLabel { label: "FUTURE RECORD"; ordinal: "05" }
 
-            DetailRow { label: "Record kind"; value: root._futureRecord(root.actionData) }
+            DetailRow { label: "Record kind"; value: root._preview.futureRecord || "—" }
 
             SectionRule {}
 
@@ -1010,7 +857,7 @@ Item {
             // ============================================================
             SectionLabel { label: "SAFETY BOUNDARY"; ordinal: "07" }
 
-            ProseBlock { text: root._safetyCopy(root.rowData, root.actionData) }
+            ProseBlock { text: root._preview.safetyCopy || "" }
 
             // ============================================================
             // 8. DEMOTION SUBMIT (ADR 0051 Phase C2 — submit-capable branch)
