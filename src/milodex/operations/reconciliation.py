@@ -20,6 +20,7 @@ from milodex.core.event_store import (
     ReconciliationRunEvent,
     TradeEvent,
 )
+from milodex.core.trade_status import POSITION_AFFECTING_STATUSES
 from milodex.risk.attribution import strategy_positions
 from milodex.risk.models import ReconciliationReadiness
 
@@ -43,7 +44,9 @@ DEFERRED_CHECKS: tuple[str, ...] = (
 )
 LOCAL_ONLY_INCIDENT_WINDOW = timedelta(hours=24)
 
-POSITION_AFFECTING_STATUSES = frozenset({"submitted", "accepted", "filled"})
+# POSITION_AFFECTING_STATUSES is imported from core/trade_status.py — the
+# shared home it splits with risk/attribution.py (P2-10). It remains
+# re-exported from this module's namespace for existing callers.
 OPEN_ORDER_STATUSES = frozenset({"submitted", "accepted"})
 
 
@@ -895,9 +898,29 @@ def build_warnings(result: ReconciliationResult, event_store: EventStore) -> lis
             "Drift detected - R-OPS-004 now blocks exposure-increasing paper previews "
             "and submits until reconciliation is clean for the current New York date."
         )
-    warnings.extend(per_strategy_ledger_warnings(event_store, result))
+    warnings.extend(stale_pending_attempt_warnings(event_store))
     warnings.extend(risk_profile_audit_warnings(event_store))
     return warnings
+
+
+def stale_pending_attempt_warnings(event_store: EventStore) -> list[str]:
+    """Informational WARN for execution attempts stuck at 'pending' (P1-02).
+
+    A 'pending' outbox row older than the staleness threshold means a process
+    died between the pre-submit outbox write and the broker call/finalize —
+    the order may or may not exist at the broker. Informational only (does
+    not feed ``incident_reason_codes`` or readiness): the attempt already
+    counts toward the duplicate-order veto, and the operator can match the
+    ``client_order_id`` exactly against the broker's order list.
+    """
+    return [
+        f"Execution attempt {attempt.client_order_id} ({attempt.symbol} "
+        f"{attempt.side} x{attempt.quantity:g}) has been 'pending' since "
+        f"{attempt.created_at.isoformat()} - likely crash between outbox write "
+        "and broker submit/finalize. Verify against the broker's order list "
+        "(client_order_id matches exactly); informational only."
+        for attempt in event_store.list_stale_pending_execution_attempts()
+    ]
 
 
 def risk_profile_audit_warnings(event_store: EventStore) -> list[str]:

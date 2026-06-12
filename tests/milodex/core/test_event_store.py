@@ -12,6 +12,7 @@ from milodex.core.event_store import (
     BacktestEquitySnapshotEvent,
     BacktestRunEvent,
     EventStore,
+    ExecutionAttemptEvent,
     ExplanationEvent,
     KillSwitchEvent,
     OrchestrationBatchEvent,
@@ -52,7 +53,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 13
+    assert store.schema_version == 14
     assert {
         "_schema_version",
         "explanations",
@@ -79,7 +80,7 @@ def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
     db_path = tmp_path / "milodex.db"
     store = EventStore(db_path)
 
-    assert store.schema_version == 13
+    assert store.schema_version == 14
     with sqlite3.connect(db_path) as con:
         batch_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")}
         job_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_jobs)")}
@@ -1114,7 +1115,7 @@ def test_migration_008_backfills_walk_forward_explanations(tmp_path):
 
     # Open with the live EventStore — this triggers migrations 008-012.
     store = EventStore(db_path)
-    assert store.schema_version == 13
+    assert store.schema_version == 14
 
     rows = sorted(store.list_explanations(), key=lambda r: r.recorded_at)
     assert len(rows) == 4
@@ -1231,7 +1232,7 @@ def test_migration_008_is_idempotent(tmp_path):
     rows = store2.list_explanations()
     assert len(rows) == 1
     assert rows[0].backtest_run_id == db_run_id
-    assert store2.schema_version == 13
+    assert store2.schema_version == 14
 
 
 # ─── BacktestEquitySnapshotEvent CRUD (ADR 0053, migration 010) ──────────────
@@ -1607,6 +1608,7 @@ def _append_dedup_trade(
     side: str = "buy",
     status: str = "submitted",
     source: str = "paper",
+    broker_order_id: str | None = None,
 ) -> None:
     explanation_id = store.append_explanation(
         ExplanationEvent(**_explanation_kwargs(submitted_by="operator", symbol=symbol, side=side))
@@ -1628,7 +1630,7 @@ def _append_dedup_trade(
             strategy_stage="paper",
             strategy_config_path="configs/x.yaml",
             submitted_by="operator",
-            broker_order_id=None,
+            broker_order_id=broker_order_id,
             broker_status=None,
             message=None,
         )
@@ -1678,6 +1680,283 @@ def test_count_recent_submitted_orders_treats_naive_timestamps_as_utc(tmp_path):
 
     since = now - timedelta(seconds=60)
     assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+# ---------------------------------------------------------------------------
+# execution_attempts outbox (P1-02) — durable attempt row before broker submit,
+# atomic explanation+trade, hardened duplicate-order count, stale-pending sweep
+# ---------------------------------------------------------------------------
+
+
+def _attempt_event(**overrides) -> ExecutionAttemptEvent:
+    """Build a minimal valid ExecutionAttemptEvent for outbox tests."""
+    base = {
+        "client_order_id": "coid-1",
+        "symbol": "SPY",
+        "side": "buy",
+        "quantity": 1.0,
+        "order_type": "market",
+        "created_at": datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+        "status": "pending",
+        "strategy_name": "alpha",
+        "strategy_config_path": "configs/x.yaml",
+        "session_id": "sess-1",
+    }
+    base.update(overrides)
+    return ExecutionAttemptEvent(**base)
+
+
+def test_execution_attempt_lifecycle_pending_to_submitted(tmp_path):
+    """Happy path: pending row, then finalized 'submitted' with broker_order_id."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_execution_attempt(_attempt_event())
+
+    [pending] = store.list_execution_attempts()
+    assert pending.status == "pending"
+    assert pending.broker_order_id is None
+    assert pending.finalized_at is None
+
+    finalized_at = datetime(2026, 5, 7, 14, 0, 2, tzinfo=UTC)
+    store.finalize_execution_attempt(
+        client_order_id="coid-1",
+        status="submitted",
+        finalized_at=finalized_at,
+        broker_order_id="broker-1",
+    )
+
+    [attempt] = store.list_execution_attempts()
+    assert attempt.status == "submitted"
+    assert attempt.broker_order_id == "broker-1"
+    assert attempt.finalized_at == finalized_at
+    assert attempt.failure_detail is None
+
+
+def test_finalize_execution_attempt_records_failure_detail(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_execution_attempt(_attempt_event())
+
+    store.finalize_execution_attempt(
+        client_order_id="coid-1",
+        status="rejected",
+        finalized_at=datetime(2026, 5, 7, 14, 0, 1, tzinfo=UTC),
+        failure_detail="potential wash trade detected (40310000)",
+    )
+
+    [attempt] = store.list_execution_attempts()
+    assert attempt.status == "rejected"
+    assert "wash trade" in attempt.failure_detail
+
+
+def test_finalize_execution_attempt_requires_pending_row(tmp_path):
+    """Finalize is exactly-once: unknown ids and re-finalization both raise."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    with pytest.raises(ValueError, match="No pending execution attempt"):
+        store.finalize_execution_attempt(
+            client_order_id="missing",
+            status="submitted",
+            finalized_at=datetime.now(tz=UTC),
+        )
+
+    store.append_execution_attempt(_attempt_event())
+    store.finalize_execution_attempt(
+        client_order_id="coid-1",
+        status="submitted",
+        finalized_at=datetime.now(tz=UTC),
+        broker_order_id="broker-1",
+    )
+    with pytest.raises(ValueError, match="No pending execution attempt"):
+        store.finalize_execution_attempt(
+            client_order_id="coid-1",
+            status="error",
+            finalized_at=datetime.now(tz=UTC),
+        )
+
+
+def test_finalize_execution_attempt_rejects_invalid_status(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_execution_attempt(_attempt_event())
+
+    with pytest.raises(ValueError, match="Invalid execution-attempt terminal status"):
+        store.finalize_execution_attempt(
+            client_order_id="coid-1",
+            status="pending",
+            finalized_at=datetime.now(tz=UTC),
+        )
+
+
+def _dedup_trade_event(*, explanation_id: int = 0, **overrides) -> TradeEvent:
+    base = {
+        "explanation_id": explanation_id,
+        "recorded_at": datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+        "status": "submitted",
+        "source": "paper",
+        "symbol": "SPY",
+        "side": "buy",
+        "quantity": 1.0,
+        "order_type": "market",
+        "time_in_force": "day",
+        "estimated_unit_price": 400.0,
+        "estimated_order_value": 400.0,
+        "strategy_name": "alpha",
+        "strategy_stage": "paper",
+        "strategy_config_path": "configs/x.yaml",
+        "submitted_by": "operator",
+        "broker_order_id": None,
+        "broker_status": None,
+        "message": None,
+    }
+    base.update(overrides)
+    return TradeEvent(**base)
+
+
+def test_append_explanation_and_trade_links_and_persists_both(tmp_path):
+    """The trade row carries the explanation id inserted in the same txn."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    explanation_id, trade_id = store.append_explanation_and_trade(
+        explanation=ExplanationEvent(**_explanation_kwargs(submitted_by="operator")),
+        # explanation_id=0 placeholder — the method overrides it.
+        trade=_dedup_trade_event(),
+    )
+
+    [trade] = store.list_trades()
+    assert trade.id == trade_id
+    assert trade.explanation_id == explanation_id
+    [explanation] = store.list_explanations()
+    assert explanation.id == explanation_id
+
+
+def test_append_explanation_and_trade_is_atomic_on_trade_failure(tmp_path):
+    """Failure between the two inserts persists NEITHER row (one transaction)."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    with pytest.raises(Exception):  # noqa: B017, PT011 — sqlite bind error type is incidental
+        store.append_explanation_and_trade(
+            explanation=ExplanationEvent(**_explanation_kwargs(submitted_by="operator")),
+            # Unbindable quantity makes the SECOND insert fail after the
+            # explanation insert succeeded inside the shared transaction.
+            trade=_dedup_trade_event(quantity=object()),
+        )
+
+    assert store.list_explanations() == []
+    assert store.list_trades() == []
+
+
+def test_append_explanation_and_trade_enforces_dual_ancestor_rule(tmp_path):
+    """The atomic path applies the same migration-008 check as append_explanation."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    with pytest.raises(ValueError, match="must carry an ancestor"):
+        store.append_explanation_and_trade(
+            explanation=ExplanationEvent(**_explanation_kwargs(submitted_by="strategy_runner")),
+            trade=_dedup_trade_event(),
+        )
+
+    assert store.list_explanations() == []
+    assert store.list_trades() == []
+
+
+def test_count_recent_submitted_orders_counts_submitted_attempt_without_trade(tmp_path):
+    """P1-02 recovery surface: broker success recorded on the attempt, but the
+    trade row was lost (crash before the atomic write) — must still veto."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_execution_attempt(
+        _attempt_event(status="submitted", broker_order_id="ghost-1", created_at=now)
+    )
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_count_recent_submitted_orders_counts_pending_attempt(tmp_path):
+    """A pending attempt (in-flight or crashed mid-submit) counts — fail-safe."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_execution_attempt(_attempt_event(created_at=now))
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_count_recent_submitted_orders_does_not_double_count_attempt_with_trade(tmp_path):
+    """A fully-recorded submit (attempt + trade sharing broker_order_id) counts
+    once: the trades subquery counts it, the attempts subquery excludes it."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_execution_attempt(
+        _attempt_event(status="submitted", broker_order_id="b-1", created_at=now)
+    )
+    _append_dedup_trade(store, recorded_at=now, broker_order_id="b-1")
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_count_recent_submitted_orders_ignores_rejected_attempts(tmp_path):
+    """A broker rejection is a definitive no-order outcome — the only
+    attempt state excluded from the dedup count."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_execution_attempt(
+        _attempt_event(client_order_id="coid-r", status="rejected", created_at=now)
+    )
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 0
+
+
+def test_count_recent_submitted_orders_counts_error_attempts(tmp_path):
+    """An 'error' attempt (unexpected broker exception, e.g. a timeout) can
+    fire AFTER the order reached the broker — delivery is unknown, so the
+    fail-safe is to veto."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_execution_attempt(
+        _attempt_event(client_order_id="coid-e", status="error", created_at=now)
+    )
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 1
+
+
+def test_count_recent_submitted_orders_filters_attempts_by_symbol_side_window(tmp_path):
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_execution_attempt(
+        _attempt_event(client_order_id="coid-sym", symbol="QQQ", created_at=now)
+    )
+    store.append_execution_attempt(
+        _attempt_event(client_order_id="coid-side", side="sell", created_at=now)
+    )
+    store.append_execution_attempt(
+        _attempt_event(client_order_id="coid-old", created_at=now - timedelta(seconds=120))
+    )
+
+    since = now - timedelta(seconds=60)
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 0
+
+
+def test_list_stale_pending_execution_attempts(tmp_path):
+    """Old 'pending' rows are listed; fresh pending and finalized rows are not."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime.now(tz=UTC)
+    store.append_execution_attempt(
+        _attempt_event(client_order_id="coid-stale", created_at=now - timedelta(minutes=30))
+    )
+    store.append_execution_attempt(_attempt_event(client_order_id="coid-fresh", created_at=now))
+    store.append_execution_attempt(
+        _attempt_event(
+            client_order_id="coid-done",
+            status="submitted",
+            broker_order_id="b-2",
+            created_at=now - timedelta(minutes=30),
+        )
+    )
+
+    stale = store.list_stale_pending_execution_attempts()
+    assert [attempt.client_order_id for attempt in stale] == ["coid-stale"]
 
 
 def test_get_latest_open_session_id_returns_none_when_no_open_run(tmp_path):

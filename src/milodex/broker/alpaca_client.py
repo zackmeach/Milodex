@@ -141,8 +141,15 @@ class AlpacaBrokerClient(BrokerClient):
         limit_price: float | None = None,
         stop_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        client_order_id: str | None = None,
     ) -> Order:
-        """Submit an order to Alpaca."""
+        """Submit an order to Alpaca.
+
+        ``client_order_id`` (the execution outbox's pre-generated idempotency
+        key, P1-02) is forwarded to Alpaca, which stores it on the order —
+        a crashed attempt can then be matched exactly against the broker's
+        order list instead of heuristically by symbol/side/time.
+        """
         alpaca_side = _SIDE_MAP[side]
         alpaca_tif = _TIF_MAP[time_in_force]
 
@@ -153,6 +160,7 @@ class AlpacaBrokerClient(BrokerClient):
                     qty=quantity,
                     side=alpaca_side,
                     time_in_force=alpaca_tif,
+                    client_order_id=client_order_id,
                 )
             elif order_type == OrderType.LIMIT:
                 request = LimitOrderRequest(
@@ -161,6 +169,7 @@ class AlpacaBrokerClient(BrokerClient):
                     side=alpaca_side,
                     time_in_force=alpaca_tif,
                     limit_price=limit_price,
+                    client_order_id=client_order_id,
                 )
             elif order_type == OrderType.STOP:
                 request = StopOrderRequest(
@@ -169,6 +178,7 @@ class AlpacaBrokerClient(BrokerClient):
                     side=alpaca_side,
                     time_in_force=alpaca_tif,
                     stop_price=stop_price,
+                    client_order_id=client_order_id,
                 )
             elif order_type == OrderType.STOP_LIMIT:
                 request = StopLimitOrderRequest(
@@ -178,6 +188,7 @@ class AlpacaBrokerClient(BrokerClient):
                     time_in_force=alpaca_tif,
                     limit_price=limit_price,
                     stop_price=stop_price,
+                    client_order_id=client_order_id,
                 )
             else:
                 msg = f"Unsupported order type: {order_type}"

@@ -164,7 +164,7 @@ def test_010_migration_splits_backtest_and_quarantines_stray(tmp_path):
 
     # Opening EventStore applies migrations 010 through current head.
     store = EventStore(db_path)
-    assert store.schema_version == 13
+    assert store.schema_version == 14
 
     with sqlite3.connect(db_path) as conn:
         conn.row_factory = sqlite3.Row
@@ -244,7 +244,7 @@ def test_011_creates_risk_profile_changes_table(tmp_path):
     db_path = tmp_path / "milodex.db"
 
     store = EventStore(db_path)
-    assert store.schema_version == 13
+    assert store.schema_version == 14
 
     with sqlite3.connect(str(db_path)) as conn:
         cur = conn.execute(
@@ -273,3 +273,76 @@ def test_011_creates_risk_profile_changes_table(tmp_path):
         cur = conn.execute("PRAGMA index_list(risk_profile_changes)")
         index_names = {row[1] for row in cur.fetchall()}
         assert "idx_risk_profile_changes_time" in index_names
+
+
+def test_014_creates_execution_attempts_on_existing_store(tmp_path):
+    """Migration 014 applies cleanly on an existing populated store (P1-02).
+
+    Seed: apply 001-013 raw, insert an explanation+trade pair, then open
+    EventStore (triggers 014). The new outbox table, its indexes, and the
+    trades(broker_order_id) correlation index must exist; pre-existing rows
+    must be untouched.
+    """
+    db_path = tmp_path / "milodex.db"
+
+    with sqlite3.connect(db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        _run_migrations_up_to(conn, 13)
+        cursor = conn.execute(
+            """INSERT INTO explanations
+               (recorded_at, decision_type, status, symbol, side, quantity, order_type,
+                time_in_force, submitted_by, market_open, account_equity, account_cash,
+                account_portfolio_value, account_daily_pnl, risk_allowed, risk_summary,
+                reason_codes_json, risk_checks_json, context_json)
+               VALUES ('2026-06-10T20:00:00+00:00', 'submit', 'submitted', 'SPY', 'buy',
+                       1.0, 'market', 'day', 'operator', 1, 10000.0, 10000.0, 10000.0,
+                       0.0, 1, 'Allowed', '[]', '[]', '{}')"""
+        )
+        conn.execute(
+            """INSERT INTO trades
+               (explanation_id, recorded_at, status, source, symbol, side, quantity,
+                order_type, time_in_force, estimated_unit_price, estimated_order_value,
+                submitted_by, broker_order_id)
+               VALUES (?, '2026-06-10T20:00:00+00:00', 'submitted', 'paper', 'SPY', 'buy',
+                       1.0, 'market', 'day', 400.0, 400.0, 'operator', 'b-1')""",
+            (cursor.lastrowid,),
+        )
+        conn.commit()
+
+    store = EventStore(db_path)
+    assert store.schema_version == 14
+
+    with sqlite3.connect(str(db_path)) as conn:
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='execution_attempts'"
+        )
+        assert cur.fetchone() is not None, "execution_attempts table must exist after migration 014"
+
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(execution_attempts)")}
+        assert {
+            "id",
+            "client_order_id",
+            "strategy_name",
+            "strategy_config_path",
+            "session_id",
+            "symbol",
+            "side",
+            "quantity",
+            "order_type",
+            "created_at",
+            "status",
+            "broker_order_id",
+            "finalized_at",
+            "failure_detail",
+        } <= cols
+
+        attempt_indexes = {row[1] for row in conn.execute("PRAGMA index_list(execution_attempts)")}
+        assert "idx_execution_attempts_symbol_status_created" in attempt_indexes
+        assert "idx_execution_attempts_status_created" in attempt_indexes
+        trade_indexes = {row[1] for row in conn.execute("PRAGMA index_list(trades)")}
+        assert "idx_trades_broker_order_id" in trade_indexes
+
+        # Pre-existing rows survive untouched.
+        assert conn.execute("SELECT COUNT(*) FROM trades").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM explanations").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM execution_attempts").fetchone()[0] == 0
