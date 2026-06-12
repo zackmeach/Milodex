@@ -20,6 +20,7 @@ from milodex.core.event_store import (
     ReconciliationRunEvent,
     TradeEvent,
 )
+from milodex.core.trade_status import POSITION_AFFECTING_STATUSES
 from milodex.risk.attribution import strategy_positions
 from milodex.risk.models import ReconciliationReadiness
 
@@ -43,7 +44,9 @@ DEFERRED_CHECKS: tuple[str, ...] = (
 )
 LOCAL_ONLY_INCIDENT_WINDOW = timedelta(hours=24)
 
-POSITION_AFFECTING_STATUSES = frozenset({"submitted", "accepted", "filled"})
+# POSITION_AFFECTING_STATUSES is imported from core/trade_status.py — the
+# shared home it splits with risk/attribution.py (P2-10). It remains
+# re-exported from this module's namespace for existing callers.
 OPEN_ORDER_STATUSES = frozenset({"submitted", "accepted"})
 
 

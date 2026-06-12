@@ -42,14 +42,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
+from milodex.core.trade_status import POSITION_AFFECTING_STATUSES
+
 if TYPE_CHECKING:
     from milodex.core.event_store import EventStore
 
 
-# Mirror of operations/reconciliation.py POSITION_AFFECTING_STATUSES.
-# Duplicated (not imported) because reconciliation.py imports
-# strategy_positions from this module — the edge already runs the other way.
-_POSITION_AFFECTING_STATUSES = frozenset({"submitted", "accepted", "filled"})
+# Shared with operations/reconciliation.py via core/trade_status.py
+# (reconciliation.py imports strategy_positions from this module — the
+# edge already runs the other way, so neither can host the constant).
+# Local alias preserved for this module's private-name convention.
+_POSITION_AFFECTING_STATUSES = POSITION_AFFECTING_STATUSES
 
 OPERATOR_ATTRIBUTION = "operator"
 """Reserved pseudo-strategy id for positions opened outside any runner.
