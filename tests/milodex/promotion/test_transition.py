@@ -249,6 +249,85 @@ def test_update_stage_in_yaml_raises_when_from_stage_absent(tmp_path):
         _update_stage_in_yaml(path, "backtest", "paper")
 
 
+def test_transition_with_inline_comment_on_stage_line_fails_before_any_db_write(tmp_path):
+    """A ``stage: "backtest"  # comment`` line does not match the rewrite
+    regex (trailing comments are deliberately unmatched). The rewrite is
+    precomputed BEFORE the event-store commit, so the failure must leave
+    no durable rows — not strand a manifest+promotion ahead of a failed
+    YAML update."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path)
+    original = cfg_path.read_text(encoding="utf-8")
+    cfg_path.write_text(
+        original.replace('stage: "backtest"', 'stage: "backtest"  # promoted by hand'),
+        encoding="utf-8",
+    )
+    # Comments don't affect the canonical hash, so the evidence hash check passes.
+    to_stage_hash = _hash_at_stage(cfg_path, "paper")
+    evidence = _build_evidence(store, manifest_hash=to_stage_hash)
+    gate = PromotionCheckResult(allowed=True, promotion_type="lifecycle_exempt")
+
+    with pytest.raises(ValueError, match="before any durable state is written"):
+        transition(
+            config_path=cfg_path,
+            to_stage="paper",
+            gate_result=gate,
+            evidence=evidence,
+            approved_by="operator",
+            event_store=store,
+            now=_NOW,
+        )
+
+    # Nothing durable was appended; YAML untouched.
+    assert store.list_promotions() == []
+    assert store.list_strategy_manifests() == []
+    assert 'stage: "backtest"  # promoted by hand' in cfg_path.read_text(encoding="utf-8")
+
+
+def test_transition_yaml_write_failure_after_commit_keeps_durable_rows(tmp_path, monkeypatch):
+    """Durable-log-first ordering: if the YAML write itself fails AFTER the
+    event-store commit, the manifest and promotion rows must survive and the
+    error must say so — naming the drift-check backstop (message contract)."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path)
+    to_stage_hash = _hash_at_stage(cfg_path, "paper")
+    evidence = _build_evidence(store, manifest_hash=to_stage_hash)
+    gate = PromotionCheckResult(allowed=True, promotion_type="lifecycle_exempt")
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", _boom)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            "Durable state is written, but the YAML could not be updated; "
+            "the next cycle's drift check will flag this discrepancy"
+        ),
+    ):
+        transition(
+            config_path=cfg_path,
+            to_stage="paper",
+            gate_result=gate,
+            evidence=evidence,
+            approved_by="operator",
+            event_store=store,
+            now=_NOW,
+        )
+
+    monkeypatch.undo()
+
+    # Durable rows exist; the YAML is stale (still at backtest).
+    promotions = store.list_promotions()
+    manifests = store.list_strategy_manifests()
+    assert len(promotions) == 1
+    assert len(manifests) == 1
+    assert promotions[0].to_stage == "paper"
+    assert manifests[0].config_hash == to_stage_hash
+    assert 'stage: "backtest"' in cfg_path.read_text(encoding="utf-8")
+
+
 def test_transition_statistical_happy_path_writes_atomically_and_advances(tmp_path):
     """The statistical (non-exempt) promotion happy path through
     ``transition()`` — gate passes on real metrics, atomic manifest+promotion

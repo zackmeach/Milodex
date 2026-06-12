@@ -323,6 +323,35 @@ def test_demote_to_unsupported_stage_raises(tmp_path):
     assert store.list_promotions() == []
 
 
+def test_demote_with_inline_comment_on_stage_line_fails_before_any_db_write(tmp_path):
+    """``demote`` shares the precompute-then-write YAML path with
+    ``transition``: a ``stage: "paper"  # comment`` line (unmatched by the
+    rewrite regex) must refuse BEFORE the promotion row is appended, not
+    strand a durable demotion ahead of a failed YAML update."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper")
+    original = cfg_path.read_text(encoding="utf-8")
+    cfg_path.write_text(
+        original.replace('stage: "paper"', 'stage: "paper"  # pinned by hand'),
+        encoding="utf-8",
+    )
+    _seed_paper_promotion(store)
+
+    with pytest.raises(ValueError, match="before any durable state is written"):
+        demote(
+            config_path=cfg_path,
+            to_stage="backtest",
+            reason="should refuse on unmatched stage line",
+            approved_by="operator",
+            event_store=store,
+            now=_NOW,
+        )
+
+    # No demotion row was appended; YAML untouched.
+    assert [p.promotion_type for p in store.list_promotions()] == ["lifecycle_exempt"]
+    assert 'stage: "paper"  # pinned by hand' in cfg_path.read_text(encoding="utf-8")
+
+
 def test_demote_when_already_at_target_stage_raises(tmp_path):
     """Kills mutation: state_machine.py:296 ``if from_stage == to_stage``
     -> any operator flip (``!=``, ``is``, ``is not``).
