@@ -146,19 +146,25 @@ def transition(
     notes: str | None = None,
     now: datetime | None = None,
 ) -> PromotionEvent:
-    """Atomic promotion: freeze + append + YAML update (plan AD-5).
+    """Durable-log-first promotion: freeze + append, then YAML update (plan AD-5).
+
+    NOT atomic across the event store and the YAML file — the DB rows and the
+    file write are separate operations, deliberately ordered durable-log-first.
 
     Sequence:
       1. Build the manifest for ``to_stage`` from the YAML with its ``stage:``
          line mentally set to the target — the hash must match what the runtime
-         will see AFTER step 3.
-      2. Insert manifest + promotion (with evidence_json) in a single event-store
+         will see AFTER step 4.
+      2. Precompute and validate the YAML ``stage:`` line rewrite. If the line
+         cannot be matched (e.g. a trailing inline comment), fail here —
+         BEFORE anything durable is written.
+      3. Insert manifest + promotion (with evidence_json) in a single event-store
          transaction via :meth:`EventStore.append_manifest_and_promotion`.
-      3. After the durable commit succeeds, update the YAML's ``stage:`` line
-         in-place. A failure here leaves durable state coherent (manifest and
-         promotion are written, YAML is stale) and the next cycle's drift check
-         surfaces the discrepancy — the standard "durable log first, side
-         effects after" pattern.
+      4. After the durable commit succeeds, write the precomputed YAML content.
+         A failure here leaves durable state coherent (manifest and promotion
+         are written, YAML is stale) and the next cycle's drift check surfaces
+         the discrepancy — the standard "durable log first, side effects after"
+         pattern.
 
     Callers must have already:
       - called :func:`validate_stage_transition`
@@ -187,6 +193,11 @@ def transition(
             "Re-assemble the evidence package with the correct hash and retry."
         )
         raise ValueError(msg)
+
+    # Precompute the YAML rewrite so a stage-line match failure aborts the
+    # promotion BEFORE any durable state exists (TOCTOU stance: read once,
+    # match once, apply this exact content after the commit — no re-read).
+    updated_yaml = _prepare_stage_yaml_update(config_path, from_stage, to_stage)
 
     manifest = StrategyManifestEvent(
         strategy_id=config.strategy_id,
@@ -217,7 +228,7 @@ def transition(
         promotion=promotion,
     )
 
-    _update_stage_in_yaml(config_path, from_stage, to_stage)
+    _write_stage_yaml(config_path, updated_yaml)
 
     return PromotionEvent(
         strategy_id=promotion.strategy_id,
@@ -261,7 +272,10 @@ def demote(
 
     Side effects:
       - ``to_stage='idle'`` / ``'backtest'``: updates the YAML ``stage:`` line
-        from the current stage so the runner treats it as non-paper.
+        from the current stage so the runner treats it as non-paper. The
+        rewrite is precomputed and validated before the DB write (same
+        durable-log-first ordering as :func:`transition`), so an unmatched
+        stage line refuses before any durable state exists.
       - ``to_stage='disabled'``: YAML untouched; the demotion lives only in
         the governance ledger. (Runtime refusal lands in slice 3.)
 
@@ -295,6 +309,12 @@ def demote(
         notes_parts.append(f"evidence_ref={evidence_ref.strip()}")
     notes = " | ".join(notes_parts)
 
+    # Same durable-log-first ordering as transition(): precompute the YAML
+    # rewrite so a stage-line match failure refuses BEFORE the DB write.
+    updated_yaml: str | None = None
+    if to_stage in {"idle", "backtest"}:
+        updated_yaml = _prepare_stage_yaml_update(config_path, from_stage, to_stage)
+
     promotion = PromotionEvent(
         strategy_id=config.strategy_id,
         from_stage=from_stage,
@@ -307,8 +327,8 @@ def demote(
     )
     promotion_id = event_store.append_promotion(promotion)
 
-    if to_stage in {"idle", "backtest"}:
-        _update_stage_in_yaml(config_path, from_stage, to_stage)
+    if updated_yaml is not None:
+        _write_stage_yaml(config_path, updated_yaml)
 
     return PromotionEvent(
         strategy_id=promotion.strategy_id,
@@ -335,8 +355,8 @@ def _hash_canonical(canonical: dict) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def _update_stage_in_yaml(path: Path, from_stage: str, to_stage: str) -> None:
-    """Replace the ``stage:`` line in the YAML in-place (preserves comments/formatting).
+def _prepare_stage_yaml_update(path: Path, from_stage: str, to_stage: str) -> str:
+    """Locate the ``stage:`` line and return the rewritten file content.
 
     Tolerant of single quotes, double quotes, no quotes, and variable
     whitespace around the value — a real promotion must not leave the YAML
@@ -346,6 +366,10 @@ def _update_stage_in_yaml(path: Path, from_stage: str, to_stage: str) -> None:
     surrounding comments and formatting are preserved. It still fails loudly
     when the ``from`` stage is genuinely absent — never a silent no-op that
     would mask a real divergence.
+
+    Callers run this BEFORE any durable write so an unmatched stage line
+    (e.g. a trailing inline comment) aborts the whole operation cleanly
+    instead of stranding DB rows ahead of a failed YAML rewrite.
     """
     content = path.read_text(encoding="utf-8")
     # Anchor to a full stage line: optional indent, ``stage:``, optional
@@ -359,11 +383,39 @@ def _update_stage_in_yaml(path: Path, from_stage: str, to_stage: str) -> None:
     if match is None:
         msg = (
             f"Could not find a 'stage: {from_stage}' line in {path}. "
-            "Durable state is written, but the YAML could not be updated; "
-            "the next cycle's drift check will flag this discrepancy."
+            "Refusing before any durable state is written — fix the stage "
+            "line (e.g. remove a trailing inline comment) and retry."
         )
         raise ValueError(msg)
     quote = match.group("q")
     replacement = f"{match.group('indent')}{quote}{to_stage}{quote}"
-    updated = content[: match.start()] + replacement + content[match.end() :]
-    path.write_text(updated, encoding="utf-8")
+    return content[: match.start()] + replacement + content[match.end() :]
+
+
+def _write_stage_yaml(path: Path, updated_content: str) -> None:
+    """Write content precomputed by :func:`_prepare_stage_yaml_update`.
+
+    Called AFTER the durable commit; a failure here means the DB rows exist
+    and the YAML is stale, so the error message names the drift-check
+    backstop that will surface the discrepancy.
+    """
+    try:
+        path.write_text(updated_content, encoding="utf-8")
+    except OSError as exc:
+        msg = (
+            f"Failed to write the updated stage line to {path}: {exc}. "
+            "Durable state is written, but the YAML could not be updated; "
+            "the next cycle's drift check will flag this discrepancy."
+        )
+        raise ValueError(msg) from exc
+
+
+def _update_stage_in_yaml(path: Path, from_stage: str, to_stage: str) -> None:
+    """One-shot prepare + write of the ``stage:`` line rewrite.
+
+    For callers with no durable write between match and write (e.g. the
+    bench facade's idle→backtest stage normalization). ``transition`` and
+    ``demote`` use the two phases separately so the match is validated
+    before the event-store commit.
+    """
+    _write_stage_yaml(path, _prepare_stage_yaml_update(path, from_stage, to_stage))
