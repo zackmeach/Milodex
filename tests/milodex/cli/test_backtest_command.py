@@ -140,6 +140,34 @@ def test_backtest_output_exposes_data_quality_report():
     )
 
 
+def test_backtest_absent_data_quality_reports_not_recorded():
+    """A legacy run with no scanner output must not render as a clean pass (P2-21)."""
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.data_quality = {}  # engine default; legacy runs predate the scanner
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["data_quality"]["status"] == "not_recorded"
+    assert result.data["data_quality"]["blocker_count"] is None
+    assert any("Data quality:  not recorded" in line for line in result.human_lines)
+    assert not any("Data quality:  pass" in line for line in result.human_lines)
+
+
+def test_backtest_none_data_quality_reports_not_recorded():
+    backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+    backtest_result.data_quality = None
+
+    result = _build_backtest_result(backtest_result)
+
+    assert result.data["data_quality"]["status"] == "not_recorded"
+    assert any("Data quality:  not recorded" in line for line in result.human_lines)
+
+
+def test_data_quality_label_does_not_default_missing_status_to_pass():
+    # A payload without a status key must not be labeled "pass".
+    assert backtest_command._data_quality_label({"warning_count": 0}) == "not recorded"
+
+
 def test_backtest_output_exposes_run_manifest():
     backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
     backtest_result.run_manifest = {

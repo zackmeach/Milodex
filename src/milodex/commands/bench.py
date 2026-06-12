@@ -46,6 +46,7 @@ from milodex.core.event_store import (
     OrchestrationJobEvent,
     PromotionEvent,
 )
+from milodex.operations.freshness import DATA_FRESHNESS_STALE_HOURS
 from milodex.operations.reconciliation import latest_readiness, run_reconciliation
 from milodex.promotion import (
     FROZEN_STAGES,
@@ -275,9 +276,10 @@ class CommandResult:
         }
 
 
-# Freshness threshold shared with the CLI trust report (_data_freshness in
-# report.py).  A bar older than this is considered stale.
-_DATA_FRESHNESS_STALE_HOURS = 24.0
+# Freshness threshold — single source is operations/freshness.py, also
+# imported by the CLI trust report (_data_freshness in report.py). Local
+# alias kept for existing references/tests.
+_DATA_FRESHNESS_STALE_HOURS = DATA_FRESHNESS_STALE_HOURS
 
 
 class _DefaultWorkflowReadiness:
@@ -452,8 +454,9 @@ class _DefaultWorkflowReadiness:
     ) -> WorkflowReadinessIssue | None:
         """Return a data-freshness issue, or ``None`` if data is fresh enough.
 
-        Threshold: ``_DATA_FRESHNESS_STALE_HOURS`` (24 h), matching the CLI
-        trust report's ``_data_freshness`` helper in ``report.py``.  Both call
+        Threshold: ``DATA_FRESHNESS_STALE_HOURS`` (operations/freshness.py),
+        the same constant the CLI trust report's ``_data_freshness`` helper
+        in ``report.py`` imports.  Both call
         ``EventStore.get_latest_bar_timestamp()`` — a bounded single-row query
         that is safe on the GUI propose path.
 

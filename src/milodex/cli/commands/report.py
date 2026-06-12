@@ -38,6 +38,7 @@ from milodex.core.event_store import (
     KillSwitchEvent,
     TradeEvent,
 )
+from milodex.operations.freshness import DATA_FRESHNESS_STALE_HOURS
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -263,7 +264,7 @@ def _data_freshness(event_store: EventStore) -> dict[str, Any]:
     age_hours = (datetime.now(tz=UTC) - _aware(latest_bar_ts)).total_seconds() / 3600.0
     return {
         "latest_bar_timestamp": latest_bar_ts.isoformat(),
-        "stale": age_hours > 24.0,
+        "stale": age_hours > DATA_FRESHNESS_STALE_HOURS,
     }
 
 
