@@ -239,6 +239,35 @@ def test_final_snapshot_uses_backtest_snapshot_table_only() -> None:
 
     assert store.list_backtest_equity_snapshots_for_strategy("kernel.test.v1")
     assert store.list_portfolio_snapshots_for_strategy("kernel.test.v1") == []
+    assert kernel.snapshot_write_error is None
+
+
+def test_final_snapshot_failure_is_logged_and_recorded_not_raised(monkeypatch, caplog) -> None:
+    """P2-02: snapshot write failures stay best-effort but leave a trace."""
+    import logging
+
+    from milodex.backtesting import simulation_kernel as kernel_module
+
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store)
+
+    def _boom(**_kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(kernel_module, "record_backtest_equity_snapshot", _boom)
+
+    with caplog.at_level(logging.WARNING, logger="milodex.backtesting.simulation_kernel"):
+        kernel.record_final_snapshot(
+            session_id="kernel-session",
+            db_run_id=db_run_id,
+            recorded_at=datetime(2024, 1, 2, tzinfo=UTC),
+        )
+
+    assert kernel.snapshot_write_error == "RuntimeError: disk full"
+    assert any(
+        "Final backtest equity snapshot write failed" in record.message for record in caplog.records
+    )
 
 
 def _primary_barset(close: float = 100.0, timestamp: str = "2024-01-02") -> BarSet:

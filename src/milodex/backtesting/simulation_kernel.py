@@ -49,6 +49,7 @@ entry day.  Preserved deliberately; pinned here for the next reader.
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -69,6 +70,8 @@ from milodex.execution.service import ExecutionService
 from milodex.execution.state import KillSwitchStateStore
 from milodex.risk import RiskEvaluator
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
+
+logger = logging.getLogger(__name__)
 
 
 class MissingOpenPolicy(Enum):
@@ -157,6 +160,9 @@ class BacktestSimulationKernel:
         self.positions: dict[str, tuple[float, float]] = {}
         self.entry_state: dict[str, dict] = {}
         self.sym_fills: dict[str, dict[str, int]] = {}
+        # Set when the final ADR 0053 snapshot write fails; the engine
+        # surfaces it into the run's final metadata as `snapshot_write_error`.
+        self.snapshot_write_error: str | None = None
 
     def round_trip_count(self) -> int:
         """Return completed round trips by symbol."""
@@ -515,7 +521,13 @@ class BacktestSimulationKernel:
         db_run_id: int,
         recorded_at: datetime,
     ) -> None:
-        """Best-effort ADR 0053 snapshot write for a simulation sweep."""
+        """Best-effort ADR 0053 snapshot write for a simulation sweep.
+
+        A failure never fails the run, but it is not silent: it is logged and
+        recorded on ``self.snapshot_write_error`` so the engine can surface it
+        in the run's final metadata (audit trail), instead of being
+        indistinguishable from a legitimately empty simulation.
+        """
         try:
             record_backtest_equity_snapshot(
                 event_store=self.event_store,
@@ -525,8 +537,15 @@ class BacktestSimulationKernel:
                 backtest_run_id=db_run_id,
                 recorded_at=recorded_at,
             )
-        except Exception:  # noqa: BLE001 - snapshot is best-effort
-            pass
+        except Exception as exc:  # noqa: BLE001 - snapshot is best-effort
+            self.snapshot_write_error = f"{type(exc).__name__}: {exc}"
+            logger.warning(
+                "Final backtest equity snapshot write failed for %s (session %s): %s",
+                self.strategy_id,
+                session_id,
+                exc,
+                exc_info=True,
+            )
 
     def _skip_missing_or_invalid_sell(
         self,
