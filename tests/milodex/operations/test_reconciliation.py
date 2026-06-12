@@ -660,3 +660,52 @@ def test_per_strategy_ledger_divergence_warns_without_incident(tmp_path):
 
     readiness = latest_readiness(store, now=_LEDGER_AS_OF)
     assert readiness.ready is True
+
+
+# ── P2-06: risk-profile file vs audit-trail divergence (informational) ────────
+
+
+def test_risk_profile_divergence_warns_without_incident(tmp_path):
+    """A hand-edited risk_profile.txt surfaces as a WARN line, never an incident."""
+    from milodex.config import get_data_dir
+
+    store = EventStore(tmp_path / "milodex.db")
+    profile_file = get_data_dir() / "risk_profile.txt"
+    profile_file.parent.mkdir(parents=True, exist_ok=True)
+    profile_file.write_text("aggressive\n", encoding="utf-8")
+
+    result = run_reconciliation(
+        event_store=store,
+        broker=_BrokerFlatWithSpy(),
+        persist=True,
+        now=_LEDGER_AS_OF,
+    )
+
+    assert result.incident_reason_codes == []
+
+    warnings = build_warnings(result, store)
+    assert any("risk-profile" in w.lower() and "aggressive" in w for w in warnings)
+
+    lines = human_lines(result, store)
+    assert any("Risk profile (informational, P2-06):" in ln for ln in lines)
+    assert any("WARN" in ln and "aggressive" in ln for ln in lines)
+
+    readiness = latest_readiness(store, now=_LEDGER_AS_OF)
+    assert readiness.ready is True
+
+
+def test_risk_profile_clean_emits_no_profile_warning(tmp_path):
+    """No profile file + no audit history = the implicit default; no WARN line."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    result = run_reconciliation(
+        event_store=store,
+        broker=_BrokerFlatWithSpy(),
+        persist=True,
+        now=_LEDGER_AS_OF,
+    )
+
+    warnings = build_warnings(result, store)
+    assert not any("risk-profile" in w.lower() for w in warnings)
+    lines = human_lines(result, store)
+    assert not any("Risk profile (informational, P2-06):" in ln for ln in lines)
