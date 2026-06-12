@@ -1824,6 +1824,82 @@ def test_submit_backtest_from_idle_returns_strategy_to_backtest_stage(
     assert events[0].backtest_run_id == "bench-run"
 
 
+def test_submit_backtest_from_idle_writes_stage_return_before_engine_runs(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """ADR 0050 Decision 6: the idle->backtest governance write happens at job
+    acceptance — the YAML stage and the stage_return promotion event are
+    already durable when the engine starts running."""
+    config_path = _write_strategy(config_dir, stage="idle")
+    observed: dict[str, object] = {}
+    inner = _FakeSingleBacktestEngine()
+
+    class _ObservingEngine:
+        def run(self, start: date, end: date, *, run_id: str | None = None) -> BacktestResult:
+            observed["yaml"] = config_path.read_text(encoding="utf-8")
+            observed["promotions"] = event_store.list_promotions_for_strategy(STRATEGY_ID)
+            return inner.run(start, end, run_id=run_id)
+
+    facade = make_facade(backtest_engine_factory=lambda _sid, **_kw: _ObservingEngine())
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert result.status == "submitted", result.blockers
+    assert 'stage: "backtest"' in observed["yaml"]
+    promotions = observed["promotions"]
+    assert len(promotions) == 1
+    assert promotions[0].promotion_type == "stage_return"
+    assert promotions[0].from_stage == "idle"
+    assert promotions[0].to_stage == "backtest"
+    assert promotions[0].backtest_run_id == "bench-run"
+
+
+class _ExplodingBacktestEngine:
+    def run(self, start: date, end: date, *, run_id: str | None = None) -> BacktestResult:
+        raise RuntimeError("engine blew up")
+
+
+def test_submit_backtest_failure_does_not_roll_back_stage_return(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    """A failed run leaves the strategy at BACKTEST with no fresh evidence —
+    a legitimate ADR 0050 state. No YAML revert, no compensating event."""
+    config_path = _write_strategy(config_dir, stage="idle")
+    facade = make_facade(backtest_engine_factory=lambda _sid, **_kw: _ExplodingBacktestEngine())
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert result.status == "error"
+    assert result.blockers[0].reason_code == "backtest_failed"
+    # Acceptance-time governance state survives the failure.
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
+    events = event_store.list_promotions_for_strategy(STRATEGY_ID)
+    assert len(events) == 1
+    assert events[0].promotion_type == "stage_return"
+    assert events[0].from_stage == "idle"
+    assert events[0].to_stage == "backtest"
+    # The error result still carries the durable stage-return refs.
+    assert result.durable_refs["from_stage"] == "idle"
+    assert result.durable_refs["to_stage"] == "backtest"
+    assert result.durable_refs["stage_return_promotion_id"]
+
+
+def test_submit_backtest_non_idle_stage_writes_no_stage_return(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_strategy(config_dir, stage="paper")
+    engine = _FakeSingleBacktestEngine()
+    facade = make_facade(backtest_engine_factory=lambda _sid, **_kw: engine)
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert result.status == "submitted", result.blockers
+    assert "from_stage" not in result.durable_refs
+    assert "stage_return_promotion_id" not in result.durable_refs
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
 def test_submit_backtest_runs_walk_forward_with_prefetched_bars(
     make_facade, config_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -3296,8 +3372,16 @@ class TestRunReconciliationNow:
             config_dir, locks_dir, event_store, broker_factory=_FakeBroker
         )
         result = facade.run_reconciliation_now()
-        for key in ("status", "clean", "mismatch_count", "trading_day", "run_id",
-                    "run_db_id", "recorded_at", "error"):
+        for key in (
+            "status",
+            "clean",
+            "mismatch_count",
+            "trading_day",
+            "run_id",
+            "run_db_id",
+            "recorded_at",
+            "error",
+        ):
             assert key in result, f"Expected key {key!r} in run_reconciliation_now result"
 
     def test_persists_reconciliation_run_row(
@@ -3331,9 +3415,7 @@ class TestRunReconciliationNow:
         self, config_dir: Path, locks_dir: Path, event_store: EventStore
     ) -> None:
         """Without broker_factory, run_reconciliation_now returns status='error', never raises."""
-        facade = self._facade_with_broker(
-            config_dir, locks_dir, event_store, broker_factory=None
-        )
+        facade = self._facade_with_broker(config_dir, locks_dir, event_store, broker_factory=None)
         result = facade.run_reconciliation_now()
         assert result["status"] == "error"
         assert result["clean"] is False
@@ -3359,12 +3441,11 @@ class TestRunReconciliationNow:
         self, config_dir: Path, locks_dir: Path, event_store: EventStore
     ) -> None:
         """When the broker factory raises, run_reconciliation_now returns status='error'."""
+
         def _raise():
             raise RuntimeError("network timeout")
 
-        facade = self._facade_with_broker(
-            config_dir, locks_dir, event_store, broker_factory=_raise
-        )
+        facade = self._facade_with_broker(config_dir, locks_dir, event_store, broker_factory=_raise)
         result = facade.run_reconciliation_now()
         assert result["status"] == "error"
         assert result["clean"] is False
