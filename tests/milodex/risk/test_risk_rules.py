@@ -2113,11 +2113,12 @@ def test_remaining_notional_overfill_clamps_to_zero():
 
 
 def test_checks_registry_is_account_complete():
-    """Guard against doc/code drift: the enforced-check registry stays at 15
-    (HR-7 added _check_max_trades_per_day) and never silently lists a
+    """Guard against doc/code drift: the enforced-check registry stays at 16
+    (HR-7 added _check_max_trades_per_day; P2-07 added
+    _check_disable_conditions per R-STR-014) and never silently lists a
     sector/correlation cap that the code does not implement
     (RISK_POLICY.md / SRS.md advertise those as planned only)."""
-    assert len(RiskEvaluator._CHECKS) == 15
+    assert len(RiskEvaluator._CHECKS) == 16
     assert not any("sector" in name or "correlat" in name for name in RiskEvaluator._CHECKS)
 
 

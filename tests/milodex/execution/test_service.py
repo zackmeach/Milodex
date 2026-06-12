@@ -826,9 +826,13 @@ def test_preview_and_submit_record_explanations_and_trades(
     assert [record.status for record in trades] == ["preview", "submitted"]
     assert trades[0].explanation_id == explanations[0].id
     assert trades[1].explanation_id == explanations[1].id
-    # 15 checks = ADR 0024 baseline (12) + ADR 0029 strategy_concurrent_positions
-    # + R-OPS-004 reconciliation + HR-7 max_trades_per_day.
-    assert len(explanations[0].risk_checks) == 15
+    # 16 checks = ADR 0024 baseline (12) + ADR 0029 strategy_concurrent_positions
+    # + R-OPS-004 reconciliation + HR-7 max_trades_per_day
+    # + R-STR-014 disable_conditions (P2-07).
+    assert len(explanations[0].risk_checks) == 16
+    # R-STR-014: the disable-condition check flows into the explanation
+    # record through the existing risk_checks serialization automatically.
+    assert any(check["name"] == "disable_conditions" for check in explanations[0].risk_checks)
     assert explanations[1].risk_allowed is True
 
 
