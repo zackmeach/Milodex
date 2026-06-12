@@ -18,7 +18,11 @@ from milodex.broker.models import (
     Position,
     TimeInForce,
 )
-from milodex.core.event_store import EventStore, ReconciliationRunEvent
+from milodex.core.event_store import (
+    EventStore,
+    ExecutionAttemptEvent,
+    ReconciliationRunEvent,
+)
 from milodex.data.models import Bar
 from milodex.execution import (
     ExecutionService,
@@ -1580,3 +1584,221 @@ def test_duplicate_order_detected_via_event_store_when_broker_fetch_truncated(
     assert result.status == ExecutionStatus.BLOCKED
     assert "duplicate_order_window" in result.risk_decision.reason_codes
     assert broker.submit_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Execution-attempt outbox (P1-02): durable attempt row BEFORE broker submit
+# ---------------------------------------------------------------------------
+
+
+def _build_service_with_store(
+    tmp_path: Path,
+    risk_defaults_file: Path,
+    latest_bar: Bar,
+    sample_account: AccountInfo,
+    submitted_order: Order,
+    *,
+    broker: StubBroker | None = None,
+) -> tuple[ExecutionService, StubBroker, EventStore]:
+    broker = broker or StubBroker(account=sample_account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    kill_switch_store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=kill_switch_store,
+        event_store=event_store,
+    )
+    return service, broker, event_store
+
+
+def test_submit_paper_attempt_lifecycle_happy_path(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """One attempt per submit: pending pre-broker, finalized 'submitted' with
+    the broker order id; the client_order_id is threaded to the broker."""
+    service, broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    [attempt] = event_store.list_execution_attempts()
+    assert attempt.status == "submitted"
+    assert attempt.broker_order_id == submitted_order.id
+    assert attempt.finalized_at is not None
+    assert attempt.symbol == "SPY"
+    assert attempt.side == "buy"
+    # The pre-generated idempotency key reached the broker.
+    assert broker.submit_calls[0]["client_order_id"] == attempt.client_order_id
+
+
+def test_submit_paper_attempt_survives_failed_explanation_trade_write(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    monkeypatch,
+):
+    """Broker success then a DB failure in the atomic explanation+trade write:
+    the attempt row (status='submitted' + broker_order_id) is the surviving
+    durable evidence — the P1-02 crash window."""
+    service, broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+
+    def _boom(**_kwargs):
+        raise RuntimeError("injected DB failure after broker success")
+
+    monkeypatch.setattr(event_store, "append_explanation_and_trade", _boom)
+
+    with pytest.raises(RuntimeError, match="injected DB failure"):
+        service.submit_paper(
+            TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+        )
+
+    assert broker.submit_calls, "the broker order WAS placed"
+    assert event_store.list_trades() == [], "no trade row landed"
+    [attempt] = event_store.list_execution_attempts()
+    assert attempt.status == "submitted"
+    assert attempt.broker_order_id == submitted_order.id
+
+
+def test_duplicate_order_blocked_by_submitted_attempt_without_trade(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Crash-after-broker-success dedup: a recent 'submitted' attempt with NO
+    trade row must still veto a duplicate, with the existing reason code."""
+    service, broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+    event_store.append_execution_attempt(
+        ExecutionAttemptEvent(
+            client_order_id="ghost-attempt-1",
+            symbol="SPY",
+            side="buy",
+            quantity=5.0,
+            order_type="market",
+            created_at=datetime.now(tz=UTC) - timedelta(seconds=30),
+            status="submitted",
+            broker_order_id="ghost-broker-1",
+        )
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.BLOCKED
+    assert "duplicate_order_window" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
+    # The blocked intent never reached the outbox boundary: still only the
+    # seeded ghost attempt.
+    assert len(event_store.list_execution_attempts()) == 1
+
+
+def test_risk_blocked_submit_creates_no_attempt_row(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A risk-blocked intent never reached the outbox boundary — no attempt row."""
+    service, broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+    service.trigger_kill_switch("test: block everything")
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.BLOCKED
+    assert broker.submit_calls == []
+    assert event_store.list_execution_attempts() == []
+
+
+def test_broker_rejection_finalizes_attempt_as_rejected(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Broker rejection: the attempt is finalized 'rejected' with the broker's
+    message, and stops counting toward the dedup veto."""
+    broker = RejectingStubBroker(
+        OrderRejectedError("potential wash trade detected ... 40310000"),
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    service, _, event_store = _build_service_with_store(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+        broker=broker,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.REJECTED
+    [attempt] = event_store.list_execution_attempts()
+    assert attempt.status == "rejected"
+    assert attempt.broker_order_id is None
+    assert "wash trade" in attempt.failure_detail
+
+
+def test_unexpected_broker_exception_finalizes_attempt_as_error(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A non-rejection broker exception still re-raises (fail-loud path is
+    unchanged) but the attempt is finalized 'error' with the detail."""
+    broker = RejectingStubBroker(
+        ConnectionError("socket timed out mid-submit"),
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    service, _, event_store = _build_service_with_store(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+        broker=broker,
+    )
+
+    with pytest.raises(ConnectionError):
+        service.submit_paper(
+            TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+        )
+
+    [attempt] = event_store.list_execution_attempts()
+    assert attempt.status == "error"
+    assert "socket timed out" in attempt.failure_detail

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -11,7 +12,12 @@ from milodex.broker import BrokerClient, Order
 from milodex.broker.exceptions import InsufficientFundsError, OrderRejectedError
 from milodex.broker.models import OrderType
 from milodex.config import get_data_dir, get_logs_dir, get_trading_mode
-from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+from milodex.core.event_store import (
+    EventStore,
+    ExecutionAttemptEvent,
+    ExplanationEvent,
+    TradeEvent,
+)
 from milodex.data import DataProvider
 
 if TYPE_CHECKING:
@@ -142,6 +148,36 @@ class ExecutionService:
             )
             return result
 
+        # Durable pre-submit outbox row (P1-02): committed BEFORE the broker
+        # call so a crash anywhere past this point leaves evidence that an
+        # order may exist at the broker (and the duplicate-order veto counts
+        # it). Risk has already allowed the intent — blocked intents return
+        # above and never reach the outbox boundary. Backtest submits skip
+        # the outbox: the simulated broker holds no recoverable state, and a
+        # per-fill outbox write+finalize would double the simulation's DB
+        # traffic for zero audit value.
+        client_order_id: str | None = None
+        if source != "backtest":
+            client_order_id = str(uuid.uuid4())
+            self._event_store.append_execution_attempt(
+                ExecutionAttemptEvent(
+                    client_order_id=client_order_id,
+                    strategy_name=result.execution_request.strategy_name,
+                    strategy_config_path=(
+                        str(result.execution_request.strategy_config_path)
+                        if result.execution_request.strategy_config_path is not None
+                        else None
+                    ),
+                    session_id=session_id,
+                    symbol=result.execution_request.symbol,
+                    side=result.execution_request.side.value,
+                    quantity=result.execution_request.quantity,
+                    order_type=result.execution_request.order_type.value,
+                    created_at=datetime.now(tz=UTC),
+                    status="pending",
+                )
+            )
+
         try:
             order = self._broker.submit_order(
                 symbol=result.execution_request.symbol,
@@ -151,8 +187,16 @@ class ExecutionService:
                 limit_price=result.execution_request.limit_price,
                 stop_price=result.execution_request.stop_price,
                 time_in_force=result.execution_request.time_in_force,
+                client_order_id=client_order_id,
             )
         except (OrderRejectedError, InsufficientFundsError) as exc:
+            if client_order_id is not None:
+                self._event_store.finalize_execution_attempt(
+                    client_order_id=client_order_id,
+                    status="rejected",
+                    finalized_at=datetime.now(tz=UTC),
+                    failure_detail=str(exc),
+                )
             rejected_result = ExecutionResult(
                 status=ExecutionStatus.REJECTED,
                 execution_request=result.execution_request,
@@ -172,6 +216,32 @@ class ExecutionService:
                 backtest_run_id=backtest_run_id,
             )
             return rejected_result
+        except Exception as exc:
+            # Unexpected broker failure (connection drop, timeout, vendor
+            # bug): record the outcome on the attempt row, then re-raise —
+            # this path was always fail-loud. NOTE a timeout can occur after
+            # the order reached the broker; the client_order_id stored here
+            # lets the operator/reconcile match the broker's order list
+            # exactly when investigating an 'error' attempt.
+            if client_order_id is not None:
+                self._event_store.finalize_execution_attempt(
+                    client_order_id=client_order_id,
+                    status="error",
+                    finalized_at=datetime.now(tz=UTC),
+                    failure_detail=f"{type(exc).__name__}: {exc}",
+                )
+            raise
+
+        # Broker accepted: record the outcome on the attempt row FIRST, so
+        # the durable evidence (status='submitted' + broker_order_id)
+        # survives even if the explanation/trade write below fails.
+        if client_order_id is not None:
+            self._event_store.finalize_execution_attempt(
+                client_order_id=client_order_id,
+                status="submitted",
+                finalized_at=datetime.now(tz=UTC),
+                broker_order_id=order.id,
+            )
 
         submitted_result = ExecutionResult(
             status=ExecutionStatus.SUBMITTED,
@@ -568,50 +638,48 @@ class ExecutionService:
         }
         if result.execution_request.reasoning is not None:
             context["reasoning"] = result.execution_request.reasoning.asdict()
-        explanation_id = self._event_store.append_explanation(
-            ExplanationEvent(
-                recorded_at=result.recorded_at or datetime.now(tz=UTC),
-                decision_type=decision_type,
-                status=result.status.value,
-                strategy_name=result.execution_request.strategy_name,
-                strategy_stage=result.execution_request.strategy_stage,
-                strategy_config_path=(
-                    str(result.execution_request.strategy_config_path)
-                    if result.execution_request.strategy_config_path is not None
-                    else None
-                ),
-                config_hash=config_hash,
-                symbol=result.execution_request.symbol,
-                side=result.execution_request.side.value,
-                quantity=result.execution_request.quantity,
-                order_type=result.execution_request.order_type.value,
-                time_in_force=result.execution_request.time_in_force.value,
-                submitted_by=intent.submitted_by,
-                market_open=result.market_open,
-                latest_bar_timestamp=(
-                    None if result.latest_bar is None else result.latest_bar.timestamp
-                ),
-                latest_bar_close=None if result.latest_bar is None else result.latest_bar.close,
-                account_equity=result.account.equity,
-                account_cash=result.account.cash,
-                account_portfolio_value=result.account.portfolio_value,
-                account_daily_pnl=result.account.daily_pnl,
-                risk_allowed=result.risk_decision.allowed,
-                risk_summary=result.risk_decision.summary,
-                reason_codes=list(result.risk_decision.reason_codes),
-                risk_checks=[
-                    {
-                        "name": check.name,
-                        "passed": check.passed,
-                        "message": check.message,
-                        "reason_code": check.reason_code,
-                    }
-                    for check in result.risk_decision.checks
-                ],
-                context=context,
-                session_id=session_id,
-                backtest_run_id=backtest_run_id,
-            )
+        explanation = ExplanationEvent(
+            recorded_at=result.recorded_at or datetime.now(tz=UTC),
+            decision_type=decision_type,
+            status=result.status.value,
+            strategy_name=result.execution_request.strategy_name,
+            strategy_stage=result.execution_request.strategy_stage,
+            strategy_config_path=(
+                str(result.execution_request.strategy_config_path)
+                if result.execution_request.strategy_config_path is not None
+                else None
+            ),
+            config_hash=config_hash,
+            symbol=result.execution_request.symbol,
+            side=result.execution_request.side.value,
+            quantity=result.execution_request.quantity,
+            order_type=result.execution_request.order_type.value,
+            time_in_force=result.execution_request.time_in_force.value,
+            submitted_by=intent.submitted_by,
+            market_open=result.market_open,
+            latest_bar_timestamp=(
+                None if result.latest_bar is None else result.latest_bar.timestamp
+            ),
+            latest_bar_close=None if result.latest_bar is None else result.latest_bar.close,
+            account_equity=result.account.equity,
+            account_cash=result.account.cash,
+            account_portfolio_value=result.account.portfolio_value,
+            account_daily_pnl=result.account.daily_pnl,
+            risk_allowed=result.risk_decision.allowed,
+            risk_summary=result.risk_decision.summary,
+            reason_codes=list(result.risk_decision.reason_codes),
+            risk_checks=[
+                {
+                    "name": check.name,
+                    "passed": check.passed,
+                    "message": check.message,
+                    "reason_code": check.reason_code,
+                }
+                for check in result.risk_decision.checks
+            ],
+            context=context,
+            session_id=session_id,
+            backtest_run_id=backtest_run_id,
         )
         # When the broker has already reported a fill (synchronous path —
         # backtest, or a broker that fills immediately), prefer the actual
@@ -623,31 +691,37 @@ class ExecutionService:
             recorded_unit_price = float(result.order.filled_avg_price)
             recorded_order_value = recorded_unit_price * result.execution_request.quantity
 
-        self._event_store.append_trade(
-            TradeEvent(
-                explanation_id=explanation_id,
-                recorded_at=result.recorded_at or datetime.now(tz=UTC),
-                status=result.status.value,
-                source=source,
-                symbol=result.execution_request.symbol,
-                side=result.execution_request.side.value,
-                quantity=result.execution_request.quantity,
-                order_type=result.execution_request.order_type.value,
-                time_in_force=result.execution_request.time_in_force.value,
-                estimated_unit_price=recorded_unit_price,
-                estimated_order_value=recorded_order_value,
-                strategy_name=result.execution_request.strategy_name,
-                strategy_stage=result.execution_request.strategy_stage,
-                strategy_config_path=(
-                    str(result.execution_request.strategy_config_path)
-                    if result.execution_request.strategy_config_path is not None
-                    else None
-                ),
-                submitted_by=intent.submitted_by,
-                broker_order_id=None if result.order is None else result.order.id,
-                broker_status=(None if result.order is None else result.order.status.value),
-                message=result.message,
-                session_id=session_id,
-                backtest_run_id=backtest_run_id,
-            )
+        trade = TradeEvent(
+            # Placeholder — append_explanation_and_trade overrides this with
+            # the explanation id it inserts inside the shared transaction.
+            explanation_id=0,
+            recorded_at=result.recorded_at or datetime.now(tz=UTC),
+            status=result.status.value,
+            source=source,
+            symbol=result.execution_request.symbol,
+            side=result.execution_request.side.value,
+            quantity=result.execution_request.quantity,
+            order_type=result.execution_request.order_type.value,
+            time_in_force=result.execution_request.time_in_force.value,
+            estimated_unit_price=recorded_unit_price,
+            estimated_order_value=recorded_order_value,
+            strategy_name=result.execution_request.strategy_name,
+            strategy_stage=result.execution_request.strategy_stage,
+            strategy_config_path=(
+                str(result.execution_request.strategy_config_path)
+                if result.execution_request.strategy_config_path is not None
+                else None
+            ),
+            submitted_by=intent.submitted_by,
+            broker_order_id=None if result.order is None else result.order.id,
+            broker_status=(None if result.order is None else result.order.status.value),
+            message=result.message,
+            session_id=session_id,
+            backtest_run_id=backtest_run_id,
         )
+        # One transaction for the pair (P1-02): the audit trail must never
+        # hold an explanation whose trade row was lost between commits (or
+        # vice versa). All decision types route through the atomic write —
+        # preview/blocked/rejected rows keep their exact prior shape, they
+        # just can no longer be torn.
+        self._event_store.append_explanation_and_trade(explanation=explanation, trade=trade)
