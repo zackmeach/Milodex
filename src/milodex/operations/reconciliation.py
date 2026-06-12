@@ -898,6 +898,7 @@ def build_warnings(result: ReconciliationResult, event_store: EventStore) -> lis
             "Drift detected - R-OPS-004 now blocks exposure-increasing paper previews "
             "and submits until reconciliation is clean for the current New York date."
         )
+    warnings.extend(per_strategy_ledger_warnings(event_store, result))
     warnings.extend(stale_pending_attempt_warnings(event_store))
     warnings.extend(risk_profile_audit_warnings(event_store))
     return warnings
