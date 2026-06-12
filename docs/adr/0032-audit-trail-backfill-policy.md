@@ -92,5 +92,6 @@ This policy is consistent with:
 ## Application
 
 The specific backfill for `meanrev.daily.pullback_rsi2.curated_largecap.v1`
-is implemented in `scripts/backfill_pullback_rsi2_audit_gap.py` and covered
+is implemented in `scripts/archive/backfill_pullback_rsi2_audit_gap.py`
+(executed and archived 2026-06-12; see `scripts/README.md`) and covered
 by `tests/milodex/scripts/test_backfill_pullback_rsi2_audit_gap.py`.

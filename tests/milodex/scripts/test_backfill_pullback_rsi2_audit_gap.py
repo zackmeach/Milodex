@@ -1,4 +1,4 @@
-"""Tests for scripts/backfill_pullback_rsi2_audit_gap.py.
+"""Tests for scripts/archive/backfill_pullback_rsi2_audit_gap.py.
 
 Covers:
 - A fresh store pre-seeded with the original 4/22 promotion events receives
@@ -18,8 +18,8 @@ import pytest
 
 from milodex.core.event_store import EventStore, PromotionEvent
 
-# Make the scripts/ directory importable regardless of CWD.
-_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+# Make the scripts/archive/ directory importable regardless of CWD.
+_SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts" / "archive"
 if str(_SCRIPTS_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS_DIR))
 

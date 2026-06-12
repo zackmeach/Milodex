@@ -1,5 +1,9 @@
 """Audit-trail backfill: synthetic demotion event for pullback_rsi2.
 
+ARCHIVED 2026-06-12: executed (the synthetic demotion row exists in
+``data/milodex.db``). Retained for audit forensics per scripts/README.md
+"Governance-state backfills". Do not re-run against production state.
+
 Closes the audit gap discovered on 2026-05-07: the strategy
 ``meanrev.daily.pullback_rsi2.curated_largecap.v1`` was demoted from
 ``micro_live`` back to ``backtest`` by a direct YAML edit rather than via
@@ -11,8 +15,8 @@ It is safe to run multiple times — it is idempotent.
 
 Usage::
 
-    python scripts/backfill_pullback_rsi2_audit_gap.py [--db PATH]
-    python scripts/backfill_pullback_rsi2_audit_gap.py --verify-only
+    python scripts/archive/backfill_pullback_rsi2_audit_gap.py [--db PATH]
+    python scripts/archive/backfill_pullback_rsi2_audit_gap.py --verify-only
 """
 
 from __future__ import annotations
