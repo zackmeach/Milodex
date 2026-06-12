@@ -204,6 +204,19 @@ def test_submit_backtest_writes_trade_row_with_backtest_source(tmp_path, risk_de
     assert trade.backtest_run_id == run_row_id
 
 
+def test_submit_backtest_creates_no_execution_attempt_rows(tmp_path, risk_defaults_file):
+    """The P1-02 outbox covers real broker submissions only: simulated fills
+    hold no recoverable broker state, so backtests skip the attempt table."""
+    service, _, store = _make_service(tmp_path, risk_defaults_file)
+    run_row_id = _seed_backtest_run(store)
+    service.submit_backtest(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+        session_id="bt-session",
+        backtest_run_id=run_row_id,
+    )
+    assert store.list_execution_attempts() == []
+
+
 def test_submit_backtest_consults_null_evaluator_not_real_risk(tmp_path, risk_defaults_file):
     evaluator = _SpyEvaluator()
     service, _, store = _make_service(tmp_path, risk_defaults_file, evaluator=evaluator)

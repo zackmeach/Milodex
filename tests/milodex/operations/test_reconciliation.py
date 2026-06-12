@@ -15,7 +15,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+from milodex.core.event_store import (
+    EventStore,
+    ExecutionAttemptEvent,
+    ExplanationEvent,
+    TradeEvent,
+)
 from milodex.operations.reconciliation import (
     build_warnings,
     human_lines,
@@ -24,6 +29,7 @@ from milodex.operations.reconciliation import (
     latest_readiness,
     local_open_orders_from_trades,
     run_reconciliation,
+    stale_pending_attempt_warnings,
 )
 
 
@@ -660,3 +666,44 @@ def test_per_strategy_ledger_divergence_warns_without_incident(tmp_path):
 
     readiness = latest_readiness(store, now=_LEDGER_AS_OF)
     assert readiness.ready is True
+
+
+def test_stale_pending_attempt_surfaced_as_informational_warning(tmp_path):
+    """P1-02: an execution attempt stuck 'pending' past the staleness window
+    appears in build_warnings, but never arms R-OPS-004 incidents/readiness."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime.now(tz=UTC)
+    store.append_execution_attempt(
+        ExecutionAttemptEvent(
+            client_order_id="coid-stale-1",
+            symbol="SPY",
+            side="buy",
+            quantity=5.0,
+            order_type="market",
+            created_at=now - timedelta(minutes=30),
+            status="pending",
+        )
+    )
+    store.append_execution_attempt(
+        ExecutionAttemptEvent(
+            client_order_id="coid-fresh-1",
+            symbol="SPY",
+            side="buy",
+            quantity=5.0,
+            order_type="market",
+            created_at=now,
+            status="pending",
+        )
+    )
+
+    attempt_warnings = stale_pending_attempt_warnings(store)
+    assert len(attempt_warnings) == 1
+    assert "coid-stale-1" in attempt_warnings[0]
+    assert "informational only" in attempt_warnings[0]
+
+    result = run_reconciliation(event_store=store, broker=_BrokerFlatWithSpy(), persist=False)
+    warnings = build_warnings(result, store)
+    assert any("coid-stale-1" in w for w in warnings)
+    assert not any("coid-fresh-1" in w for w in warnings)
+    # Informational only — no incident armed by a stale attempt.
+    assert result.incident_reason_codes == []

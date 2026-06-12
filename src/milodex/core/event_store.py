@@ -7,7 +7,7 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +85,34 @@ class TradeEvent:
     message: str | None
     session_id: str | None = None
     backtest_run_id: int | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class ExecutionAttemptEvent:
+    """Durable pre-submit outbox row for a broker order attempt (P1-02).
+
+    Written with ``status='pending'`` BEFORE the broker call, then finalized
+    to ``'submitted'`` (+ ``broker_order_id``), ``'rejected'``, or ``'error'``
+    (+ ``failure_detail``) after the broker returns. ``client_order_id`` is
+    generated pre-submit and passed to the broker so a crashed attempt can be
+    reconciled exactly against the broker's order list. Rows stuck at
+    ``'pending'`` indicate a crash mid-submit — see migration 014.
+    """
+
+    client_order_id: str
+    symbol: str
+    side: str
+    quantity: float
+    order_type: str
+    created_at: datetime
+    status: str
+    strategy_name: str | None = None
+    strategy_config_path: str | None = None
+    session_id: str | None = None
+    broker_order_id: str | None = None
+    finalized_at: datetime | None = None
+    failure_detail: str | None = None
     id: int | None = None
 
 
@@ -311,6 +339,17 @@ have no run ancestry by design and pass through unchecked.
 """
 
 
+STALE_PENDING_ATTEMPT_MINUTES = 15
+"""Age threshold (minutes) past which a 'pending' execution attempt is stale.
+
+A healthy attempt finalizes within seconds of the broker round-trip; one
+still 'pending' after this window almost certainly died between the outbox
+write and the broker call/finalize (P1-02). Consumed by
+:meth:`EventStore.list_stale_pending_execution_attempts` and surfaced as an
+informational reconciliation warning.
+"""
+
+
 MIN_COMPATIBLE_SCHEMA_VERSION = 12
 """Minimum event-store schema version this build can safely operate on.
 
@@ -372,6 +411,15 @@ class EventStore:
         header for the full rationale, including why we do not use a SQLite
         CHECK constraint here.
         """
+        self._require_explanation_ancestor(event)
+        with self._connect() as connection:
+            explanation_id = self._insert_explanation(connection, event)
+            connection.commit()
+            return explanation_id
+
+    @staticmethod
+    def _require_explanation_ancestor(event: ExplanationEvent) -> None:
+        """Raise unless the dual-ancestor rule (migration 008) is satisfied."""
         if (
             event.submitted_by in _STRATEGY_RUN_SUBMITTERS
             and event.session_id is None
@@ -385,127 +433,288 @@ class EventStore:
                 "backtest_runs.id for backtest engine rows). Refusing to "
                 "write an unparented strategy-run explanation."
             )
+
+    @staticmethod
+    def _insert_explanation(connection: sqlite3.Connection, event: ExplanationEvent) -> int:
+        """Execute the explanation INSERT on ``connection``; no commit."""
+        cursor = connection.execute(
+            """
+            INSERT INTO explanations (
+                recorded_at,
+                decision_type,
+                status,
+                strategy_name,
+                strategy_stage,
+                strategy_config_path,
+                config_hash,
+                symbol,
+                side,
+                quantity,
+                order_type,
+                time_in_force,
+                submitted_by,
+                market_open,
+                latest_bar_timestamp,
+                latest_bar_close,
+                account_equity,
+                account_cash,
+                account_portfolio_value,
+                account_daily_pnl,
+                risk_allowed,
+                risk_summary,
+                reason_codes_json,
+                risk_checks_json,
+                context_json,
+                session_id,
+                backtest_run_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                _dt(event.recorded_at),
+                event.decision_type,
+                event.status,
+                event.strategy_name,
+                event.strategy_stage,
+                event.strategy_config_path,
+                event.config_hash,
+                event.symbol,
+                event.side,
+                event.quantity,
+                event.order_type,
+                event.time_in_force,
+                event.submitted_by,
+                int(event.market_open),
+                _dt(event.latest_bar_timestamp),
+                event.latest_bar_close,
+                event.account_equity,
+                event.account_cash,
+                event.account_portfolio_value,
+                event.account_daily_pnl,
+                int(event.risk_allowed),
+                event.risk_summary,
+                _dump_json(event.reason_codes),
+                _dump_json(event.risk_checks),
+                _dump_json(event.context),
+                event.session_id,
+                event.backtest_run_id,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    @staticmethod
+    def _insert_trade(
+        connection: sqlite3.Connection,
+        event: TradeEvent,
+        *,
+        explanation_id: int | None = None,
+    ) -> int:
+        """Execute the trade INSERT on ``connection``; no commit.
+
+        ``explanation_id`` overrides ``event.explanation_id`` when supplied —
+        used by :meth:`append_explanation_and_trade`, where the parent id is
+        only known mid-transaction.
+        """
+        cursor = connection.execute(
+            """
+            INSERT INTO trades (
+                explanation_id,
+                recorded_at,
+                status,
+                source,
+                symbol,
+                side,
+                quantity,
+                order_type,
+                time_in_force,
+                estimated_unit_price,
+                estimated_order_value,
+                strategy_name,
+                strategy_stage,
+                strategy_config_path,
+                submitted_by,
+                broker_order_id,
+                broker_status,
+                message,
+                session_id,
+                backtest_run_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.explanation_id if explanation_id is None else explanation_id,
+                _dt(event.recorded_at),
+                event.status,
+                event.source,
+                event.symbol,
+                event.side,
+                event.quantity,
+                event.order_type,
+                event.time_in_force,
+                event.estimated_unit_price,
+                event.estimated_order_value,
+                event.strategy_name,
+                event.strategy_stage,
+                event.strategy_config_path,
+                event.submitted_by,
+                event.broker_order_id,
+                event.broker_status,
+                event.message,
+                event.session_id,
+                event.backtest_run_id,
+            ),
+        )
+        return int(cursor.lastrowid)
+
+    def append_trade(self, event: TradeEvent) -> int:
+        with self._connect() as connection:
+            trade_id = self._insert_trade(connection, event)
+            connection.commit()
+            return trade_id
+
+    def append_explanation_and_trade(
+        self,
+        *,
+        explanation: ExplanationEvent,
+        trade: TradeEvent,
+    ) -> tuple[int, int]:
+        """Insert an explanation row and its trade row in a single transaction.
+
+        The trade is written with ``explanation_id`` set to the newly-inserted
+        explanation's id (``trade.explanation_id`` is ignored — the parent id
+        does not exist until mid-transaction). Both inserts share one
+        ``_connect()`` context so a failure on either side rolls the whole
+        thing back: the execution audit trail can never hold an explanation
+        whose trade row was lost to a crash between commits, or vice versa
+        (P1-02; same precedent as :meth:`append_manifest_and_promotion` and
+        :meth:`finalize_backtest_run`). The dual-ancestor rule (migration 008)
+        is enforced exactly as in :meth:`append_explanation`. Returns
+        ``(explanation_id, trade_id)``.
+        """
+        self._require_explanation_ancestor(explanation)
+        with self._connect() as connection:
+            try:
+                explanation_id = self._insert_explanation(connection, explanation)
+                trade_id = self._insert_trade(connection, trade, explanation_id=explanation_id)
+                connection.commit()
+            except BaseException:
+                connection.rollback()
+                raise
+        return explanation_id, trade_id
+
+    def append_execution_attempt(self, event: ExecutionAttemptEvent) -> int:
+        """Insert a pre-submit outbox row (migration 014) and return its id.
+
+        Must commit BEFORE the broker call it covers — the row is the durable
+        evidence that an order may exist at the broker even if every later
+        write fails (P1-02).
+        """
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO explanations (
-                    recorded_at,
-                    decision_type,
-                    status,
+                INSERT INTO execution_attempts (
+                    client_order_id,
                     strategy_name,
-                    strategy_stage,
                     strategy_config_path,
-                    config_hash,
+                    session_id,
                     symbol,
                     side,
                     quantity,
                     order_type,
-                    time_in_force,
-                    submitted_by,
-                    market_open,
-                    latest_bar_timestamp,
-                    latest_bar_close,
-                    account_equity,
-                    account_cash,
-                    account_portfolio_value,
-                    account_daily_pnl,
-                    risk_allowed,
-                    risk_summary,
-                    reason_codes_json,
-                    risk_checks_json,
-                    context_json,
-                    session_id,
-                    backtest_run_id
+                    created_at,
+                    status,
+                    broker_order_id,
+                    finalized_at,
+                    failure_detail
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    _dt(event.recorded_at),
-                    event.decision_type,
-                    event.status,
+                    event.client_order_id,
                     event.strategy_name,
-                    event.strategy_stage,
                     event.strategy_config_path,
-                    event.config_hash,
+                    event.session_id,
                     event.symbol,
                     event.side,
                     event.quantity,
                     event.order_type,
-                    event.time_in_force,
-                    event.submitted_by,
-                    int(event.market_open),
-                    _dt(event.latest_bar_timestamp),
-                    event.latest_bar_close,
-                    event.account_equity,
-                    event.account_cash,
-                    event.account_portfolio_value,
-                    event.account_daily_pnl,
-                    int(event.risk_allowed),
-                    event.risk_summary,
-                    _dump_json(event.reason_codes),
-                    _dump_json(event.risk_checks),
-                    _dump_json(event.context),
-                    event.session_id,
-                    event.backtest_run_id,
+                    _dt(event.created_at),
+                    event.status,
+                    event.broker_order_id,
+                    _dt(event.finalized_at),
+                    event.failure_detail,
                 ),
             )
             connection.commit()
             return int(cursor.lastrowid)
 
-    def append_trade(self, event: TradeEvent) -> int:
+    def finalize_execution_attempt(
+        self,
+        *,
+        client_order_id: str,
+        status: str,
+        finalized_at: datetime,
+        broker_order_id: str | None = None,
+        failure_detail: str | None = None,
+    ) -> None:
+        """Record the broker outcome on a 'pending' execution attempt.
+
+        ``status`` is ``'submitted'`` (broker accepted; ``broker_order_id``
+        set), ``'rejected'`` (broker rejection), or ``'error'`` (unexpected
+        exception). Only a ``'pending'`` row may be finalized — finalizing an
+        unknown or already-finalized ``client_order_id`` raises, because the
+        outbox protocol writes each attempt exactly once and a mismatch means
+        a code bug or external tampering, not a recoverable state.
+        """
+        if status not in {"submitted", "rejected", "error"}:
+            raise ValueError(f"Invalid execution-attempt terminal status: {status!r}")
         with self._connect() as connection:
             cursor = connection.execute(
                 """
-                INSERT INTO trades (
-                    explanation_id,
-                    recorded_at,
-                    status,
-                    source,
-                    symbol,
-                    side,
-                    quantity,
-                    order_type,
-                    time_in_force,
-                    estimated_unit_price,
-                    estimated_order_value,
-                    strategy_name,
-                    strategy_stage,
-                    strategy_config_path,
-                    submitted_by,
-                    broker_order_id,
-                    broker_status,
-                    message,
-                    session_id,
-                    backtest_run_id
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                UPDATE execution_attempts
+                SET status = ?, broker_order_id = ?, finalized_at = ?, failure_detail = ?
+                WHERE client_order_id = ? AND status = 'pending'
                 """,
-                (
-                    event.explanation_id,
-                    _dt(event.recorded_at),
-                    event.status,
-                    event.source,
-                    event.symbol,
-                    event.side,
-                    event.quantity,
-                    event.order_type,
-                    event.time_in_force,
-                    event.estimated_unit_price,
-                    event.estimated_order_value,
-                    event.strategy_name,
-                    event.strategy_stage,
-                    event.strategy_config_path,
-                    event.submitted_by,
-                    event.broker_order_id,
-                    event.broker_status,
-                    event.message,
-                    event.session_id,
-                    event.backtest_run_id,
-                ),
+                (status, broker_order_id, _dt(finalized_at), failure_detail, client_order_id),
             )
             connection.commit()
-            return int(cursor.lastrowid)
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    f"No pending execution attempt found for "
+                    f"client_order_id={client_order_id!r}; refusing to finalize."
+                )
+
+    def list_execution_attempts(self) -> list[ExecutionAttemptEvent]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT * FROM execution_attempts ORDER BY id ASC").fetchall()
+        return [_execution_attempt_from_row(row) for row in rows]
+
+    def list_stale_pending_execution_attempts(
+        self,
+        *,
+        older_than_minutes: int = STALE_PENDING_ATTEMPT_MINUTES,
+    ) -> list[ExecutionAttemptEvent]:
+        """List attempts stuck at 'pending' for more than ``older_than_minutes``.
+
+        A healthy attempt finalizes within seconds; a stale 'pending' row
+        means the process died between the outbox write and the broker
+        call/finalize — the order may or may not exist at the broker.
+        Surfaced by reconciliation as an informational warning so the
+        operator can verify against the broker's order list (the
+        ``client_order_id`` makes the lookup exact).
+        """
+        cutoff = datetime.now(tz=UTC) - timedelta(minutes=older_than_minutes)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT * FROM execution_attempts
+                WHERE status = 'pending' AND datetime(created_at) < datetime(?)
+                ORDER BY id ASC
+                """,
+                (cutoff.isoformat(),),
+            ).fetchall()
+        return [_execution_attempt_from_row(row) for row in rows]
 
     def append_kill_switch_event(self, event: KillSwitchEvent) -> int:
         with self._connect() as connection:
@@ -895,6 +1104,25 @@ class EventStore:
         from ``fromisoformat`` and the evaluator's fail-closed wrapper
         vetoed — reachable only via DB corruption (0 such rows observed
         live), accepted to keep the count total-function.
+
+        P1-02 hardening: the count also includes recent ``execution_attempts``
+        outbox rows (written BEFORE the broker call, paper path only) in
+        states ``'pending'``/``'submitted'``/``'error'``, so a crash after
+        broker success but before the trade row committed still blocks a
+        duplicate. Double-count avoidance: a fully-recorded submit produces
+        BOTH an attempt (``status='submitted'``, ``broker_order_id`` set) and
+        a ``trades`` row carrying the same ``broker_order_id`` — the trades
+        subquery already counts those, so the attempts subquery excludes any
+        attempt whose ``broker_order_id`` matches an existing submitted paper
+        trade. What remains countable is exactly the unknown-delivery
+        surface: ``'pending'`` attempts (in-flight, or crashed mid-submit),
+        ``'submitted'`` attempts with no trade row (crash between broker ack
+        and the atomic explanation+trade write), and ``'error'`` attempts (an
+        unexpected broker exception — e.g. a timeout — can fire AFTER the
+        order reached the broker, so delivery is unknown and the fail-safe is
+        to veto). Only ``'rejected'`` is excluded: a broker rejection is a
+        definitive no-order outcome. Over-counting can only widen the veto,
+        never narrow it — the check blocks on count > 0.
         """
         normalized_symbol = symbol.strip().upper()
         normalized_side = side.strip().lower()
@@ -902,13 +1130,36 @@ class EventStore:
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*)
-                FROM trades
-                WHERE symbol = ? AND status = 'submitted' AND source = 'paper'
-                  AND lower(side) = ?
-                  AND datetime(recorded_at) >= datetime(?)
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM trades
+                        WHERE symbol = :symbol AND status = 'submitted' AND source = 'paper'
+                          AND lower(side) = :side
+                          AND datetime(recorded_at) >= datetime(:since)
+                    )
+                    +
+                    (
+                        SELECT COUNT(*)
+                        FROM execution_attempts a
+                        WHERE a.symbol = :symbol AND lower(a.side) = :side
+                          AND a.status IN ('pending', 'submitted', 'error')
+                          AND datetime(a.created_at) >= datetime(:since)
+                          AND (
+                              a.broker_order_id IS NULL
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM trades t
+                                  WHERE t.broker_order_id = a.broker_order_id
+                                    AND t.status = 'submitted' AND t.source = 'paper'
+                              )
+                          )
+                    )
                 """,
-                (normalized_symbol, normalized_side, since_utc.isoformat()),
+                {
+                    "symbol": normalized_symbol,
+                    "side": normalized_side,
+                    "since": since_utc.isoformat(),
+                },
             ).fetchone()
         return int(row[0])
 
@@ -1944,6 +2195,25 @@ def _trade_from_row(row: sqlite3.Row) -> TradeEvent:
         message=row["message"],
         session_id=row["session_id"],
         backtest_run_id=int(backtest_run_id) if backtest_run_id is not None else None,
+    )
+
+
+def _execution_attempt_from_row(row: sqlite3.Row) -> ExecutionAttemptEvent:
+    return ExecutionAttemptEvent(
+        id=int(row["id"]),
+        client_order_id=str(row["client_order_id"]),
+        strategy_name=row["strategy_name"],
+        strategy_config_path=row["strategy_config_path"],
+        session_id=row["session_id"],
+        symbol=str(row["symbol"]),
+        side=str(row["side"]),
+        quantity=float(row["quantity"]),
+        order_type=str(row["order_type"]),
+        created_at=_parse_datetime(row["created_at"]),
+        status=str(row["status"]),
+        broker_order_id=row["broker_order_id"],
+        finalized_at=_parse_datetime(row["finalized_at"]),
+        failure_detail=row["failure_detail"],
     )
 
 

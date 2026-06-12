@@ -120,6 +120,9 @@ class SimulatedBroker(BrokerClient):
         limit_price: float | None = None,
         stop_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        # Accepted per BrokerClient; simulated fills are local-only, so there
+        # is no broker-side order to reconcile the idempotency key against.
+        client_order_id: str | None = None,  # noqa: ARG002
     ) -> Order:
         normalized_symbol = symbol.strip().upper()
         fill_price = self.fill_price_for(normalized_symbol, side)

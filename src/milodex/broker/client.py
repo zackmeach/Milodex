@@ -33,8 +33,14 @@ class BrokerClient(ABC):
         limit_price: float | None = None,
         stop_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        client_order_id: str | None = None,
     ) -> Order:
-        """Submit an order. Returns the order with initial status."""
+        """Submit an order. Returns the order with initial status.
+
+        ``client_order_id`` is the caller-generated idempotency key from the
+        execution outbox (P1-02); brokers that support it should attach it to
+        the order so a crashed attempt can be reconciled exactly.
+        """
 
     @abstractmethod
     def get_order(self, order_id: str) -> Order:
