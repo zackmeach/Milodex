@@ -19,6 +19,11 @@ No code reachable from here runs backtests, promotes, demotes, edits configs,
 or resets risk state. The GUI surfaces that bind to these models remain
 observability-first.
 
+Private helpers (``_StrategyRow``, ``_compute_bench_action_menu``,
+``_action_intent_preview``, ``_open_ro_conn``) are NOT re-exported here —
+import them from their home modules below (P3-04 trimmed them from the shim;
+only tests ever reached them through it).
+
 New homes for the moved definitions:
 
 - ``strategy_row``       — ``_StrategyRow`` (the shared row contract)
@@ -32,22 +37,16 @@ New homes for the moved definitions:
 
 from __future__ import annotations
 
-from milodex.gui.bench_actions import (
-    _action_intent_preview,
-    _compute_bench_action_menu,
-)
 from milodex.gui.bench_state import BenchState
 from milodex.gui.front_page_state import FrontPageState
 from milodex.gui.kanban_state import KanbanState
 from milodex.gui.ledger_state import LedgerState
-from milodex.gui.query_helpers import _open_ro_conn
 from milodex.gui.snapshot_builders import (
     build_bench_snapshot,
     build_front_page_snapshot,
     build_kanban_snapshot,
     build_ledger_snapshot,
 )
-from milodex.gui.strategy_row import _StrategyRow
 
 __all__ = [
     # State read models (the QML registry imports these four from here so they
@@ -61,9 +60,4 @@ __all__ = [
     "build_bench_snapshot",
     "build_kanban_snapshot",
     "build_ledger_snapshot",
-    # Reached-into helpers (tests import these directly via the shim).
-    "_StrategyRow",
-    "_compute_bench_action_menu",
-    "_action_intent_preview",
-    "_open_ro_conn",
 ]

@@ -116,71 +116,57 @@ def _build_qml_registry(
     risk_profile_bridge: object,
     orphan_reaper_controller: object,
 ) -> list[object]:
-    """Build the ordered list of :class:`QmlSingleton` descriptors.
+    """Bind the live instances onto the canonical descriptor spec.
 
-    This list is the SINGLE ordered source of truth for the GUI wiring.  Its
-    order is the QML registration order; filtered by ``lifecycle`` it is also
-    the polling start/stop order, which is a deliberate Windows-shutdown
-    teardown contract (stop polling -> drain QThreadPool -> quit) and MUST be
-    preserved: ``operational_state`` first through ``activity_feed_state``,
-    with ``orphan_reaper_controller`` LAST among lifecycle entries.  The three
-    register-only entries (ThemeManager, BenchCommandBridge, RiskProfileBridge)
-    carry ``lifecycle=False`` and so are skipped by the lifecycle filter.  Of
-    those, BenchCommandBridge is a non-polling QThreadPool owner: its private
-    async pool is drained explicitly OUTSIDE the lifecycle filter (via
-    ``aboutToQuit`` and ``AppController.quitRequested`` in :func:`run_app`), not
-    by the lifecycle stop loop.
+    The ordered source of truth for the GUI wiring is
+    ``milodex.gui.qml_setup.REGISTRY_SPEC`` — one static tuple that fixes the
+    QML registration order and the per-entry lifecycle flags.  This function
+    only zips the construction-site instances onto that spec; it adds no
+    ordering or lifecycle knowledge of its own.
 
-    To wire a NEW read model: add ONE ``QmlSingleton(...)`` entry here (plus
-    its import + construction in :func:`run_app`).  The registration, polling
-    start, AppController membership, load-failure stop, and aboutToQuit stop
-    are all derived from this one list.
+    The spec order is the QML registration order; filtered by ``lifecycle`` it
+    is also the polling start/stop order, which is a deliberate
+    Windows-shutdown teardown contract (stop polling -> drain QThreadPool ->
+    quit) and MUST be preserved: ``operational_state`` first through
+    ``activity_feed_state``, with ``orphan_reaper_controller`` LAST among
+    lifecycle entries.  The three register-only entries (ThemeManager,
+    BenchCommandBridge, RiskProfileBridge) carry ``lifecycle=False`` and so are
+    skipped by the lifecycle filter.  Of those, BenchCommandBridge is a
+    non-polling QThreadPool owner: its private async pool is drained explicitly
+    OUTSIDE the lifecycle filter (via ``aboutToQuit`` and
+    ``AppController.quitRequested`` in :func:`run_app`), not by the lifecycle
+    stop loop.
+
+    To wire a NEW read model: add ONE entry to ``REGISTRY_SPEC`` plus a keyword
+    parameter here and its construction in :func:`run_app`.  The registration,
+    polling start, AppController membership, load-failure stop, and aboutToQuit
+    stop are all derived from this one list.
 
     Factored out (rather than inlined in :func:`run_app`) so the order-snapshot
     test can assert the order without launching Qt.
     """
-    from milodex.gui.active_ops_state import ActiveOpsState
-    from milodex.gui.activity_feed_state import ActivityFeedState
-    from milodex.gui.attention_state import AttentionState
-    from milodex.gui.bench_command_bridge import BenchCommandBridge
-    from milodex.gui.market_tape_state import MarketTapeState
-    from milodex.gui.operational_state import OperationalState
-    from milodex.gui.orphan_reaper_controller import OrphanReaperController
-    from milodex.gui.performance_state import PerformanceState
-    from milodex.gui.qml_setup import QmlSingleton
-    from milodex.gui.read_models import (
-        BenchState,
-        FrontPageState,
-        LedgerState,
-    )
-    from milodex.gui.risk_profile_bridge import RiskProfileBridge
-    from milodex.gui.risk_throughput_state import RiskThroughputState
-    from milodex.gui.theme_manager import ThemeManager
+    from milodex.gui.qml_setup import REGISTRY_SPEC, QmlSingleton
+
+    provided = {
+        "theme_manager": theme_manager,
+        "operational_state": operational_state,
+        "front_page_state": front_page_state,
+        "bench_state": bench_state,
+        "ledger_state": ledger_state,
+        "performance_state": performance_state,
+        "risk_throughput_state": risk_throughput_state,
+        "active_ops_state": active_ops_state,
+        "attention_state": attention_state,
+        "market_tape_state": market_tape_state,
+        "activity_feed_state": activity_feed_state,
+        "bench_command_bridge": bench_command_bridge,
+        "risk_profile_bridge": risk_profile_bridge,
+        "orphan_reaper_controller": orphan_reaper_controller,
+    }
 
     return [
-        QmlSingleton("ThemeManager", ThemeManager, theme_manager, lifecycle=False),
-        QmlSingleton("OperationalState", OperationalState, operational_state, lifecycle=True),
-        QmlSingleton("FrontPageState", FrontPageState, front_page_state, lifecycle=True),
-        QmlSingleton("BenchState", BenchState, bench_state, lifecycle=True),
-        QmlSingleton("LedgerState", LedgerState, ledger_state, lifecycle=True),
-        QmlSingleton("PerformanceState", PerformanceState, performance_state, lifecycle=True),
-        QmlSingleton(
-            "RiskThroughputState", RiskThroughputState, risk_throughput_state, lifecycle=True
-        ),
-        QmlSingleton("ActiveOpsState", ActiveOpsState, active_ops_state, lifecycle=True),
-        QmlSingleton("AttentionState", AttentionState, attention_state, lifecycle=True),
-        QmlSingleton("MarketTapeState", MarketTapeState, market_tape_state, lifecycle=True),
-        QmlSingleton("ActivityFeedState", ActivityFeedState, activity_feed_state, lifecycle=True),
-        QmlSingleton(
-            "BenchCommandBridge", BenchCommandBridge, bench_command_bridge, lifecycle=False
-        ),
-        QmlSingleton("RiskProfileBridge", RiskProfileBridge, risk_profile_bridge, lifecycle=False),
-        QmlSingleton(
-            "OrphanReaperController",
-            OrphanReaperController,
-            orphan_reaper_controller,
-            lifecycle=True,
-        ),
+        QmlSingleton(qml_name, qml_type, provided[kwarg], lifecycle=lifecycle)
+        for kwarg, qml_name, qml_type, lifecycle in REGISTRY_SPEC
     ]
 
 

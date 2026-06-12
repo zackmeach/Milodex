@@ -13,11 +13,12 @@ its own property bindings — context properties on the root context are
 not visible to QML singletons, so a registered singleton is the
 load-bearing mechanism.
 
-Production startup (``milodex.gui.app.run_app``) builds an ordered
-:class:`QmlSingleton` registry via ``_build_qml_registry`` and calls
-:func:`register_qml_singletons` directly.  :func:`register_qml_types` is
-retained as a back-compat wrapper so existing test/smoke harnesses that pass
-a keyword-subset are untouched.
+The canonical ordered descriptor spec lives here as :data:`REGISTRY_SPEC`.
+Production startup (``milodex.gui.app.run_app``) binds live instances onto it
+via ``app._build_qml_registry`` and calls :func:`register_qml_singletons`
+directly.  :func:`register_qml_types` is retained as a back-compat wrapper —
+consuming the same spec — so existing test/smoke harnesses that pass a
+keyword-subset are untouched.
 """
 
 from __future__ import annotations
@@ -125,12 +126,23 @@ def register_qml_singletons(registry: Sequence[QmlSingleton]) -> None:
         _PINNED.append(descriptor.instance)
 
 
-# Static spec mapping each :func:`register_qml_types` keyword argument to its
-# (qml_name, qml_type, lifecycle) in the canonical registration order.  This
-# drives the back-compat wrapper; production (``app.py``) builds its own
-# ordered registry directly.  ``theme_manager`` is handled separately because
-# it defaults to a fresh ``ThemeManager()`` and is the return value.
-_REGISTRY_SPEC: tuple[tuple[str, str, type, bool], ...] = (
+# THE single descriptor source of truth for the QML singleton registry: each
+# entry maps a construction-site keyword to (qml_name, qml_type, lifecycle) in
+# the canonical registration order.  BOTH the production path
+# (``app._build_qml_registry``) and the back-compat wrapper
+# (:func:`register_qml_types`) consume this tuple, so order and lifecycle
+# flags cannot silently diverge between them.
+#
+# The order is the QML registration order; filtered by ``lifecycle`` it is
+# also the polling start/stop order, which is a deliberate Windows-shutdown
+# teardown contract (stop polling -> drain QThreadPool -> quit) and MUST be
+# preserved: ``operational_state`` first through ``activity_feed_state``, with
+# ``orphan_reaper_controller`` LAST among lifecycle entries.  The three
+# register-only entries (ThemeManager, BenchCommandBridge, RiskProfileBridge)
+# carry ``lifecycle=False``.  To wire a NEW read model: add ONE entry here
+# (plus its import above and its construction in ``app.run_app``).
+REGISTRY_SPEC: tuple[tuple[str, str, type, bool], ...] = (
+    ("theme_manager", "ThemeManager", ThemeManager, False),
     ("operational_state", "OperationalState", OperationalState, True),
     ("front_page_state", "FrontPageState", FrontPageState, True),
     ("bench_state", "BenchState", BenchState, True),
@@ -169,7 +181,7 @@ def register_qml_types(
     when *None*) as the QML singleton ``Milodex.ThemeManager``.  When
     *operational_state* is provided, it is registered as
     ``Milodex.OperationalState``.  Additional kwargs are registered in
-    the canonical order defined by :data:`_REGISTRY_SPEC`.
+    the canonical order defined by :data:`REGISTRY_SPEC`.
 
     After this call any QML file can ``import Milodex 1.0`` and reference
     ``ThemeManager.theme``, ``OperationalState.*`` etc.
@@ -204,12 +216,13 @@ def register_qml_types(
     :func:`register_qml_singletons`, kept at its original signature so
     existing callers (and the subprocess smoke harnesses that pass a subset
     of kwargs) are untouched.  Production startup
-    (``milodex.gui.app.run_app``) builds an ordered :class:`QmlSingleton`
-    registry directly and calls :func:`register_qml_singletons` instead.
+    (``milodex.gui.app.run_app``) binds live instances onto the same
+    :data:`REGISTRY_SPEC` via ``app._build_qml_registry`` and calls
+    :func:`register_qml_singletons` instead.
 
     The ``theme_manager`` is always registered first (defaulting to a fresh
     ``ThemeManager()``); the remaining non-``None`` kwargs are registered in
-    the canonical order defined by :data:`_REGISTRY_SPEC`.  Omitting a kwarg
+    the canonical order defined by :data:`REGISTRY_SPEC`.  Omitting a kwarg
     simply leaves that singleton unregistered -- exactly the previous
     ``if x is not None`` behaviour.
     """
@@ -218,6 +231,7 @@ def register_qml_types(
     theme = theme_manager if theme_manager is not None else ThemeManager()
 
     provided = {
+        "theme_manager": theme,
         "operational_state": operational_state,
         "front_page_state": front_page_state,
         "bench_state": bench_state,
@@ -234,18 +248,15 @@ def register_qml_types(
     }
 
     registry: list[QmlSingleton] = [
-        QmlSingleton(qml_name="ThemeManager", qml_type=ThemeManager, instance=theme)
-    ]
-    registry.extend(
         QmlSingleton(
             qml_name=qml_name,
             qml_type=qml_type,
             instance=provided[kwarg],
             lifecycle=lifecycle,
         )
-        for kwarg, qml_name, qml_type, lifecycle in _REGISTRY_SPEC
+        for kwarg, qml_name, qml_type, lifecycle in REGISTRY_SPEC
         if provided[kwarg] is not None
-    )
+    ]
 
     register_qml_singletons(registry)
     _singleton_instance = theme

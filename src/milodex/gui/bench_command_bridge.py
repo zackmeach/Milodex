@@ -16,8 +16,8 @@ by the facade and the modules it routes into (``milodex.promotion``,
 * caches the live ``CommandProposal`` between propose and submit so the
   proposal identity (``proposal_id``) survives the round-trip without QML
   needing to reconstruct dataclasses,
-* refreshes the Bench and Ledger read models on a successful submit (single
-  permitted reach into ``_kick_refresh`` on each polling model),
+* refreshes the Bench and Ledger read models on a successful submit (via the
+  public ``PollingReadModel.request_refresh`` on each polling model),
 * emits a ``submitCompleted`` signal QML surfaces can listen to, and
 * retains a bounded, **read-only** record of recent completion outcomes
   (``recentCompletions``) for a display-fallback sink. This record exists so a
@@ -382,23 +382,23 @@ class BenchCommandBridge(QObject):
         return payload
 
     def _refresh_after_submit(self, operation: str) -> None:
-        # Suppress refreshes once the bridge is stopping. An async completion can
-        # be delivered (queued metacall) after the shutdown sequence has stopped
-        # the read models, and PollingReadModel._kick_refresh has NO stopped-guard
-        # (polling_lifecycle.py) — it would start a fresh worker on an
-        # already-torn-down read model. The disconnect in stop() is best-effort
-        # (Qt may still deliver an already-queued metacall), so this flag is the
-        # definitive guard against resurrecting read-model pool work on shutdown.
+        # PollingReadModel.request_refresh carries its own stopped-guard, so a
+        # late refresh request can no longer resurrect pool work on a torn-down
+        # read model. The bridge's _stopped check here is kept as
+        # defense-in-depth: it suppresses the refresh attempt entirely once the
+        # bridge is shutting down (the disconnect in stop() is best-effort — Qt
+        # may still deliver an already-queued metacall), and it does not depend
+        # on the injected read-model doubles implementing the stopped contract.
         if self._stopped:
             return
         if self._bench_state is not None:
             try:
-                self._bench_state._kick_refresh()  # noqa: SLF001
+                self._bench_state.request_refresh(operation)
             except Exception:  # noqa: BLE001
                 logger.exception("BenchState refresh after %s failed.", operation)
         if self._ledger_state is not None:
             try:
-                self._ledger_state._kick_refresh()  # noqa: SLF001
+                self._ledger_state.request_refresh(operation)
             except Exception:  # noqa: BLE001
                 logger.exception("LedgerState refresh after %s failed.", operation)
 

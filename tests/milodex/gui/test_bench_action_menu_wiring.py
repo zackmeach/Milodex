@@ -49,7 +49,7 @@ class _FakeRow:
 
 
 def _menu(row: _FakeRow) -> list[dict]:
-    from milodex.gui.read_models import _compute_bench_action_menu
+    from milodex.gui.bench_actions import _compute_bench_action_menu
 
     return _compute_bench_action_menu(row)  # type: ignore[arg-type]
 

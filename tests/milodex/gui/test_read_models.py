@@ -1385,8 +1385,9 @@ def test_bench_pr_n_no_command_keys_in_action_preview(tmp_path: Path) -> None:
 
 def test_bench_pr_n_action_preview_micro_live_capital_bearing(tmp_path: Path) -> None:
     """Promote-target of micro_live/live or label containing 'Live' is capital-bearing."""
+    from milodex.gui.bench_actions import _action_intent_preview
     from milodex.gui.bench_v1 import MenuItem
-    from milodex.gui.read_models import _action_intent_preview, _StrategyRow
+    from milodex.gui.strategy_row import _StrategyRow
 
     row = _StrategyRow(
         strategy_id="x.y.z.v1",
@@ -1688,7 +1689,7 @@ def test_open_ro_conn_rejects_writes(tmp_path: Path) -> None:
     """
     import pytest as _pytest
 
-    from milodex.gui.read_models import _open_ro_conn
+    from milodex.gui.query_helpers import _open_ro_conn
 
     db = tmp_path / "test.db"
     # Create the file with a simple table via a normal rw connection first.
