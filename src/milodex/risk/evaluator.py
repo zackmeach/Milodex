@@ -227,13 +227,30 @@ class RiskEvaluator:
         # decision for a runner already in flight). Falls back to the YAML's
         # per-cycle stage for callers without runner binding.
         effective_stage = context.expected_stage or context.strategy_config.stage
-        if effective_stage not in {"backtest", "paper"}:
+        # Consume the canonical stage/mode table (SRS R-PRM-002): the risk
+        # layer must never be looser than the promotion policy the CLI and
+        # bench preflight already enforce. Unrecognized modes resolve to an
+        # empty allow-set — fail closed. Preview is intentionally NOT exempt:
+        # stage eligibility does not depend on whether the order is actually
+        # sent, and a preview verdict must predict the submit verdict.
+        #
+        # Lazy import: a module-scope import is a circular-import landmine —
+        # ``milodex.promotion.__init__`` eagerly loads ``manifest`` →
+        # ``strategies.__init__`` → strategy classes → ``execution.__init__``
+        # → ``service`` → ``milodex.risk`` (mid-init). Same cycle and same
+        # fix as the ``get_active_manifest_hash`` import in
+        # ``execution/service.py``.
+        from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE
+
+        allowed_stages = ALLOWED_STAGES_BY_MODE.get(context.trading_mode, frozenset())
+        if effective_stage not in allowed_stages:
             return RiskCheckResult(
                 name="strategy_stage",
                 passed=False,
                 message=(
                     f"Strategy '{context.strategy_config.name}' stage "
-                    f"'{effective_stage}' is not eligible for paper submission."
+                    f"'{effective_stage}' is not eligible for "
+                    f"'{context.trading_mode}'-mode submission."
                 ),
                 reason_code="strategy_stage_ineligible",
             )

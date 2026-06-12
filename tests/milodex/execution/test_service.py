@@ -567,7 +567,7 @@ def test_stale_data_is_blocked(tmp_path, risk_defaults_file, sample_account, sub
     assert broker.submit_calls == []
 
 
-def test_strategy_stage_must_be_paper_or_backtest(
+def test_strategy_stage_must_be_paper(
     tmp_path,
     risk_defaults_file,
     latest_bar,
@@ -599,6 +599,50 @@ def test_strategy_stage_must_be_paper_or_backtest(
     )
 
     assert "strategy_stage_ineligible" in result.risk_decision.reason_codes
+
+
+def test_backtest_stage_cannot_submit_paper_orders(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+    strategy_file,
+):
+    """SRS R-PRM-002 / review P1-01: stage ``backtest`` is not in
+    ``ALLOWED_STAGES_BY_MODE['paper']`` — the risk layer must refuse the
+    submission even though the CLI launch gate would normally have caught
+    it (the risk layer is the final arbiter, not a duplicate of the CLI)."""
+    updated_contents = strategy_file.read_text(encoding="utf-8").replace(
+        'stage: "paper"',
+        'stage: "backtest"',
+    )
+    strategy_file.write_text(updated_contents, encoding="utf-8")
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    intent = TradeIntent(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=5,
+        order_type=OrderType.MARKET,
+        strategy_config_path=strategy_file,
+    )
+
+    preview = service.preview(intent)
+    submit = service.submit_paper(intent)
+
+    # Preview mirrors submit: stage eligibility does not depend on whether
+    # the order is actually sent.
+    assert "strategy_stage_ineligible" in preview.risk_decision.reason_codes
+    assert submit.risk_decision.allowed is False
+    assert "strategy_stage_ineligible" in submit.risk_decision.reason_codes
+    # Chokepoint invariant: a blocked submit must NEVER reach the broker.
+    assert broker.submit_calls == []
 
 
 def test_paper_submit_requires_paper_mode(

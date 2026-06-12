@@ -1027,6 +1027,68 @@ def test_strategy_stage_uses_runner_bound_stage_when_yaml_flips_to_ineligible_st
     assert result.reason_code == "strategy_stage_ineligible"
 
 
+def test_strategy_stage_refuses_backtest_stage_for_paper_submission():
+    """SRS R-PRM-002 / review P1-01: stage ``backtest`` is not in
+    ``ALLOWED_STAGES_BY_MODE['paper']``. The risk layer previously accepted
+    both ``backtest`` and ``paper`` here — looser than the canonical
+    promotion table the CLI and bench preflight enforce. The risk layer is
+    the final arbiter and must not be the loosest gate."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="backtest"),
+            preview_only=False,
+        )
+    )
+
+    result = check_result(decision, "strategy_stage")
+    assert result.passed is False
+    assert result.reason_code == "strategy_stage_ineligible"
+
+
+def test_strategy_stage_refuses_backtest_stage_even_in_preview():
+    """Preview is intentionally NOT exempt from the stage check: stage
+    eligibility does not depend on whether the order is actually sent, and
+    a preview verdict must predict the submit verdict."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="backtest"),
+            preview_only=True,
+        )
+    )
+
+    result = check_result(decision, "strategy_stage")
+    assert result.passed is False
+    assert result.reason_code == "strategy_stage_ineligible"
+
+
+def test_strategy_stage_fails_closed_for_unrecognized_trading_mode():
+    """A trading mode absent from ``ALLOWED_STAGES_BY_MODE`` resolves to an
+    empty allow-set — no stage is eligible. (Defense in depth: the
+    paper-mode check refuses non-paper modes first, but the stage check
+    must not silently pass if that fence ever moves.)"""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=_strategy_config(stage="paper"),
+            trading_mode="micro_live",
+        )
+    )
+
+    result = check_result(decision, "strategy_stage")
+    assert result.passed is False
+    assert result.reason_code == "strategy_stage_ineligible"
+
+
+def test_strategy_stage_allows_paper_stage_for_paper_submission():
+    """Positive case: ``paper`` is the only stage in
+    ``ALLOWED_STAGES_BY_MODE['paper']`` and must keep passing."""
+    decision = RiskEvaluator().evaluate(
+        make_context(strategy_config=_strategy_config(stage="paper"))
+    )
+
+    result = check_result(decision, "strategy_stage")
+    assert result.passed is True
+
+
 def test_concurrent_positions_uses_runner_bound_max_positions():
     """A parallel writer raising ``max_positions`` from 1 to 10 mid-session
     must not let the runner take a second position. The runner's bound cap
