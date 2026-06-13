@@ -1918,3 +1918,28 @@ def test_paper_submit_is_lock_free_even_when_submit_lock_held(
 
     # Paper stays lock-free: a held submit lock must NOT decline a paper submit.
     assert "submit_serialization_unavailable" not in result.risk_decision.reason_codes
+
+
+def test_micro_live_submit_fails_closed_on_lock_filesystem_error(
+    tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
+):
+    # A plain file where the locks dir should be: the lock's mkdir/open raise
+    # OSError, not AdvisoryLockError. The submit must still fail closed (decline,
+    # no order, session survives) rather than crash the runner.
+    locks_path = tmp_path / "locks_is_a_file"
+    locks_path.write_text("not a directory", encoding="utf-8")
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+        locks_dir=locks_path,
+        submit_lock_timeout_seconds=0.2,
+    )
+
+    result = service.submit_paper(_serialization_intent(strategy_file, "micro_live"))
+
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "submit_serialization_unavailable" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []

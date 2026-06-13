@@ -173,7 +173,12 @@ class ExecutionService:
         lock = self._submit_lock()
         try:
             lock.acquire_blocking(timeout_seconds=self._submit_lock_timeout_seconds)
-        except AdvisoryLockError as exc:
+        except (AdvisoryLockError, OSError) as exc:
+            # AdvisoryLockError = contention timeout. OSError = the lock's own
+            # filesystem ops failed (locks dir unwritable, disk full, path is a
+            # file). Either way we cannot prove serialization, so fail closed —
+            # never fall through to an unserialized submit, never crash the
+            # runner (which does not catch submit exceptions).
             return self._declined_for_serialization(
                 intent,
                 source=source,
@@ -239,7 +244,7 @@ class ExecutionService:
         session_id: str | None,
         backtest_run_id: int | None,
         reasoning: DecisionReasoning | None,
-        error: AdvisoryLockError,
+        error: AdvisoryLockError | OSError,
     ) -> ExecutionResult:
         """Fail-closed result when the submit lock could not be acquired.
 
@@ -248,6 +253,12 @@ class ExecutionService:
         this like any other blocked decision: no trade this cycle, recorded for
         audit, session continues.
         """
+        _logger.warning(
+            "Submit serialization lock unavailable for %s; declining fail-closed "
+            "(no order sent). %s",
+            intent.normalized_symbol(),
+            error,
+        )
         preview = self._evaluate(intent, preview_only=True, reasoning=reasoning)
         decision = RiskDecision(
             allowed=False,
