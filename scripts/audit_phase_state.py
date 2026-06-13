@@ -98,6 +98,10 @@ _ALLOWLISTED_DOCS = frozenset(
         "docs/PHASE6_BENCH_PREP.md",
         "docs/bench/README.md",
         "docs/architecture/roadmaps/2026-05-21-deepening-roadmap.md",
+        # Phase-1 mentions here are scope qualifiers ("infeasible in Phase 1",
+        # "Phase 1 is market-only"), not claims that Phase 1 is the current phase.
+        "docs/architecture/roadmaps/2026-06-10-hardening-roadmap.md",
+        "docs/architecture/2026-06-13-cross-process-submit-serialization-design.md",
     }
 )
 
