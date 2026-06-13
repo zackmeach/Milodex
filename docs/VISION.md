@@ -8,7 +8,7 @@
 
 ## What Is Milodex?
 
-Milodex is a fully autonomous trading system that analyzes market data, identifies opportunities, and executes trades without human intervention. It runs locally on your machine, connects to a brokerage via official APIs, and makes buy/sell decisions based on configurable, testable strategies.
+Milodex is an operator-governed automation harness for trading strategies. It analyzes market data, identifies opportunities, and can act on them automatically — but always inside boundaries the operator sets and a risk layer enforces, never as a black box that hands an account to a model. It runs locally on your machine, connects to a brokerage via official APIs, and makes buy/sell decisions based on configurable, testable strategies. Trading is **paper by default**; live capital is reached only through explicit, human-approved promotion — never automatically.
 
 But more importantly, Milodex is built to solve the *hard* problem: not placing trades — any script can do that — but avoiding the trap of mistaking noise for signal. The system is designed around truthful discovery, rigorous validation, and strict risk controls so that every strategy earns its way from research to live capital.
 
