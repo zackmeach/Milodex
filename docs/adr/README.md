@@ -84,4 +84,3 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0053](0053-backtest-equity-snapshots-distinct-table.md) | Backtest equity snapshots are a distinct table from broker portfolio snapshots | Accepted |
 | [0054](0054-risk-profiles-bounded-operator-preferences.md) | Risk profiles are bounded operator preferences | Accepted |
 | [0055](0055-event-store-per-strategy-position-ledger.md) | Event-store per-strategy position ledger for concurrent runners | Accepted |
-| [0056](0056-cross-process-submit-serialization-is-the-micro-live-capital-gate.md) | Cross-process submit serialization is the micro-live capital gate | Proposed |
