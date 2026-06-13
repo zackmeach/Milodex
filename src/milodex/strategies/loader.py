@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,8 @@ from milodex.strategies.base import (
     StrategyParameterRelation,
     StrategyParameterSpec,
 )
+
+logger = logging.getLogger(__name__)
 
 _VALID_STAGES = {"idle", "backtest", "paper", "micro_live", "live"}
 _VALID_BAR_SIZES = {"1D", "1H", "30Min", "15Min", "5Min", "1Min"}
@@ -313,6 +316,29 @@ def load_strategy_config(path: Path) -> StrategyConfig:
         path=path,
         raw_data=data,
     )
+
+
+def resolve_config_path(strategy_id: str, config_dir: Path = Path("configs")) -> Path:
+    """Canonical strategy-id -> config-path resolver.
+
+    Locate the YAML file under ``config_dir`` whose ``strategy.id`` equals
+    ``strategy_id``. This is the single owner of the glob-load-match loop that
+    was previously copied across the promotion, CLI, runner, and backtest
+    layers; those sites now delegate here.
+
+    Invalid configs (bad YAML or failed validation) are skipped, not fatal.
+    Raises ``ValueError`` if no config matches ``strategy_id``.
+    """
+    for path in sorted(config_dir.glob("*.yaml")):
+        try:
+            config = load_strategy_config(path)
+        except (ValueError, yaml.YAMLError) as exc:
+            logger.debug("Skipping invalid config %s: %s", path, exc)
+            continue
+        if config.strategy_id == strategy_id:
+            return path
+    msg = f"Strategy config not found for strategy id: {strategy_id}"
+    raise ValueError(msg)
 
 
 def validate_strategy_parameters(

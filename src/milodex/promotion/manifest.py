@@ -13,8 +13,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import yaml
-
 from milodex.core.event_store import StrategyManifestEvent
 from milodex.strategies.loader import (
     canonicalize_config_data,
@@ -95,13 +93,11 @@ def get_active_manifest_hash(
 
 
 def resolve_strategy_config_path(strategy_id: str, config_dir: Path = Path("configs")) -> Path:
-    """Locate the YAML file whose ``strategy.id`` matches ``strategy_id``."""
-    for path in sorted(config_dir.glob("*.yaml")):
-        try:
-            config = load_strategy_config(path)
-        except (ValueError, yaml.YAMLError):
-            continue
-        if config.strategy_id == strategy_id:
-            return path
-    msg = f"Strategy config not found for strategy id: {strategy_id}"
-    raise ValueError(msg)
+    """Locate the YAML file whose ``strategy.id`` matches ``strategy_id``.
+
+    Thin re-export of the canonical resolver in
+    :mod:`milodex.strategies.loader`; kept for the established import path.
+    """
+    from milodex.strategies.loader import resolve_config_path
+
+    return resolve_config_path(strategy_id, config_dir)

@@ -353,17 +353,9 @@ def _worker_screen_one(
     child_ctx.config_dir = config_dir
 
     def _resolve_strategy_config_path(sid: str) -> Path:
-        for candidate in config_dir.glob("*.yaml"):
-            try:
-                from milodex.strategies.loader import load_strategy_config
+        from milodex.strategies.loader import resolve_config_path
 
-                config = load_strategy_config(candidate)
-            except Exception:
-                continue
-            if config.strategy_id == sid:
-                return candidate
-        msg = f"Strategy id {sid!r} not found under {config_dir}."
-        raise ValueError(msg)
+        return resolve_config_path(sid, config_dir)
 
     def _build_engine(sid: str, **kwargs: Any) -> BacktestEngine:
         loader = StrategyLoader()

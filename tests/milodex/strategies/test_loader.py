@@ -23,6 +23,7 @@ from milodex.strategies.loader import (
     build_default_registry,
     compute_config_hash,
     load_strategy_config,
+    resolve_config_path,
     resolve_universe_survivorship_corrected,
 )
 
@@ -754,3 +755,35 @@ def test_every_shipped_config_loads_through_strategy_loader():
     for path in strategy_paths:
         loaded = loader.load(path)
         assert loaded.strategy is not None, f"{path.name}: loader returned no strategy"
+
+
+# ---------------------------------------------------------------------------
+# Canonical strategy-id -> config-path resolver (consolidation of the
+# glob-load-match loop previously copied across promotion/cli/runner/backtest)
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_config_path_finds_shipped_strategy():
+    """Canonical resolver locates a real shipped config by its strategy id."""
+    target = _strategy_yaml_paths()[0]
+    sid = load_strategy_config(target).strategy_id
+    assert resolve_config_path(sid, _CONFIGS_DIR) == target
+
+
+def test_resolve_config_path_raises_when_missing(tmp_path: Path):
+    """No matching id -> ValueError with the pinned message; invalid files skipped, not fatal."""
+    (tmp_path / "junk.yaml").write_text("not: a strategy\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Strategy config not found"):
+        resolve_config_path("ghost.v1", tmp_path)
+
+
+def test_resolver_wrappers_delegate_to_canonical():
+    """Every re-export wrapper returns the same path as the canonical resolver."""
+    from milodex.cli.commands.promote import resolve_strategy_config
+    from milodex.promotion.manifest import resolve_strategy_config_path
+
+    target = _strategy_yaml_paths()[0]
+    sid = load_strategy_config(target).strategy_id
+    canonical = resolve_config_path(sid, _CONFIGS_DIR)
+    assert resolve_strategy_config_path(sid, _CONFIGS_DIR) == canonical
+    assert resolve_strategy_config(sid, _CONFIGS_DIR) == canonical

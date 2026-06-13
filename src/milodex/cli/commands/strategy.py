@@ -50,17 +50,13 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def _resolve_config_path(strategy_id: str, config_dir: Path) -> Path:
-    """Locate the YAML file whose ``strategy.id`` matches *strategy_id*."""
-    for path in sorted(config_dir.glob("*.yaml")):
-        try:
-            cfg = load_strategy_config(path)
-        except ValueError as exc:
-            logger.debug("Skipping invalid config %s: %s", path, exc)
-            continue
-        if cfg.strategy_id == strategy_id:
-            return path
-    msg = f"Strategy config not found for strategy_id: {strategy_id}"
-    raise ValueError(msg)
+    """Locate the YAML file whose ``strategy.id`` matches *strategy_id*.
+
+    Delegates to the canonical resolver in :mod:`milodex.strategies.loader`.
+    """
+    from milodex.strategies.loader import resolve_config_path
+
+    return resolve_config_path(strategy_id, config_dir)
 
 
 def _format_decision_line(result: ExecutionResult) -> str:
