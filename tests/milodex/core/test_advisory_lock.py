@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -88,6 +89,60 @@ def test_advisory_lock_release_is_noop_when_not_held(tmp_path):
     # Should not raise even though acquire was never called.
     lock.release()
     assert not lock.path.exists()
+
+
+def test_acquire_blocking_returns_immediately_when_free(tmp_path):
+    lock = AdvisoryLock("submit.paper", locks_dir=tmp_path)
+
+    holder = lock.acquire_blocking(timeout_seconds=1.0)
+    try:
+        assert lock.path.exists()
+        assert holder.pid == os.getpid()
+    finally:
+        lock.release()
+
+
+def test_acquire_blocking_times_out_when_held(tmp_path):
+    holder_lock = AdvisoryLock("submit.paper", locks_dir=tmp_path)
+    waiter = AdvisoryLock("submit.paper", locks_dir=tmp_path)
+
+    holder_lock.acquire()
+    try:
+        start = time.monotonic()
+        with pytest.raises(AdvisoryLockError) as exc_info:
+            waiter.acquire_blocking(timeout_seconds=0.2, poll_interval_seconds=0.02)
+        elapsed = time.monotonic() - start
+    finally:
+        holder_lock.release()
+
+    assert elapsed >= 0.2
+    assert "within" in str(exc_info.value)
+    # Fail-closed: the waiter never acquired, so no lock file leaks under it.
+    assert not waiter._held
+
+
+def test_acquire_blocking_succeeds_after_holder_releases(tmp_path):
+    holder_lock = AdvisoryLock("submit.paper", locks_dir=tmp_path)
+    waiter = AdvisoryLock("submit.paper", locks_dir=tmp_path)
+
+    holder_lock.acquire()
+    released = threading.Event()
+
+    def _release_after_delay() -> None:
+        time.sleep(0.15)
+        holder_lock.release()
+        released.set()
+
+    releaser = threading.Thread(target=_release_after_delay)
+    releaser.start()
+    try:
+        holder = waiter.acquire_blocking(timeout_seconds=3.0, poll_interval_seconds=0.02)
+        assert released.is_set()
+        assert holder.pid == os.getpid()
+        assert waiter.path.exists()
+    finally:
+        waiter.release()
+        releaser.join()
 
 
 def test_old_lockfile_with_live_recycled_pid_is_reclaimable_with_warning(tmp_path, caplog):

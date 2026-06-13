@@ -1,6 +1,6 @@
 # Cross-process submit serialization — design proposal (the micro-live capital gate)
 
-**Status:** Design proposal (pre-decision)
+**Status:** Resolved — Option A accepted; see [ADR 0056](../adr/0056-cross-process-submit-serialization-per-account-advisory-lock.md). This note remains the option analysis / background.
 **Date:** 2026-06-13
 **Related:** [ADR 0008](../adr/0008-risk-layer-veto-architecture.md) (risk veto / execution chokepoint), [ADR 0024](../adr/0024-account-scoped-position-caps-are-authoritative.md) (account-scoped caps authoritative), [ADR 0026](../adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (per-process supervisor; 2026-05-30 addendum names this race), [ADR 0029](../adr/0029-per-strategy-position-attribution-at-risk-layer.md) (per-strategy attribution), [ADR 0055](../adr/0055-event-store-per-strategy-position-ledger.md) (per-strategy ledger), [`docs/RISK_POLICY.md`](../RISK_POLICY.md) "Known limitations" #3, [`src/milodex/execution/service.py`](../../src/milodex/execution/service.py), [`src/milodex/core/advisory_lock.py`](../../src/milodex/core/advisory_lock.py)
 
