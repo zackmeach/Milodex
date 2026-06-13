@@ -9,6 +9,8 @@
 
 A **strategy family** is a named archetype of trading logic: what market behavior it tries to exploit, what its semantic invariants are, what parameters can vary, and what conditions should disable it. Every **promotable strategy instance** (see SRS Key Terms) is an instance of exactly one family.
 
+**Scope note.** This document specifies the Phase-1 alpha families (`meanrev`, `regime`, `momentum`, `breakout`, `seasonality`). The benchmark, scored, and tree families that ship in `configs/` and `src/` are decision-layer-seam / benchmark / canary strategies specified in code only — they are not given a full family spec here. For an undocumented family the risk layer applies the universal disable-condition subset by default (`src/milodex/risk/disable_conditions.py`).
+
 This document is **normative**. YAML config files under `configs/` carry only the *frozen values* for a specific instance — they do not redefine the family. If a proposed change to a strategy is not expressible within the family's declared parameter surface, the change is either a new variant, a new version (per ADR 0015), or a new family — not a silent override in YAML.
 
 Each section below defines one family with a fixed structure:

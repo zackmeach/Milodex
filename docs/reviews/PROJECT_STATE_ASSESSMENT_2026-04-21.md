@@ -1,5 +1,7 @@
 # Project State Assessment — 2026-04-21
 
+> **Captured 2026-04-21 (Phase 1 era). Historical snapshot** — Phase 1 was closed by ADR 0023. Do not cite the body as current state.
+
 **Reviewer:** AI pair (internal review)
 **Scope:** Full repo snapshot — documentation layer, source tree, configs, tests.
 **Audience:** Founder. No sugar, no cheerleading.

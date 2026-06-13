@@ -1,5 +1,7 @@
 # Risk Policy
 
+**Status:** Living document (normative subsystem spec — authority rank 2 per `docs/adr/README.md`)
+
 Companion to `docs/SRS.md` Domain 2 (Execution / Risk) and Domain 4 (Strategy Engine). SRS encodes *what risk checks must exist and how they behave*; this document fixes the **default numeric values**, the **scope of kill-switch behavior**, and the **policy distinctions** (hard stop vs warning, increasing vs reducing exposure) that the checks implement. The authoritative machine-readable source is `configs/risk_defaults.yaml` — this document is the human-readable rationale it should match.
 
 The founder's intent (see `docs/FOUNDER_INTENT.md`) is that Milodex feel disciplined rather than aggressive, and understandable to a less financially literate user. Every default below is chosen for clarity and restraint over sophistication.

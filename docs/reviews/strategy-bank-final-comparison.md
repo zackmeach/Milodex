@@ -1,5 +1,7 @@
 # Research Screen — 2020-01-01 → 2024-12-31
 
+> **Point-in-time research screen, 2026-05-05. NOT the current bank** — see docs/STRATEGY_BANK.md for canonical status. No promotion implied; all candidates at stage: backtest.
+
 Generated: 2026-05-05T16:10:18.947964-04:00
 Strategies: 12
 

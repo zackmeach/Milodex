@@ -81,3 +81,6 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0050](0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) | Strategy evidence has a freshness axis distinct from promotion stage | Accepted |
 | [0051](0051-bench-command-infrastructure-v1.md) | Bench Command Infrastructure v1 — propose / submit lifecycle for the launch paper-lifecycle | Accepted |
 | [0052](0052-promotion-policy-is-a-typed-governance-source-of-truth.md) | Promotion policy is a typed governance source of truth | Accepted |
+| [0053](0053-backtest-equity-snapshots-distinct-table.md) | Backtest equity snapshots are a distinct table from broker portfolio snapshots | Accepted |
+| [0054](0054-risk-profiles-bounded-operator-preferences.md) | Risk profiles are bounded operator preferences | Accepted |
+| [0055](0055-event-store-per-strategy-position-ledger.md) | Event-store per-strategy position ledger for concurrent runners | Accepted |

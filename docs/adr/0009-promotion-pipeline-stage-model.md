@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-04-16
 
-**Implementation update (2026-05):** Later promotion work made the evidence gates stage-aware. Backtest-to-paper uses a paper-readiness gate, later capital stages use the stricter Sharpe > 0.5 / max drawdown < 15% gate, and trade-count evidence is sourced from each strategy's configured `backtest.min_trades_required` value. The enforced stage model in this ADR remains unchanged; see SRS R-PRM-004 for the current thresholds.
+**Implementation update (2026-05):** Later promotion work made the evidence gates stage-aware. Backtest-to-paper uses a permissive paper-readiness gate, later capital stages use a stricter capital-readiness gate, and trade-count evidence is sourced from each strategy's configured `backtest.min_trades_required` value. The enforced stage model in this ADR remains unchanged; the numeric thresholds are owned by `src/milodex/promotion/policy.py` (ADR 0052) — see SRS R-PRM-004 for the current thresholds.
 
 ## Context
 

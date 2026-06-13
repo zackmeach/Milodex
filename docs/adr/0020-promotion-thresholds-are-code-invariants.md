@@ -1,7 +1,7 @@
 # ADR 0020 — Promotion Thresholds Are Code-Level Invariants
 
 **Status:** Accepted — superseded in part by ADR 0052 (2026-05)
-**Superseded in part by:** [ADR 0052](0052-promotion-policy-is-a-typed-governance-source-of-truth.md) — the threshold source-of-truth moved from `src/milodex/strategies/promotion.py` to `src/milodex/promotion/policy.py`. The core decision (thresholds are code-level invariants, not YAML tuning) remains binding. See ADR 0052 for the current module path and the typed `PromotionPolicy` / `GateTier` structure.
+**Superseded in part by:** [ADR 0052](0052-promotion-policy-is-a-typed-governance-source-of-truth.md) — the threshold source-of-truth moved from `src/milodex/strategies/promotion.py` to `src/milodex/promotion/policy.py`. The core decision (thresholds are code-level invariants, not YAML tuning) remains binding. See ADR 0052 for the current module path and the typed `PromotionPolicy` / `GateTier` structure. **Correction (per ADR 0052):** the "Update to `CLAUDE.md`" section below is now historical — current `CLAUDE.md` no longer lists the three thresholds inline (it forbids restating them); `src/milodex/promotion/policy.py` is the sole authoritative copy.
 **Date:** 2026-04-22
 **Relates to:** ADR 0009 (promotion pipeline stage model), ADR 0003 (config-driven strategies)
 

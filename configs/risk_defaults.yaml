@@ -37,8 +37,10 @@ portfolio:
   # Account-scoped: counts every broker position regardless of which strategy
   # opened it (per ADR 0024). When running multiple strategies in one paper
   # account, size this to the SUM of expected concurrent positions across all
-  # running strategies — strategy YAML `risk.max_positions` is informational
-  # only and does not bind the risk layer.
+  # running strategies. Per ADR 0029, strategy YAML `risk.max_positions` is
+  # BINDING for that strategy's own runner-attributed positions (reason code
+  # `max_strategy_positions_exceeded`); it constrains that one strategy and does
+  # not relax this account-wide cap.
   max_concurrent_positions: 10
 
 daily_limits:

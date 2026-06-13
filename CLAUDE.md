@@ -14,7 +14,7 @@ python -m milodex.cli.main <subcommand>   # CLI entry — `python -m milodex` do
 
 ## Architecture
 
-src-layout Python package (`src/milodex/`). Twelve modules:
+src-layout Python package (`src/milodex/`). Thirteen modules:
 
 - **broker/** — Brokerage API integration (Alpaca). All broker access goes through this interface.
 - **strategies/** — Config-driven strategy definitions. No hardcoded strategy logic — parameters live in `configs/*.yaml`.
@@ -25,6 +25,7 @@ src-layout Python package (`src/milodex/`). Twelve modules:
 - **data/** — Market data acquisition. Start with free sources (Alpaca, Yahoo Finance). Premium only if testing justifies cost.
 - **analytics/** — Performance metrics, trade logging, benchmark comparison (vs SPY).
 - **core/** — Shared infrastructure: SQLite event store (ADR 0011), advisory locks, schema migrations. Source of truth for trade, explanation, kill-switch, strategy-run, and backtest-run history. Durable state lives under `data/` per ADR 0018.
+- **operations/** — Operational maintenance routines run outside the trade path: data-freshness checks, broker reconciliation, and periodic orphan-runner maintenance.
 - **cli/** — Command-line interface. Primary interaction surface.
 - **commands/** — Backend command facades the GUI (and future tooling) reaches. Thin orchestrators over existing CLI/governance/runtime callees — no business rules of their own (ADR 0051).
 - **gui/** — GUI subsystem (PySide6 + Qt Quick), per ADR 0033/0035. Bundled fonts, QML theme infrastructure, read models.

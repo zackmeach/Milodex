@@ -22,7 +22,7 @@ Most personal trading projects are a strategy script plus a broker SDK call. Mil
 - **Kill switch with manual reset.** When tripped, trading halts. There is no auto-resume path. ([ADR 0005](docs/adr/0005-kill-switch-manual-reset.md))
 - **An event-sourced SQLite store as the source of truth** for trades, explanations, promotion-log entries, strategy runs, kill-switch events, and frozen manifests. Append-only, content-hash-keyed where idempotency matters. ([ADR 0011](docs/adr/0011-sqlite-event-store.md))
 - **A rich-terminal CLI that's the daily operator surface.** Color-coded by exposure (live red, paper yellow, backtest cyan), threshold-coded by promotion gate (Sharpe ≥ 0.5 green / 0–0.5 yellow / negative red, drawdown thresholded at 7.5% and 15%), with kill-switch banners that override everything else on screen. The `--json` machine contract sits next to it untouched, so the same command output drives operators or scripts. The CLI is what the GUI gate ([ENGINEERING_STANDARDS.md §"GUI Readiness Gate"](docs/ENGINEERING_STANDARDS.md)) requires before any GUI work begins.
-- **ADR-driven design.** 54 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
+- **ADR-driven design.** 55 numbered Architecture Decision Records capture the "why" behind every consequential choice, from broker selection to durable state layout to why risk types live in the risk module. See the [ADR index](docs/adr/).
 
 ---
 
@@ -50,13 +50,13 @@ Most personal trading projects are a strategy script plus a broker SDK call. Mil
    └───────────────┘   └──────────────┘  └─────────────────────┘
 ```
 
-Ten modules in `src/milodex/`: `broker`, `strategies`, `risk`, `execution`, `backtesting`, `data`, `analytics`, `promotion`, `core`, `cli`. Separation of concerns is enforced by the rule that strategies never call the broker directly and the risk layer is never bypassed for convenience.
+Thirteen modules in `src/milodex/`: `broker`, `strategies`, `risk`, `execution`, `backtesting`, `data`, `analytics`, `promotion`, `operations`, `core`, `cli`, `commands`, `gui`. Separation of concerns is enforced by the rule that strategies never call the broker directly and the risk layer is never bypassed for convenience.
 
 ---
 
 ## By the Numbers
 
-- **54 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0054)
+- **55 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0055)
 - A **`src/`-layout Python 3.11 package** with a test suite mirroring the `src/` tree
 - **90%+ test coverage** with a one-way ratchet (CI fails on regression below the floor)
 - Ruff-linted, formatted, and clean

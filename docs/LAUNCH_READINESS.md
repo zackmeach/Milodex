@@ -1,5 +1,7 @@
 # Editorial Dark Launch Readiness
 
+> **Frozen snapshot — Editorial Dark pre-launch verification, captured 2026-05-14 (commit fee27fe).** Historical evidence, not current system state. Surfaces and verdicts below reflect that date (e.g. AnchorSurface.qml has since been removed).
+
 **Scope:** Final pre-launch verification pass for the Editorial Dark initial release. Editorial Light + Bronze are deferred post-launch (see [DESIGN.md §7](DESIGN.md), [DESIGN_SYSTEM.md §1.2](DESIGN_SYSTEM.md), commit `fee27fe`).
 
 **Predecessors:** [PHASE5_PLANNING.md](PHASE5_PLANNING.md), [VISION.md "Daily Operator Workflow"](VISION.md#daily-operator-workflow), [FOUNDER_INTENT.md](FOUNDER_INTENT.md), [ADR 0004](adr/0004-paper-only-phase-one.md) (paper-only), [ADR 0005](adr/0005-kill-switch-manual-reset.md) (manual reset), [ADR 0037](adr/0037-distribution-model-pyinstaller-onedir-plus-inno-setup-unsigned.md) (distribution).
