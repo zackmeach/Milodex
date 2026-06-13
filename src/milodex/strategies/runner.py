@@ -24,7 +24,7 @@ from milodex.execution.service import ExecutionService
 from milodex.operations.reconciliation import local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
 from milodex.strategies.base import DecisionReasoning
-from milodex.strategies.loader import StrategyLoader, load_strategy_config
+from milodex.strategies.loader import StrategyLoader
 from milodex.strategies.paper_runner_control import consume_controlled_stop_request
 
 logger = logging.getLogger(__name__)
@@ -579,16 +579,9 @@ class StrategyRunner:
         )
 
     def _resolve_config_path(self) -> Path:
-        for path in sorted(self._config_dir.glob("*.yaml")):
-            try:
-                config = load_strategy_config(path)
-            except ValueError as exc:
-                logger.debug("Skipping invalid config %s: %s", path, exc)
-                continue
-            if config.strategy_id == self._strategy_id:
-                return path
-        msg = f"Strategy config not found for strategy id: {self._strategy_id}"
-        raise ValueError(msg)
+        from milodex.strategies.loader import resolve_config_path
+
+        return resolve_config_path(self._strategy_id, self._config_dir)
 
     def _fetch_bars_by_symbol(self) -> dict[str, Any]:
         """Fetch bars for every universe symbol over the history window."""

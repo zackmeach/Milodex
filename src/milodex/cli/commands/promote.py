@@ -57,17 +57,9 @@ def resolve_strategy_config(strategy_id: str, config_dir: Path = Path("configs")
     """Locate the YAML file whose ``strategy.id`` matches ``strategy_id``.
 
     Kept here (and re-exported via :mod:`milodex.cli.main`) because several
-    commands resolve a strategy_id → config path the same way. Not coupled
-    to the legacy promote flow.
+    commands resolve a strategy_id -> config path the same way. Thin re-export
+    of the canonical resolver in :mod:`milodex.strategies.loader`.
     """
-    from milodex.strategies.loader import load_strategy_config
+    from milodex.strategies.loader import resolve_config_path
 
-    for path in sorted(config_dir.glob("*.yaml")):
-        try:
-            config = load_strategy_config(path)
-        except ValueError:
-            continue
-        if config.strategy_id == strategy_id:
-            return path
-    msg = f"Strategy config not found for strategy id: {strategy_id}"
-    raise ValueError(msg)
+    return resolve_config_path(strategy_id, config_dir)

@@ -262,7 +262,6 @@ def run_app() -> int:
         return 1
 
     from milodex.backtesting.engine import BacktestEngine
-    from milodex.cli.commands.promote import resolve_strategy_config
     from milodex.commands.bench import BenchCommandFacade
     from milodex.config import (
         get_bundled_resource_dir,
@@ -291,7 +290,7 @@ def run_app() -> int:
     from milodex.gui.risk_profile_bridge import RiskProfileBridge, record_startup_default
     from milodex.gui.risk_throughput_state import RiskThroughputState
     from milodex.gui.theme_manager import ThemeManager
-    from milodex.strategies.loader import StrategyLoader
+    from milodex.strategies.loader import StrategyLoader, resolve_config_path
     from milodex.strategies.paper_runner_control import PaperRunnerControl
 
     # NOTE: register_qml_singletons is imported above but intentionally stays
@@ -415,7 +414,7 @@ def run_app() -> int:
         return EventStore(db_path)
 
     def get_backtest_engine(strategy_id: str, **kwargs) -> BacktestEngine:
-        config_path = resolve_strategy_config(strategy_id, configs_dir)
+        config_path = resolve_config_path(strategy_id, configs_dir)
         loaded = StrategyLoader().load(config_path)
         return BacktestEngine(
             loaded=loaded,
