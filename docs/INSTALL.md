@@ -2,7 +2,7 @@
 
 ## What is this?
 
-Milodex is a personal autonomous trading system distributed as a Windows desktop application. The latest installer is available on the [GitHub Releases page](https://github.com/zackmeach/Milodex/releases). For Phase 5, releases are published manually — check the Releases page for the most recent `Milodex-Setup-vX.Y.Z.exe`.
+Milodex is a personal autonomous trading system distributed as a Windows desktop application. The latest installer is available on the [GitHub Releases page](https://github.com/zackmeach/Milodex/releases). Releases are currently published manually — check the Releases page for the most recent `Milodex-Setup-vX.Y.Z.exe`.
 
 ---
 
@@ -58,7 +58,7 @@ The application bundle itself (Python runtime, Qt libraries, QML) is at `%LOCALA
 
 ## Updating Milodex
 
-Phase 5 has no auto-update mechanism. To update:
+There is currently no auto-update mechanism (auto-update/CI are deferred per ADR 0037). To update:
 
 1. Download the newer `Milodex-Setup-vX.Y.Z.exe` from the Releases page.
 2. Run the installer.
