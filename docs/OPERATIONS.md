@@ -257,7 +257,7 @@ Operators onboarding a strategy for the first time run the freeze command once a
 - `milodex promotion history <strategy_id> [--limit N]` — newest-first audit log. Reversals are marked with a `↩` glyph pointing at the reversed promotion id.
 - **Phase 1 lock:** `--to micro_live` and `--to live` are refused by the state machine with a message citing ADR 0004 / R-PRM-006. The lock lifts only via a future ADR, not a config edit. R-EXE-007 at the risk layer is the runtime defense-in-depth.
 
-All commands honor the global `--json` flag for scripting (ADR 0014). The legacy top-level `milodex promote` still works but prints a one-slice deprecation banner — prefer `milodex promotion promote`.
+All commands honor the global `--json` flag for scripting (ADR 0014). The legacy top-level `milodex promote` is **refused** (it bypassed the ADR 0015 manifest freeze) — it raises a hard error pointing to `milodex promotion promote`.
 
 #### Standard promotion ceremony
 
@@ -289,8 +289,8 @@ milodex promotion demote <strategy_id> \
 
 Backtest data lives in a versioned parquet cache under
 `market_cache/<version>/<timeframe>/<SYMBOL>.parquet`. The version is bumped
-when the underlying fetch semantics change — for example, PR 1.1 bumped v1 → v2
-because raw-bar parquets in v1 do not carry split adjustments. Files cached
+when the underlying fetch semantics change — e.g. v1 → v2 added split
+adjustments; the current version is `v3` (`milodex.data.alpaca_provider.CACHE_VERSION`). Files cached
 under the old version are ignored automatically; a fresh fill is required before
 any backtest can run.
 
@@ -318,7 +318,7 @@ python -c "
 from pathlib import Path
 from milodex.strategies.loader import resolve_universe_ref
 expected = resolve_universe_ref('universe.sp100_liquid.v1', Path('configs/_dummy.yaml'))
-cached = {f.stem for f in Path('market_cache/v2/1Day').glob('*.parquet')}
+cached = {f.stem for f in Path('market_cache/v3/1Day').glob('*.parquet')}
 missing = sorted(set(expected) - cached)
 print(f'expected={len(expected)} cached={len(cached)} missing={len(missing)}')
 print('missing:', missing[:10], '...' if len(missing) > 10 else '')

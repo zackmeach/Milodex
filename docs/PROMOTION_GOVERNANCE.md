@@ -1,5 +1,7 @@
 # Promotion Governance
 
+**Status:** Living document (normative subsystem spec — authority rank 2 per `docs/adr/README.md`)
+
 Companion to `docs/SRS.md` Domain 8 (Promotion Pipeline). SRS encodes *what must be true* for a stage transition; this document defines *what artifacts must exist, what they must contain, who approves them, and how reversals and rejections are preserved*. Every evidence package described here is scoped to **one frozen strategy instance** (one `strategy.id` + config fingerprint, per R-STR-012) — never to a template, family, or informal bundle.
 
 Promotion in Milodex is governed, not ceremonial. The purpose of each package is to make it possible, months later, for the operator (or a reviewer) to ask "why was this strategy in this stage?" and get an answer from durable state alone — not from memory, not from the CLI session that approved it.

@@ -36,6 +36,8 @@ Companions to SRS domains. These are current and binding until revised by a new 
 | [DESIGN.md](DESIGN.md) | Design narrative — *why* surfaces look/read as they do (binding for surface judgment calls). |
 | [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) | Design tokens, components, theme architecture. |
 | [INSTALL.md](INSTALL.md) | End-user install instructions. |
+| [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Operational failure modes and fixes (GUI-launched runner death, venv trampoline, stale-bar gating). |
+| [KNOWN_FLAKY_TESTS.md](KNOWN_FLAKY_TESTS.md) | Quarantined/known-flaky tests and the reason for each (e.g. Qt/QML subprocess pollution). Refreshed as tests are quarantined or fixed. |
 
 ## Living state (regenerable — trust the as-of marker, not the filename)
 
@@ -54,7 +56,7 @@ Named as if evergreen but capture one moment. Treat as historical evidence.
 | Doc | Captured |
 |---|---|
 | [TEST_EFFICACY_AUDIT.md](TEST_EFFICACY_AUDIT.md) | Mutation-testing audit, 2026-05-06 (Phase 4). Reproduce via `scripts/run_mutation_audit.ps1`. |
-| [LAUNCH_READINESS.md](LAUNCH_READINESS.md) | Editorial Dark pre-launch verification pass. |
+| [LAUNCH_READINESS.md](LAUNCH_READINESS.md) | Editorial Dark pre-launch verification pass — captured 2026-05-14 (commit `fee27fe`). |
 
 ## Closed history (read for the record only)
 
@@ -79,11 +81,14 @@ goes here.
 
 | Dir | Contents |
 |---|---|
-| [adr/](adr/README.md) | 54 Architecture Decision Records + the binding Document Authority Order. The decision backbone. |
+| [adr/](adr/README.md) | Architecture Decision Records + the binding Document Authority Order. The decision backbone (count lives in the ADR index, not here). |
 | reviews/ | Point-in-time analyses, screens, and forensic write-ups. Each is dated/frozen. |
+| architecture/ | Architecture framework docs, `audits/`, `interface-explorations/`, and `roadmaps/`. Point-in-time except `roadmaps/` (living trackers — judge by content). |
+| incidents/ | Dated incident write-ups. Resolved/frozen. |
+| overnight/ | Overnight autonomous-run after-action reports + launch briefs. Dated/frozen, point-in-time. |
 | mockups/, prototypes/ | Bench/GUI design exploration — non-binding visual material. |
 | bench/ | Bench surface notes. |
-| superpowers/ | Plans and specs scratch space. |
+| superpowers/ | Plans and specs scratch space — point-in-time implementation artifacts, dated by filename, NOT current canon. |
 
 ## Maintaining this map
 

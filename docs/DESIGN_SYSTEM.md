@@ -1,7 +1,7 @@
 # Milodex Design System
 
 **Status:** Accepted &middot; 2026-05-13 &middot; v0.2
-**Phase:** 5 (open per [ADR 0031](adr/0031-phase-4-is-closed-and-phase-5-may-open.md))
+**Phase:** 6 (open per [ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md); Phase 5 closed)
 **Architecture:** [ADR 0033](adr/0033-gui-runtime-is-pyside6-qt-quick.md) (PySide6 + Qt Quick), [ADR 0034](adr/0034-phase-5-scope-orders-observability-before-features.md) (observability-first ordering), [ADR 0035](adr/0035-design-system-and-theme-architecture.md) (this design system + theme architecture)
 
 This document is the canonical reference for Milodex's GUI design tokens, components, and themes. It is the spec the first Phase 5 GUI implementation PR builds against, and the artifact subsequent PRs cite when they extend it. When a GUI implementation choice is ambiguous, this document is the binding answer; if the document is wrong, the answer is to update the document, not to deviate silently.
@@ -39,9 +39,9 @@ Same components, same tokens, three palettes. Hot-swappable at runtime via a pro
 
 | Theme | Role | Surface | Identity |
 |---|---|---|---|
-| **Editorial Dark** | Default — **the only theme shipped at initial launch** | Warm-tinted near-black `#0a0907` | Parchment cream `#e6cf99` + oxblood `#722f37` |
+| **Editorial Dark** | Default — **the only theme shipped at initial launch** | Warm-tinted near-black `#0a0907` | Parchment cream `#ecd6a5` + oxblood `#7d3540` |
 | **Editorial Light** | Daytime variant — **architectural; deferred for post-launch parity** | Cream-beige `#f5efe1` | Deep brown `#2a2218` + oxblood `#722f37` |
-| **Bronze** | Alternate direction — **architectural; deferred for post-launch parity** | Warm-tinted near-black `#0d0c0a` | Patinated bronze `#a68063` + verdigris `#5e8b7e` |
+| **Bronze** | Alternate direction — **architectural; deferred for post-launch parity** | Warm-tinted near-black `#0d0c0a` | Patinated bronze `#b58c6e` + verdigris `#6a9a8c` |
 
 Editorial Dark and Editorial Light are the same aesthetic in inverted contrast &mdash; literally what publications look like on a screen vs. on paper. Bronze is a separate aesthetic story (workshop / craft-tool / patinated metal) that demonstrates the theme machinery and gives variety without diverging the structural design.
 
@@ -83,6 +83,8 @@ Six display steps, four body steps, three data steps. All sizes in pixels (Qt Qu
 | `typography.data.sm` | JetBrains Mono | 13 / 1.60 | 400 + `tnum` | Compact tables |
 | `typography.data.xs` | JetBrains Mono | 12 / 1.55 | 400 + `tnum` | Very dense tables, header rows |
 
+> **Note — surface-specific roles beyond the foundational scale.** The table above is the foundational scale. `Theme.qml`'s `typography` object also carries surface-specific roles introduced for FRONT/DESK composition that are not foundational steps: `display.heroNum` / `display.deskNum` / `display.heroAccent` / `display.heroCents` / `display.tally` (hero P&amp;L numerics and stage tallies), `body.lgPlus` / `body.mdPlus` (large narrative prose), and `label.xs.criticalTrack` (wider letter-spacing for the destructive button label). They are documented at their point of use (&sect;7.9 hero band, &sect;7.1 buttons); the foundational scale is what general surfaces compose against.
+
 **Tabular figures (`tnum`) are mandatory** for any data role. Strategy Bank rows, Sharpe ratios, trade counts, P&amp;L &mdash; all must align numerically. Set via `font.features: ["tnum"]` in QML. Without this, monospaced numbers still drift across rows in proportional-figure mode.
 
 > **Non-negotiable: mono + tabular for all tabular numerics.** Any column of numbers &mdash; in any surface, in any theme &mdash; renders in `typography.data.*` (JetBrains Mono) with `tnum` on. Proportional sans is forbidden for tabular numerics. This is the single most common density violation and the most damaging to the ledger-typeset register; surface PRs that render numbers in `typography.body.*` for a column will not pass review. The carve-out is hero serif numerics on FRONT and DESK (one number on the page, set in `typography.display.lg`/`xl` Newsreader) &mdash; those are typographic, not tabular. Reinforces [DESIGN.md §5.3](DESIGN.md#53-three-voices-never-crossed) and [DESIGN.md §6](DESIGN.md#6-the-negative-space--what-this-design-rejects) negative-space entry on proportional numerics in tabular columns.
@@ -115,31 +117,31 @@ Serious does not mean faint. If a value is evidence, state, or an operator decis
 | Token | Hex | Use |
 |---|---|---|
 | `color.surface.canvas` | `#0a0907` | Page background, root window |
-| `color.surface.base` | `#100d09` | Cards, panels, content surfaces |
-| `color.surface.raised` | `#14110d` | Elevated surfaces (dialogs, popovers, hovered rows) |
-| `color.border.subtle` | `#1f1a12` | Hairline dividers, low-emphasis borders |
-| `color.border.regular` | `#2a2218` | Default panel borders, button outlines |
-| `color.border.emphasis` | `#4a3d28` | Hover/focus borders, emphasized cards |
+| `color.surface.base` | `#13100a` | Cards, panels, content surfaces |
+| `color.surface.raised` | `#1a1611` | Elevated surfaces (dialogs, popovers, hovered rows) |
+| `color.border.subtle` | `#241f15` | Hairline dividers, low-emphasis borders |
+| `color.border.regular` | `#33291c` | Default panel borders, button outlines |
+| `color.border.emphasis` | `#544532` | Hover/focus borders, emphasized cards |
 
 #### Text &amp; brand
 
 | Token | Hex | Use |
 |---|---|---|
-| `color.brand.primary` | `#e6cf99` | Surface titles, primary brand accent (parchment) |
-| `color.brand.accent` | `#722f37` | Primary buttons, selection rings, key links (oxblood) |
-| `color.brand.accentHover` | `#8a3a45` | Primary button background on hover |
-| `color.brand.accentPressed` | `#5d262d` | Primary button background on pressed |
-| `color.text.primary` | `#d8c5a3` | Default body text, table content |
-| `color.text.secondary` | `#b89e7a` | Secondary text, italics, metadata |
-| `color.text.muted` | `#8a7c5e` | Captions, disabled context, placeholder |
-| `color.text.disabled` | `#3d342a` | Truly disabled UI |
+| `color.brand.primary` | `#ecd6a5` | Surface titles, primary brand accent (parchment) |
+| `color.brand.accent` | `#7d3540` | Primary buttons, selection rings, key links (oxblood) |
+| `color.brand.accentHover` | `#9a4350` | Primary button background on hover |
+| `color.brand.accentPressed` | `#622b34` | Primary button background on pressed |
+| `color.text.primary` | `#e4d2a8` | Default body text, table content |
+| `color.text.secondary` | `#c4a880` | Secondary text, italics, metadata |
+| `color.text.muted` | `#9c8c6c` | Captions, disabled context, placeholder |
+| `color.text.disabled` | `#43392c` | Truly disabled UI |
 | `color.text.onBrand` | `#f5e6c4` | Text rendered on top of `color.brand.accent` (primary button label) |
 
 #### Texture (optional)
 
 | Token | Value | Use |
 |---|---|---|
-| `texture.parchment.dot` | `radial-gradient(rgba(230,207,153,0.04) 1px, transparent 1px); background-size: 3px 3px;` | Subtle parchment grain over surfaces. Used sparingly; default is off. |
+| `texture.parchment.dot` (**proposed / not yet in the token set**) | `radial-gradient(rgba(230,207,153,0.04) 1px, transparent 1px); background-size: 3px 3px;` | Subtle parchment grain over surfaces. Used sparingly; default is off. Not present in any theme `.qml`; sketch only until a PR adds it. |
 
 ### 3.2 Editorial Light
 
@@ -168,18 +170,18 @@ Workshop / craft-tool / patinated-metal aesthetic.
 | Token | Hex | Notes |
 |---|---|---|
 | `color.surface.canvas` | `#0d0c0a` | Warm dark with bronze tilt |
-| `color.surface.base` | `#19170f` | |
-| `color.surface.raised` | `#22201a` | |
-| `color.border.subtle` | `#28241b` | |
-| `color.border.regular` | `#3d3625` | |
-| `color.border.emphasis` | `#5a5036` | |
-| `color.brand.primary` | `#a68063` | Bronze |
-| `color.brand.accent` | `#5e8b7e` | Verdigris (oxidized-copper green) |
-| `color.text.primary` | `#e0d4bd` | |
-| `color.text.secondary` | `#a89070` | |
-| `color.text.muted` | `#948a76` | Bumped from `#7e7565` (3.95:1) so muted text on `surface.base` clears AA |
-| `color.text.disabled` | `#3d3525` | |
-| `color.text.onBrand` | `#0d0c0a` | Dark text on verdigris (5.09:1). Verdigris is light; warm-near-white only hit 3.29:1 — dark "stamped" text reads as workshop nameplate. |
+| `color.surface.base` | `#1c1a12` | |
+| `color.surface.raised` | `#27241d` | |
+| `color.border.subtle` | `#2e2920` | |
+| `color.border.regular` | `#463e2b` | |
+| `color.border.emphasis` | `#665a3e` | |
+| `color.brand.primary` | `#b58c6e` | Bronze |
+| `color.brand.accent` | `#6a9a8c` | Verdigris (oxidized-copper green) |
+| `color.text.primary` | `#e8dcc5` | |
+| `color.text.secondary` | `#b89e7c` | |
+| `color.text.muted` | `#a59b86` | Lifted in the 2026-05-08 brightness pass so muted text on `surface.base` clears AA |
+| `color.text.disabled` | `#433b2b` | |
+| `color.text.onBrand` | `#0d0c0a` | Dark text on verdigris. Verdigris is light; warm-near-white was too low-contrast — dark "stamped" text reads as workshop nameplate. |
 
 ---
 
@@ -222,9 +224,15 @@ tables, anywhere a multi-cell row appears). Theme-invariant: constant across all
 | `column.metric` | `64px` | Right-aligned numeric metric (e.g., "+1.19") |
 | `column.chips` | `200px` | Gate-chip slot + optional "— flagged, not retired" marginalia. Max case is 2 chips (~52px) + 8px left-padding + the flagged marginalia (~125px italic Newsreader 14px) ≈ 185px; 200 leaves headroom. |
 | `column.tradeCount` | `88px` | Right-aligned secondary metric (e.g., "433 trades") |
-| `bench.row` | `288px` | Stable Phase 6 Bench row width inside a stage section. |
-| `bench.rowMinHeight` | `132px` | Minimum Bench row height; content may grow downward. |
-| `bench.metric` | `68px` | Fixed metric slots inside a Bench row (`S`, `D`, `N`). |
+| `column.kanbanCard` | `288px` | Stable Phase 6 Bench/kanban card width inside a stage section. |
+| `column.kanbanCardMinHeight` | `132px` | Minimum Bench/kanban card height; content may grow downward. |
+| `column.kanbanMetric` | `68px` | Fixed metric slots inside a Bench/kanban card (`S`, `D`, `N`). |
+| `column.benchMetric` | `64px` | Bench-row numeric metric slot. |
+| `column.benchConfigKey` | `380px` | Bench-row config-key (strategy ID / config) column. |
+| `column.benchStage` | `90px` | Bench-row stage column. |
+| `column.benchEvidence` | `260px` | Bench-row evidence column. |
+| `column.benchAction` | `152px` | Bench-row action column. |
+| `column.benchStatus` | `280px` | Bench-row status prose + meta column (fixed width; longer strings elide). |
 
 Accessed via `Theme.column.pill` etc. Surfaces that need different proportions
 may compose `StrategyRow` with their own column widths via property overrides
@@ -321,13 +329,13 @@ write-capable Action menu submissions, no bulk actions, and no runner controls.
 
 | Role | Editorial Dark | Editorial Light | Bronze | Meaning |
 |---|---|---|---|---|
-| `status.positive` | `#9bb89e` muted sage | `#3d6b40` deep moss | `#9bb89e` muted sage | Positive P&amp;L, gate passing, paper-active |
-| `status.warning` | `#c4965a` mustard | `#7a560d` deep mustard | `#c4965a` mustard | Marginal, gate-narrow, attention-required |
-| `status.negative` | `#d97757` rust | `#a04020` deep rust | `#cd6038` rust | Negative P&amp;L, gate failing, kill-switch fired |
-| `status.negativeHover` | `#e08b6b` | `#c04d28` | `#df7548` | Danger button border on hover/pressed |
-| `status.info` | `#6c89a3` ink | `#3a5474` deep ink | `#6c89a3` ink | Neutral information, backtest stage |
+| `status.positive` | `#a8c4ab` muted sage | `#3d6b40` deep moss | `#a8c4ab` muted sage | Positive P&amp;L, gate passing, paper-active |
+| `status.warning` | `#d5a566` mustard | `#7a560d` deep mustard | `#d5a566` mustard | Marginal, gate-narrow, attention-required |
+| `status.negative` | `#df805e` rust | `#a04020` deep rust | `#d97550` rust | Negative P&amp;L, gate failing, kill-switch fired |
+| `status.negativeHover` | `#e89472` | `#c04d28` | `#e88862` | Danger button border on hover/pressed |
+| `status.info` | `#7a98b2` ink | `#3a5474` deep ink | `#7a98b2` ink | Neutral information, backtest stage |
 
-Bronze's `status.positive` deliberately matches Editorial Dark's sage rather than tinting toward verdigris: the brand accent (`#5e8b7e` verdigris) and a verdigris positive on the same row would collide visually. Sage stays inside the palette story while staying distinct from the accent.
+Bronze's `status.positive` deliberately matches Editorial Dark's sage rather than tinting toward verdigris: the brand accent (`#6a9a8c` verdigris) and a verdigris positive on the same row would collide visually. Sage stays inside the palette story while staying distinct from the accent.
 
 ### 6.2 Why not raw red / green / amber
 
@@ -350,7 +358,7 @@ Token references for the four built-in pill variants:
 
 ### 6.4 Modal scope
 
-**Modal scope.** The kill-switch confirmation dialog in `AnchorSurface.qml` masks at the surface level only — clicking a tab in `Main.qml` while the dialog is open will dismiss it without confirmation. Future dialogs that gate destructive actions should mask at the window level (overlay in `Main.qml`). Tracked for the next surface that adds a dialog.
+**Modal scope.** The kill-switch reset dialog lives in `KillSwitchResetModal.qml` (extracted from the deleted `AnchorSurface.qml` in HR-4; reachable from the `RiskStrip` badge kill-switch indicator and the `RiskOfficeDrawer` KILL SWITCH section). It is an overlay that `anchors.fill: parent` and swallows click-through with a backing `MouseArea`, but it masks only within the surface that instantiates it — it is not a window-level overlay in `Main.qml`. Future dialogs that gate destructive actions should mask at the window level (overlay in `Main.qml`). Tracked for the next surface that adds a dialog.
 
 ### 6.5 Editorial marginalia
 
@@ -358,7 +366,7 @@ Inline commentary text &mdash; "lifecycle exempt", "flagged, not retired", or ot
 
 Typical placement: inside the strategy-ID column on `StrategyRow`, anchored after the strategy ID (and the audit asterisk, if present), elides if the remaining column space is short. Long strategy IDs always get the most space; the note takes whatever is left and elides gracefully.
 
-The em-dash prefix gives the marginalia a deliberate-aside feel and visually separates it from the strategyId. The pattern was introduced in the PR E polish pass for `StrategyBankSurface.qml`; the same token and em-dash convention should be used wherever similar commentary is needed on tabular rows in future surfaces.
+The em-dash prefix gives the marginalia a deliberate-aside feel and visually separates it from the strategyId. The pattern was introduced in the PR E polish pass on the since-removed `StrategyBankSurface.qml` and now lives in `StrategyRow.qml`; the same token and em-dash convention should be used wherever similar commentary is needed on tabular rows in future surfaces.
 
 ---
 
@@ -436,7 +444,8 @@ The default panel/card. Background `color.surface.base`, border `1px color.borde
 
 Surfaces with categorically-distinct sections (e.g. "blocked" vs "running")
 may use a low-alpha section-wash to signal section semantics before text is
-parsed. Follows the same pattern as the kill-switch panel wash on AnchorSurface:
+parsed. Follows the same pattern as the kill-switch panel wash in
+`KillSwitchResetModal.qml`:
 
 ```qml
 // Wash rectangle, z-ordered behind section content.
@@ -463,9 +472,11 @@ Use sparingly — one section-wash per surface maximum, and only when the
 section's status is itself the structural information. Do not use for
 visual variety alone.
 
-First use: `StrategyBankSurface.qml` BLOCKED section (`status.negative` @
-0.06); the kill-switch panel on `AnchorSurface.qml` uses a higher alpha
-(0.10) as an active-alarm indicator, not a section hint.
+First use (historical): the BLOCKED section of the since-removed
+`StrategyBankSurface.qml` (`status.negative` @ 0.06). The kill-switch panel —
+now in `KillSwitchResetModal.qml` — uses a higher alpha (0.10) as an
+active-alarm indicator, not a section hint. The Bench/Ledger/Desk surfaces
+are the live homes for any future section-wash.
 
 ### 7.6 Modals and dossier rails (component selection)
 
@@ -549,7 +560,7 @@ The primary nav (`FRONT / BENCH / LEDGER / DESK`) is the most visible recurring 
 **Hero band** (the lead block of DESK).
 
 - One dominant block, occupying 2&times; the column width of the secondary blocks beside it.
-- Lead metric: `typography.display.xl` (64/1.05) Newsreader, hero serif numerics. This is one of the two allowed carve-outs from the mono-numerics rule (&sect;2).
+- Lead metric: hero serif numerics, one of the two allowed carve-outs from the mono-numerics rule (&sect;2). `Theme.qml` ships dedicated hero numeric tokens — `typography.display.heroNum` (96/1.05) for the FRONT hero P&amp;L and `typography.display.deskNum` (56/1.05) for the denser DESK cockpit hero — both above the foundational `display.xl` (64/1.05). Use the dedicated hero token for the lead metric; reserve `display.xl` for rare feature surfaces.
 - Standfirst: `typography.deck` Newsreader italic 14, `text.secondary`, single line.
 - Padding: `space[6]` (32px) all sides; bottom edge is a `1px color.border.subtle` hairline rule, not a card border.
 - Surrounding secondary blocks (1&times; column width) use `typography.display.md` (24/1.20) for their lead values; tertiary sidebars use `typography.display.sm`. The hero/secondary/tertiary type ladder is what carries "front-page composition" instead of equal-weight columns.

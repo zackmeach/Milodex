@@ -1,5 +1,7 @@
 # Backtest Rejection Analysis
 
+> **Status: Historical — superseded (generated 2026-05-05).** The engine defects diagnosed here are fixed: split/dividend adjustment now uses adjustment=ALL in the data layer; the single-tier Sharpe>0.5 gate is replaced by the two-tier paper/capital-readiness model owned by src/milodex/promotion/policy.py (ADR 0052). Retained for history; not a current action plan.
+
 **Generated:** 2026-05-05
 **Question:** 11 of 12 backtested strategies were rejected (91.7%). Is this because the strategies lack edge (H1), the engine is biased toward false negatives (H2), or the gate is mis-calibrated for the backtest→paper transition (H3)?
 

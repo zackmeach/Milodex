@@ -1,5 +1,7 @@
 # Test-Efficacy Audit (Mutation Testing)
 
+> **Frozen snapshot — captured 2026-05-06 (Phase 4).** Mutant counts, IDs, and line numbers reflect that commit and have since drifted (e.g. promotion thresholds moved to src/milodex/promotion/policy.py per ADR 0052). Reproduce current state via scripts/run_mutation_audit.ps1.
+
 **Audit date:** 2026-05-06
 **Branch:** `feat/phase4-test-efficacy-audit` (Phase 4, PR #4)
 **Tool:** mutmut 2.5.1 (pinned `>=2.4,<3` — see Methodology for why)

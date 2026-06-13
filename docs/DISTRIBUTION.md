@@ -72,8 +72,8 @@ When Milodex ships to another person (Phase 2+), the defaults must be the **most
 - **paper trading by default**
 - **no live trading enabled by default**
 - **fixed curated universe** (see `configs/universe_phase1_v1.yaml` as the Phase 1 reference)
-- **conservative position sizing** — matches `sizing.per_position_target_pct` in `configs/risk_defaults.yaml` (10%)
-- **capped portfolio exposure** — `portfolio.max_total_exposure_pct` at 50%
+- **conservative position sizing** — per `sizing.per_position_target_pct` in `configs/risk_defaults.yaml`
+- **capped portfolio exposure** — per `portfolio.max_total_exposure_pct` in `configs/risk_defaults.yaml`
 - **explicit kill switches enabled** — both strategy-level and account-level per R-EXE-014
 - **preview-before-commit workflow** — every consequential command per R-CLI-018
 - **strong logging and auditability enabled** — SQLite event store, explanation records
@@ -128,7 +128,7 @@ Milodex remains **openly personal and opinionated** in the areas below. These ar
 
 - strategy-family selection and ordering (mean reversion first, then momentum, then breakout — per `docs/strategy-families.md`)
 - promotion thresholds and evidence standards (stage-aware Sharpe/drawdown gates plus each strategy's configured trade-count floor — per R-PRM-004)
-- risk tolerance defaults (10% / 50% / 20% sector — per `docs/RISK_POLICY.md`)
+- risk tolerance defaults (conservative per-position, total-exposure, and per-sector caps — owned by `docs/RISK_POLICY.md` / `configs/risk_defaults.yaml`)
 - curated universe choices (Phase 1 universe in `configs/universe_phase1_v1.yaml`)
 - reporting preferences and trust-summary design
 - UX emphasis on clarity over density

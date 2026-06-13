@@ -32,7 +32,7 @@ This ADR is the Phase 5 close-out record.
 
 4. **All prior trust boundaries remain in force.** This ADR does not relax [ADR 0004](0004-paper-only-phase-one.md), [ADR 0005](0005-kill-switch-manual-reset.md), [ADR 0008](0008-risk-layer-veto-architecture.md), [ADR 0009](0009-promotion-pipeline-stage-model.md), [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md), [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md), or [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md).
 
-5. **Phase 6 inherits Kanban as the likely anchor program, but not as pre-authorized implementation.** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) locks the visual spec and names deferred mechanics questions Q-A through Q-H. Those mechanics are now answered by ADRs 0039-0046 and summarized in [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md). Phase 6 implementation work must follow those decisions before shipping write-capable behavior.
+5. **Phase 6 inherits Kanban as the likely anchor program, but not as pre-authorized implementation.** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) locks the visual spec and names deferred mechanics questions Q-A through Q-H. Those mechanics are now answered by ADRs 0039-0048 and summarized in [PHASE6_BENCH_PREP.md](../PHASE6_BENCH_PREP.md). Phase 6 implementation work must follow those decisions before shipping write-capable behavior.
 
 6. **The remaining "not wired" empty states are honest Phase 6+ data-feed opportunities, not Phase 5 defects.** Market tape, sector heat, calendar, feed latency, capital deployed, drawdown, and comparable placeholders may be wired as future read models. They do not justify reopening Phase 5 because Phase 5's rule was truthful observability, not simulated completeness.
 
@@ -65,7 +65,7 @@ This ADR is the Phase 5 close-out record.
 
 These are not Phase 5 defects. They are the first honest menu for Phase 6 planning.
 
-1. **Kanban foundation implementation.** ADR 0036 Q-A through Q-H are resolved by ADRs 0039-0046: display-name provenance, stage/session decoupling, eligibility-window policy, demotion security, hover/drop validation timing, responsive layout, bulk orchestration, and stage-hue token reconciliation. The first Phase 6 Kanban PR should be read-only foundation work before write-capable drag or bulk actions.
+1. **Kanban foundation implementation.** ADR 0036 Q-A through Q-H are resolved by ADRs 0039-0048: display-name provenance, stage/session decoupling, eligibility-window policy, demotion security, hover/drop validation timing, responsive layout, bulk orchestration, and stage-hue token reconciliation. The first Phase 6 Kanban PR should be read-only foundation work before write-capable drag or bulk actions.
 
 2. **Read-model/data-feed wiring for honest empty states.** Candidate feeds: market tape, sector heat, calendar, feed latency, capital deployed, drawdown, and any related DESK/FRONT placeholders. Each should be wired as a read model before the UI treats it as real.
 
@@ -85,7 +85,7 @@ These are not Phase 5 defects. They are the first honest menu for Phase 6 planni
 ## Non-goals
 
 - Does not implement the Phase 6 Kanban.
-- Does not itself answer ADR 0036 Q-A through Q-H; those are answered by ADRs 0039-0046.
+- Does not itself answer ADR 0036 Q-A through Q-H; those are answered by ADRs 0039-0048.
 - Does not authorize drag-to-promote, drag-to-demote, bulk backtest/session commands, or any write-capable promotion surface.
 - Does not authorize micro_live or live trading.
 - Does not supersede ADR 0037's unsigned installer posture.

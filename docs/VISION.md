@@ -249,7 +249,7 @@ Windows-first (primary dev machine). Designed to be distributable — friends ca
 ### Data Sources
 The data layer is organized by **role**, not by vendor. The `DataProvider` abstraction (ADR 0006) exposes three roles, each with a currently-selected provider pinned in ADR 0017:
 
-- **Canonical research data** — historical OHLCV, reference metadata, corporate actions. Drives every backtest and promotion decision. Phase 1 selection: Massive.
+- **Canonical research data** — historical OHLCV, reference metadata, corporate actions. Drives every backtest and promotion decision. Phase 1 selection: Massive. *(The `MassiveDataProvider` is deferred — ADR 0017, Phase 1.2+; canonical reads currently fall back to the Alpaca / Yahoo Finance providers.)*
 - **Execution-adjacent market data** — previews and runtime monitoring that must match what the broker sees. Phase 1 selection: Alpaca SIP feed.
 - **Broker state of record** — orders, fills, positions. Phase 1 selection: Alpaca Trading API.
 - **Fallback feed** — local-development and degraded-operation only; never canonical research. Phase 1 selection: Alpaca IEX feed.

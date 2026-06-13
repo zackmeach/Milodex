@@ -1,5 +1,7 @@
 # Phase 1.2 Evidence — 2026-04-22
 
+> **Phase 1.2 evidence, 2026-04-22. Phase 1 closed by ADR 0023** — frozen historical record.
+
 **Scope:** Satisfy the Phase 1.2 Definition of Done evidence requirements per `docs/ROADMAP_PHASE1.md`.
 **Session date:** Wednesday 2026-04-22, US market hours (9:30 AM – 4:00 PM ET).
 **Reviewer/operator:** Founder (Zack).

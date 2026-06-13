@@ -86,7 +86,7 @@ The deepest claim, and the one most likely to be eroded under PR-by-PR pressure.
 
 ## 4. The four-surface narrative
 
-Milodex's primary nav is `FRONT · BENCH · LEDGER · DESK` (`Main.qml:166-169`). These are publication and workshop metaphors, not app-tab metaphors, and they form a deliberate arc:
+Milodex's primary nav is `FRONT · BENCH · LEDGER · DESK` (`Main.qml:287-290`). These are publication and workshop metaphors, not app-tab metaphors, and they form a deliberate arc:
 
 | Surface | Role | Voice | Density |
 |---|---|---|---|
@@ -193,7 +193,7 @@ Naming what's *out of voice* is as load-bearing as naming what's in voice. Each 
 | Progress sparkles, success animations, loading shimmer | Performance. A loading state is *italic muted text*: "loading." or "pending." |
 | "Get started" / "Continue" / "Next" CTA chrome | Wrong vocabulary. The surface uses verbs: "Open in bench →", "Strategy detail →". |
 | Rounded-pill primary buttons with shadow | The button language is `radius.md` (4px) outlined or filled, no shadow. (See `Button.qml`.) |
-| Iconography as primary signal | Color and language carry the signal. Icons are sparingly used and never load-bearing. (DeskSurface header: "No iconography — color + language carry the signal.") |
+| Iconography as primary signal | Color and language carry the signal. Icons are sparingly used and never load-bearing. (See `GateTable.qml`: "iconography (no ✓ / ✕) — language is the editorial-print convention"; `SegmentedToggle.qml`: "type and colour only, no iconography".) |
 | Light-on-color callout banners ("ℹ Tip:") | Marginalia is *italic in the column*, not in a colored box. |
 | Third-party charting libraries with default styling | A chart that doesn't look hand-set is wrong. The Sparkline component is intentionally minimal — line + optional fill, no axes by default, no tooltip. |
 | Bordered card frames for content blocks (rounded rectangles enclosing data, status, or evidence) | The frame is doing SaaS-dashboard work. Editorial sections are bounded by hairline rules and small-caps section heads, not by container chrome. A surface composed of stacked cards is a dashboard wearing a serif font, not an editorial broadsheet. (Common failure: FRONT's "AT THE GATE" rendered as a card with two CTAs at the bottom.) |
