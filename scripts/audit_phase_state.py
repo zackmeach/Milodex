@@ -98,6 +98,8 @@ _ALLOWLISTED_DOCS = frozenset(
         "docs/PHASE6_BENCH_PREP.md",
         "docs/bench/README.md",
         "docs/architecture/roadmaps/2026-05-21-deepening-roadmap.md",
+        "docs/architecture/roadmaps/2026-06-10-hardening-roadmap.md",
+        "docs/architecture/2026-06-13-cross-process-submit-serialization-design.md",
     }
 )
 
