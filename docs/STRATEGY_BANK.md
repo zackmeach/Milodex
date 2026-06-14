@@ -258,7 +258,7 @@ The trade-count failure is not a tuning problem. The strategy trades weekly. Wit
 
 The MaxDD failure may be addressable with a tighter position-sizing or stop rule, but that risks changing the strategy's character.
 
-**Current status: flagged, not retired.** The walk-forward Sharpe is real signal and this tension is a methodology question, not a strategy failure. The appropriate resolution is a governance discussion in Phase 5+ about how the 30-trade gate applies to sub-daily-frequency strategies — specifically whether a frequency-adjusted minimum (e.g., 30 * weekly/daily ratio) is the right standard. Until that question is resolved, the strategy stays at backtest stage.
+**Current status: flagged, not retired.** The walk-forward Sharpe is real signal and this tension is a methodology question, not a strategy failure. The appropriate resolution is a future governance discussion about how the 30-trade gate applies to sub-daily-frequency strategies — specifically whether a frequency-adjusted minimum (e.g., 30 * weekly/daily ratio) is the right standard. Until that question is resolved, the strategy stays at backtest stage.
 
 Do not promote. Do not retire. Keep the run record in place.
 
