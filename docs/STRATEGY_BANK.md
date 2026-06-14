@@ -120,7 +120,9 @@ AND br.status = 'completed'
 ORDER BY br.strategy_id;
 ```
 
-⚠️ **This blocked-stage query over-includes idle strategies** — it excludes only paper-promoted strategies, so any strategy whose latest event is `idle` still appears here. Cross-reference the idle query below and move idle strategies to the Idle section; only strategies with **no promotion event at all** are genuinely blocked-at-backtest.
+⚠️ **This blocked-stage query over-includes idle strategies** — it excludes only paper-promoted strategies, so any strategy whose latest event is `idle` still appears here. Cross-reference the idle query below and move idle strategies to the Idle section.
+
+⚠️ **It also over-includes the decision-layer seam-proof deciders** (`scored.*`, `tree.*`) — they have completed `backtest_runs` and no promotion event, so they surface in this query, but they are **capability proofs that must never be promoted**, not blocked alpha awaiting a gate pass. Move them to the "Decision-layer seam-proof deciders" section below; do not list them as blocked-at-backtest. Net: a strategy is genuinely blocked-at-backtest only if it has **no promotion event at all** *and* is not a capability-proof decider.
 
 **Idle-stage strategies (demoted from rotation):**
 
@@ -302,6 +304,23 @@ Two BTC/USD canaries were added on 2026-05-30 to prove Milodex can represent, lo
 | `meanrev.crypto.rsi2.btc_usd_30m.v1` | 30Min | RSI(2) oversold mean-reversion, long-only, fractional, 24/7 | backtest-only canary |
 
 These are an **architecture/harness proof, not alpha candidates** — no paper, live, GUI, broker, or orchestration involvement. They are proven through deterministic-fixture backtests run through the real engine (unit tests per rule + an end-to-end backtest smoke test); **full historical crypto backtesting is blocked** by the absence of local BTC/USD bars and the no-network policy (`AlpacaDataProvider` is stock-only and the Parquet cache cannot key a `/`-symbol). Promoting either requires the deferred crypto data-ingestion task. Full audit, design decisions, and the blocked-data disclosure: `docs/reviews/2026-05-30-crypto-archetype-proof-slice.md`.
+
+---
+
+## Decision-layer seam-proof deciders — backtest-only (not in the durable bank)
+
+Two **non-rule deciders** were added on 2026-05-31 to prove that Milodex's `Strategy` decision contract honestly hosts decision paradigms other than config-driven rules — **capability axis 3, the substitutable decision layer**, which the project treats as its central architectural claim. They are **capability proofs, not alpha candidates**: negative or random backtest performance is the expected, correct result, and neither was tuned for return.
+
+| strategy_id | family | decision paradigm | status |
+|---|---|---|---|
+| `scored.daily.linear_features.sector_etfs.v1` | `scored` | continuous weighted z-score → cross-sectional rank → top-N | backtest-only capability proof |
+| `tree.daily.bucketed_lookup.sector_etfs.v1` | `tree` | discrete depth-2 binary tree → leaf action | backtest-only capability proof |
+
+Both are `stage: backtest` and **must never be promoted to paper**. The `lifecycle_exempt` label in their configs is a documentation intent, not an event-store promotion — they carry **zero** rows in the `promotions` table. They are therefore **not** blocked alpha awaiting a gate pass: the answer to "what would need to change" is *nothing; never promote*.
+
+They differ from the crypto canaries above in one operational respect: they **do** have completed `backtest_runs` rows in `data/milodex.db` (`scored.*`: 4 runs, `tree.*`: 2 runs, all 2026-05-31), produced by the seam-proof run on a pinned offline window (`2023-01-03 → 2026-05-16`, single-period). Because those runs are single-period rather than walk-forward, they carry **no `oos_aggregate` metrics** — so the blocked-stage refresh query surfaces them with NULL WF columns. This is why the "How to refresh" blocked-query caveat above calls them out explicitly: a refresh must move them here, not into the blocked-at-backtest table. (For the record, both happened to post positive single-period returns on this window — `scored.*` +39.4%, `tree.*` +35.8% — which is noise for a capability proof and carries no promotion weight.)
+
+Full design, the eight adversarial verifications, and the load-bearing `asdict()` decision: the launch brief `docs/overnight/DECISION_LAYER_SEAM_PROOF_BRIEF.md` and after-action report `docs/overnight/DECISION_LAYER_SEAM_PROOF_AAR.md`; thesis grounding in `docs/architecture/2026-05-30-harness-capability-axes.md` (axis 3).
 
 ---
 
