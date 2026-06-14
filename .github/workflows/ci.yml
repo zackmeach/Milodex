@@ -1,0 +1,40 @@
+name: CI
+
+# Makes the README's "CI fails on regression below the floor" claim real:
+# lint with ruff, run the non-integration suite, and enforce the coverage
+# ratchet. Runs on windows-latest to match the project's Windows-first
+# environment (PySide6/Qt GUI tests need a real display + bundled fonts).
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install (declared deps, editable)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src/
+
+      # Coverage floor lives in pyproject.toml ([tool.coverage.report] fail_under);
+      # pytest-cov fails the run when coverage regresses below it.
+      - name: Test (non-integration) with coverage floor
+        run: pytest -m "not integration" --cov=src/milodex --cov-report=term-missing
