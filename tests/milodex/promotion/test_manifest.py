@@ -11,6 +11,7 @@ import pytest
 
 from milodex.core.event_store import EventStore
 from milodex.promotion import (
+    FROZEN_STAGES,
     freeze_manifest,
     get_active_manifest_hash,
     resolve_strategy_config_path,
@@ -212,6 +213,20 @@ def test_resolve_strategy_config_path_raises_when_missing(tmp_path):
     _write_config(tmp_path, filename="a.yaml")
     with pytest.raises(ValueError, match="Strategy config not found"):
         resolve_strategy_config_path("ghost.v1", tmp_path)
+
+
+def test_frozen_stages_is_exactly_paper_micro_live_live():
+    """``FROZEN_STAGES`` must be *exactly* the three promoted stages.
+
+    Freezing binds an immutable manifest — the production-evidence
+    guarantee of ADR 0015/0030. Which stages freeze is a governance
+    invariant: ``backtest`` is exploratory (no frozen manifest), while
+    ``paper``/``micro_live``/``live`` each carry one. A silent add or
+    remove here would change what evidence the system promises. Pinning
+    the whole set (not just membership) closes the TEST_EFFICACY_AUDIT
+    surviving mutant on this constant.
+    """
+    assert FROZEN_STAGES == frozenset({"paper", "micro_live", "live"})
 
 
 def test_freeze_manifest_always_appends_even_on_identical_hash(tmp_path):

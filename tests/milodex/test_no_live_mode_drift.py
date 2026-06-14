@@ -207,6 +207,17 @@ class TestNoLiveModeDrift:
         """
         assert "micro_live" in PHASE_ONE_BLOCKED_STAGES
 
+    def test_phase_one_blocked_stages_is_exactly_micro_live_and_live(self):
+        """The blocked set must be *exactly* ``{"micro_live", "live"}``.
+
+        The membership tests above catch *removing* a stage; this
+        exact-set pin also catches *adding* one. A mutation that put
+        ``paper`` (or ``backtest``) into the set would silently pass the
+        membership tests yet halt Phase-1 paper trading at promotion.
+        Pinning the whole set closes that gap.
+        """
+        assert PHASE_ONE_BLOCKED_STAGES == frozenset({"micro_live", "live"})
+
     def test_validate_stage_transition_blocks_micro_live_promotion(self):
         """``paper → micro_live`` must raise during Phase 1."""
         with pytest.raises(ValueError, match=r"Phase 1"):
