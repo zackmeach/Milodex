@@ -20,7 +20,6 @@ import yaml
 from milodex.strategies.loader import StrategyConfig
 from milodex.strategies.runner_status import _FAILURE_EXIT_REASONS
 
-_STAGES = ("backtest", "paper", "micro_live", "live")
 _VISIBLE_STAGES = ("idle", "backtest", "paper", "micro_live", "live")
 _CONFIG_SKIP_PREFIXES = ("universe_",)
 _CONFIG_SKIP_NAMES = {"risk_defaults.yaml", "sample_strategy.yaml"}

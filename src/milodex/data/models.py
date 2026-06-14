@@ -23,8 +23,6 @@ BARSET_REQUIRED_COLUMNS = frozenset(
         "volume",
     }
 )
-# vwap is always present but nullable
-BARSET_ALL_COLUMNS = BARSET_REQUIRED_COLUMNS | {"vwap"}
 
 
 class Timeframe(Enum):
