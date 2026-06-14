@@ -32,7 +32,7 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src/
+        run: ruff check src/ tests/
 
       # Coverage floor lives in pyproject.toml ([tool.coverage.report] fail_under);
       # pytest-cov fails the run when coverage regresses below it.

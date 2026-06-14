@@ -346,10 +346,11 @@ sys.exit(0)
 # ---------------------------------------------------------------------------
 # QUARANTINED — pre-existing flaky tests (2026-05-17)
 #
-# These two tests (test_design_system_showcase_loads_without_errors_via_subprocess
-# and test_anchor_surface_loads_without_errors_via_subprocess) are FLAKY in
-# full-suite runs due to pre-existing process-global Qt/QML state pollution in
-# the test-runner process.  They pass reliably in isolation.
+# This test (test_design_system_showcase_loads_without_errors_via_subprocess) is
+# FLAKY in full-suite runs due to pre-existing process-global Qt/QML state
+# pollution in the test-runner process.  It passes reliably in isolation.
+# (test_anchor_surface_loads_without_errors_via_subprocess was removed with
+# AnchorSurface in HR-4.)
 #
 # Root cause: process-global Qt/QML type-cache pollution from other tests in
 # the gui suite contaminates the subprocess-launch environment in a
