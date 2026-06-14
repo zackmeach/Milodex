@@ -18,6 +18,7 @@ from milodex.broker.models import (
     Position,
     TimeInForce,
 )
+from milodex.core.advisory_lock import AdvisoryLock
 from milodex.core.event_store import (
     EventStore,
     ExecutionAttemptEvent,
@@ -209,6 +210,8 @@ def build_service(
     positions: list[Position] | None = None,
     orders: list[Order] | None = None,
     market_open: bool = True,
+    locks_dir: Path | None = None,
+    submit_lock_timeout_seconds: float | None = None,
 ) -> tuple[ExecutionService, StubBroker]:
     broker = StubBroker(
         account=sample_account,
@@ -224,12 +227,18 @@ def build_service(
         event_store=event_store,
         legacy_path=tmp_path / "kill_switch.json",
     )
+    extra: dict[str, object] = {}
+    if locks_dir is not None:
+        extra["locks_dir"] = locks_dir
+    if submit_lock_timeout_seconds is not None:
+        extra["submit_lock_timeout_seconds"] = submit_lock_timeout_seconds
     service = ExecutionService(
         broker_client=broker,
         data_provider=provider,
         risk_defaults_path=risk_defaults_file,
         kill_switch_store=store,
         event_store=event_store,
+        **extra,
     )
     return service, broker
 
@@ -1806,3 +1815,131 @@ def test_unexpected_broker_exception_finalizes_attempt_as_error(
     [attempt] = event_store.list_execution_attempts()
     assert attempt.status == "error"
     assert "socket timed out" in attempt.failure_detail
+
+
+# --- Cross-process submit serialization (Option A, ADR 0056) -----------------
+
+
+def _serialization_intent(strategy_file: Path, stage: str | None) -> TradeIntent:
+    return TradeIntent(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=1.0,
+        order_type=OrderType.MARKET,
+        strategy_config_path=strategy_file,
+        expected_stage=stage,
+    )
+
+
+def test_should_serialize_only_for_micro_live_and_live_non_backtest(
+    tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
+):
+    service, _ = build_service(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+    assert service._should_serialize_submit(
+        _serialization_intent(strategy_file, "micro_live"), "paper"
+    )
+    assert service._should_serialize_submit(_serialization_intent(strategy_file, "live"), "paper")
+    assert not service._should_serialize_submit(
+        _serialization_intent(strategy_file, "paper"), "paper"
+    )
+    # Backtest source never serializes (simulated broker, single process).
+    assert not service._should_serialize_submit(
+        _serialization_intent(strategy_file, "micro_live"), "backtest"
+    )
+
+
+def test_effective_stage_prefers_expected_stage_then_config(
+    tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
+):
+    service, _ = build_service(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+    # Runner-bound expected_stage wins.
+    micro_live = _serialization_intent(strategy_file, "micro_live")
+    assert service._effective_stage(micro_live) == "micro_live"
+    # Falls back to the config stage (the fixture is "paper") when unset.
+    no_stage = TradeIntent(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=1.0,
+        order_type=OrderType.MARKET,
+        strategy_config_path=strategy_file,
+    )
+    assert service._effective_stage(no_stage) == "paper"
+
+
+def test_micro_live_submit_fails_closed_when_lock_held(
+    tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
+):
+    locks_dir = tmp_path / "locks"
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+        locks_dir=locks_dir,
+        submit_lock_timeout_seconds=0.2,
+    )
+    blocker = AdvisoryLock(service._submit_lock_name(), locks_dir=locks_dir)
+    blocker.acquire()
+    try:
+        result = service.submit_paper(_serialization_intent(strategy_file, "micro_live"))
+    finally:
+        blocker.release()
+
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "submit_serialization_unavailable" in result.risk_decision.reason_codes
+    # Fail-closed: never reached the broker.
+    assert broker.submit_calls == []
+
+
+def test_paper_submit_is_lock_free_even_when_submit_lock_held(
+    tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
+):
+    locks_dir = tmp_path / "locks"
+    service, _ = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+        locks_dir=locks_dir,
+        submit_lock_timeout_seconds=0.2,
+    )
+    blocker = AdvisoryLock(service._submit_lock_name(), locks_dir=locks_dir)
+    blocker.acquire()
+    try:
+        result = service.submit_paper(_serialization_intent(strategy_file, "paper"))
+    finally:
+        blocker.release()
+
+    # Paper stays lock-free: a held submit lock must NOT decline a paper submit.
+    assert "submit_serialization_unavailable" not in result.risk_decision.reason_codes
+
+
+def test_micro_live_submit_fails_closed_on_lock_filesystem_error(
+    tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
+):
+    # A plain file where the locks dir should be: the lock's mkdir/open raise
+    # OSError, not AdvisoryLockError. The submit must still fail closed (decline,
+    # no order, session survives) rather than crash the runner.
+    locks_path = tmp_path / "locks_is_a_file"
+    locks_path.write_text("not a directory", encoding="utf-8")
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+        locks_dir=locks_path,
+        submit_lock_timeout_seconds=0.2,
+    )
+
+    result = service.submit_paper(_serialization_intent(strategy_file, "micro_live"))
+
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "submit_serialization_unavailable" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []

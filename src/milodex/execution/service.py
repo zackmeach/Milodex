@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -12,6 +13,7 @@ from milodex.broker import BrokerClient, Order
 from milodex.broker.exceptions import InsufficientFundsError, OrderRejectedError
 from milodex.broker.models import OrderType
 from milodex.config import get_data_dir, get_logs_dir, get_trading_mode
+from milodex.core.advisory_lock import AdvisoryLock, AdvisoryLockError
 from milodex.core.event_store import (
     EventStore,
     ExecutionAttemptEvent,
@@ -42,9 +44,18 @@ from milodex.risk import (
     load_active_risk_profile,
     load_risk_defaults,
 )
+from milodex.risk.models import RiskCheckResult, RiskDecision
 from milodex.strategies.loader import compute_config_hash
 
 _logger = logging.getLogger(__name__)
+
+_DEFAULT_SUBMIT_LOCK_TIMEOUT_SECONDS = 30.0
+"""Bounded wait for the per-account submit serialization lock (ADR 0056).
+
+A submit critical section (read account snapshot -> evaluate caps -> submit) is
+seconds at most, so this is generous slack, not a hot-path tax. On timeout the
+submit is declined fail-closed (no order), never sent unserialized.
+"""
 
 
 class ExecutionService:
@@ -60,10 +71,17 @@ class ExecutionService:
         risk_evaluator: RiskEvaluator | None = None,
         event_store: EventStore | None = None,
         is_backtest: bool = False,
+        locks_dir: Path | None = None,
+        submit_lock_timeout_seconds: float = _DEFAULT_SUBMIT_LOCK_TIMEOUT_SECONDS,
     ) -> None:
         self._broker = broker_client
         self._data_provider = data_provider
         self._risk_defaults_path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+        # Per-account submit serialization (ADR 0056). Account-scoped advisory
+        # lock dir; the lock only engages at micro_live/live (paper is
+        # lock-free by design).
+        self._locks_dir = locks_dir or (get_data_dir() / "locks")
+        self._submit_lock_timeout_seconds = submit_lock_timeout_seconds
         self._event_store = event_store or EventStore(get_data_dir() / "milodex.db")
         self._kill_switch_store = kill_switch_store or KillSwitchStateStore(
             event_store=self._event_store,
@@ -127,6 +145,155 @@ class ExecutionService:
         )
 
     def _submit(
+        self,
+        intent: TradeIntent,
+        *,
+        source: str,
+        session_id: str | None = None,
+        backtest_run_id: int | None = None,
+        reasoning: DecisionReasoning | None = None,
+    ) -> ExecutionResult:
+        """Serialize the submit critical section per account, then submit.
+
+        ADR 0056: at micro_live/live stages the read-snapshot -> evaluate-caps
+        -> submit sequence is held under a per-account advisory lock so two
+        processes cannot both evaluate against a stale snapshot and both fill,
+        overshooting an account-scoped cap. Paper stays lock-free (the accepted
+        overshoot bound). On lock-acquire timeout the submit is declined
+        fail-closed -- no order is sent.
+        """
+        if not self._should_serialize_submit(intent, source):
+            return self._submit_locked(
+                intent,
+                source=source,
+                session_id=session_id,
+                backtest_run_id=backtest_run_id,
+                reasoning=reasoning,
+            )
+        lock = self._submit_lock()
+        try:
+            lock.acquire_blocking(timeout_seconds=self._submit_lock_timeout_seconds)
+        except (AdvisoryLockError, OSError) as exc:
+            # AdvisoryLockError = contention timeout. OSError = the lock's own
+            # filesystem ops failed (locks dir unwritable, disk full, path is a
+            # file). Either way we cannot prove serialization, so fail closed —
+            # never fall through to an unserialized submit, never crash the
+            # runner (which does not catch submit exceptions).
+            return self._declined_for_serialization(
+                intent,
+                source=source,
+                session_id=session_id,
+                backtest_run_id=backtest_run_id,
+                reasoning=reasoning,
+                error=exc,
+            )
+        try:
+            return self._submit_locked(
+                intent,
+                source=source,
+                session_id=session_id,
+                backtest_run_id=backtest_run_id,
+                reasoning=reasoning,
+            )
+        finally:
+            lock.release()
+
+    def _should_serialize_submit(self, intent: TradeIntent, source: str) -> bool:
+        """Whether this submit must hold the per-account serialization lock.
+
+        Engaged only for non-backtest submits at micro_live/live: backtests use
+        the simulated broker in a single process, and paper is lock-free by
+        design (ADR 0056 / ADR 0026 addendum).
+        """
+        if source == "backtest":
+            return False
+        return self._effective_stage(intent) in {"micro_live", "live"}
+
+    def _effective_stage(self, intent: TradeIntent) -> str | None:
+        """Resolve the stage governing this intent.
+
+        The runner-bound ``expected_stage`` when present, else the strategy
+        config's stage. Mirrors the manifest-drift stage resolution in
+        ``_evaluate`` (audit finding #1/#2); a later PR consolidates both onto
+        one source.
+        """
+        if intent.expected_stage is not None:
+            return intent.expected_stage
+        if intent.strategy_config_path is None:
+            return None
+        config = self._load_strategy_config(intent.strategy_config_path)
+        return config.stage if config is not None else None
+
+    def _submit_lock_name(self) -> str:
+        """Account-scoped lock name. One Alpaca account per trading mode in
+        Phase 1, so the trading mode keys the account."""
+        return f"submit.{get_trading_mode()}"
+
+    def _submit_lock(self) -> AdvisoryLock:
+        return AdvisoryLock(
+            self._submit_lock_name(),
+            locks_dir=self._locks_dir,
+            holder_name="milodex-submit",
+        )
+
+    def _declined_for_serialization(
+        self,
+        intent: TradeIntent,
+        *,
+        source: str,
+        session_id: str | None,
+        backtest_run_id: int | None,
+        reasoning: DecisionReasoning | None,
+        error: AdvisoryLockError | OSError,
+    ) -> ExecutionResult:
+        """Fail-closed result when the submit lock could not be acquired.
+
+        Builds a fully-populated result via a preview (read-only; never
+        submits), then overrides it to a serialization block. The runner treats
+        this like any other blocked decision: no trade this cycle, recorded for
+        audit, session continues.
+        """
+        _logger.warning(
+            "Submit serialization lock unavailable for %s; declining fail-closed "
+            "(no order sent). %s",
+            intent.normalized_symbol(),
+            error,
+        )
+        preview = self._evaluate(intent, preview_only=True, reasoning=reasoning)
+        decision = RiskDecision(
+            allowed=False,
+            summary=(
+                "Declined to submit: per-account submit serialization lock "
+                "unavailable (fail-closed). No order was sent."
+            ),
+            checks=[
+                RiskCheckResult(
+                    name="submit_serialization",
+                    passed=False,
+                    message=str(error),
+                    reason_code="submit_serialization_unavailable",
+                )
+            ],
+            reason_codes=["submit_serialization_unavailable"],
+        )
+        declined = replace(
+            preview,
+            status=ExecutionStatus.BLOCKED,
+            risk_decision=decision,
+            message="Submit declined: serialization lock unavailable (fail-closed).",
+            recorded_at=datetime.now(tz=UTC),
+        )
+        self._record_execution(
+            intent,
+            declined,
+            decision_type="submit",
+            session_id=session_id,
+            source=source,
+            backtest_run_id=backtest_run_id,
+        )
+        return declined
+
+    def _submit_locked(
         self,
         intent: TradeIntent,
         *,

@@ -197,6 +197,37 @@ class AdvisoryLock:
         self._held = True
         return holder
 
+    def acquire_blocking(
+        self,
+        *,
+        timeout_seconds: float,
+        poll_interval_seconds: float = 0.05,
+    ) -> LockHolder:
+        """Acquire, waiting up to ``timeout_seconds`` for a live holder to release.
+
+        Unlike :meth:`acquire` (which refuses immediately when another live
+        process holds the lock), this polls until the lock is free or the
+        timeout elapses, then **fails closed**: it raises ``AdvisoryLockError``
+        rather than proceeding unserialized. Stale / recycled-PID holders are
+        reclaimed by the underlying :meth:`acquire`, so a dead holder never
+        blocks for the full timeout. Used to serialize the cross-process submit
+        critical section (see
+        ``docs/architecture/2026-06-13-cross-process-submit-serialization-design.md``).
+        """
+        deadline = time.monotonic() + timeout_seconds
+        while True:
+            try:
+                return self.acquire()
+            except AdvisoryLockError as exc:
+                if time.monotonic() >= deadline:
+                    msg = (
+                        f"Advisory lock '{self._name}' not acquired within "
+                        f"{timeout_seconds:.1f}s; another holder kept it for the full "
+                        "wait. Declined (fail-closed)."
+                    )
+                    raise AdvisoryLockError(msg, holder=exc.holder) from exc
+                time.sleep(poll_interval_seconds)
+
     def refresh(self) -> None:
         """Heartbeat: bump the held lock file's mtime to "now".
 

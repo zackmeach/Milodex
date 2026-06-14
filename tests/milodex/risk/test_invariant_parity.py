@@ -79,6 +79,15 @@ def test_daily_loss_parity_holds_under_runner_bound_cap_preference(
 
 # --- data staleness: veto _check_data_staleness vs condition _evaluate_data_quality ---
 
+# Ages bracket the staleness threshold but deliberately exclude the exact
+# boundary (age_factor 1.0): both checks read ``datetime.now()`` INDEPENDENTLY,
+# so when the bar age is exactly ``max_data_staleness_seconds`` the two clock
+# reads can land microseconds either side of ``age > max_age`` and disagree.
+# That microsecond window is harmless in production and is not the divergence
+# this test guards against (a structural formula/threshold change); 0.99 and
+# 1.01 cover both sides of the threshold deterministically.
+_STALENESS_AGE_FACTORS = [0.0, 0.5, 0.99, 1.01, 2.0, 100.0]
+
 
 def _bar_aged(seconds: float) -> Bar:
     return Bar(
@@ -92,7 +101,7 @@ def _bar_aged(seconds: float) -> Bar:
     )
 
 
-@pytest.mark.parametrize("age_factor", [0.0, 0.5, 0.99, 1.0, 1.01, 2.0, 100.0])
+@pytest.mark.parametrize("age_factor", _STALENESS_AGE_FACTORS)
 def test_data_staleness_veto_and_disable_condition_never_diverge(age_factor: float):
     max_age = DEFAULT_RISK_DEFAULTS.max_data_staleness_seconds
     ctx = make_context(
