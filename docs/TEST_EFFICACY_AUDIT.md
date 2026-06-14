@@ -340,6 +340,13 @@ Wall-clock, end-to-end: ~50 minutes across all four files. Per-file:
 
 ## E. How to re-run
 
+> **Note (post-xdist):** the test suite now defaults to parallel execution
+> (`-n auto` in `pyproject.toml` addopts). Mutation runs must stay
+> single-process — `scripts/run_mutation_audit.ps1` already passes `-n0`. If you
+> run a `mutmut run --runner "python -m pytest ..."` command **manually** (as
+> below), add `-n0` to the runner string, or per-mutant xdist startup will
+> dominate and `-x` early-exit will behave differently across workers.
+
 ### Setup
 
 ```

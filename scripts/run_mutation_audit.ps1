@@ -44,10 +44,14 @@ function Invoke-MutationRun {
 
     if (Test-Path .mutmut-cache) { Remove-Item .mutmut-cache -Force }
 
+    # -n0 disables pytest-xdist (overrides the `-n auto` default in pyproject
+    # addopts): mutmut invokes this runner once per mutant, so per-run xdist
+    # worker startup would dominate and `-x` early-exit semantics differ under
+    # parallel workers. Mutation runs must stay single-process and deterministic.
     & $Python -m mutmut run `
         --paths-to-mutate $SrcPath `
         --tests-dir $TestDir `
-        --runner "python -m pytest --no-cov -x -q --tb=line -p no:cacheprovider $TestDir" `
+        --runner "python -m pytest -n0 --no-cov -x -q --tb=line -p no:cacheprovider $TestDir" `
         --no-progress --simple-output --CI
 
     Write-Host ""

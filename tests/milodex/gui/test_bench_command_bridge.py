@@ -24,7 +24,7 @@ import json
 import os
 import textwrap
 import threading
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -248,6 +248,28 @@ def _process_qt_until(predicate, *, timeout_ms: int = 2_000) -> bool:  # noqa: A
         app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 20)
     timer.stop()
     return bool(predicate())
+
+
+def _fast_forward_clock(step_seconds: float = 3600.0):
+    """Monotonic clock that jumps ``step_seconds`` forward on every call.
+
+    ``submit_start_paper_runner`` polls for the runner's audit row until
+    ``_now() >= deadline``, where ``deadline`` is derived from the first
+    ``_now()`` call. The audit-link-missing branch therefore burns the full
+    real ``_INTERPRETER_PROBE_TIMEOUT_SECONDS`` (~15s) wall-clock budget when
+    the facade uses the real clock. Injecting this clock (paired with a no-op
+    ``sleep``) lets the loop exhaust after a single poll — exercising the
+    retry-then-give-up path without the real wait.
+    """
+    base = datetime(2026, 5, 15, 12, 0, 0, tzinfo=UTC)
+    state = {"calls": 0}
+
+    def _now() -> datetime:
+        moment = base + timedelta(seconds=step_seconds * state["calls"])
+        state["calls"] += 1
+        return moment
+
+    return _now
 
 
 class _FakePaperRunnerControl:
@@ -697,6 +719,8 @@ def test_propose_start_paper_runner_returns_dict_and_caches_proposal(
         event_store_factory=lambda: event_store,
         paper_runner_control=_FakePaperRunnerControl(locks_dir),
         workflow_readiness=_healthy_readiness(),
+        now=_fast_forward_clock(),
+        sleep=lambda _seconds: None,
     )
     bridge = BenchCommandBridge(facade)
 
@@ -753,6 +777,8 @@ def test_submit_start_paper_runner_missing_audit_link_surfaces_error_without_ref
         event_store_factory=lambda: event_store,
         paper_runner_control=control,
         workflow_readiness=_healthy_readiness(),
+        now=_fast_forward_clock(),
+        sleep=lambda _seconds: None,
     )
     fake_state = _FakeBenchState()
     bridge = BenchCommandBridge(facade, bench_state=fake_state)
