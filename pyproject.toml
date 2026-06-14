@@ -32,6 +32,11 @@ dev = [
     "ruff",
     "pytest",
     "pytest-cov",
+    # Parallel test execution. The full suite is ~6min serial, but the cost is
+    # spread across a long tail of tests (top 30 are only ~34% of wall-clock),
+    # so parallelism — not deleting slow tests — is the speed lever. Worker cap
+    # rationale lives in [tool.pytest.ini_options] addopts below.
+    "pytest-xdist",
     # Mutation testing (test-efficacy audit). Pinned to the 2.x line because 3.x
     # refuses to run on native Windows (boxed/mutmut#397) and the operator's
     # primary dev environment is Windows. See docs/TEST_EFFICACY_AUDIT.md.
@@ -52,6 +57,13 @@ select = ["E", "F", "I", "N", "W", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Parallelise by default (pytest-xdist). ``auto`` scales to the host core count;
+# ``--maxprocesses`` caps it because each PySide6/Qt GUI worker holds ~1.5GB and
+# a few GUI tests spawn their own subprocess — uncapped ``auto`` on a 20-core box
+# OOMs 32GB of RAM. Capped at 8: full suite 6m16s -> ~1m50s locally, and = 4 on
+# CI's 4-vCPU windows-latest runner (memory-safe at 16GB; coverage combines
+# correctly across workers). For tight single-test loops, disable with ``-n0``.
+addopts = ["-n", "auto", "--maxprocesses=8"]
 markers = [
     "integration: marks tests that hit real APIs (deselect with '-m \"not integration\"')",
     "flaky_qt_pollution: pre-existing process-global Qt/QML subprocess pollution; passes in isolation, flakes only in full-suite (tracked, not caused by Trading Desk work)",

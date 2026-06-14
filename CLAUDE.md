@@ -7,6 +7,7 @@ Personal autonomous trading system. See `docs/VISION.md` for the full project vi
 ```bash
 pip install -e ".[dev]"      # Install in editable mode with dev deps
 python -m pytest             # Run tests (bare `pytest`/`ruff` may not be on PATH; use `python -m`)
+                             # Runs in parallel by default (pytest-xdist, capped at 8 workers); full suite ~1m50s. Add `-n0` to disable for tight single-test loops.
 python -m ruff check src/ tests/    # Lint
 python -m ruff format src/ tests/   # Format
 python -m milodex.cli.main <subcommand>   # CLI entry — `python -m milodex` does NOT work (no __main__.py at package root); always include `.cli.main`
