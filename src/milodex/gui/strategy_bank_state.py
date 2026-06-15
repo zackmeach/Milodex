@@ -300,9 +300,7 @@ def _query_bank(
     return paper, blocked
 
 
-def _fetch_paper(
-    conn: sqlite3.Connection, *, demotion_aware: bool = False
-) -> list[dict[str, Any]]:
+def _fetch_paper(conn: sqlite3.Connection, *, demotion_aware: bool = False) -> list[dict[str, Any]]:
     sql = _SQL_PAPER_CURRENT_STAGE if demotion_aware else _SQL_PAPER
     rows = conn.execute(sql).fetchall()
     result: list[dict[str, Any]] = []
@@ -342,9 +340,7 @@ def _fetch_blocked(
     exclude_sql = (
         _SQL_BLOCKED_EXCLUDE_PAPER_CURRENT if demotion_aware else _SQL_BLOCKED_EXCLUDE_PAPER_EVER
     )
-    paper_strategy_ids: set[str] = {
-        r["strategy_id"] for r in conn.execute(exclude_sql).fetchall()
-    }
+    paper_strategy_ids: set[str] = {r["strategy_id"] for r in conn.execute(exclude_sql).fetchall()}
 
     result: list[dict[str, Any]] = []
     for strategy_id, m in all_metrics.items():

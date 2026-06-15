@@ -1416,9 +1416,7 @@ def test_submit_start_paper_runner_errors_without_audit_linkage(
         calls[0] += 1
         return t0 + timedelta(seconds=n * 20)
 
-    facade = make_facade(
-        paper_runner_control=control, now=_fast_now, sleep=lambda _: None
-    )
+    facade = make_facade(paper_runner_control=control, now=_fast_now, sleep=lambda _: None)
     proposal = facade.propose_start_paper_runner(STRATEGY_ID)
 
     result = facade.submit_start_paper_runner(proposal)

@@ -236,9 +236,7 @@ class TestMainQmlWiring:
 
     def test_modal_instantiated(self) -> None:
         src = _MAIN_QML.read_text(encoding="utf-8")
-        assert "KillSwitchResetModal {" in src, (
-            "Main.qml must instantiate KillSwitchResetModal"
-        )
+        assert "KillSwitchResetModal {" in src, "Main.qml must instantiate KillSwitchResetModal"
 
     def test_modal_has_id(self) -> None:
         src = _MAIN_QML.read_text(encoding="utf-8")
@@ -272,8 +270,7 @@ class TestMainQmlWiring:
             "to open the reset modal"
         )
         assert "killSwitchResetModal.open = true" in src, (
-            "Main.qml onKillSwitchResetRequested handler must set "
-            "killSwitchResetModal.open = true"
+            "Main.qml onKillSwitchResetRequested handler must set killSwitchResetModal.open = true"
         )
 
     def test_anchor_surface_route_deleted(self) -> None:
