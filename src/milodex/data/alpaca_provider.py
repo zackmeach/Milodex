@@ -269,6 +269,66 @@ class AlpacaDataProvider(DataProvider):
 
         return result
 
+    def backfill_range(
+        self,
+        symbols: list[str],
+        timeframe: Timeframe,
+        start: date,
+        end: date,
+    ) -> dict[str, int]:
+        """Force-fetch ``[start, end]`` from the source and merge into the cache.
+
+        Unlike :meth:`get_bars`, this does NOT short-circuit on a cache hit and
+        does NOT apply the recent-window gap heuristic — it fetches the entire
+        requested range and merges it. Use it to heal an interior cache gap that
+        is older than the ``get_bars`` recent-scan window (``today - 60d``): e.g.
+        a missing year between an old backtest warm (ending 2024-12-31) and a
+        later live-runner tail (starting 2026-03-09), which ``get_bars`` assumes
+        is complete and never refetches. Merge is additive and de-duplicating,
+        so overlapping an existing range is safe.
+
+        Returns ``{symbol: bars_fetched}``.
+
+        ponytail: the fetch/parse/merge below mirrors get_bars Phase 2/3 by
+        design — duplicated, not shared, so the hot-path get_bars stays
+        byte-identical. DRY into a helper only if a third caller appears.
+        """
+        if not symbols:
+            return {}
+        alpaca_tf = _TIMEFRAME_MAP[timeframe]
+        request = StockBarsRequest(
+            symbol_or_symbols=symbols if len(symbols) > 1 else symbols[0],
+            timeframe=alpaca_tf,
+            feed=DataFeed.IEX,
+            adjustment=Adjustment.ALL,
+            start=datetime(start.year, start.month, start.day, tzinfo=UTC),
+            end=datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC),
+        )
+        response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
+        fetched_counts: dict[str, int] = {}
+        for sym in symbols:
+            bars_data = response.data.get(sym, [])
+            fetched_counts[sym] = len(bars_data)
+            if not bars_data:
+                continue
+            df = pd.DataFrame(
+                [
+                    {
+                        "timestamp": b.timestamp,
+                        "open": float(b.open),
+                        "high": float(b.high),
+                        "low": float(b.low),
+                        "close": float(b.close),
+                        "volume": int(b.volume),
+                        "vwap": float(b.vwap) if b.vwap else None,
+                    }
+                    for b in bars_data
+                ]
+            )
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            self._cache.merge(sym, timeframe, df)
+        return fetched_counts
+
     def get_latest_bar(self, symbol: str) -> Bar:
         """Fetch the most recent bar from Alpaca."""
         response = call_with_retry_on_429(
