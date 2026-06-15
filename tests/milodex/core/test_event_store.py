@@ -1609,6 +1609,7 @@ def _append_dedup_trade(
     status: str = "submitted",
     source: str = "paper",
     broker_order_id: str | None = None,
+    strategy_name: str | None = "alpha",
 ) -> None:
     explanation_id = store.append_explanation(
         ExplanationEvent(**_explanation_kwargs(submitted_by="operator", symbol=symbol, side=side))
@@ -1626,7 +1627,7 @@ def _append_dedup_trade(
             time_in_force="day",
             estimated_unit_price=400.0,
             estimated_order_value=400.0,
-            strategy_name="alpha",
+            strategy_name=strategy_name,
             strategy_stage="paper",
             strategy_config_path="configs/x.yaml",
             submitted_by="operator",
@@ -1634,6 +1635,40 @@ def _append_dedup_trade(
             broker_status=None,
             message=None,
         )
+    )
+
+
+def test_count_recent_submitted_orders_scoped_to_strategy_excludes_others(tmp_path):
+    """PR5: scoping to a strategy counts only that strategy's rows."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    _append_dedup_trade(store, recorded_at=now, strategy_name="alpha")
+    _append_dedup_trade(store, recorded_at=now, strategy_name="beta")
+    since = now - timedelta(seconds=60)
+
+    assert (
+        store.count_recent_submitted_orders(
+            symbol="SPY", side="buy", since=since, strategy_name="alpha"
+        )
+        == 1
+    )
+    # Unscoped (default) still counts account-wide — both rows.
+    assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 2
+
+
+def test_count_recent_submitted_orders_operator_scope_excludes_strategy_rows(tmp_path):
+    """PR5: strategy_name=None scopes to operator-attributed (NULL) rows only."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    _append_dedup_trade(store, recorded_at=now, strategy_name="alpha")
+    _append_dedup_trade(store, recorded_at=now, strategy_name=None)  # operator
+    since = now - timedelta(seconds=60)
+
+    assert (
+        store.count_recent_submitted_orders(
+            symbol="SPY", side="buy", since=since, strategy_name=None
+        )
+        == 1
     )
 
 

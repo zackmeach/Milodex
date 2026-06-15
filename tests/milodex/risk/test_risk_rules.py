@@ -2542,3 +2542,155 @@ def test_no_opposite_side_order_passes():
     )
 
     assert check_result(decision, "opposite_side_order").passed is True
+
+
+# --------------------------------------------------------------------------- #
+# Per-strategy duplicate-order scoping (concurrent-intraday PR5)
+#
+# RISK_POLICY's Duplicate-Order Policy and the risk_defaults.yaml comment both
+# say detection keys off the *strategy instance*. The check was account-wide
+# (symbol+side+window, no strategy_name) — masked by the launch guard's
+# one-strategy-per-symbol rule. With same-symbol co-run (PR4), two different
+# strategies' legitimate same-side entries within the window would false-veto
+# the second. The veto now scopes to the proposing strategy via the durable
+# event-store path (broker recent_orders carries no strategy tag).
+# --------------------------------------------------------------------------- #
+
+
+def _store_with_recent_submit(
+    tmp_path,
+    *,
+    strategy_name: str | None,
+    symbol: str = "SPY",
+    side: str = "buy",
+    seconds_ago: int = 30,
+):
+    """EventStore seeded with one recent submitted paper trade attributed to
+    ``strategy_name`` (None → operator)."""
+    from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+
+    store = EventStore(tmp_path / "milodex_dedup.db")
+    recorded_at = datetime.now(tz=UTC) - timedelta(seconds=seconds_ago)
+    is_operator = strategy_name is None
+    explanation_id = store.append_explanation(
+        ExplanationEvent(
+            recorded_at=recorded_at,
+            decision_type="submit",
+            status="submitted",
+            strategy_name=strategy_name,
+            strategy_stage=None if is_operator else "paper",
+            strategy_config_path=None,
+            config_hash=None,
+            symbol=symbol,
+            side=side,
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="operator" if is_operator else "strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=recorded_at,
+            latest_bar_close=100.0,
+            account_equity=10_000.0,
+            account_cash=10_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="Allowed",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id=None if is_operator else f"dedup-session-{strategy_name}",
+        )
+    )
+    store.append_trade(
+        TradeEvent(
+            explanation_id=explanation_id,
+            recorded_at=recorded_at,
+            status="submitted",
+            source="paper",
+            symbol=symbol,
+            side=side,
+            quantity=1.0,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=100.0,
+            estimated_order_value=100.0,
+            strategy_name=strategy_name,
+            strategy_stage=None if is_operator else "paper",
+            strategy_config_path=None,
+            submitted_by="operator" if is_operator else "strategy_runner",
+            broker_order_id=f"dedup-broker-{strategy_name}",
+            broker_status=None,
+            message=None,
+        )
+    )
+    return store
+
+
+def test_duplicate_order_not_blocked_across_strategies(tmp_path):
+    """A recent SPY BUY by strategy 'alpha' must NOT veto strategy 'beta's SPY
+    BUY: different strategies are not duplicates of each other (the co-run case
+    the launch guard used to make impossible).
+
+    Non-vacuous: the pre-PR5 account-wide durable query counts alpha's order
+    regardless of the proposing strategy → BLOCKS beta. Per-strategy scoping
+    sees zero beta orders → PASS.
+    """
+    store = _store_with_recent_submit(tmp_path, strategy_name="alpha")
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            request_strategy_name="beta",
+            event_store=store,
+        )
+    )
+    assert check_result(decision, "duplicate_order").passed is True
+
+
+def test_duplicate_order_blocked_for_same_strategy(tmp_path):
+    """A strategy's own recent same-side order on the symbol still vetoes a
+    duplicate — the protective intent is preserved, just scoped per-strategy."""
+    store = _store_with_recent_submit(tmp_path, strategy_name="alpha")
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            request_strategy_name="alpha",
+            event_store=store,
+        )
+    )
+    result = check_result(decision, "duplicate_order")
+    assert result.passed is False
+    assert result.reason_code == "duplicate_order_window"
+
+
+def test_duplicate_order_operator_scope_ignores_strategy_orders(tmp_path):
+    """An operator manual order (no strategy) scopes to operator-attributed
+    history only: a *strategy's* recent order does not veto the operator's."""
+    store = _store_with_recent_submit(tmp_path, strategy_name="alpha")
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            request_strategy_name=None,  # operator
+            event_store=store,
+        )
+    )
+    assert check_result(decision, "duplicate_order").passed is True
+
+
+def test_duplicate_order_blocked_for_same_operator_order(tmp_path):
+    """Operator scope still dedups against the operator's own recent order."""
+    store = _store_with_recent_submit(tmp_path, strategy_name=None)  # operator-seeded
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            request_strategy_name=None,  # operator
+            event_store=store,
+        )
+    )
+    result = check_result(decision, "duplicate_order")
+    assert result.passed is False
+    assert result.reason_code == "duplicate_order_window"

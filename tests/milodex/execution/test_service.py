@@ -502,23 +502,17 @@ def test_missing_limit_price_still_reports_unsupported_order_type_first(
 def test_duplicate_order_is_blocked(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):
-    recent_order = Order(
-        id="duplicate",
-        symbol="SPY",
-        side=OrderSide.BUY,
-        order_type=OrderType.MARKET,
-        quantity=1,
-        time_in_force=TimeInForce.DAY,
-        status=OrderStatus.PENDING,
-        submitted_at=datetime.now(tz=UTC) - timedelta(seconds=30),
+    # PR5: the duplicate veto is now durable + per-strategy (the account-scoped
+    # broker recent_orders path was removed). An operator intent dedups against
+    # operator-attributed history, so seed a recent operator SPY BUY.
+    service, broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
     )
-    service, broker = build_service(
-        tmp_path,
-        risk_defaults_file,
-        latest_bar,
-        sample_account,
-        submitted_order,
-        orders=[recent_order],
+    _seed_submitted_trade(
+        event_store,
+        symbol="SPY",
+        side="buy",
+        recorded_at=datetime.now(tz=UTC) - timedelta(seconds=30),
     )
 
     result = service.submit_paper(
@@ -1201,19 +1195,6 @@ def _make_stale_bar() -> Bar:
     )
 
 
-def _make_recent_duplicate_order() -> Order:
-    return Order(
-        id="dup-order",
-        symbol="SPY",
-        side=OrderSide.BUY,
-        order_type=OrderType.MARKET,
-        quantity=1,
-        time_in_force=TimeInForce.DAY,
-        status=OrderStatus.PENDING,
-        submitted_at=datetime.now(tz=UTC) - timedelta(seconds=30),
-    )
-
-
 @pytest.mark.parametrize(
     "scenario",
     [
@@ -1238,11 +1219,10 @@ def test_any_block_reason_never_submits(
 
     Meaningfulness verified: temporarily mutating the chokepoint in service.py
     to call ``self._broker.submit_order(...)`` unconditionally (before the
-    ``if not result.risk_decision.allowed: return`` guard) causes this test to
-    fail for all non-duplicate-order scenarios, since StubBroker.submit_order
-    raises AssertionError when ``submit_order_result is None`` (the duplicate
-    path sets it to None to provoke that path). The parametrize coverage is
-    therefore genuine for every entry listed here.
+    ``if not result.risk_decision.allowed: return`` guard) causes the final
+    ``broker.submit_calls == []`` assertion to fail for every scenario — the
+    block reason differs but the chokepoint guarantee is the same. The
+    parametrize coverage is therefore genuine for every entry listed here.
     """
     intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
 
@@ -1294,13 +1274,14 @@ def test_any_block_reason_never_submits(
         assert "paper_mode_required" in result.risk_decision.reason_codes
 
     elif scenario == "duplicate_order":
-        service, broker = build_service(
-            tmp_path,
-            risk_defaults_file,
-            latest_bar,
-            sample_account,
-            submitted_order,
-            orders=[_make_recent_duplicate_order()],
+        service, broker, event_store = _build_service_with_store(
+            tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+        )
+        _seed_submitted_trade(
+            event_store,
+            symbol="SPY",
+            side="buy",
+            recorded_at=datetime.now(tz=UTC) - timedelta(seconds=30),
         )
         result = service.submit_paper(intent)
         assert "duplicate_order_window" in result.risk_decision.reason_codes
