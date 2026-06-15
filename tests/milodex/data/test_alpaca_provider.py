@@ -7,6 +7,7 @@ All tests mock the Alpaca SDK -- no real API calls.
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 import requests
 from alpaca.common.exceptions import APIError
@@ -131,6 +132,55 @@ class TestGetBars:
 
         request = provider._client.get_stock_bars.call_args.args[0]
         assert request.adjustment == Adjustment.ALL
+
+
+class TestBackfillRange:
+    """backfill_range force-fetches the full range and heals an interior cache
+    gap that get_bars' recent-window scan (today - 60d) assumes is complete."""
+
+    def test_heals_interior_gap(self, provider):
+        d0102 = datetime(2025, 1, 2, 5, 0, tzinfo=UTC)
+        d0103 = datetime(2025, 1, 3, 5, 0, tzinfo=UTC)  # weekday — the gap
+        d0106 = datetime(2025, 1, 6, 5, 0, tzinfo=UTC)
+
+        # Seed the cache with a gap at 2025-01-03 (fetch only 01-02 and 01-06).
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"SPY": [_make_bar(d0102), _make_bar(d0106)]}
+        )
+        provider.get_bars(["SPY"], Timeframe.DAY_1, date(2025, 1, 2), date(2025, 1, 6))
+        seeded = provider._cache.read("SPY", Timeframe.DAY_1)
+        seeded_dates = set(pd.to_datetime(seeded["timestamp"]).dt.date)
+        assert date(2025, 1, 3) not in seeded_dates  # gap confirmed present
+
+        # Force a full-range backfill; the source now returns the missing 01-03.
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"SPY": [_make_bar(d0102), _make_bar(d0103), _make_bar(d0106)]}
+        )
+        counts = provider.backfill_range(
+            ["SPY"], Timeframe.DAY_1, date(2025, 1, 1), date(2025, 1, 7)
+        )
+
+        healed = provider._cache.read("SPY", Timeframe.DAY_1)
+        healed_dates = set(pd.to_datetime(healed["timestamp"]).dt.date)
+        assert date(2025, 1, 3) in healed_dates  # gap healed
+        assert counts["SPY"] == 3
+
+    def test_fetches_full_range_with_iex_all_adjustment(self, provider):
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"SPY": [_make_bar(datetime(2025, 2, 3, 5, 0, tzinfo=UTC))]}
+        )
+        provider.backfill_range(["SPY"], Timeframe.DAY_1, date(2025, 1, 1), date(2025, 3, 1))
+        request = provider._client.get_stock_bars.call_args.args[0]
+        assert request.feed == DataFeed.IEX
+        assert request.adjustment == Adjustment.ALL
+        # Full requested range — no cache-coverage short-circuit.
+        assert request.start.date() == date(2025, 1, 1)
+        assert request.end.date() == date(2025, 3, 1)
+
+    def test_empty_symbols_makes_no_call(self, provider):
+        result = provider.backfill_range([], Timeframe.DAY_1, date(2025, 1, 1), date(2025, 2, 1))
+        assert result == {}
+        provider._client.get_stock_bars.assert_not_called()
 
 
 class TestGetBarsBatching:
