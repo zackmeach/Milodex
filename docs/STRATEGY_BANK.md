@@ -20,13 +20,38 @@ Six statistically- or lifecycle-justified strategies are at paper stage and are 
 >
 > These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. All are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours, and concurrent-fleet behavior), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
 
+### ⚠️ Concurrency limit — at most 3 of these run at once
+
+The launch-time same-symbol guard (ADR 0055; `cli/commands/strategy.py` →
+`evaluation_symbol_for_config`) refuses to start two runners whose **evaluation
+symbol** — the *sorted* `universe[0]` — collides, because same-account
+same-symbol runners corrupt each other's position view and trip wash-trade
+rejection. Across the 11 paper strategies the eval symbols collapse to **three
+groups**, so **at most three runners can be live concurrently — one per group**:
+
+| eval symbol | strategies sharing it (one runs at a time) |
+|---|---|
+| **SPY** | `regime.daily.sma200_rotation` **+ all 5 intraday canaries** (inline `[SPY, SHY]` and `universe.spy_only.v1` both resolve `universe[0]=SPY`) |
+| **XLB** | `breakout.daily.atr_channel`, `breakout.daily.donchian_20_10` (`universe.sector_etfs_spdr.v1`, sorted-first = XLB) |
+| **AAPL** | `meanrev.daily.bbands_lowerband`, `meanrev.daily.pullback_rsi2`, `momentum.daily.tsmom` (`universe.curated_largecap.v2`, sorted-first = AAPL) |
+
+Pick **one strategy per group**; the guard refuses the rest with a clear
+`Refusing to start … evaluation symbol 'X' is already in use` `ValueError`
+(GUI: a pre-spawn Bench blocker). Note the regime daily strategy holds the SPY
+slot, so **launching it blocks every intraday SPY canary** (and vice-versa). To
+validate all six daily "deserving" strategies, rotate them across sessions, or
+accept three-at-a-time. Pre-check a batch with
+`fleet.py deploy <ids> --dry-run` (fleet-ops skill). This is the conservative
+ADR-0055 guard working as designed pending per-symbol locks (ADR 0026
+addendum) — not a defect, and it never silently corrupts: it refuses cleanly.
+
 Three strategies are at the **idle** stage (demoted out of active rotation 2026-05-19). Three remain genuinely at **backtest** stage (never promoted) and are blocked — see the blocked table and the new Idle section below.
 
 ---
 
 ## As of date and source of truth
 
-This document reflects the event-store state as of 2026-05-29 (intraday fleet soak test).
+This document reflects the event-store state as of 2026-05-29 (intraday fleet soak test). Roster re-verified unchanged against config disk-state and the `promotions` table on **2026-06-15** (11 paper / 3 idle / 3 blocked, plus the seam-proof deciders and crypto canaries).
 
 Changes since the 2026-05-28 update:
 - **Three more intraday strategies were promoted to paper on 2026-05-29 via `lifecycle_exempt`** (`approved_by=operator-zack`) as additional intraday-harness validation canaries for a concurrent-fleet soak test: `meanrev.rsi2.intraday.spy.v1` (evid `0312e734`, Sharpe −7.96), `meanrev.vwap_reversion.intraday.spy.v1` (evid `f0eb3b25`, Sharpe −1.89), `momentum.vwap_trend.intraday.spy.v1` (evid `c34868c5`, Sharpe −1.79). All three are knowingly-losing nulls from overnight backtests; they were promoted to exercise the runner under concurrent load, not for signal merit. The soak test exposed an unbounded-query OOM bug in startup reconciliation — see `docs/incidents/2026-05-29-runner-fleet-oom-freeze.md` (root-cause fix landed).
@@ -211,7 +236,9 @@ On 2026-05-28 two intraday strategies were promoted to paper via `lifecycle_exem
 - The intraday backtest engine and the intraday *paper runner* are new infrastructure. These strategies validate the runner end-to-end — cadence, fills, evaluation *during* market hours (intraday strategies, unlike daily ones, evaluate while the market is open), and **concurrent-fleet behavior** under simultaneous launch. All are knowingly-losing; the point is mechanics, not return.
 - `lifecycle_exempt` is the documented operator-override path (CLAUDE.md: `--lifecycle-exempt` bypasses the statistical gate for *any* promotion). It was used intentionally to place these negative-Sharpe canaries at paper. This is the override working as designed, not a misapplication.
 
-**2026-05-29 fleet soak test outcome:** Launching all 11 paper strategies (6 daily + 5 intraday canaries) concurrently exposed a latent OOM bug — startup reconciliation's `incident_already_logged()` loaded the entire ~1M-row `explanations` table per runner, spiking memory and killing two runners with `MemoryError` (it also froze the workstation). Root cause fixed (targeted single-row query); see `docs/incidents/2026-05-29-runner-fleet-oom-freeze.md`. Steady-state per-runner footprint is light (~30–165 MB); the cold-start transient is the constraint, and the harness has no launch throttle (tracked follow-up).
+**2026-05-29 fleet soak test outcome:** Launching all 11 paper strategies (6 daily + 5 intraday canaries) concurrently exposed a latent OOM bug — startup reconciliation's `incident_already_logged()` loaded the entire ~1M-row `explanations` table per runner, spiking memory and killing two runners with `MemoryError` (it also froze the workstation). Root cause fixed (targeted single-row query); see `docs/incidents/2026-05-29-runner-fleet-oom-freeze.md`. Steady-state per-runner footprint is light (~30–165 MB); the cold-start transient is the constraint. (`fleet.py deploy` launches sequentially — waiting for each runner's lock to go live before the next — which acts as a de-facto throttle.)
+
+> **No longer reproducible as written:** that soak test launched all 5 SPY intraday canaries (+ the regime daily strategy) at once. The ADR-0055 launch-time eval-symbol guard now refuses a second runner on an in-use evaluation symbol, and all six of those resolve `universe[0]=SPY` — so only **one** can be live at a time. See the **⚠️ Concurrency limit** callout under "What can I run today?". The five canaries are now mutually exclusive at runtime; exercise them by rotating one per session.
 
 **Disposition:** All five are **kept at paper intentionally** while the intraday harness is being exercised. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — a future operator call, not a pending action.
 
