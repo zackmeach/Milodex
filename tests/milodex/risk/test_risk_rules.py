@@ -2113,12 +2113,14 @@ def test_remaining_notional_overfill_clamps_to_zero():
 
 
 def test_checks_registry_is_account_complete():
-    """Guard against doc/code drift: the enforced-check registry stays at 16
+    """Guard against doc/code drift: the enforced-check registry stays at 17
     (HR-7 added _check_max_trades_per_day; P2-07 added
-    _check_disable_conditions per R-STR-014) and never silently lists a
-    sector/correlation cap that the code does not implement
-    (RISK_POLICY.md / SRS.md advertise those as planned only)."""
-    assert len(RiskEvaluator._CHECKS) == 16
+    _check_disable_conditions per R-STR-014; concurrent-intraday PR2 added
+    _check_opposite_side_order) and never silently lists a sector/correlation
+    cap that the code does not implement (RISK_POLICY.md / SRS.md advertise
+    those as planned only)."""
+    assert len(RiskEvaluator._CHECKS) == 17
+    assert "_check_opposite_side_order" in RiskEvaluator._CHECKS
     assert not any("sector" in name or "correlat" in name for name in RiskEvaluator._CHECKS)
 
 
@@ -2341,3 +2343,117 @@ def test_max_trades_per_day_skipped_when_no_event_store():
     )
     result = check_result(decision, "max_trades_per_day")
     assert result.passed is True
+
+
+# --------------------------------------------------------------------------- #
+# Opposite-side resting order veto (concurrent-intraday plan PR2, invariant 2)
+#
+# When many strategies share one account+symbol, one can submit a BUY while a
+# sibling's SELL still rests (or vice versa). Alpaca rejects that as a wash
+# trade (40310000). The risk layer declines it first — audit hygiene, decided in
+# risk/ (risk disposes), keyed off the account-scoped order book (recent_orders).
+# Only OPEN (PENDING / PARTIALLY_FILLED) orders rest; a FILLED order is a
+# position, a CANCELLED/REJECTED one is gone.
+# --------------------------------------------------------------------------- #
+
+
+def _open_sell(symbol: str, *, status: OrderStatus = OrderStatus.PENDING) -> Order:
+    """Build an in-flight (open) SELL order — the opposite-side mirror of
+    ``_open_buy``."""
+    return Order(
+        id=f"ord-sell-{symbol}",
+        symbol=symbol,
+        side=OrderSide.SELL,
+        order_type=OrderType.MARKET,
+        quantity=10.0,
+        time_in_force=TimeInForce.DAY,
+        status=status,
+        submitted_at=datetime.now(tz=UTC),
+    )
+
+
+def test_opposite_side_resting_buy_declines_incoming_sell():
+    """A resting BUY on SPY + an incoming SELL on SPY is declined: submitting it
+    would trip Alpaca's wash-trade reject (40310000)."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            symbol="SPY",
+            recent_orders=[_open_buy("SPY", status=OrderStatus.PENDING)],
+        )
+    )
+
+    result = check_result(decision, "opposite_side_order")
+    assert result.passed is False
+    assert result.reason_code == "opposite_side_order_open"
+
+
+def test_opposite_side_resting_sell_declines_incoming_buy():
+    """Symmetric: a resting SELL + an incoming BUY on the same symbol is
+    declined."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="SPY",
+            recent_orders=[_open_sell("SPY", status=OrderStatus.PARTIALLY_FILLED)],
+        )
+    )
+
+    result = check_result(decision, "opposite_side_order")
+    assert result.passed is False
+    assert result.reason_code == "opposite_side_order_open"
+
+
+def test_same_side_resting_order_passes_opposite_side_check():
+    """A resting BUY + an incoming BUY is NOT an opposite-side collision (the
+    duplicate-order check handles same-side; this check must not fire)."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="SPY",
+            recent_orders=[_open_buy("SPY", status=OrderStatus.PENDING)],
+        )
+    )
+
+    assert check_result(decision, "opposite_side_order").passed is True
+
+
+def test_opposite_side_order_on_different_symbol_passes():
+    """A resting BUY on GOOG does not block a SELL on SPY — wash trades are
+    per-symbol."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            symbol="SPY",
+            recent_orders=[_open_buy("GOOG", status=OrderStatus.PENDING)],
+        )
+    )
+
+    assert check_result(decision, "opposite_side_order").passed is True
+
+
+@pytest.mark.parametrize(
+    "terminal_status",
+    [OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED],
+)
+def test_terminal_opposite_side_order_does_not_block(terminal_status):
+    """Only OPEN orders rest. A terminal opposite-side order (filled = a
+    position; cancelled/rejected = gone) does not trip the veto."""
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            symbol="SPY",
+            recent_orders=[_open_sell("SPY", status=terminal_status)],
+        )
+    )
+
+    assert check_result(decision, "opposite_side_order").passed is True
+
+
+def test_no_opposite_side_order_passes():
+    """No resting orders at all → the veto passes."""
+    decision = RiskEvaluator().evaluate(
+        make_context(side=OrderSide.SELL, symbol="SPY", recent_orders=[])
+    )
+
+    assert check_result(decision, "opposite_side_order").passed is True
