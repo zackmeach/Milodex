@@ -1831,7 +1831,7 @@ def _serialization_intent(strategy_file: Path, stage: str | None) -> TradeIntent
     )
 
 
-def test_should_serialize_only_for_micro_live_and_live_non_backtest(
+def test_serializes_paper_micro_live_and_live_but_never_backtest(
     tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
 ):
     service, _ = build_service(
@@ -1841,12 +1841,16 @@ def test_should_serialize_only_for_micro_live_and_live_non_backtest(
         _serialization_intent(strategy_file, "micro_live"), "paper"
     )
     assert service._should_serialize_submit(_serialization_intent(strategy_file, "live"), "paper")
-    assert not service._should_serialize_submit(
-        _serialization_intent(strategy_file, "paper"), "paper"
-    )
+    # Paper now serializes too: once many paper runners share one account
+    # (concurrent-intraday plan, 2026-06-15), two simultaneous fires could
+    # both clear an account cap on a stale snapshot. ADR 0056 amended.
+    assert service._should_serialize_submit(_serialization_intent(strategy_file, "paper"), "paper")
     # Backtest source never serializes (simulated broker, single process).
     assert not service._should_serialize_submit(
         _serialization_intent(strategy_file, "micro_live"), "backtest"
+    )
+    assert not service._should_serialize_submit(
+        _serialization_intent(strategy_file, "paper"), "backtest"
     )
 
 
@@ -1896,11 +1900,17 @@ def test_micro_live_submit_fails_closed_when_lock_held(
     assert broker.submit_calls == []
 
 
-def test_paper_submit_is_lock_free_even_when_submit_lock_held(
+def test_paper_submit_fails_closed_when_lock_held(
     tmp_path, risk_defaults_file, strategy_file, latest_bar, sample_account, submitted_order
 ):
+    # Two concurrent paper submits on one shared account must not both clear an
+    # account cap on the same stale snapshot. The per-account submit lock makes
+    # the read-snapshot -> evaluate-caps -> submit sequence mutually exclusive:
+    # while writer A holds the lock (modeled here by an externally-held blocker),
+    # writer B is declined fail-closed rather than proceeding against A's
+    # pre-submit snapshot. ADR 0056 amended to include paper.
     locks_dir = tmp_path / "locks"
-    service, _ = build_service(
+    service, broker = build_service(
         tmp_path,
         risk_defaults_file,
         latest_bar,
@@ -1916,8 +1926,10 @@ def test_paper_submit_is_lock_free_even_when_submit_lock_held(
     finally:
         blocker.release()
 
-    # Paper stays lock-free: a held submit lock must NOT decline a paper submit.
-    assert "submit_serialization_unavailable" not in result.risk_decision.reason_codes
+    assert result.status is ExecutionStatus.BLOCKED
+    assert "submit_serialization_unavailable" in result.risk_decision.reason_codes
+    # Fail-closed: never reached the broker.
+    assert broker.submit_calls == []
 
 
 def test_micro_live_submit_fails_closed_on_lock_filesystem_error(

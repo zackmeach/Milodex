@@ -77,9 +77,10 @@ class ExecutionService:
         self._broker = broker_client
         self._data_provider = data_provider
         self._risk_defaults_path = risk_defaults_path or Path("configs/risk_defaults.yaml")
-        # Per-account submit serialization (ADR 0056). Account-scoped advisory
-        # lock dir; the lock only engages at micro_live/live (paper is
-        # lock-free by design).
+        # Per-account submit serialization (ADR 0056, amended 2026-06-15).
+        # Account-scoped advisory lock dir; the lock engages for every
+        # non-backtest submit (paper/micro_live/live) now that many paper
+        # runners share one account.
         self._locks_dir = locks_dir or (get_data_dir() / "locks")
         self._submit_lock_timeout_seconds = submit_lock_timeout_seconds
         self._event_store = event_store or EventStore(get_data_dir() / "milodex.db")
@@ -155,12 +156,14 @@ class ExecutionService:
     ) -> ExecutionResult:
         """Serialize the submit critical section per account, then submit.
 
-        ADR 0056: at micro_live/live stages the read-snapshot -> evaluate-caps
-        -> submit sequence is held under a per-account advisory lock so two
-        processes cannot both evaluate against a stale snapshot and both fill,
-        overshooting an account-scoped cap. Paper stays lock-free (the accepted
-        overshoot bound). On lock-acquire timeout the submit is declined
-        fail-closed -- no order is sent.
+        ADR 0056 (amended 2026-06-15): for every non-backtest submit the
+        read-snapshot -> evaluate-caps -> submit sequence is held under a
+        per-account advisory lock so two processes cannot both evaluate against
+        a stale snapshot and both fill, overshooting an account-scoped cap.
+        Paper is now included (many paper runners share one account); only
+        backtests stay lock-free (simulated broker, single process). On
+        lock-acquire timeout the submit is declined fail-closed -- no order is
+        sent.
         """
         if not self._should_serialize_submit(intent, source):
             return self._submit_locked(
@@ -201,13 +204,18 @@ class ExecutionService:
     def _should_serialize_submit(self, intent: TradeIntent, source: str) -> bool:
         """Whether this submit must hold the per-account serialization lock.
 
-        Engaged only for non-backtest submits at micro_live/live: backtests use
-        the simulated broker in a single process, and paper is lock-free by
-        design (ADR 0056 / ADR 0026 addendum).
+        Engaged for every non-backtest submit (paper/micro_live/live). Paper was
+        originally lock-free (ADR 0056), but once many paper runners share one
+        Alpaca account — including several on the same symbol (concurrent-intraday
+        plan, 2026-06-15) — two simultaneous fires could both clear an
+        account-scoped cap on a stale snapshot. The lock makes the read-snapshot
+        -> evaluate-caps -> submit sequence mutually exclusive per account. ADR
+        0056 amended. Backtests still never serialize: simulated broker, single
+        process.
         """
         if source == "backtest":
             return False
-        return self._effective_stage(intent) in {"micro_live", "live"}
+        return self._effective_stage(intent) in {"paper", "micro_live", "live"}
 
     def _effective_stage(self, intent: TradeIntent) -> str | None:
         """Resolve the stage governing this intent.
