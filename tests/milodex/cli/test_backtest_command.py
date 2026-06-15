@@ -140,6 +140,61 @@ def test_backtest_output_exposes_data_quality_report():
     )
 
 
+def _clamp_issue(symbol: str, first_bar_date: str) -> dict:
+    return {
+        "code": "requested_window_starts_after_requested_start",
+        "severity": "warning",
+        "symbol": symbol,
+        "message": f"{symbol} starts materially after the requested backtest window.",
+        "context": {
+            "requested_start": "2020-01-01",
+            "first_bar_date": first_bar_date,
+            "tolerance_days": 7,
+        },
+    }
+
+
+def test_clamped_window_surfaced_legibly_in_human_output():
+    """A clamped window must name actual-vs-requested start, not hide in a warning count."""
+    backtest_result = _result("momentum.daily.tsmom.curated_largecap.v1", trade_count=0)
+    backtest_result.data_quality = {
+        "status": "pass_with_warnings",
+        "blocker_count": 0,
+        "warning_count": 2,
+        "issues": [_clamp_issue("AAPL", "2020-07-27"), _clamp_issue("SPY", "2020-08-03")],
+    }
+
+    result = _build_backtest_result(backtest_result)
+
+    clamp_lines = [ln for ln in result.human_lines if ln.startswith("Window clamp:")]
+    assert len(clamp_lines) == 1
+    assert "2020-07-27" in clamp_lines[0]  # earliest actual start across affected symbols
+    assert "2020-01-01" in clamp_lines[0]  # requested start
+    assert "2 symbol(s)" in clamp_lines[0]
+
+
+def test_no_window_clamp_line_when_window_not_clamped():
+    backtest_result = _result("momentum.daily.tsmom.curated_largecap.v1", trade_count=40)
+    backtest_result.data_quality = {
+        "status": "pass_with_warnings",
+        "blocker_count": 0,
+        "warning_count": 1,
+        "issues": [
+            {
+                "code": "requested_window_coverage_below_98pct",
+                "severity": "warning",
+                "symbol": "AAPL",
+                "message": "AAPL has 97.0% requested-window bar coverage.",
+                "context": {"coverage_pct": 97.0},
+            }
+        ],
+    }
+
+    result = _build_backtest_result(backtest_result)
+
+    assert not any(ln.startswith("Window clamp:") for ln in result.human_lines)
+
+
 def test_backtest_absent_data_quality_reports_not_recorded():
     """A legacy run with no scanner output must not render as a clean pass (P2-21)."""
     backtest_result = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
