@@ -132,3 +132,20 @@ Scope and limits:
 4. **Live-soak guardrail unchanged.** Strategy-scoped position ledger work (ADR 0055) and supervised fleet soak are still required before treating same-symbol operation as fully verified; launch refusal reduces wash-trade and position-view risk but does not lift the soak gate alone.
 
 Helpers live in `src/milodex/strategies/paper_runner_control.py` (`evaluation_symbol_for_config`, `live_runner_eval_symbols`).
+
+## Addendum (2026-06-15) — Launch-time co-run guard removed; same-symbol co-run admitted
+
+**The 2026-06-05 launch guard above is superseded and removed.** It was a coarse proxy for three separable invariants on the single shared paper account; the concurrent-intraday-runners work closed each invariant individually, making the guard unnecessary:
+
+- **PR1 — paper submit serialization ([ADR 0056](0056-cross-process-submit-serialization-per-account-advisory-lock.md) amended).** The per-account submit lock now engages for paper too, so two simultaneous same-account fires cannot both clear an account-scoped cap on a stale snapshot. Closes the cross-process cap race deferred in the 2026-05-30 addendum (for paper; it was already closed for micro_live/live).
+- **PR2 — opposite-side resting-order veto.** The risk layer declines an intent when an open order on the same symbol rests on the opposite side, pre-empting the Alpaca wash-trade reject (`40310000`).
+- **PR3 — per-strategy cap reads the strategy ledger ([ADR 0055](0055-event-store-per-strategy-position-ledger.md) amended).** `_check_strategy_concurrent_positions` counts the strategy's own ledger lots, so a sibling's offsetting position cannot net the broker flat and hide this strategy's lot (the cap no longer fails open under same-symbol netting).
+
+With those closed, the launch-time refusal (`milodex strategy run` CLI + the bench GUI mirror `_peek_eval_symbol_collision`) and its `fleet.py` deploy pre-check are removed. **What is kept:** the per-strategy runner advisory lock (`runner_lock_name`), which still prevents the *same* strategy from double-launching. The `live_runner_eval_symbols` / `evaluation_symbol_for_config` helpers remain for read-only fleet display.
+
+The residual TOCTOU (point 3) and the soak guardrail (point 4) no longer gate co-run: the invariants are enforced in the risk/execution layers on every evaluate→submit, not at launch.
+
+**Two known same-symbol residuals remain, both fail-safe (neither corrupts positions, trips a wash reject, or overshoots a cap):**
+
+1. **Partial-fill ledger reconciliation** (`docs/RISK_POLICY.md` #5): the ledger records the *requested* quantity, not broker `filled_qty`. Guard-independent (predates this work), fails closed for the per-strategy cap, economically nil in the paper regime.
+2. **Cross-strategy duplicate-order false-veto.** `_check_duplicate_order` / `count_recent_submitted_orders` key on symbol + side + window with **no `strategy_name` predicate** — they are account-wide, despite `docs/RISK_POLICY.md` "Duplicate-Order Policy" and the `configs/risk_defaults.yaml` comment both specifying *per-strategy* ("strategy instance"). The launch guard masked this: one strategy per symbol made account-wide ≡ per-strategy. With same-symbol co-run, two *different* strategies' legitimate same-side entries on one symbol within the 60s window will have the second falsely vetoed (`duplicate_order_window`). Fail-safe (a skipped trade, not an unguarded order), but it contradicts the spec and partially defeats co-run for correlated same-side strategies. Closing it means scoping the duplicate check to the proposing strategy (durable event-store path carries `strategy_name`; the broker `recent_orders` path does not) — a relaxation of an account-wide check that must be deliberately reviewed against the "never weaken a cap for concurrency" rule, hence tracked here rather than bundled into this PR.
