@@ -356,9 +356,7 @@ def test_holder_is_live_false_for_recycled_pid() -> None:
     assert holder_is_live(recycled) is False
 
 
-def test_holder_is_live_falls_back_to_pid_existence_without_start_time(
-    monkeypatch, caplog
-) -> None:
+def test_holder_is_live_falls_back_to_pid_existence_without_start_time(monkeypatch, caplog) -> None:
     """When the platform cannot report a process start time, degrade to bare
     PID-existence — loudly. Matches the strongest pre-consolidation behavior."""
     import logging
@@ -375,9 +373,9 @@ def test_holder_is_live_falls_back_to_pid_existence_without_start_time(
     recycled = _holder(os.getpid(), datetime.fromtimestamp(0, tz=UTC))
     with caplog.at_level(logging.WARNING, logger="milodex.core.advisory_lock"):
         assert holder_is_live(recycled) is True
-    assert any(
-        "introspection unavailable" in r.message for r in caplog.records
-    ), f"expected a degraded-liveness WARNING, got {caplog.records!r}"
+    assert any("introspection unavailable" in r.message for r in caplog.records), (
+        f"expected a degraded-liveness WARNING, got {caplog.records!r}"
+    )
 
 
 def test_live_lock_holder_returns_none_when_no_lock(tmp_path) -> None:

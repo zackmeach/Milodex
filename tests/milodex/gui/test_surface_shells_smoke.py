@@ -184,7 +184,7 @@ def test_surface_base_loads_and_exposes_contract_members() -> None:
     checks = (
         "if obj.property('captureContentHeight') != 1234:\n"
         "    print(f'captureContentHeight mismatch: "
-        "{obj.property(\"captureContentHeight\")}', file=sys.stderr)\n"
+        '{obj.property("captureContentHeight")}\', file=sys.stderr)\n'
         "    sys.exit(5)\n"
         "# sessionBag default is null; property must exist (KeyError-free read).\n"
         "sb = obj.property('sessionBag')\n"

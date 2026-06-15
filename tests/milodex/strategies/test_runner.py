@@ -3102,9 +3102,7 @@ def test_hr3_same_ny_day_cycles_do_not_re_reconcile(
     # Same NY day — additional cycles must not re-reconcile
     runner.run_cycle()
     runner.run_cycle()
-    assert call_count["n"] == 1, (
-        "same-NY-day cycles must not trigger rollover re-reconciliation"
-    )
+    assert call_count["n"] == 1, "same-NY-day cycles must not trigger rollover re-reconciliation"
 
 
 def test_hr3_ny_day_rollover_triggers_exactly_one_re_reconcile(
