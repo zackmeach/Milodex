@@ -68,6 +68,15 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         default="configs",
         help="Directory containing universe manifests (default: configs).",
     )
+    fu_parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Force a full-range refetch+merge before reading back, healing "
+            "interior cache gaps that get_bars assumes are complete (e.g. a "
+            "missing year between an old backtest warm and a later runner tail)."
+        ),
+    )
 
     wt_parser = data_subparsers.add_parser(
         "warmup-tape",
@@ -177,11 +186,14 @@ def _run_fetch_universe(args: argparse.Namespace, ctx: CommandContext) -> Comman
     timeframe = TIMEFRAME_CHOICES[args.timeframe]
     provider = ctx.data_provider_factory()
 
+    mode = "force-backfilling" if getattr(args, "force", False) else "Fetching"
     print(
-        f"Fetching {len(symbols)} symbols from {start} to {end} ({args.timeframe})...",
+        f"{mode} {len(symbols)} symbols from {start} to {end} ({args.timeframe})...",
         flush=True,
     )
 
+    if getattr(args, "force", False):
+        provider.backfill_range(list(symbols), timeframe, start, end)
     bars_by_symbol = provider.get_bars(list(symbols), timeframe, start, end)
 
     return _build_fetch_universe_result(
