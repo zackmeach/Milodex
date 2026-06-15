@@ -113,6 +113,7 @@ class RiskEvaluator:
         "_check_concurrent_positions",
         "_check_strategy_concurrent_positions",
         "_check_duplicate_order",
+        "_check_opposite_side_order",
     )
 
     def evaluate(self, context: EvaluationContext) -> RiskDecision:
@@ -866,6 +867,53 @@ class RiskEvaluator:
                 )
 
         return RiskCheckResult("duplicate_order", True, "No duplicate orders detected.")
+
+    def _check_opposite_side_order(self, context: EvaluationContext) -> RiskCheckResult:
+        """Decline an intent when an OPEN order on the same symbol rests on the
+        opposite side (concurrent-intraday plan, invariant 2).
+
+        Once many strategies share one Alpaca account+symbol, one can submit a
+        BUY while a sibling's SELL still rests (or vice versa). Alpaca rejects
+        that as a wash trade (``40310000``). That broker reject is survivable —
+        caught in the execution service, recorded REJECTED, no crash — but it is
+        audit noise. The risk layer declines it first (risk disposes), keyed off
+        the **account-scoped order book** (``context.recent_orders``, already
+        fetched for the duplicate-order veto — no new broker call). The order
+        book is the only source that can see a *resting* (unfilled) order: the
+        per-strategy ``trades`` ledger folds filled/submitted lots and carries no
+        order-level attribution.
+
+        Only OPEN orders rest (``Order.is_open`` → PENDING / PARTIALLY_FILLED).
+        A FILLED order is already a position; a CANCELLED / REJECTED one is gone.
+
+        The veto is symmetric: it can transiently decline an exit SELL while a
+        sibling's BUY rests (or vice versa). In the Phase-1 market-only regime
+        (ADR 0013) a resting order is momentary — the next runner cycle
+        re-fetches ``recent_orders`` and the exit clears — so no strategy is
+        trapped. If a future phase admits resting limit orders, this could delay
+        an exit until the contra order resolves; the fix then is an
+        exposure-reducing exemption on the *incoming* side (mirroring
+        ``_check_reconciliation_readiness``). ponytail: market-only ceiling.
+        """
+        symbol = context.intent.normalized_symbol()
+        side = context.intent.side
+        for order in context.recent_orders:
+            if order.is_open and order.symbol.upper() == symbol and order.side != side:
+                return RiskCheckResult(
+                    name="opposite_side_order",
+                    passed=False,
+                    message=(
+                        f"An open {order.side.value} order on {symbol} rests while a "
+                        f"{side.value} order is being evaluated; submitting it would trip a "
+                        "wash-trade reject (40310000)."
+                    ),
+                    reason_code="opposite_side_order_open",
+                )
+        return RiskCheckResult(
+            "opposite_side_order",
+            True,
+            "No opposite-side resting order on this symbol.",
+        )
 
     def _effective_daily_loss_pct(self, context: EvaluationContext) -> float:
         if context.strategy_config is None:
