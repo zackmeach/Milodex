@@ -98,7 +98,13 @@ No code in this ADR — prose sequence only:
 
 - **Risk evaluator and [`attribution.py`](../../src/milodex/risk/attribution.py) public contracts remain stable**; new helpers extend the module. No schema migration ([ADR 0029 Decision 8](0029-per-strategy-position-attribution-at-risk-layer.md)).
 
-- **[ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) and [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md) are extended, not superseded.** Account caps count broker positions; per-strategy caps count attributed broker positions; runner logic counts strategy-ledger positions.
+- **[ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) and [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md) are extended, not superseded.** Account caps count broker positions; per-strategy caps count attributed broker positions; runner logic counts strategy-ledger positions. *(Amended 2026-06-15 — see [Amendment](#amendment-2026-06-15--per-strategy-cap-reads-the-strategy-ledger) below.)*
+
+## Amendment (2026-06-15) — per-strategy cap reads the strategy ledger
+
+This ADR left a gap it named but did not close: the per-strategy concurrent-positions cap (`_check_strategy_concurrent_positions`, [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md)) still enumerated **broker-net** `context.positions` and re-attributed each symbol. When a sibling's offsetting position nets the broker flat for a symbol this strategy holds — the exact 2026-06-03 case in the Context above (rsi2 +13 / vwap_trend −13 → account flat) — the symbol never enters the broker-net enumeration, the strategy's own lot is invisible, and the cap **fails open** (undercounts). The runner's `_current_positions()` was already fixed to read the strategy ledger; the risk cap was not, so the two disagreed.
+
+The concurrent-intraday-runners work (2026-06-15, PR3) closes it: on the **live/paper path** `_check_strategy_concurrent_positions` now derives the owned set from `strategy_positions(proposing_strategy, event_store)` — the same strategy-scoped ledger the runner trusts. The cap and the runner now agree on what a strategy holds, independent of broker netting. The **backtest path** (ADR 0030 `is_backtest`) is unchanged: a single-strategy replay has no sibling netting, and `strategy_positions` is paper-source-only, so it keeps the broker-net + `attribute_position(source="backtest")` reconstruction. So the consequence line above now reads: per-strategy caps count **strategy-ledger** positions on the live/paper path (attributed broker positions only in backtest).
 
 - **Interim guardrail:** multiple strategies on the same symbol and same account remain forbidden until implementation + soak verification. Acceptance of this ADR alone does not authorize lifting the ban.
 

@@ -1449,7 +1449,11 @@ def _attrib_store(tmp_path, *, attributions: dict[str, str]):
                 strategy_stage="paper",
                 strategy_config_path=None,
                 submitted_by=("operator" if strategy_name is None else "strategy_runner"),
-                broker_order_id="broker-1",
+                # Unique per row: the strategy-scoped ledger (strategy_positions)
+                # dedupes by broker_order_id, so a shared id would collapse a
+                # multi-symbol strategy to a single lot. attribute_position keys
+                # off symbol and is unaffected either way.
+                broker_order_id=f"broker-{idx}",
                 broker_status=None,
                 message=None,
             )
@@ -1804,6 +1808,87 @@ def test_regime_can_enter_when_meanrev_holds_unrelated_positions(tmp_path):
     )
     assert "max_strategy_positions_exceeded" not in decision.reason_codes
     assert "max_concurrent_positions_exceeded" not in decision.reason_codes
+
+
+# --- per-strategy cap counts the strategy's OWN lots (concurrent-intraday PR3) ---
+#
+# The pre-PR3 check enumerated broker-net ``context.positions``, then attributed
+# each symbol. When a sibling's offsetting position nets the broker flat for a
+# symbol this strategy holds (ADR 0055: rsi2 +13 / vwap_trend -13 -> account
+# flat), the symbol never enters the enumeration -> the strategy's own lot is
+# invisible -> the cap undercounts and FAILS OPEN. PR3 derives the owned set
+# from the strategy-scoped ledger (``strategy_positions``), the same source the
+# runner already trusts (runner.py ``_current_positions``).
+
+
+def test_strategy_concurrent_positions_counts_own_lot_when_broker_net_flat(tmp_path):
+    """Strategy owns SPY in its own ledger, but a sibling has netted the broker
+    flat (``positions=[]``). The per-strategy cap must still see the SPY lot and
+    block a BUY on a new symbol — not fail open.
+
+    Non-vacuous: the pre-PR3 broker-net enumeration sees no SPY (net flat) ->
+    owned 0 -> BUY AAPL projects 1 <= cap 1 -> ALLOWS. PR3 sees the ledger SPY
+    lot -> owned 1 -> projects 2 > 1 -> BLOCKS.
+    """
+    store = _attrib_store(tmp_path, attributions={"SPY": "rsi2"})
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="AAPL",
+            side=OrderSide.BUY,
+            positions=[],  # broker net flat — sibling offset rsi2's lot at the account
+            request_strategy_name="rsi2",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is False
+    assert result.reason_code == "max_strategy_positions_exceeded"
+
+
+def test_strategy_concurrent_positions_blocks_at_ledger_cap_when_net_flat(tmp_path):
+    """Two ledger lots (SPY, AAPL), broker net flat, cap 2, BUY a third symbol ->
+    projected 3 > 2 -> BLOCK. Exercises owned=2 read purely from the strategy
+    ledger (requires the fixture's per-row broker_order_id to be unique)."""
+    store = _attrib_store(tmp_path, attributions={"SPY": "rsi2", "AAPL": "rsi2"})
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="MSFT",
+            side=OrderSide.BUY,
+            positions=[],  # broker net flat
+            request_strategy_name="rsi2",
+            event_store=store,
+            expected_max_positions=2,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    result = check_result(decision, "strategy_concurrent_positions")
+    assert result.passed is False
+    assert result.reason_code == "max_strategy_positions_exceeded"
+
+
+def test_strategy_concurrent_positions_adding_to_held_ledger_lot_adds_no_slot(tmp_path):
+    """Buying MORE of a symbol the strategy already holds (per its ledger) adds
+    no slot, even when broker net is flat. Guards against the PR3 implementation
+    double-counting a held symbol: owned 1 + BUY SPY (already held) -> projected
+    1 <= cap 1 -> PASS (a missing 'already-owned' guard would project 2 > 1)."""
+    store = _attrib_store(tmp_path, attributions={"SPY": "rsi2"})
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=[],  # broker net flat
+            request_strategy_name="rsi2",
+            event_store=store,
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+    assert check_result(decision, "strategy_concurrent_positions").passed is True
 
 
 # --- _check_data_staleness fail-closed -------------------------------------
