@@ -412,8 +412,7 @@ class StrategyRunner:
                 self._broker.cancel_all_orders()
             except Exception:  # noqa: BLE001
                 logger.warning(
-                    "Kill-switch shutdown: cancel_all_orders failed; "
-                    "activating the switch anyway.",
+                    "Kill-switch shutdown: cancel_all_orders failed; activating the switch anyway.",
                     exc_info=True,
                 )
             self._execution_service.trigger_kill_switch("Operator requested kill switch.")

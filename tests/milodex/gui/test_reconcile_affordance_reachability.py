@@ -135,9 +135,9 @@ class TestBridgeSlotWiring:
             "BenchCommandBridge must declare reconciliationCompleted"
         )
         # PySide6 signals are instances of Signal descriptor on the class.
-        assert isinstance(
-            BenchCommandBridge.__dict__.get("reconciliationCompleted"), Signal
-        ), "BenchCommandBridge.reconciliationCompleted must be a PySide6 Signal"
+        assert isinstance(BenchCommandBridge.__dict__.get("reconciliationCompleted"), Signal), (
+            "BenchCommandBridge.reconciliationCompleted must be a PySide6 Signal"
+        )
 
     def test_run_reconciliation_async_is_callable(self) -> None:
         """BenchCommandFacade.run_reconciliation_now must exist and be callable."""

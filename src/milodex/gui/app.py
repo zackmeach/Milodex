@@ -516,9 +516,7 @@ def run_app() -> int:
     # explicitly OUTSIDE the lifecycle filter (here via the controller's
     # quitRequested, and via aboutToQuit below) so an in-flight async backtest
     # submit is not abandoned mid-event-store-write on quit.
-    app_controller = _make_app_controller(
-        lifecycle_models, extra_drainables=[bench_command_bridge]
-    )
+    app_controller = _make_app_controller(lifecycle_models, extra_drainables=[bench_command_bridge])
     engine.rootContext().setContextProperty("AppController", app_controller)
 
     # --- 5. QML import path ---------------------------------------------------
