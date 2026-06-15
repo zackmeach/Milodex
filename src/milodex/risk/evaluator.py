@@ -696,15 +696,20 @@ class RiskEvaluator:
         )
 
     def _check_strategy_concurrent_positions(self, context: EvaluationContext) -> RiskCheckResult:
-        """Per-strategy concurrent-positions cap (ADR 0029).
+        """Per-strategy concurrent-positions cap (ADR 0029 / ADR 0055).
 
-        Counts current broker positions whose attribution (reconstructed
-        from the durable ``trades`` history per
-        :func:`milodex.risk.attribution.attribute_position`) matches the
-        proposing strategy, projects the post-trade count using the same
-        rules as :meth:`_check_concurrent_positions`, and refuses when
-        the projected count would exceed the strategy's own declared
-        cap.
+        Counts the symbols this strategy currently holds, projects the
+        post-trade count using the same rules as
+        :meth:`_check_concurrent_positions`, and refuses when the
+        projected count would exceed the strategy's own declared cap.
+
+        The owned set comes from the strategy-scoped submitted-fill ledger
+        (:func:`milodex.risk.attribution.strategy_positions`) on the
+        live/paper path — the same source the runner trusts — so a
+        sibling's offsetting position that nets the broker flat (ADR 0055)
+        cannot hide this strategy's lot and fail the cap open. The backtest
+        path (ADR 0030 ``is_backtest``) keeps the broker-net +
+        :func:`milodex.risk.attribution.attribute_position` reconstruction.
 
         Reads ``context.expected_max_positions`` directly per ADR 0029
         Decision 6 — the per-strategy cap is an independent ceiling and
@@ -748,51 +753,55 @@ class RiskEvaluator:
                 "Operator-attributed trade has no per-strategy cap.",
             )
 
-        # Lazy import keeps this module importable without circular issues.
-        from milodex.risk.attribution import attribute_position
+        # The owned set — symbols this strategy currently holds, with quantities.
+        #
+        # Live/paper: read the strategy's OWN submitted-fill ledger
+        # (``strategy_positions``), NOT broker-net ``context.positions``. When a
+        # sibling's offsetting position nets the broker flat for a symbol this
+        # strategy holds (ADR 0055: rsi2 +13 / vwap_trend −13 → account flat), a
+        # broker-net enumeration never sees the symbol and the cap undercounts —
+        # failing OPEN. The ledger is the same source the runner already trusts
+        # (``runner.py`` ``_current_positions`` → ``strategy_positions``), so the
+        # cap and the runner now agree on what the strategy holds.
+        #
+        # Backtest (ADR 0030 ``is_backtest``): a single-strategy replay has no
+        # sibling netting, and ``strategy_positions`` is paper-source-only, so
+        # keep the broker-net + ``attribute_position(source="backtest")`` path —
+        # its positions were opened by source='backtest' fills (R-P0-1).
+        #
+        # Lazy imports keep this module importable without circular issues.
+        if context.is_backtest:
+            from milodex.risk.attribution import attribute_position
 
-        # Attribution must walk the same trade universe that opened the
-        # positions under evaluation: backtest contexts (ADR 0030
-        # ``is_backtest``) opened theirs with source='backtest' fills,
-        # live contexts with source='paper'. R-P0-1 scoped the walk by
-        # source, making the two universes mutually invisible.
-        attribution_source = "backtest" if context.is_backtest else "paper"
-
-        existing_symbols = {
-            position.symbol.upper() for position in context.positions if position.quantity > 0
-        }
-        owned = 0
-        for symbol in existing_symbols:
-            owner = attribute_position(
-                symbol=symbol, event_store=context.event_store, source=attribution_source
-            )
-            if owner == proposing_strategy:
-                owned += 1
-
-        symbol = context.intent.normalized_symbol()
-        projected_count = owned
-        if context.intent.side == OrderSide.BUY:
-            # An entry adds 1 only if the strategy doesn't already hold
-            # the symbol (mirrors _check_concurrent_positions). Whether
-            # the strategy *currently* holds the symbol is determined by
-            # attribution: strategy A buying more of a symbol it owns
-            # adds zero slots; strategy B buying a symbol that strategy
-            # A holds adds 1 (under per-strategy semantics).
-            currently_owned_by_strategy = (
-                symbol in existing_symbols
+            owned_quantities = {
+                position.symbol.upper(): position.quantity
+                for position in context.positions
+                if position.quantity > 0
                 and attribute_position(
-                    symbol=symbol, event_store=context.event_store, source=attribution_source
+                    symbol=position.symbol.upper(),
+                    event_store=context.event_store,
+                    source="backtest",
                 )
                 == proposing_strategy
-            )
-            if not currently_owned_by_strategy:
+            }
+        else:
+            from milodex.risk.attribution import strategy_positions
+
+            owned_quantities = strategy_positions(proposing_strategy, context.event_store)
+
+        owned_symbols = set(owned_quantities)
+        symbol = context.intent.normalized_symbol()
+        projected_count = len(owned_symbols)
+        if context.intent.side == OrderSide.BUY:
+            # An entry adds a slot only if the strategy doesn't already hold the
+            # symbol (mirrors _check_concurrent_positions). Buying more of a
+            # held symbol adds zero slots.
+            if symbol not in owned_symbols:
                 projected_count += 1
-        elif context.intent.side == OrderSide.SELL and symbol in existing_symbols:
-            position = next(pos for pos in context.positions if pos.symbol.upper() == symbol)
-            owner = attribute_position(
-                symbol=symbol, event_store=context.event_store, source=attribution_source
-            )
-            if owner == proposing_strategy and context.intent.quantity >= position.quantity:
+        elif context.intent.side == OrderSide.SELL and symbol in owned_symbols:
+            # A full exit of the strategy's own lot frees its slot. Sized against
+            # the strategy's ledger quantity, not broker-net.
+            if context.intent.quantity >= owned_quantities[symbol]:
                 projected_count -= 1
 
         cap = context.expected_max_positions

@@ -2,6 +2,7 @@
 
 **Status:** Accepted · 2026-05-06
 **Implementation update (2026-05):** Backtests now expose explicit risk-policy modes. The default `RiskPolicy.BYPASS` mode preserves this ADR's original raw-research behavior with `NullRiskEvaluator`; opt-in `RiskPolicy.ENFORCE` applies backtest structural sizing and exposure checks.
+**Amendment (2026-06-15):** On the live/paper path the per-strategy cap (`_check_strategy_concurrent_positions`) now reads the strategy-scoped ledger (`strategy_positions`) instead of re-attributing broker-net positions, closing a sibling-netting fail-open. The `attribute_position` reconstruction described below remains the backtest path. See the [ADR 0055 amendment](0055-event-store-per-strategy-position-ledger.md#amendment-2026-06-15--per-strategy-cap-reads-the-strategy-ledger).
 **Related:** [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) (extended, not superseded), [ADR 0028](0028-phase-4-scope-closes-as-cleanup-and-attribution.md) (authorizes this work), [PHASE2_PLANNING.md §3.2 CS-1](../PHASE2_PLANNING.md), [ADR 0022](0022-strategy-rotation-scope-is-the-declared-universe.md) (intent-side discipline that complements this execution-side discipline), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (concurrency model this enables), [ADR 0011](0011-sqlite-event-store.md) (the source of truth for attribution data), [ADR 0008](0008-risk-layer-veto-architecture.md) ("strategy proposes, risk disposes"), [CLAUDE.md](../../CLAUDE.md) "Risk layer is sacred"
 
 ## Context
