@@ -135,6 +135,7 @@ def _build_backtest_result(result: BacktestResult, *, min_trade_count: int = 30)
         f"Slippage:       {result.slippage_pct * 100:.2f}%",
         f"Commission:     {format_money(result.commission_per_trade)}/trade",
     ]
+    _insert_window_clamp_line(lines, result.data_quality)
     data: dict[str, Any] = {
         "run_id": result.run_id,
         "strategy_id": result.strategy_id,
@@ -213,6 +214,7 @@ def _build_walk_forward_result(
         f"  Negative windows: {stability.windows_negative} / {len(result.windows)}",
         f"  Single-window dependency: {'YES' if stability.single_window_dependency else 'no'}",
     ]
+    _insert_window_clamp_line(lines, result.data_quality)
     if result.windows:
         lines.append("")
         lines.append("Per-window OOS results:")
@@ -356,6 +358,57 @@ def _data_quality_label(data_quality: dict | None) -> str:
     if status == "pass_with_warnings":
         return f"pass with warnings ({warning_count} warning(s))"
     return status.replace("_", " ")
+
+
+def _window_clamp_line(data_quality: dict | None) -> str | None:
+    """Surface a clamped backtest window legibly in the human output.
+
+    The bar-quality scanner already flags ``requested_window_starts_after_requested_start``
+    per symbol (a WARNING, rides in ``data_quality["issues"]``), but the default surface
+    only shows an opaque warning *count* ("N warning(s)"). A clamped window silently
+    shortens the evidence the backtest reports — the most consequential warning category
+    for a research-honesty system — so name it: actual data start vs requested start.
+    Returns ``None`` when the window was not clamped. JSON callers already carry the full
+    per-symbol detail under ``data_quality``.
+    """
+    payload = _data_quality_payload(data_quality)
+    clamp_issues = [
+        issue
+        for issue in payload.get("issues", [])
+        if issue.get("code") == "requested_window_starts_after_requested_start"
+    ]
+    first_bar_dates = [
+        issue["context"]["first_bar_date"]
+        for issue in clamp_issues
+        if isinstance(issue.get("context"), dict) and issue["context"].get("first_bar_date")
+    ]
+    if not first_bar_dates:
+        return None
+    actual_start = min(first_bar_dates)
+    requested_start = next(
+        (
+            issue["context"]["requested_start"]
+            for issue in clamp_issues
+            if isinstance(issue.get("context"), dict) and issue["context"].get("requested_start")
+        ),
+        None,
+    )
+    requested_part = f" (requested {requested_start})" if requested_start else ""
+    return (
+        f"Window clamp:   data begins {actual_start}{requested_part}; "
+        f"{len(clamp_issues)} symbol(s) start late; results reflect the shorter window."
+    )
+
+
+def _insert_window_clamp_line(lines: list[str], data_quality: dict | None) -> None:
+    """Insert the window-clamp line right after the 'Data quality:' line, if clamped."""
+    clamp = _window_clamp_line(data_quality)
+    if clamp is None:
+        return
+    dq_index = next(
+        (i for i, line in enumerate(lines) if line.startswith("Data quality:")), len(lines) - 1
+    )
+    lines.insert(dq_index + 1, clamp)
 
 
 def _run_manifest_payload(run_manifest: dict | None) -> dict[str, Any]:
