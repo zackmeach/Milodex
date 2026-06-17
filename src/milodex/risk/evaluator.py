@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 from milodex.broker.models import OrderSide, OrderStatus
 from milodex.risk.config import RiskDefaults
 from milodex.risk.disable_conditions import effective_disable_conditions
-from milodex.risk.exposure import is_exposure_increasing
+from milodex.risk.exposure import exposure_increasing_notional, is_exposure_increasing
 from milodex.risk.models import ReconciliationReadiness, RiskCheckResult, RiskDecision
 
 if TYPE_CHECKING:
@@ -637,7 +637,16 @@ class RiskEvaluator:
         if context.intent.side == OrderSide.BUY:
             projected_exposure = current_exposure + delta
         else:
-            projected_exposure = max(0.0, current_exposure - delta)
+            # A naked short or sell-beyond-held INCREASES exposure; only the
+            # portion covered by a held long genuinely nets down (A-6). Without
+            # this split a short read as benign long-side notional and slipped
+            # past the cap. exposure_increasing_notional shares is_exposure_
+            # increasing's held-qty logic, so all three caps agree on direction.
+            increasing = exposure_increasing_notional(
+                context.intent, context.request, context.positions
+            )
+            reducing = delta - increasing  # the covered portion that truly nets down
+            projected_exposure = max(0.0, current_exposure - reducing) + increasing
         max_exposure = (
             context.account.portfolio_value * context.risk_defaults.max_total_exposure_pct
         )
@@ -970,7 +979,13 @@ class RiskEvaluator:
         delta = context.request.estimated_order_value
         if context.intent.side == OrderSide.BUY:
             return current + delta
-        return max(0.0, current - delta)
+        # Mirror _check_total_exposure: a naked/over-held short adds its excess
+        # leg rather than netting the whole order off the held value (A-6).
+        increasing = exposure_increasing_notional(
+            context.intent, context.request, context.positions
+        )
+        reducing = delta - increasing
+        return max(0.0, current - reducing) + increasing
 
 
 def _fmt_money(value: float) -> str:
