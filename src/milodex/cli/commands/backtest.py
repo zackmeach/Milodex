@@ -83,6 +83,8 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     end = parse_iso_date(args.end)
     if end < start:
         raise ValueError("--end must be on or after --start.")
+    if args.slippage is not None and not (0.0 <= args.slippage <= 0.10):
+        raise ValueError("--slippage must be a fraction in [0.0, 0.10] (e.g. 0.001 = 0.1%).")
     engine_kwargs: dict[str, Any] = {"initial_equity": args.initial_equity}
     if args.slippage is not None:
         engine_kwargs["slippage_pct"] = args.slippage
@@ -426,7 +428,12 @@ def _min_trade_count_from_engine(engine) -> int:
     loaded = getattr(engine, "_loaded", None)
     config = getattr(loaded, "config", None)
     backtest = getattr(config, "backtest", {}) or {}
-    return int(backtest.get("min_trades_required", _STATISTICAL_MIN_TRADES))
+    # `.get(k, default)` returns None (not the default) for a present-but-null key;
+    # the regime config sets `min_trades_required: null` (R-PRM-004 exemption).
+    configured = backtest.get("min_trades_required")
+    if configured is None:
+        return _STATISTICAL_MIN_TRADES
+    return int(configured)
 
 
 def _strategy_family(strategy_id: str) -> str:

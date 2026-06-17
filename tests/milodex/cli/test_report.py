@@ -102,6 +102,7 @@ def _append_explanation(
     risk_allowed: bool = True,
     reason_codes: list[str] | None = None,
     latest_bar_timestamp: datetime | None = None,
+    backtest_run_id: int | None = None,
 ) -> int:
     return event_store.append_explanation(
         ExplanationEvent(
@@ -130,6 +131,7 @@ def _append_explanation(
             reason_codes=reason_codes or [],
             risk_checks=[],
             context={},
+            backtest_run_id=backtest_run_id,
         )
     )
 
@@ -556,6 +558,51 @@ def test_report_daily_honors_date_override(tmp_path: Path) -> None:
     assert payload["data"]["date"] == "2026-01-15"
     assert len(payload["data"]["trades_today"]) == 1
     assert len(payload["data"]["explanations_today"]) == 1
+
+
+def test_report_daily_excludes_backtest_rows(tmp_path: Path) -> None:
+    """`report daily` counts only live operational activity, not backtest-engine rows
+    (D-2). A backtest trade AND explanation dated today are excluded even though they
+    share the date with a live row — the date filter alone is insufficient."""
+    event_store = EventStore(tmp_path / "milodex.db")
+    target = datetime(2026, 1, 15, 14, 30, tzinfo=UTC)
+
+    bt_id = event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="bt-contam",
+            strategy_id="meanrev.v1",
+            config_path="configs/test.yaml",
+            config_hash="fp-bt",
+            start_date=target,
+            end_date=target,
+            started_at=target,
+            status="running",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"initial_equity": 100_000.0},
+        )
+    )
+    bt_exp = _append_explanation(
+        event_store, strategy_name="meanrev.v1", when=target, backtest_run_id=bt_id
+    )
+    _append_trade(
+        event_store,
+        explanation_id=bt_exp,
+        when=target,
+        source="backtest",
+        backtest_run_id=bt_id,
+        strategy_name="meanrev.v1",
+    )
+
+    # A live paper trade + explanation dated the same day.
+    live_exp = _append_explanation(event_store, strategy_name="spy_shy_regime", when=target)
+    _append_trade(event_store, explanation_id=live_exp, when=target, strategy_name="spy_shy_regime")
+
+    exit_code, out, _ = _run(["report", "daily", "--date", "2026-01-15", "--json"], tmp_path)
+    assert exit_code == 0
+    data = json.loads(out.getvalue())["data"]
+    assert len(data["trades_today"]) == 1  # backtest trade excluded
+    assert len(data["explanations_today"]) == 1  # backtest explanation excluded
 
 
 # ---------------------------------------------------------------------------
