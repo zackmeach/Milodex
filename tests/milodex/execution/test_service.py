@@ -1632,6 +1632,66 @@ def _build_service_with_store(
     return service, broker, event_store
 
 
+def test_record_execution_reconciles_quantity_to_broker_filled_qty(
+    tmp_path, risk_defaults_file, latest_bar, sample_account
+):
+    """When the broker reports a synchronous fill, the trade row records the
+    ACTUAL filled quantity and value, not the requested quantity.
+
+    Partial-fill ledger reconciliation: the recorded ``quantity`` drove the
+    strategy-scoped ledger (``strategy_positions``) off the *requested* amount,
+    so a partial fill mis-stated the position. The synchronous path (backtest /
+    instant-fill brokers / synchronously-reported partial fills) now records
+    ``filled_quantity``. Mirrors the pre-existing fill-price reconciliation.
+    """
+    partial_fill = Order(
+        id="order-partial-1",
+        symbol="SPY",
+        side=OrderSide.BUY,
+        order_type=OrderType.MARKET,
+        quantity=5.0,  # requested
+        time_in_force=TimeInForce.DAY,
+        status=OrderStatus.FILLED,
+        submitted_at=datetime.now(tz=UTC),
+        filled_quantity=3.0,  # broker actually filled 3
+        filled_avg_price=100.0,
+        filled_at=datetime.now(tz=UTC),
+    )
+    service, _broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, partial_fill
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    trades = event_store.list_trades()
+    assert len(trades) == 1
+    assert trades[0].quantity == 3.0  # filled, not requested 5
+    assert trades[0].estimated_order_value == 300.0  # 3 x 100, not 5 x 100
+    assert trades[0].estimated_unit_price == 100.0
+
+
+def test_record_execution_keeps_requested_quantity_when_no_synchronous_fill(
+    tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+):
+    """Async path (Alpaca paper): submit returns PENDING with no fill info, so
+    the optimistic trade row keeps the requested quantity (the fill is unknown
+    at record time; reconciliation corrects it later)."""
+    service, _broker, event_store = _build_service_with_store(
+        tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+    )
+
+    service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    trades = event_store.list_trades()
+    assert len(trades) == 1
+    assert trades[0].quantity == 5.0  # requested preserved (submitted_order is PENDING, no fill)
+
+
 def test_submit_paper_attempt_lifecycle_happy_path(
     tmp_path,
     risk_defaults_file,
