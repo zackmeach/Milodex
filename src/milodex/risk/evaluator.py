@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
-from milodex.broker.models import OrderSide, OrderStatus
+from milodex.broker.models import OrderSide
 from milodex.risk.config import RiskDefaults
 from milodex.risk.disable_conditions import effective_disable_conditions
 from milodex.risk.exposure import exposure_increasing_notional, is_exposure_increasing
@@ -831,59 +831,62 @@ class RiskEvaluator:
         )
 
     def _check_duplicate_order(self, context: EvaluationContext) -> RiskCheckResult:
+        """Per-strategy duplicate-order veto (RISK_POLICY "Duplicate-Order Policy").
+
+        A duplicate is the *same strategy's* recent same-side order on the same
+        symbol. The broker ``recent_orders`` fetch is account-scoped and carries
+        no strategy tag (Alpaca has no strategy concept; ``client_order_id`` is a
+        uuid), so it cannot be scoped per-strategy — and an account-wide match
+        would false-veto a *different* strategy's legitimate same-symbol entry
+        under same-symbol co-run (the bug the launch guard used to mask;
+        concurrent-intraday PR5). The durable event-store history is the
+        authoritative, untruncated, strategy-attributed source: every Milodex
+        submit writes an ``execution_attempts`` row BEFORE the broker call and a
+        ``trades`` row after, so a strategy's own in-flight order is always
+        durably visible — the broker path adds nothing for this strategy's own
+        orders, only the cross-strategy false-veto. We therefore rely solely on
+        the durable query, scoped to the proposing strategy (``None`` = operator,
+        which scopes to operator-attributed rows).
+
+        No event store (legacy / non-service callers) → skip, consistent with
+        the per-strategy cap. If the query errors, FAIL CLOSED: a dedup veto that
+        cannot verify must block, not silently allow.
+        """
+        if context.event_store is None:
+            return RiskCheckResult(
+                "duplicate_order",
+                True,
+                "No event store available; skipping duplicate-order check.",
+            )
         window = timedelta(seconds=context.risk_defaults.duplicate_order_window_seconds)
         now = datetime.now(tz=UTC)
-        duplicates = [
-            order
-            for order in context.recent_orders
-            if order.symbol.upper() == context.intent.normalized_symbol()
-            and order.side == context.intent.side
-            and order.status not in {OrderStatus.CANCELLED, OrderStatus.REJECTED}
-            and now - order.submitted_at <= window
-        ]
-        if duplicates:
+        try:
+            durable_matches = context.event_store.count_recent_submitted_orders(
+                symbol=context.intent.normalized_symbol(),
+                side=context.intent.side.value,
+                since=now - window,
+                strategy_name=context.request.strategy_name,
+            )
+        except Exception:
             return RiskCheckResult(
                 name="duplicate_order",
                 passed=False,
-                message="Recent matching order found within duplicate-order window.",
+                message=(
+                    "Duplicate-order history query failed; failing closed "
+                    "(cannot verify the order is not a duplicate)."
+                ),
                 reason_code="duplicate_order_window",
             )
-
-        # Durable backstop: ``context.recent_orders`` is truncated at the
-        # broker's limit=100 fetch, so with >100 orders inside the window
-        # the matching prior order is silently dropped — precisely when
-        # order volume is high. The event store is the authoritative,
-        # untruncated trade history. Query it for the same symbol/side
-        # within the same window. If the query errors, FAIL CLOSED: a
-        # dedup veto that cannot verify must block, not silently allow.
-        if context.event_store is not None:
-            try:
-                durable_matches = context.event_store.count_recent_submitted_orders(
-                    symbol=context.intent.normalized_symbol(),
-                    side=context.intent.side.value,
-                    since=now - window,
-                )
-            except Exception:
-                return RiskCheckResult(
-                    name="duplicate_order",
-                    passed=False,
-                    message=(
-                        "Duplicate-order history query failed; failing closed "
-                        "(cannot verify the order is not a duplicate)."
-                    ),
-                    reason_code="duplicate_order_window",
-                )
-            if durable_matches > 0:
-                return RiskCheckResult(
-                    name="duplicate_order",
-                    passed=False,
-                    message=(
-                        "Recent matching order found in durable history within "
-                        "duplicate-order window."
-                    ),
-                    reason_code="duplicate_order_window",
-                )
-
+        if durable_matches > 0:
+            return RiskCheckResult(
+                name="duplicate_order",
+                passed=False,
+                message=(
+                    "Recent matching order for this strategy found in durable "
+                    "history within duplicate-order window."
+                ),
+                reason_code="duplicate_order_window",
+            )
         return RiskCheckResult("duplicate_order", True, "No duplicate orders detected.")
 
     def _check_opposite_side_order(self, context: EvaluationContext) -> RiskCheckResult:

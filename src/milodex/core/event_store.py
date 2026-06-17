@@ -361,6 +361,17 @@ than producing surprising read results downstream.
 """
 
 
+_UNSCOPED_STRATEGY = object()
+"""Sentinel for :meth:`EventStore.count_recent_submitted_orders` ``strategy_name``.
+
+Distinguishes "no strategy predicate — count account-wide" (the default) from
+``strategy_name=None`` ("scope to operator-attributed rows, ``strategy_name IS
+NULL``"). The duplicate-order veto passes the proposing strategy so the count is
+per-strategy (concurrent-intraday PR5); other callers may omit it for the
+account-wide mechanics.
+"""
+
+
 class EventStore:
     """Append-only SQLite event store with forward-only migrations."""
 
@@ -1078,6 +1089,7 @@ class EventStore:
         symbol: str,
         side: str,
         since: datetime,
+        strategy_name: str | None | object = _UNSCOPED_STRATEGY,
     ) -> int:
         """Count submitted trade rows for ``symbol``/``side`` since ``since``.
 
@@ -1127,16 +1139,38 @@ class EventStore:
         normalized_symbol = symbol.strip().upper()
         normalized_side = side.strip().lower()
         since_utc = since.astimezone(UTC) if since.tzinfo else since.replace(tzinfo=UTC)
+        params: dict[str, object] = {
+            "symbol": normalized_symbol,
+            "side": normalized_side,
+            "since": since_utc.isoformat(),
+        }
+        # Strategy scoping (PR5): the duplicate-order veto is per-strategy
+        # (RISK_POLICY "Duplicate-Order Policy"). The proposing strategy is
+        # passed through so two *different* strategies' legitimate same-side
+        # entries on one symbol do not false-veto each other under same-symbol
+        # co-run. The clauses are fixed SQL literals (no interpolated user
+        # data); the strategy value is bound. Default (sentinel) = no predicate,
+        # the account-wide mechanics retained for other callers.
+        if strategy_name is _UNSCOPED_STRATEGY:
+            trades_clause = ""
+            attempts_clause = ""
+        elif strategy_name is None:
+            trades_clause = " AND strategy_name IS NULL"
+            attempts_clause = " AND a.strategy_name IS NULL"
+        else:
+            trades_clause = " AND strategy_name = :strategy_name"
+            attempts_clause = " AND a.strategy_name = :strategy_name"
+            params["strategy_name"] = strategy_name
         with self._connect() as connection:
             row = connection.execute(
-                """
+                f"""
                 SELECT
                     (
                         SELECT COUNT(*)
                         FROM trades
                         WHERE symbol = :symbol AND status = 'submitted' AND source = 'paper'
                           AND lower(side) = :side
-                          AND datetime(recorded_at) >= datetime(:since)
+                          AND datetime(recorded_at) >= datetime(:since){trades_clause}
                     )
                     +
                     (
@@ -1144,7 +1178,7 @@ class EventStore:
                         FROM execution_attempts a
                         WHERE a.symbol = :symbol AND lower(a.side) = :side
                           AND a.status IN ('pending', 'submitted', 'error')
-                          AND datetime(a.created_at) >= datetime(:since)
+                          AND datetime(a.created_at) >= datetime(:since){attempts_clause}
                           AND (
                               a.broker_order_id IS NULL
                               OR NOT EXISTS (
@@ -1155,11 +1189,7 @@ class EventStore:
                           )
                     )
                 """,
-                {
-                    "symbol": normalized_symbol,
-                    "side": normalized_side,
-                    "since": since_utc.isoformat(),
-                },
+                params,
             ).fetchone()
         return int(row[0])
 
