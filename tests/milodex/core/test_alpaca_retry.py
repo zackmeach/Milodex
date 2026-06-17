@@ -10,7 +10,7 @@ import pytest
 import requests
 from alpaca.common.exceptions import APIError
 
-from milodex.core._alpaca_retry import call_with_retry_on_429
+from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
 
 
 def _make_429_api_error() -> APIError:
@@ -142,6 +142,70 @@ class TestCallWithRetryOn429:
         with patch("time.sleep"):
             with pytest.raises(APIError) as exc_info:
                 call_with_retry_on_429(call)
+
+        assert exc_info.value is err
+        assert call.call_count == 1
+
+
+class TestCallWithRetryOnTransient:
+    """Read-only-call helper: retries 429 AND transient read/connect timeouts.
+
+    submit_order deliberately stays on call_with_retry_on_429 (an ambiguous
+    write timeout must not be blindly retried), so these tests pin the
+    read-path resilience added after the 2026-06-17 co-run soak crashed three
+    runners on an unhandled Alpaca ReadTimeout.
+    """
+
+    def test_retries_on_read_timeout_then_succeeds(self):
+        err = requests.exceptions.ReadTimeout("read timed out")
+        call = MagicMock(side_effect=[err, err, "ok"])
+
+        with patch("time.sleep"):
+            result = call_with_retry_on_transient(call)
+
+        assert result == "ok"
+        assert call.call_count == 3
+
+    def test_exhausts_on_persistent_timeout_and_reraises(self):
+        err = requests.exceptions.ReadTimeout("read timed out")
+        call = MagicMock(side_effect=err)
+
+        with patch("time.sleep"):
+            with pytest.raises(requests.exceptions.ReadTimeout) as exc_info:
+                call_with_retry_on_transient(call, max_attempts=4)
+
+        assert exc_info.value is err
+        assert call.call_count == 4
+
+    def test_retries_on_connect_timeout_and_connection_error(self):
+        err1 = requests.exceptions.ConnectTimeout("connect timed out")
+        err2 = requests.exceptions.ConnectionError("conn reset")
+        call = MagicMock(side_effect=[err1, err2, "ok"])
+
+        with patch("time.sleep"):
+            result = call_with_retry_on_transient(call)
+
+        assert result == "ok"
+        assert call.call_count == 3
+
+    def test_still_retries_429(self):
+        err = _make_429_api_error()
+        call = MagicMock(side_effect=[err, "ok"])
+
+        with patch("time.sleep"):
+            result = call_with_retry_on_transient(call)
+
+        assert result == "ok"
+        assert call.call_count == 2
+
+    def test_does_not_retry_unexpected_error(self):
+        """A non-transient, non-429 error bubbles up on the first failure."""
+        err = _make_non_429_api_error(422)
+        call = MagicMock(side_effect=err)
+
+        with patch("time.sleep"):
+            with pytest.raises(APIError) as exc_info:
+                call_with_retry_on_transient(call)
 
         assert exc_info.value is err
         assert call.call_count == 1
