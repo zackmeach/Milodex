@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 from datetime import UTC, date, datetime
 from io import StringIO
 from pathlib import Path
@@ -492,6 +493,50 @@ def test_cli_reports_data_quality_failures_with_structured_error(monkeypatch):
     assert payload["data"]["data_quality"]["status"] == "fail"
     assert payload["data"]["data_quality"]["issue_codes"] == ["invalid_ohlc_relationship"]
     assert payload["data"]["data_quality"]["issues"][0]["symbol"] == "SPY"
+
+
+def test_cli_unexpected_exception_is_structured_error_not_traceback(monkeypatch, caplog):
+    """A command raising an exception outside the known set is rendered as a clean
+    structured error (code 'unexpected_error') with the full traceback routed to the
+    log file, not dumped to stderr. Closes the FIX-1 catch-all gap (main.py)."""
+
+    def boom(_args, _ctx):
+        raise RuntimeError("kaboom")
+
+    monkeypatch.setattr(cli_main_module.status, "run", boom)
+    stderr = StringIO()
+
+    with caplog.at_level(logging.ERROR):
+        exit_code = cli_entrypoint(["status", "--json"], stdout=StringIO(), stderr=stderr)
+
+    payload = json.loads(stderr.getvalue())
+    assert exit_code == 1
+    assert payload["errors"][0]["code"] == "unexpected_error"
+    assert "kaboom" in payload["errors"][0]["message"]
+    assert "log" in payload["errors"][0]["message"].lower()  # breadcrumb to the log dir
+    # full traceback captured in the log (exc_info), NOT leaked to stderr
+    assert any(record.exc_info is not None for record in caplog.records)
+    assert "Traceback" not in stderr.getvalue()
+
+
+def test_cli_universe_coverage_error_is_clean_domain_error(monkeypatch):
+    """UniverseCoverageError (reparented to ValueError) is reported as a clean domain
+    error preserving its descriptive message, not a generic 'unexpected_error' nor a
+    raw traceback. Pins the FIX-1 reparent (engine.py:88)."""
+    from milodex.backtesting.engine import UniverseCoverageError
+
+    def reject(_args, _ctx):
+        raise UniverseCoverageError("Universe coverage 0.0% < 80.0% (0/42 symbols)")
+
+    monkeypatch.setattr(cli_main_module.status, "run", reject)
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(["status", "--json"], stdout=StringIO(), stderr=stderr)
+
+    payload = json.loads(stderr.getvalue())
+    assert exit_code == 1
+    assert payload["errors"][0]["code"] == "error"
+    assert "Universe coverage" in payload["errors"][0]["message"]
 
 
 def test_trade_submit_requires_paper_flag():

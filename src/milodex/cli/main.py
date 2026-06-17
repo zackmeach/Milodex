@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -90,6 +91,27 @@ _DISPATCH = {
 }
 
 
+def _force_utf8_streams() -> None:
+    """Force process stdout/stderr to UTF-8 so non-Latin1 glyphs (e.g. the
+    promotion-history reversal '↩', '≥', '∞') neither crash nor
+    mojibake on a cp1252 Windows console.
+
+    Mutates the process-global ``sys.stdout``/``sys.stderr`` (including pytest's
+    capture stream) for the life of the process; idempotent and ASCII-safe.
+    No-op for streams that cannot reconfigure (already-UTF-8 pipes, detached or
+    closed streams, non-reconfigurable capture objects).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            # Detached/closed/non-reconfigurable stream — leave as-is.
+            pass
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build the root CLI parser by delegating subparser registration to command modules."""
     parser = argparse.ArgumentParser(prog="milodex", description="Milodex operator CLI.")
@@ -115,6 +137,7 @@ def main(
     stderr: TextIO | None = None,
 ) -> int:
     """Run the CLI and return a process exit code."""
+    _force_utf8_streams()
     stdout = stdout or sys.stdout
     stderr = stderr or sys.stderr
     # Resolve config_dir lazily so frozen-bundle detection in
@@ -232,6 +255,16 @@ def main(
         return 1
     except (BrokerError, ValueError) as exc:
         result = error_result(command_name, str(exc), code="error")
+        print(formatter.render(result), file=stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 — final operator-facing safety net
+        logging.getLogger(__name__).exception("Unexpected CLI error in %s", command_name)
+        result = error_result(
+            command_name,
+            f"Unexpected error ({type(exc).__name__}): {exc}. "
+            "Full traceback written to the log directory.",
+            code="unexpected_error",
+        )
         print(formatter.render(result), file=stderr)
         return 1
 
