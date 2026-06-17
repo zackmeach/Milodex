@@ -12,6 +12,36 @@ from pathlib import Path
 
 import pytest
 
+# ---------------------------------------------------------------------------
+# Process-wide Qt application singleton (xdist isolation)
+# ---------------------------------------------------------------------------
+# Qt allows exactly one QCoreApplication-family object per process and does not
+# tolerate mixing kinds. Some GUI test modules create a *bare* QCoreApplication
+# (e.g. test_bench_command_bridge._process_qt_until) while the font/QML tests
+# need a GUI-capable application with a font subsystem. Under pytest-xdist the
+# tests scatter across worker processes, so a worker can run a
+# QCoreApplication-creating test before a font/QML test — leaving
+# QFontDatabase.addApplicationFont with no font subsystem (returns -1; or a
+# native access-violation crash when a QApplication is then constructed over the
+# bare QCoreApplication). Serial (-n0) already passes because an early GUI test
+# establishes a QGuiApplication that everyone reuses; this flake is purely
+# xdist worker-grouping.
+#
+# conftest.py is imported during collection, before any test module in this
+# directory, so constructing the most-derived QApplication here — once per
+# worker — makes it THE singleton that every `*.instance() or *Application(...)`
+# call in the package reuses: GUI-capable for the font/QML tests, and reused
+# (never a new bare core app) by the QCoreApplication call sites. Held in a
+# module global so it is not garbage-collected mid-session.
+try:
+    from PySide6.QtWidgets import QApplication
+
+    _GUI_TEST_APP = QApplication.instance() or QApplication([])
+except ImportError:
+    # PySide6 absent (headless CI without Qt): the Qt-dependent tests skip
+    # themselves via their own importorskip / skipif guards.
+    _GUI_TEST_APP = None
+
 
 @pytest.fixture
 def event_store_db(tmp_path: Path) -> Path:
