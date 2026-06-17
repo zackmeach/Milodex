@@ -53,6 +53,34 @@ def _replace_with_retry(
     raise last_err
 
 
+def _read_parquet_with_retry(
+    path: Path, *, max_attempts: int = 4, base_delay: float = 0.01
+) -> pd.DataFrame:
+    """Read a parquet with bounded retry on Windows PermissionError.
+
+    The symmetric counterpart to ``_replace_with_retry``. A concurrent writer's
+    ``os.replace`` briefly holds the destination locked on Windows; a sibling
+    reader opening that path during the rename window gets ``PermissionError``
+    [Errno 13]. Under same-symbol co-run (multiple runners reading and writing
+    one symbol's parquet) this collision is otherwise fatal — it killed a runner
+    on the shared 5Min SPY cache during the 2026-06-17 soak. The retry burst
+    (~150 ms total) lets the rename settle before the read proceeds.
+
+    Re-raises non-``PermissionError`` ``OSError`` immediately (don't mask real
+    permission/path bugs). Re-raises the last ``PermissionError`` if all
+    attempts are exhausted.
+    """
+    last_err: PermissionError | None = None
+    for attempt in range(max_attempts):
+        try:
+            return pd.read_parquet(path)
+        except PermissionError as exc:
+            last_err = exc
+            time.sleep(base_delay * 2**attempt)
+    assert last_err is not None
+    raise last_err
+
+
 class ParquetCache:
     """File-based Parquet cache for market data bars."""
 
@@ -93,7 +121,7 @@ class ParquetCache:
                 path,
             )
             return None
-        df = pd.read_parquet(path)
+        df = _read_parquet_with_retry(path)
         _logger.info(
             "cache_hit symbol=%s timeframe=%s rows=%d path=%s",
             symbol.upper(),
