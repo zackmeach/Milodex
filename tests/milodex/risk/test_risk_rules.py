@@ -485,6 +485,143 @@ def test_total_exposure_allows_sell_that_reduces_exposure():
     assert check_result(decision, "total_exposure").passed is True
 
 
+# --- A-6: naked / over-held SELL exposure netting (FIX4) --------------------
+# The single-position and total-exposure caps must not read a short or a
+# sell-beyond-held as benign exposure-REDUCING notional. exposure_increasing_
+# notional() nets the short leg the same way is_exposure_increasing() classifies
+# it, so all three caps (order_value, single_position, total_exposure) agree on
+# exposure direction. Covered exits still net DOWN (the regression guards above).
+
+
+def _intent_and_request(side, symbol, quantity, unit_price=100.0):
+    intent = TradeIntent(symbol=symbol, side=side, quantity=quantity, order_type=OrderType.MARKET)
+    request = ExecutionRequest(
+        symbol=symbol.upper(),
+        side=side,
+        quantity=quantity,
+        order_type=OrderType.MARKET,
+        time_in_force=TimeInForce.DAY,
+        estimated_unit_price=unit_price,
+        estimated_order_value=quantity * unit_price,
+    )
+    return intent, request
+
+
+def test_exposure_increasing_notional_units():
+    from milodex.risk.exposure import exposure_increasing_notional
+
+    buy_i, buy_r = _intent_and_request(OrderSide.BUY, "SPY", 10.0)
+    assert exposure_increasing_notional(buy_i, buy_r, []) == 1_000.0  # full notional
+
+    naked_i, naked_r = _intent_and_request(OrderSide.SELL, "SPY", 10.0)
+    assert exposure_increasing_notional(naked_i, naked_r, []) == 1_000.0  # naked short
+
+    covered_i, covered_r = _intent_and_request(OrderSide.SELL, "SPY", 10.0)
+    assert exposure_increasing_notional(covered_i, covered_r, [_position("SPY", 10.0)]) == 0.0
+
+    over_i, over_r = _intent_and_request(OrderSide.SELL, "SPY", 30.0)
+    # excess 20 shares * $100 = $2,000
+    assert exposure_increasing_notional(over_i, over_r, [_position("SPY", 10.0)]) == 2_000.0
+
+
+def test_exposure_increasing_notional_agrees_with_is_exposure_increasing():
+    """The notional helper is positive iff is_exposure_increasing is True — the two
+    cannot drift (they share _held_long_qty)."""
+    from milodex.risk.exposure import exposure_increasing_notional, is_exposure_increasing
+
+    cases = [
+        (OrderSide.BUY, "SPY", 10.0, []),
+        (OrderSide.SELL, "SPY", 10.0, []),  # naked
+        (OrderSide.SELL, "SPY", 10.0, [_position("SPY", 10.0)]),  # covered exact
+        (OrderSide.SELL, "SPY", 30.0, [_position("SPY", 10.0)]),  # over-held
+        (OrderSide.SELL, "SPY", 5.0, [_position("SPY", 10.0)]),  # partial reduce
+    ]
+    for side, sym, qty, pos in cases:
+        intent, request = _intent_and_request(side, sym, qty)
+        assert (exposure_increasing_notional(intent, request, pos) > 0) == is_exposure_increasing(
+            intent, pos
+        )
+
+
+def test_total_exposure_naked_sell_adds_short_leg_exposure():
+    # Pre-fix the SELL subtracted notional -> projected 0 -> falsely passed.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=90.0,
+            estimated_unit_price=100.0,
+            estimated_order_value=9_000.0,  # > $8,000 total cap
+            positions=[],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    result = check_result(decision, "total_exposure")
+    assert result.passed is False
+    assert result.reason_code == "max_total_exposure_exceeded"
+
+
+def test_total_exposure_oversized_sell_beyond_held_counts_excess():
+    held = _position("SPY", 50.0, 100.0)  # current exposure $5,000
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=200.0,
+            estimated_unit_price=100.0,
+            estimated_order_value=20_000.0,
+            positions=[held],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    # excess 150sh * $100 = $15,000 short leg; projected $15,000 > $8,000 cap.
+    result = check_result(decision, "total_exposure")
+    assert result.passed is False
+    assert result.reason_code == "max_total_exposure_exceeded"
+
+
+def test_total_exposure_naked_sell_with_pending_buy_sums_both():
+    """The naked short leg ADDS on top of in-flight BUY exposure — additively
+    independent in the projection (A-6 nets the short; ADR 0024 folds open BUYs)."""
+    pending = _open_buy(
+        "QQQ",
+        status=OrderStatus.PARTIALLY_FILLED,
+        quantity=40.0,
+        filled_avg_price=100.0,
+        filled_quantity=10.0,
+    )  # remaining_notional = (40 - 10) * 100 = $3,000
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            symbol="SPY",
+            quantity=60.0,
+            estimated_unit_price=100.0,
+            estimated_order_value=6_000.0,
+            positions=[],
+            recent_orders=[pending],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    # $3,000 pending BUY + $6,000 naked short leg = $9,000 > $8,000 cap.
+    result = check_result(decision, "total_exposure")
+    assert result.passed is False
+    assert result.reason_code == "max_total_exposure_exceeded"
+
+
+def test_single_position_naked_sell_projects_short_leg():
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=30.0,
+            estimated_unit_price=100.0,
+            estimated_order_value=3_000.0,  # > $2,000 single-position cap
+            positions=[],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    result = check_result(decision, "single_position")
+    assert result.passed is False
+    assert result.reason_code == "max_single_position_exceeded"
+
+
 # --- _check_concurrent_positions ------------------------------------------
 
 
