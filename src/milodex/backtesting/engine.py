@@ -85,9 +85,12 @@ if TYPE_CHECKING:
     from milodex.data.provider import DataProvider
 
 
-class UniverseCoverageError(RuntimeError):
+class UniverseCoverageError(ValueError):
     """Raised by :meth:`BacktestEngine.prefetch_bars` when fewer than the configured
     fraction of declared-universe symbols have bars in the requested window.
+
+    Subclasses ``ValueError`` so the CLI top-level handler renders it as a clean
+    domain error (preserving its descriptive message) rather than a raw traceback.
 
     Prevents silent results computed over a tiny subset of the intended universe
     (e.g. NR7/52w-high running on 20 of 97 declared SP100 symbols).

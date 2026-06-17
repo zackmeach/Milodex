@@ -858,14 +858,26 @@ class ExecutionService:
             backtest_run_id=backtest_run_id,
         )
         # When the broker has already reported a fill (synchronous path —
-        # backtest, or a broker that fills immediately), prefer the actual
-        # fill price over the pre-submission estimate so the trade row
-        # reflects what really happened.
+        # backtest, or a broker that fills immediately), prefer the actual fill
+        # quantity AND price over the pre-submission estimate so the trade row —
+        # and the strategy-scoped ledger folded from it — reflect what really
+        # happened, not the requested intent. Recording the requested quantity
+        # on a partial fill mis-stated the lot (RISK_POLICY #5).
+        #
+        # Async path (Alpaca paper market orders): submit returns PENDING with
+        # no fill info, so filled_quantity/filled_avg_price are None and the
+        # optimistic record keeps the requested quantity until a later fill is
+        # known. Reconciling that async fill into the ledger (the corrective-row
+        # path in operations/reconciliation.py + the attribution fold) is a
+        # separate, deeper change and remains the documented residual.
+        recorded_quantity = result.execution_request.quantity
         recorded_unit_price = result.execution_request.estimated_unit_price
         recorded_order_value = result.execution_request.estimated_order_value
         if result.order is not None and result.order.filled_avg_price is not None:
             recorded_unit_price = float(result.order.filled_avg_price)
-            recorded_order_value = recorded_unit_price * result.execution_request.quantity
+            if result.order.filled_quantity:  # actual positive fill (not None, not 0)
+                recorded_quantity = float(result.order.filled_quantity)
+            recorded_order_value = recorded_unit_price * recorded_quantity
 
         trade = TradeEvent(
             # Placeholder — append_explanation_and_trade overrides this with
@@ -876,7 +888,7 @@ class ExecutionService:
             source=source,
             symbol=result.execution_request.symbol,
             side=result.execution_request.side.value,
-            quantity=result.execution_request.quantity,
+            quantity=recorded_quantity,
             order_type=result.execution_request.order_type.value,
             time_in_force=result.execution_request.time_in_force.value,
             estimated_unit_price=recorded_unit_price,

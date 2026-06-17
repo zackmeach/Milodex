@@ -350,11 +350,18 @@ def _build_daily_result(
     *,
     target_date: date,
 ) -> CommandResult:
+    # Exclude backtest-engine rows (backtest_run_id set) so a backtest run does not
+    # inflate the day's live operational counts (D-2). backtest_run_id is the same
+    # structural marker get_latest_bar_timestamp uses to keep backtests out.
     trades_today = [
-        t for t in event_store.list_trades() if _event_date(t.recorded_at) == target_date
+        t
+        for t in event_store.list_trades()
+        if t.backtest_run_id is None and _event_date(t.recorded_at) == target_date
     ]
     explanations_today = [
-        e for e in event_store.list_explanations() if _event_date(e.recorded_at) == target_date
+        e
+        for e in event_store.list_explanations()
+        if e.backtest_run_id is None and _event_date(e.recorded_at) == target_date
     ]
     kill_switch = _kill_switch_state(event_store)
     portfolio = _portfolio_snapshot(ctx)

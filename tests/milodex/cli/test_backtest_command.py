@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import argparse
 from datetime import date
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 from milodex.backtesting.engine import BacktestResult
 from milodex.cli.commands import backtest as backtest_command
@@ -90,6 +92,69 @@ def test_regime_strategy_exempt_even_at_high_trade_count():
     )
     assert result.data["evidence_basis"] == "operational"
     assert "uncertainty_label" not in result.data
+
+
+def _engine_with_backtest_config(backtest: dict) -> SimpleNamespace:
+    return SimpleNamespace(_loaded=SimpleNamespace(config=SimpleNamespace(backtest=backtest)))
+
+
+def test_min_trade_count_from_engine_treats_null_config_as_default():
+    """A config with `min_trades_required: null` (the regime R-PRM-004 exemption)
+    must not crash plain backtest with int(None); it falls back to the statistical
+    default (A-5)."""
+    engine = _engine_with_backtest_config({"min_trades_required": None})
+    assert backtest_command._min_trade_count_from_engine(engine) == 30
+
+
+def test_min_trade_count_from_engine_uses_configured_value():
+    """A real integer floor (including 0) is preserved, not collapsed to the default."""
+    assert (
+        backtest_command._min_trade_count_from_engine(
+            _engine_with_backtest_config({"min_trades_required": 20})
+        )
+        == 20
+    )
+    assert (
+        backtest_command._min_trade_count_from_engine(
+            _engine_with_backtest_config({"min_trades_required": 0})
+        )
+        == 0
+    )
+
+
+@pytest.mark.parametrize("bad", [-0.5, -0.001, 50.0, float("nan")])
+def test_backtest_rejects_invalid_slippage(bad):
+    """Negative / implausibly-large / nan slippage is rejected BEFORE engine
+    construction, so no return-inflating backtest_runs row is ever persisted (A-4)."""
+    ctx = MagicMock()
+    args = _args(risk_policy="bypass")
+    args.slippage = bad
+
+    with pytest.raises(ValueError, match="slippage"):
+        backtest_command.run(args, ctx)
+
+    ctx.get_backtest_engine.assert_not_called()
+
+
+@pytest.mark.parametrize("good", [0.0, 0.002])
+def test_backtest_accepts_valid_slippage(good):
+    """The lower bound is inclusive of 0.0 and accepts normal fractional slippage."""
+    captured = {}
+
+    def get_engine(strategy_id, **kwargs):
+        captured["kwargs"] = kwargs
+        engine = MagicMock()
+        engine.run.return_value = _result("meanrev.daily.rsi2pullback.v1", trade_count=30)
+        return engine
+
+    ctx = MagicMock()
+    ctx.get_backtest_engine = get_engine
+    args = _args(risk_policy="bypass")
+    args.slippage = good
+
+    backtest_command.run(args, ctx)
+
+    assert captured["kwargs"]["slippage_pct"] == good
 
 
 def test_backtest_cli_defaults_to_bypass_risk_policy():

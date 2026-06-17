@@ -131,6 +131,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    # `trades` and `list` slice by --limit; a non-positive value silently drops rows
+    # via a negative/empty slice, so reject it before any work (A-7).
+    limit = getattr(args, "limit", None)
+    if limit is not None and limit < 1:
+        raise ValueError("--limit must be a positive integer (>= 1).")
     event_store = ctx.get_event_store()
 
     if args.analytics_command == "list":

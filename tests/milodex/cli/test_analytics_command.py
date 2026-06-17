@@ -289,6 +289,51 @@ def test_analytics_metrics_walk_forward_uses_oos_aggregate(tmp_path: Path) -> No
     assert strategy["trade_count"] > 0
 
 
+def test_analytics_metrics_walk_forward_handles_null_oos_sharpe(tmp_path: Path) -> None:
+    """A walk-forward run whose OOS-aggregate sharpe is null (the regime strategy:
+    trade_count 0 / near-flat OOS) must not crash `analytics metrics` with
+    float(None) (D-1). Sharpe renders as null, not a TypeError."""
+    store = EventStore(tmp_path / "milodex.db")
+    _seed_walk_forward_run(
+        store,
+        run_id="bt-wf-null",
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        total_return_pct=0.0,
+        sharpe=None,
+        max_drawdown_pct=0.0,
+        trading_days=0,
+    )
+
+    exit_code, out, _ = _run(["analytics", "metrics", "bt-wf-null", "--json"], tmp_path)
+    assert exit_code == 0
+    strategy = json.loads(out.getvalue())["data"]["strategy"]
+    assert strategy["result_type"] == "walk_forward"
+    assert strategy["sharpe_ratio"] is None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["analytics", "trades", "bt-x", "--limit", "-1"],
+        ["analytics", "trades", "bt-x", "--limit", "0"],
+        ["analytics", "list", "--limit", "-5"],
+        ["analytics", "list", "--limit", "0"],
+    ],
+)
+def test_analytics_rejects_non_positive_limit(tmp_path: Path, argv: list[str]) -> None:
+    """A non-positive --limit fails loudly instead of silently dropping rows via a
+    negative/empty slice (A-7)."""
+    exit_code, _out, err = _run(argv, tmp_path)
+    assert exit_code == 1
+    assert "limit" in err.getvalue().lower()
+
+
+def test_analytics_list_accepts_limit_one(tmp_path: Path) -> None:
+    """Boundary: limit == 1 is accepted (the guard rejects < 1, not <= 1)."""
+    exit_code, _out, _err = _run(["analytics", "list", "--limit", "1"], tmp_path)
+    assert exit_code == 0
+
+
 def test_analytics_metrics_walk_forward_human_lines_label_oos(tmp_path: Path) -> None:
     """Human output flags walk-forward results so an operator can't misread them."""
     store = EventStore(tmp_path / "milodex.db")

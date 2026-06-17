@@ -257,7 +257,7 @@ def metrics_for_run(run_, event_store: EventStore) -> PerformanceMetrics:
         metrics.result_type = "walk_forward"
         metrics.total_return_pct = float(oos.get("total_return_pct", metrics.total_return_pct))
         metrics.max_drawdown_pct = float(oos.get("max_drawdown_pct", metrics.max_drawdown_pct))
-        if "sharpe" in oos:
+        if oos.get("sharpe") is not None:  # present-but-null sharpe -> treat as absent (D-1)
             metrics.sharpe_ratio = float(oos["sharpe"])
         trading_days = int(oos.get("trading_days", metrics.trading_days))
         metrics.trading_days = trading_days
