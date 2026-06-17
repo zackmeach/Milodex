@@ -15,8 +15,6 @@ from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE, RECOGNIZED_MO
 from milodex.strategies.loader import load_strategy_config
 from milodex.strategies.paper_runner_control import (
     controlled_stop_request_path,
-    evaluation_symbol_for_config,
-    live_runner_eval_symbols,
     runner_lock_name,
 )
 from milodex.strategies.runner_status import collect_runner_statuses
@@ -167,22 +165,14 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     _check_stage_compatibility(args.strategy_id, strategy_config.stage, ctx.get_trading_mode())
 
     locks_dir = ctx.locks_dir or get_locks_dir()
-    eval_symbol = evaluation_symbol_for_config(strategy_config)
-    live_by_symbol = live_runner_eval_symbols(
-        ctx.config_dir,
-        locks_dir,
-        exclude_strategy_id=args.strategy_id,
-    )
-    if eval_symbol in live_by_symbol:
-        colliding_strategy_id = live_by_symbol[eval_symbol]
-        msg = (
-            f"Refusing to start strategy '{args.strategy_id}': evaluation symbol "
-            f"{eval_symbol!r} is already in use by runner "
-            f"'{colliding_strategy_id}'. Stop the existing runner for "
-            f"'{colliding_strategy_id}' before starting another strategy on the "
-            "same symbol."
-        )
-        raise ValueError(msg)
+    # The same-evaluation-symbol co-run launch guard was removed by the
+    # concurrent-intraday-runners work (2026-06-15, ADR 0026 addendum
+    # superseded). The three invariants it stood in for are now closed in the
+    # risk/execution layers: PR1 (paper submit serialization, ADR 0056 amended),
+    # PR2 (opposite-side resting-order veto), PR3 (per-strategy cap reads the
+    # strategy ledger, ADR 0055 amended). Same-symbol co-run is therefore safe by
+    # construction; the per-strategy runner lock below still prevents the same
+    # strategy from double-launching.
 
     # Per ADR 0026 (concurrent multi-strategy uses per-process supervisor)
     # the runner lock is scoped per strategy_id, not global. Two strategies can

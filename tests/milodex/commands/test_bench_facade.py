@@ -1093,12 +1093,15 @@ def _seed_other_runner_lock(locks_dir: Path) -> Path:
     return holder_path
 
 
-def test_propose_start_paper_runner_blocks_on_eval_symbol_collision(
+def test_propose_start_paper_runner_admits_same_eval_symbol_co_run(
     make_facade, config_dir: Path, locks_dir: Path
 ) -> None:
-    """A live runner on the same evaluation symbol (first resolved universe
-    symbol) blocks the proposal BEFORE any subprocess spawn — previously the
-    CLI child died on this refusal invisibly (ADR 0026 addendum 2026-06-05)."""
+    """A live runner on the SAME evaluation symbol no longer blocks the proposal
+    (concurrent-intraday PR4 removed the launch guard / its bench mirror). The
+    three invariants the guard stood in for are closed (PR1 paper submit
+    serialization, PR2 opposite-side veto, PR3 per-strategy cap reads the
+    strategy ledger), so same-symbol co-run is admitted. The per-strategy runner
+    lock (``advisory_lock_held``) still blocks the *same* strategy."""
     _write_strategy(config_dir, stage="paper")  # STRATEGY_ID, eval symbol AAPL
     _write_other_strategy(config_dir, universe='["AAPL", "SPY"]')  # same eval symbol
     _seed_other_runner_lock(locks_dir)
@@ -1106,75 +1109,11 @@ def test_propose_start_paper_runner_blocks_on_eval_symbol_collision(
 
     proposal = facade.propose_start_paper_runner(STRATEGY_ID)
 
-    assert not proposal.admissible
+    assert proposal.admissible, proposal.blockers
     codes = {b.reason_code for b in proposal.blockers}
-    assert "evaluation_symbol_in_use" in codes
-    blocker = next(b for b in proposal.blockers if b.reason_code == "evaluation_symbol_in_use")
-    assert blocker.context["evaluation_symbol"] == "AAPL"
-    assert blocker.context["colliding_strategy_id"] == _OTHER_STRATEGY_ID
-    assert _OTHER_STRATEGY_ID in blocker.message
-    precondition = next(p for p in proposal.preconditions if p.name == "evaluation_symbol_free")
-    assert precondition.passed is False
-
-
-def test_propose_start_paper_runner_allows_live_runner_on_different_eval_symbol(
-    make_facade, config_dir: Path, locks_dir: Path
-) -> None:
-    """Different first universe symbols may co-run; the live sibling does not block."""
-    _write_strategy(config_dir, stage="paper")  # eval symbol AAPL
-    _write_other_strategy(config_dir, universe='["SPY", "AAPL"]')  # eval symbol SPY
-    _seed_other_runner_lock(locks_dir)
-    facade = make_facade()
-
-    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
-
-    assert proposal.admissible, proposal.blockers
-    precondition = next(p for p in proposal.preconditions if p.name == "evaluation_symbol_free")
-    assert precondition.passed is True
-
-
-def test_propose_start_paper_runner_ignores_stale_lock_on_colliding_symbol(
-    make_facade, config_dir: Path, locks_dir: Path
-) -> None:
-    """A stale (dead/recycled-PID) lock on the colliding strategy does not block."""
-    _write_strategy(config_dir, stage="paper")
-    _write_other_strategy(config_dir, universe='["AAPL", "SPY"]')
-    holder_path = locks_dir / f"milodex.runtime.strategy.{_OTHER_STRATEGY_ID}.lock"
-    holder_path.write_text(
-        json.dumps(
-            {
-                "pid": os.getpid(),
-                "hostname": "ghost",
-                "holder_name": "milodex",
-                # started_at far before this process started → identity check fails
-                "started_at": datetime.fromtimestamp(0, tz=UTC).isoformat(),
-            }
-        ),
-        encoding="utf-8",
-    )
-    facade = make_facade()
-
-    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
-
-    assert proposal.admissible, proposal.blockers
-
-
-def test_submit_start_paper_runner_blocked_by_eval_symbol_collision_at_revalidation(
-    make_facade, config_dir: Path, locks_dir: Path
-) -> None:
-    """Revalidate-at-submit: a collision that appears between propose and submit
-    blocks the submit; no subprocess is spawned."""
-    _write_strategy(config_dir, stage="paper")
-    _write_other_strategy(config_dir, universe='["AAPL", "SPY"]')
-    facade = make_facade()
-    proposal = facade.propose_start_paper_runner(STRATEGY_ID)
-    assert proposal.admissible, proposal.blockers
-
-    _seed_other_runner_lock(locks_dir)  # collision appears after propose
-    result = facade.submit_start_paper_runner(proposal)
-
-    assert result.status == "blocked"
-    assert "evaluation_symbol_in_use" in {b.reason_code for b in result.blockers}
+    assert "evaluation_symbol_in_use" not in codes
+    # The retired guard's precondition is gone entirely.
+    assert not any(p.name == "evaluation_symbol_free" for p in proposal.preconditions)
 
 
 @pytest.mark.parametrize(

@@ -824,9 +824,13 @@ def test_strategy_run_allows_concurrent_different_strategies(monkeypatch, tmp_pa
         holder_a.release()
 
 
-def test_strategy_run_refuses_second_strategy_on_same_eval_symbol(monkeypatch, tmp_path):
-    """Launch-time co-run guard: two strategies sharing the evaluation symbol
-    (first resolved universe symbol) must not run concurrently."""
+def test_strategy_run_allows_second_strategy_on_same_eval_symbol(monkeypatch, tmp_path):
+    """Co-run is now allowed on a shared evaluation symbol (concurrent-intraday
+    PR4 removed the launch guard). The three risk invariants that the guard
+    stood in for are closed (PR1 paper submit serialization, PR2 opposite-side
+    veto, PR3 per-strategy cap reads the strategy ledger), so a second strategy
+    on the same symbol launches. The per-strategy runner lock still prevents the
+    *same* strategy from double-launching."""
     from milodex.core.advisory_lock import AdvisoryLock
 
     monkeypatch.setattr(cli_main_module, "get_trading_mode", lambda: "paper")
@@ -841,22 +845,20 @@ def test_strategy_run_refuses_second_strategy_on_same_eval_symbol(monkeypatch, t
     holder_a.acquire()
     try:
         runner_b = StubStrategyRunner()
+        stdout = StringIO()
         stderr = StringIO()
 
         exit_code = cli_entrypoint(
             ["strategy", "run", strategy_b],
             strategy_runner_factory=lambda sid: runner_b,
             locks_dir=tmp_path,
-            stdout=StringIO(),
+            stdout=stdout,
             stderr=stderr,
         )
 
-        assert exit_code == 1
-        assert runner_b.run_calls == 0
-        err_text = stderr.getvalue()
-        assert "SPY" in err_text
-        assert strategy_a in err_text
-        assert strategy_b in err_text
+        assert exit_code == 0, f"strategy B refused: stderr={stderr.getvalue()!r}"
+        assert runner_b.run_calls == 1
+        assert f"strategy: {strategy_b}" in stdout.getvalue()
     finally:
         holder_a.release()
 
