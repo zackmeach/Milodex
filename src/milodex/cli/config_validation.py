@@ -30,9 +30,16 @@ def validate_config_file(path: Path, kind: str | None = None) -> list[str]:
     if not path.exists():
         msg = f"Config file does not exist: {path}"
         raise ValueError(msg)
+    if not path.is_file():
+        msg = f"Config path is not a file: {path}"
+        raise ValueError(msg)
 
-    with path.open("r", encoding="utf-8") as handle:
-        data = yaml.safe_load(handle)
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+    except yaml.YAMLError as exc:
+        msg = f"Config file is not valid YAML: {path}: {exc}"
+        raise ValueError(msg) from exc
 
     if not isinstance(data, dict):
         msg = f"Config root must be a mapping: {path}"

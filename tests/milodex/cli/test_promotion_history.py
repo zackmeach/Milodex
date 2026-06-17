@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
-from io import StringIO
+import sys
+from io import BytesIO, StringIO, TextIOWrapper
 from pathlib import Path
 
+from milodex.cli.main import _force_utf8_streams
 from milodex.cli.main import main as cli_entrypoint
 from milodex.core.event_store import EventStore
 
@@ -167,3 +169,53 @@ def test_history_json_output(tmp_path):
     assert events[0]["reverses_event_id"] == events[1]["id"]
     assert events[1]["promotion_type"] == "lifecycle_exempt"
     assert events[1]["reverses_event_id"] is None
+
+
+def test_history_does_not_crash_on_cp1252_stdout(tmp_path, monkeypatch):
+    """A demotion row prints the reversal glyph '↩' (U+21A9) at the CLI's
+    success-render path, which is OUTSIDE the dispatch try/except — so it is only
+    safe once the entrypoint forces UTF-8 stdout (FIX-5). Reproduces a real
+    Windows cp1252 console with a BytesIO-backed TextIOWrapper; the existing glyph
+    test uses StringIO (no encoding) and so never catches this crash.
+    """
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    _write_config(config_dir, stage="backtest")
+    _promote_and_demote(tmp_path)
+
+    out_buf = BytesIO()
+    monkeypatch.setattr(sys, "stdout", TextIOWrapper(out_buf, encoding="cp1252", newline=""))
+    monkeypatch.setattr(sys, "stderr", TextIOWrapper(BytesIO(), encoding="cp1252", newline=""))
+
+    # stdout=None routes output to the (reconfigured) global sys.stdout, exactly as
+    # the real console does — pre-fix this raises UnicodeEncodeError 'charmap'.
+    exit_code = cli_entrypoint(
+        ["promotion", "history", _STRATEGY_ID],
+        event_store_factory=lambda: EventStore(tmp_path / "data" / "milodex.db"),
+        config_dir=tmp_path / "configs",
+        broker_factory=lambda: _raise("no broker"),
+        data_provider_factory=lambda: _raise("no data provider"),
+        stdout=None,
+        stderr=None,
+    )
+    sys.stdout.flush()
+
+    assert exit_code == 0
+    assert "↩" in out_buf.getvalue().decode("utf-8")
+
+
+def test_force_utf8_streams_tolerates_non_reconfigurable_stream(monkeypatch):
+    """The entrypoint UTF-8 reconfigure must no-op (not crash) on a stream lacking
+    reconfigure() or whose reconfigure() raises (detached/closed/capture object)."""
+
+    class _NoReconfigure:
+        pass
+
+    class _RaisingReconfigure:
+        def reconfigure(self, **kwargs):
+            raise ValueError("detached")
+
+    monkeypatch.setattr(sys, "stdout", _NoReconfigure())
+    monkeypatch.setattr(sys, "stderr", _RaisingReconfigure())
+
+    _force_utf8_streams()  # must not raise
