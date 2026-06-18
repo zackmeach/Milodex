@@ -40,7 +40,7 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.config import get_alpaca_credentials, get_trading_mode
-from milodex.core._alpaca_retry import call_with_retry_on_429
+from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
 
 # Map our enums to Alpaca's
 _SIDE_MAP = {
@@ -219,7 +219,9 @@ class AlpacaBrokerClient(BrokerClient):
         sync) never see vendor exceptions — the broker boundary contract.
         """
         try:
-            alpaca_order = call_with_retry_on_429(lambda: self._client.get_order_by_id(order_id))
+            alpaca_order = call_with_retry_on_transient(
+                lambda: self._client.get_order_by_id(order_id)
+            )
         except APIError as exc:
             raise BrokerError(f"get_order({order_id}) failed: {exc}") from exc
         return self._translate_order(alpaca_order)
@@ -248,25 +250,27 @@ class AlpacaBrokerClient(BrokerClient):
             status=status_map.get(status, QueryOrderStatus.ALL),
             limit=limit,
         )
-        alpaca_orders = call_with_retry_on_429(lambda: self._client.get_orders(request))
+        alpaca_orders = call_with_retry_on_transient(lambda: self._client.get_orders(request))
         return [self._translate_order(o) for o in alpaca_orders]
 
     def get_positions(self) -> list[Position]:
         """Get all open positions from Alpaca."""
-        alpaca_positions = call_with_retry_on_429(lambda: self._client.get_all_positions())
+        alpaca_positions = call_with_retry_on_transient(lambda: self._client.get_all_positions())
         return [self._translate_position(p) for p in alpaca_positions]
 
     def get_position(self, symbol: str) -> Position | None:
         """Get position for a symbol, or None if not held."""
         try:
-            alpaca_pos = call_with_retry_on_429(lambda: self._client.get_open_position(symbol))
+            alpaca_pos = call_with_retry_on_transient(
+                lambda: self._client.get_open_position(symbol)
+            )
             return self._translate_position(alpaca_pos)
         except Exception:
             return None
 
     def get_account(self) -> AccountInfo:
         """Get account summary from Alpaca."""
-        acct = call_with_retry_on_429(lambda: self._client.get_account())
+        acct = call_with_retry_on_transient(lambda: self._client.get_account())
         equity = float(acct.equity)
         prev_close_raw = getattr(acct, "equity_previous_close", None)
         if prev_close_raw is None:
@@ -282,5 +286,5 @@ class AlpacaBrokerClient(BrokerClient):
 
     def is_market_open(self) -> bool:
         """Check if the market is currently open."""
-        clock = call_with_retry_on_429(lambda: self._client.get_clock())
+        clock = call_with_retry_on_transient(lambda: self._client.get_clock())
         return clock.is_open

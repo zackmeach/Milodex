@@ -177,6 +177,27 @@ class TestGetAccount:
         assert result.equity == 10000.0
         assert result.daily_pnl == 150.0  # 10000 - 9850
 
+    def test_get_account_retries_on_transient_read_timeout(self, client):
+        """A read-only call survives a transient Alpaca ReadTimeout (the
+        2026-06-17 co-run-soak crash). The 429-only helper would propagate it
+        and kill the runner; the transient helper retries the idempotent read."""
+        acct = MagicMock()
+        acct.equity = "10000.0"
+        acct.cash = "5000.0"
+        acct.buying_power = "5000.0"
+        acct.portfolio_value = "10000.0"
+        acct.equity_previous_close = "9850.0"
+
+        client._client.get_account.side_effect = [
+            requests.exceptions.ReadTimeout("read timed out"),
+            acct,
+        ]
+        with patch("time.sleep"):
+            result = client.get_account()
+
+        assert isinstance(result, AccountInfo)
+        assert client._client.get_account.call_count == 2
+
     def test_get_account_falls_back_to_last_equity(self, client):
         acct = MagicMock()
         acct.equity = "10000.0"
