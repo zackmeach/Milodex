@@ -419,3 +419,55 @@ def test_concurrent_failure_leaves_no_orphan_tmp_for_other_writer(
     # No orphan tmp files in the whole cache tree.
     tmp_files = list(cache_dir.rglob("*.tmp*"))
     assert tmp_files == [], f"orphan tmp files found: {tmp_files}"
+
+
+# ---------------------------------------------------------------------------
+# _read_parquet_with_retry tests (reader-vs-writer rename collision fix).
+# A sibling runner reading a symbol's parquet while another runner is mid
+# os.replace onto it gets PermissionError(13) on Windows; the read must
+# survive the transient collision the same way the write side already does.
+# ---------------------------------------------------------------------------
+
+
+def test_read_with_retry_succeeds_after_transient_permission_error(cache, sample_df):
+    """A single transient PermissionError on the parquet read is retried and
+    the cached frame is returned intact (reader-vs-writer-rename race)."""
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    real_read = pd.read_parquet
+    call_count = 0
+
+    def _fail_once(path, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise PermissionError("[Errno 13] Permission denied (simulated)")
+        return real_read(path, *args, **kwargs)
+
+    with patch("milodex.data.cache.pd.read_parquet", side_effect=_fail_once):
+        result = cache.read("AAPL", Timeframe.DAY_1)
+
+    assert call_count == 2, f"expected pd.read_parquet to be called twice, got {call_count}"
+    assert result is not None
+    assert len(result) == len(sample_df)
+
+
+def test_read_with_retry_gives_up_after_max_attempts(cache, sample_df):
+    """When the parquet read always raises PermissionError, the read retry
+    exhausts max_attempts (default 4) then re-raises rather than crashing the
+    whole runner process on the first transient collision."""
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    call_count = 0
+
+    def _always_fail(path, *args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        raise PermissionError("[Errno 13] Permission denied (simulated)")
+
+    with patch("milodex.data.cache.pd.read_parquet", side_effect=_always_fail):
+        with patch("milodex.data.cache.time.sleep"):  # don't actually sleep in tests
+            with pytest.raises(PermissionError):
+                cache.read("AAPL", Timeframe.DAY_1)
+
+    assert call_count == 4, f"expected exactly 4 read attempts (max_attempts), got {call_count}"
