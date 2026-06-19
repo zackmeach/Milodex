@@ -36,7 +36,7 @@ MARKET_CLOSE_ET_FULL = time(16, 0)
 #: Half-day session close in Eastern Time (early close at 1pm).
 MARKET_CLOSE_ET_HALF = time(13, 0)
 
-#: US equities early-close (13:00 ET) days for the 2022-2025 backtest window.
+#: US equities early-close (13:00 ET) days for the 2022-2026 backtest window.
 #: Sourced from NYSE's published holiday calendar. Half-days are: day after
 #: Thanksgiving, day before July 4 when 7/4 is Wed/Thu/Fri, Christmas Eve when
 #: it falls on a weekday.
@@ -51,6 +51,8 @@ US_MARKET_HALF_DAYS: frozenset[date] = frozenset(
         date(2025, 7, 3),  # Day before July 4
         date(2025, 11, 28),  # Day after Thanksgiving
         date(2025, 12, 24),  # Christmas Eve (Wed)
+        date(2026, 11, 27),  # Day after Thanksgiving
+        date(2026, 12, 24),  # Christmas Eve (Thu)
     }
 )
 

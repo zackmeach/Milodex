@@ -305,3 +305,36 @@ def test_clean_full_session_still_exactly_100_after_fix():
     assert sr.coverage_pct == 100.0
     assert report.status == "pass"
     assert not any(w.code == "intraday_offgrid_or_duplicate_bars" for w in report.issues)
+
+
+# ---------------------------------------------------------------------------
+# B2: 2026 half-days in calendar
+# ---------------------------------------------------------------------------
+
+
+def test_2026_half_day_nov27_expected_count_is_42():
+    # 2026-11-27 is Day after Thanksgiving — should be a half-day (210min / 5 = 42 bars).
+    # Without B2: scored as a 390-min full session (expected=78 vs observed=42 -> 53.8%
+    # coverage -> intraday_session_coverage_below_threshold fires, status pass_with_warnings).
+    report = _scan(
+        {"SPY": _session_5min("2026-11-27", n_bars=42)},
+        start=date(2026, 11, 27),
+        end=date(2026, 11, 27),
+    )
+    sr = report.per_symbol[0]
+    assert sr.expected_bars == 42
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"
+
+
+def test_2026_half_day_dec24_expected_count_is_42():
+    # 2026-12-24 is Christmas Eve (Thursday) — should be a half-day.
+    report = _scan(
+        {"SPY": _session_5min("2026-12-24", n_bars=42)},
+        start=date(2026, 12, 24),
+        end=date(2026, 12, 24),
+    )
+    sr = report.per_symbol[0]
+    assert sr.expected_bars == 42
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"
