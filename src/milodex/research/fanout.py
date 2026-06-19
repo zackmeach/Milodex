@@ -95,6 +95,17 @@ def generate_per_symbol_configs(
         strategy_section.pop("universe_ref", None)
         strategy_section["universe"] = [sym.upper()]
 
+        # Swap the base-variant ticker token in the description so the generated
+        # config names the symbol it actually trades.
+        # ponytail: plain token-swap on description — safe because base descriptions
+        # reference the instrument by ticker only (e.g. "SPY"), never as a substring
+        # of another word.
+        base_sym_upper = variant.upper()
+        if "description" in strategy_section and base_sym_upper in strategy_section["description"]:
+            strategy_section["description"] = strategy_section["description"].replace(
+                base_sym_upper, sym.upper()
+            )
+
         out_path = out_dir / f"{stem}_{sym_lower}_v{version}.yaml"
         with out_path.open("w", encoding="utf-8") as fh:
             yaml.safe_dump(data, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)

@@ -65,6 +65,36 @@ def test_fanout_preserves_config_level_slippage(tmp_path: Path) -> None:
         assert cfg.backtest["slippage_pct"] == 0.0005
 
 
+def test_fanout_description_names_target_symbol(tmp_path: Path) -> None:
+    """Generated configs must name the target symbol in their description, not SPY."""
+    base = _setup_tmp(tmp_path)
+    written = generate_per_symbol_configs(
+        base_config_path=base,
+        universe_ref="universe.liquid_etf_core.v1",
+        out_dir=tmp_path,
+    )
+    # Find the XLF config specifically and verify description substitution.
+    xlf_path = next(p for p in written if "xlf" in p.name)
+    cfg = load_strategy_config(xlf_path)
+    assert "XLF" in cfg.description, f"Expected 'XLF' in description: {cfg.description!r}"
+    assert "SPY" not in cfg.description, (
+        f"Expected 'SPY' absent from description: {cfg.description!r}"
+    )
+    # Verify every generated config has its own symbol in the description (not SPY).
+    base_cfg = load_strategy_config(base)
+    base_desc_has_spy = "SPY" in base_cfg.description
+    if base_desc_has_spy:
+        for path in written:
+            c = load_strategy_config(path)
+            sym = c.universe[0]  # e.g. "XLF"
+            assert sym in c.description, (
+                f"{path.name}: expected '{sym}' in description: {c.description!r}"
+            )
+            assert "SPY" not in c.description, (
+                f"{path.name}: 'SPY' still in description: {c.description!r}"
+            )
+
+
 def test_fanout_rejects_ineligible_symbol(tmp_path: Path) -> None:
     # a universe_ref pointing at a manifest with a forbidden ETP must raise
     # (proves the generator does not bypass ADR 0016).

@@ -4,9 +4,9 @@ strategy:
   template: unconditional_intraday_long
   variant: gld
   version: 1
-  description: 'Benchmark: long SPY from the first bar after the opening range until
+  description: 'Benchmark: long GLD from the first bar after the opening range until
     the time-stop bar 5min before close. Every full session. Half-days skipped (matches
-    ORB skip behavior). Provides the floor that any intraday SPY signal must beat
+    ORB skip behavior). Provides the floor that any intraday GLD signal must beat
     — the unconditional intraday long return after realistic slippage.
 
     '

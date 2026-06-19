@@ -4,7 +4,7 @@ strategy:
   template: rsi2.intraday
   variant: xlc
   version: 1
-  description: 'RSI(2) intraday mean-reversion on SPY, 5-minute bars. Long-only intraday
+  description: 'RSI(2) intraday mean-reversion on XLC, 5-minute bars. Long-only intraday
     round-trip: buy when the current session''s Wilder RSI(rsi_lookback) is at or
     below rsi_entry_threshold; exit on stop_loss_pct from entry, RSI reverting to/above
     rsi_exit_threshold, or the time-stop before the close. One entry per session.

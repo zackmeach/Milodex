@@ -4,7 +4,7 @@ strategy:
   template: time_of_day_null
   variant: xlc
   version: 1
-  description: 'Time-of-day null baseline: buy SPY at +180 min after the open (12:30
+  description: 'Time-of-day null baseline: buy XLC at +180 min after the open (12:30
     ET), sell at the time-stop bar 5 min before close, every full session. Half-days
     skipped. A candidate intraday signal must beat this midday-entry null after realistic
     slippage to claim a time-specific edge.
