@@ -30,6 +30,7 @@ from milodex.strategies.base import (
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+    single_symbol,
 )
 
 
@@ -54,10 +55,9 @@ class BenchTimeOfDayNullStrategy(Strategy):
         _ = bars
         params = _validated_parameters(context)
 
-        universe_symbols = sorted({symbol.upper() for symbol in context.universe})
-        if not universe_symbols:
+        symbol = single_symbol(context.universe)
+        if symbol is None:
             return _no_signal("empty universe")
-        symbol = universe_symbols[0]
 
         barset = context.bars_by_symbol.get(symbol)
         if barset is None or len(barset) == 0:
