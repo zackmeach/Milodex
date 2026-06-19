@@ -150,6 +150,47 @@ def test_two_consecutive_sessions_produce_two_round_trips() -> None:
     assert decision_d2_buy.intents[0].side == OrderSide.BUY
 
 
+def test_generalizes_to_non_spy_single_symbol() -> None:
+    """Pointed at a single-symbol XLB universe, the benchmark trades XLB (no SPY
+    hardcoding). This is the "across 17 ETFs" mechanism: per-symbol resolution via
+    17 single-symbol backtests, NOT new multi-symbol strategy logic (decision #2).
+    """
+    strategy = BenchUnconditionalIntradayLongStrategy()
+    bars = _intraday_bars(
+        date_et="2024-01-15",
+        times_et=["09:30", "09:35", "09:40", "09:45", "09:50", "09:55", "10:00"],
+        close=80.0,
+    )
+    context = StrategyContext(
+        strategy_id="benchmark.unconditional_intraday_long.xlb.v1",
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="xlb",
+        version=1,
+        config_hash="test_hash",
+        parameters={
+            "opening_range_minutes": 30,
+            "exit_minutes_before_close": 5,
+            "per_position_notional_pct": 0.10,
+        },
+        universe=("XLB",),
+        universe_ref=None,
+        disable_conditions=(),
+        config_path="/dev/null",
+        manifest={},
+        positions={},
+        equity=10_000.0,
+        bars_by_symbol={"XLB": bars},
+        entry_state={},
+    )
+
+    decision = strategy.evaluate(bars, context)
+
+    assert len(decision.intents) == 1
+    assert decision.intents[0].side == OrderSide.BUY
+    assert decision.intents[0].symbol == "XLB"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

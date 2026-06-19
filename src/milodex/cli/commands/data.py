@@ -16,8 +16,18 @@ from milodex.cli._shared import (
     parse_iso_date,
 )
 from milodex.cli.formatter import CommandResult
-from milodex.data import BarSet
+from milodex.data import BarSet, Timeframe
+from milodex.strategies.instrument_eligibility import InstrumentEligibilityError
 from milodex.strategies.loader import resolve_universe_ref
+
+#: Intraday timeframes valid for the readiness report, mapped to bar minutes.
+#: 1d is intentionally absent — readiness is a per-session intraday check.
+_READINESS_TIMEFRAME_MINUTES = {
+    Timeframe.MINUTE_1: 1,
+    Timeframe.MINUTE_5: 5,
+    Timeframe.MINUTE_15: 15,
+    Timeframe.HOUR_1: 60,
+}
 
 _DATE_RANGE_TOLERANCE = timedelta(days=7)
 
@@ -90,12 +100,48 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Number of calendar days of history to fetch (default: 365).",
     )
 
+    rd_parser = data_subparsers.add_parser(
+        "readiness",
+        help="Intraday data-readiness report for a universe (per-session completeness).",
+    )
+    add_global_flags(rd_parser)
+    rd_parser.add_argument("--universe-ref", required=True, help="Universe id string.")
+    rd_parser.add_argument("--start", required=True, help="Start date in YYYY-MM-DD format.")
+    rd_parser.add_argument("--end", required=True, help="End date in YYYY-MM-DD format.")
+    rd_parser.add_argument(
+        "--timeframe",
+        choices=tuple(TIMEFRAME_CHOICES),
+        default="5m",
+        help="Intraday timeframe (default: 5m). Daily (1d) is not valid for readiness.",
+    )
+    rd_parser.add_argument(
+        "--config-dir",
+        default="configs",
+        help="Directory containing universe manifests (default: configs).",
+    )
+    rd_parser.add_argument(
+        "--feed-label",
+        default="fallback",
+        choices=("research_grade", "execution_adjacent", "fallback"),
+        help="Feed-quality label for the verdict (IEX free tier => fallback).",
+    )
+    rd_parser.add_argument(
+        "--cross-check-reference",
+        action="store_true",
+        help=(
+            "Cross-check IEX session ranges against a free consolidated daily "
+            "reference (Yahoo) to flag inward price bias. Makes live network calls."
+        ),
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.data_command == "fetch-universe":
         return _run_fetch_universe(args, ctx)
     if args.data_command == "warmup-tape":
         return _run_warmup_tape(args)
+    if args.data_command == "readiness":
+        return _run_readiness(args, ctx)
     if args.data_command != "bars":
         raise ValueError(f"Unsupported data command: {args.data_command}")
     provider = ctx.data_provider_factory()
@@ -312,6 +358,97 @@ def _date_range_warnings(
         if requested_end - last_bar_date > _DATE_RANGE_TOLERANCE:
             warnings.append({**common, "issue": "ends_before_requested_window"})
     return warnings
+
+
+def _run_readiness(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    from milodex.data.intraday_readiness import scan_intraday_readiness
+
+    config_path = Path(args.config_dir) / "_dummy.yaml"
+    try:
+        symbols = resolve_universe_ref(args.universe_ref, config_path)
+    except InstrumentEligibilityError as exc:
+        return CommandResult(
+            command="data.readiness",
+            status="error",
+            human_lines=[f"Error: {exc}"],
+            errors=[{"code": "universe_contains_forbidden_instrument", "message": str(exc)}],
+        )
+    except ValueError as exc:
+        return CommandResult(
+            command="data.readiness",
+            status="error",
+            human_lines=[f"Error: {exc}"],
+            errors=[{"code": "universe_ref_not_found", "message": str(exc)}],
+        )
+
+    timeframe = TIMEFRAME_CHOICES[args.timeframe]
+    minutes = _READINESS_TIMEFRAME_MINUTES.get(timeframe)
+    if minutes is None:
+        return CommandResult(
+            command="data.readiness",
+            status="error",
+            human_lines=[
+                f"Error: {args.timeframe} is not an intraday timeframe (use 1m/5m/15m/1h)."
+            ],
+            errors=[
+                {
+                    "code": "invalid_timeframe",
+                    "message": "readiness requires an intraday timeframe (1m/5m/15m/1h)",
+                }
+            ],
+        )
+
+    start = parse_iso_date(args.start)
+    end = parse_iso_date(args.end)
+    if end < start:
+        raise ValueError("--end must be on or after --start.")
+
+    provider = ctx.data_provider_factory()
+    bars_by_symbol = provider.get_bars(list(symbols), timeframe, start, end)
+
+    reference_daily = None
+    if getattr(args, "cross_check_reference", False):
+        from milodex.data.consolidated_reference import fetch_daily_ohlc
+
+        reference_daily = {s: fetch_daily_ohlc(s, start, end) for s in symbols}
+
+    report = scan_intraday_readiness(
+        bars_by_symbol,
+        timeframe_minutes=minutes,
+        requested_start=start,
+        requested_end=end,
+        feed_label=args.feed_label,
+        reference_daily_by_symbol=reference_daily,
+    )
+    return _build_readiness_result(args.universe_ref, args.timeframe, report)
+
+
+def _build_readiness_result(universe_ref: str, timeframe_label: str, report: Any) -> CommandResult:
+    data = report.to_dict()
+    lines = [
+        f"data readiness: {universe_ref} ({timeframe_label})",
+        f"  Status        : {data['status']}",
+        f"  Feed label    : {data['feed_label']}",
+        f"  Symbols       : {len(data['scanned_symbols'])}",
+        f"  Warnings      : {data['warning_count']}",
+    ]
+    cap = 10
+    per_symbol = data["per_symbol"]
+    for sr in per_symbol[:cap]:
+        lines.append(
+            f"    {sr['symbol']}: {sr['observed_bars']}/{sr['expected_bars']} bars "
+            f"({sr['coverage_pct']}%), {sr['sessions_observed']} sessions"
+        )
+    if len(per_symbol) > cap:
+        lines.append("    ...")
+    issue_codes = data["issue_codes"]
+    if issue_codes:
+        from collections import Counter
+
+        counts = Counter(issue_codes)
+        summary = ", ".join(f"{c}×{n}" for c, n in counts.most_common(cap))
+        lines.append(f"  Issue codes   : {summary}")
+    return CommandResult(command="data.readiness", data=data, human_lines=lines)
 
 
 def _run_warmup_tape(args: argparse.Namespace) -> CommandResult:

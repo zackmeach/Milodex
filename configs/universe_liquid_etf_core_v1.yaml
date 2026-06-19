@@ -1,0 +1,48 @@
+# Liquid ETF Core Universe — v1
+#
+# Frozen universe manifest (ADR 0015 frozen-manifest principle). Strategies
+# reference this by id; they do not inline their own lists. Any membership
+# change creates a new version — never edited in place.
+#
+# Purpose: the provider-agnostic price-action evidence lane (intraday ETF
+# canaries + baselines) runs per-symbol across this set. 17 highly-liquid,
+# plain-vanilla, survivorship-immune ETFs. Subject to ADR 0016 (now enforced
+# by src/milodex/strategies/instrument_eligibility.py).
+
+universe:
+  id: "universe.liquid_etf_core.v1"
+  version: 1
+  slippage_pct: 0.0005  # 5 bps — conservative for the thinner sector/commodity ETFs intraday
+  # Survivorship-immune: every member launched well before Phase 1 windows and
+  # none has been delisted (broad index 1993-2000; Select Sector SPDRs 1998,
+  # XLRE 2015, XLC 2018; TLT 2002; GLD 2004). See docs/RISK_POLICY.md
+  # "Known Backtest Limitations and Biases".
+  survivorship_corrected: true
+  description: >
+    Seventeen highly-liquid plain-vanilla ETFs: four broad-market index ETFs
+    (SPY QQQ IWM DIA), the eleven GICS-sector Select Sector SPDRs, and two
+    macro hedges (TLT long Treasuries, GLD gold). The reusable universe for
+    the intraday price-action evidence lane — broad enough to test whether an
+    intraday edge generalizes beyond SPY, all on instruments with clean
+    corporate actions and reliable bar structure. Subject to ADR 0016.
+
+  etfs:
+    - "SPY"   # S&P 500
+    - "QQQ"   # Nasdaq-100
+    - "IWM"   # Russell 2000
+    - "DIA"   # Dow Jones Industrial Average
+    - "XLB"   # Materials
+    - "XLC"   # Communication Services
+    - "XLE"   # Energy
+    - "XLF"   # Financials
+    - "XLI"   # Industrials
+    - "XLK"   # Technology
+    - "XLP"   # Consumer Staples
+    - "XLRE"  # Real Estate
+    - "XLU"   # Utilities
+    - "XLV"   # Health Care
+    - "XLY"   # Consumer Discretionary
+    - "TLT"   # 20+ Year Treasury
+    - "GLD"   # Gold
+
+  stocks: []

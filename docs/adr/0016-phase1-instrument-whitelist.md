@@ -45,6 +45,34 @@ Phase 1 trades **long-only U.S.-listed common stocks and plain-vanilla ETFs**. E
 - The Phase 1 universe manifest (`configs/universe_phase1_v1.yaml`) is internally consistent with this whitelist. A future universe manifest that added, say, `UVXY` or `TQQQ` would fail validation and block the entire promotion pipeline until the ADR is superseded.
 - Massive's and Alpaca's broader instrument coverage is not exercised in Phase 1. This is intentional; integration work for those surfaces is deferred to Phase 2+.
 
+## Enforcement (added 2026-06-19)
+
+The "Consequences" claim above — that the config validator refuses a universe
+containing a forbidden instrument — described an *intended* invariant that no
+code implemented until now. Enforcement is implemented in
+`src/milodex/strategies/instrument_eligibility.py` and called from both
+universe-resolution paths in `strategies/loader.py`: `resolve_universe_ref` for
+`universe_ref` manifests and `_load_universe` for inline universes. (Callers of
+`resolve_universe_ref` include `StrategyLoader.load`, `data fetch-universe`, and
+the paper-runner-launch path `strategies/paper_runner_control.py` — the guard now
+fires on each.)
+
+The mechanism is a **curated denylist** of known leveraged / inverse / volatility
+ETPs, NOT the instrument-type allowlist the prose implies. No instrument-type
+metadata exists on symbols in Phase 1 (no SIP / reference feed — ADR 0017), so a
+type-based allowlist is not yet feasible. The denylist is deliberately
+incomplete: a newly-launched leveraged ETP not on the list would pass. The
+upgrade path to a true type allowlist opens when a reference-data feed supplies
+asset-class / leverage metadata.
+
+`InstrumentEligibilityError` subclasses `ValueError`, so glob-based config
+loaders that catch `ValueError` (e.g. `loader.resolve_config_path`) *skip* a
+forbidden config rather than failing loudly. The fail-loud surfaces are the
+no-try/except `load_strategy_config` calls in the test suite (the CI tripwire)
+and the CLI handlers, which catch the subclass explicitly to emit a distinct
+error. No shipped manifest or strategy config contains a denylisted ticker
+(verified 2026-06-19), so the guard is a no-op on current configs.
+
 ## Links
 
 - Supersedes: none

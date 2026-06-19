@@ -18,6 +18,7 @@ from milodex.strategies.base import (
     StrategyParameterRelation,
     StrategyParameterSpec,
 )
+from milodex.strategies.instrument_eligibility import reject_ineligible_instruments
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +149,7 @@ def resolve_universe_ref(universe_ref: str, config_path: Path) -> tuple[str, ...
         if not symbols:
             msg = f"{manifest_path}: universe '{universe_ref}' has no members"
             raise ValueError(msg)
+        reject_ineligible_instruments(symbols, source=str(manifest_path))
         return tuple(sorted(set(symbols)))
     msg = (
         f"{config_path}: universe_ref '{universe_ref}' not found in any "
@@ -506,7 +508,9 @@ def _load_universe(strategy: dict[str, Any], path: Path) -> tuple[tuple[str, ...
         ):
             msg = f"{path}: strategy.universe must be a non-empty list of symbols"
             raise ValueError(msg)
-        return tuple(symbol.strip().upper() for symbol in universe), None
+        resolved = tuple(symbol.strip().upper() for symbol in universe)
+        reject_ineligible_instruments(resolved, source=str(path))
+        return resolved, None
 
     universe_ref = strategy["universe_ref"]
     if not isinstance(universe_ref, str) or not universe_ref.strip():

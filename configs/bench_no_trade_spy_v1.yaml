@@ -1,0 +1,41 @@
+# No-Trade Baseline — SPY v1
+#
+# The absolute floor: never trades, P&L == 0. The trivial null every candidate
+# must clear before any other comparison matters. A research instrument — stays
+# at backtest, never promoted. Rules in code:
+#   src/milodex/strategies/bench_no_trade.py
+
+strategy:
+  id: "benchmark.no_trade.spy.v1"
+  family: "benchmark"
+  template: "no_trade"
+  variant: "spy"
+  version: 1
+  description: >
+    No-trade baseline: never emits an order. P&L is identically zero. Used as the
+    floor in the intraday ETF evidence baseline suite — a candidate that cannot
+    beat doing nothing has no edge.
+  enabled: true
+
+  universe_ref: "universe.spy_only.v1"
+
+  parameters: {}
+
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    slippage_pct: 0.0005
+    min_trades_required: 0
+
+  disable_conditions_additional: []
