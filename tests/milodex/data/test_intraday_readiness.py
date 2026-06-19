@@ -157,3 +157,25 @@ def test_feed_label_recorded():
         start=date(2025, 6, 17), end=date(2025, 6, 17), feed_label="fallback",
     )
     assert report.to_dict()["feed_label"] == "fallback"
+
+
+def test_reference_cross_check_folds_inward_bias():
+    # Narrow IEX session (high 100.5/low 99.5) vs wide consolidated daily (102/98).
+    rows = _session_5min("2025-06-17")
+    for r in rows:
+        r["high"], r["low"] = 100.5, 99.5
+    reference = {"SPY": pd.DataFrame([{
+        "timestamp": pd.Timestamp("2025-06-17", tz="UTC"),
+        "open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0,
+        "volume": 1_000_000, "vwap": float("nan"),
+    }])}
+    report = scan_intraday_readiness(
+        {"SPY": _barset(rows)},
+        timeframe_minutes=5,
+        requested_start=date(2025, 6, 17),
+        requested_end=date(2025, 6, 17),
+        reference_daily_by_symbol=reference,
+    )
+    # min_sessions defaults to 5, so a single session does NOT flag — proves the
+    # advisory gate is inert on short windows (documented behaviour).
+    assert "iex_inward_price_bias" not in report.to_dict()["issue_codes"]

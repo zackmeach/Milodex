@@ -137,6 +137,7 @@ def scan_intraday_readiness(
     requested_start: date,
     requested_end: date,
     feed_label: str = "fallback",
+    reference_daily_by_symbol: dict[str, pd.DataFrame] | None = None,
 ) -> ReadinessReport:
     if timeframe_minutes <= 0:
         raise ValueError("timeframe_minutes must be positive")
@@ -233,6 +234,13 @@ def scan_intraday_readiness(
             sessions_observed=len(session_days),
             expected_bars=total_expected, observed_bars=total_observed,
         ))
+
+    if reference_daily_by_symbol:
+        # IEX price-fidelity gate (advisory). No feed_label demotion: an inward-bias
+        # warning is the v1 signal — the label is operator-supplied, not derived here.
+        from milodex.data.consolidated_reference import cross_check_session_extremes
+
+        issues.extend(cross_check_session_extremes(bars_by_symbol, reference_daily_by_symbol))
 
     return ReadinessReport(
         requested_start=requested_start, requested_end=requested_end,

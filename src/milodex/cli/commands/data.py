@@ -125,6 +125,14 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         choices=("research_grade", "execution_adjacent", "fallback"),
         help="Feed-quality label for the verdict (IEX free tier => fallback).",
     )
+    rd_parser.add_argument(
+        "--cross-check-reference",
+        action="store_true",
+        help=(
+            "Cross-check IEX session ranges against a free consolidated daily "
+            "reference (Yahoo) to flag inward price bias. Makes live network calls."
+        ),
+    )
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
@@ -395,12 +403,20 @@ def _run_readiness(args: argparse.Namespace, ctx: CommandContext) -> CommandResu
 
     provider = ctx.data_provider_factory()
     bars_by_symbol = provider.get_bars(list(symbols), timeframe, start, end)
+
+    reference_daily = None
+    if getattr(args, "cross_check_reference", False):
+        from milodex.data.consolidated_reference import fetch_daily_ohlc
+
+        reference_daily = {s: fetch_daily_ohlc(s, start, end) for s in symbols}
+
     report = scan_intraday_readiness(
         bars_by_symbol,
         timeframe_minutes=minutes,
         requested_start=start,
         requested_end=end,
         feed_label=args.feed_label,
+        reference_daily_by_symbol=reference_daily,
     )
     return _build_readiness_result(args.universe_ref, args.timeframe, report)
 
