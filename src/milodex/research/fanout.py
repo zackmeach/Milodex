@@ -62,11 +62,13 @@ def generate_per_symbol_configs(
     # "meanrev_rsi2_intraday".
     base_stem = base_config_path.stem  # e.g. "meanrev_rsi2_intraday_spy_v1"
     suffix_to_strip = f"_{variant.lower()}_v{version}"
-    if base_stem.endswith(suffix_to_strip):
-        stem = base_stem[: -len(suffix_to_strip)]
-    else:
-        # Fallback: strip only the trailing _v<version> segment if variant not found.
-        stem = base_stem
+    if not base_stem.endswith(suffix_to_strip):
+        raise ValueError(
+            f"Base config filename '{base_config_path.name}' does not follow the "
+            f"'<stem>_{variant.lower()}_v{version}.yaml' convention; "
+            "cannot derive a per-symbol stem."
+        )
+    stem = base_stem[: -len(suffix_to_strip)]
 
     # Load raw YAML once for deep-copying.
     with base_config_path.open("r", encoding="utf-8") as fh:

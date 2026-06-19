@@ -95,6 +95,20 @@ def test_fanout_description_names_target_symbol(tmp_path: Path) -> None:
             )
 
 
+def test_fanout_raises_on_off_convention_filename(tmp_path: Path) -> None:
+    """A base config saved under an off-convention filename must raise ValueError."""
+    shutil.copy(_UNIVERSE_MANIFEST, tmp_path / _UNIVERSE_MANIFEST.name)
+    # Copy the base YAML to a weirdname that does NOT end with _spy_v1
+    weird = tmp_path / "weirdname.yaml"
+    shutil.copy(_BASE_CONFIG, weird)
+    with pytest.raises(ValueError, match="does not follow"):
+        generate_per_symbol_configs(
+            base_config_path=weird,
+            universe_ref="universe.liquid_etf_core.v1",
+            out_dir=tmp_path,
+        )
+
+
 def test_fanout_rejects_ineligible_symbol(tmp_path: Path) -> None:
     # a universe_ref pointing at a manifest with a forbidden ETP must raise
     # (proves the generator does not bypass ADR 0016).
