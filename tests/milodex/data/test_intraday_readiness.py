@@ -132,6 +132,37 @@ def test_interior_gap_warns():
     assert "intraday_intra_session_gap" in report.to_dict()["issue_codes"]
 
 
+def test_hourly_timeframe_full_session_passes():
+    # 1h does not divide the 390-min session: a clean session has 7 bars
+    # (9:30,10:30,..,15:30 = offsets 0,60,..,360), NOT 390//60=6. Regression for
+    # the ceil-division / last-grid-offset fix — must report 100% coverage and no
+    # spurious missing-close-bar.
+    start = pd.Timestamp("2025-06-17 09:30", tz="America/New_York")
+    rows = [
+        {
+            "timestamp": (start + pd.Timedelta(minutes=60 * i)).tz_convert("UTC"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000.0,
+            "vwap": 100.2,
+        }
+        for i in range(7)
+    ]
+    report = scan_intraday_readiness(
+        {"SPY": _barset(rows)},
+        timeframe_minutes=60,
+        requested_start=date(2025, 6, 17),
+        requested_end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.expected_bars == 7 and sr.observed_bars == 7
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"
+    assert "intraday_missing_session_close_bar" not in report.to_dict()["issue_codes"]
+
+
 def test_half_day_expected_count_is_42():
     # 2025-11-28 is a known half-day (210 min / 5 = 42 bars).
     report = _scan(

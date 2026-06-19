@@ -174,7 +174,12 @@ def scan_intraday_readiness(
         total_observed = 0
         for day in session_days:
             close_off = session_close_offset_minutes(day)
-            expected = close_off // timeframe_minutes
+            # Count of regular-session bar slots = grid offsets in [0, close_off)
+            # stepping by timeframe = ceil(close_off / tf). For timeframes that don't
+            # divide the session (e.g. 1h into 390min: offsets 0,60..360 = 7 bars,
+            # not 390//60=6) floor-division undercounts by one.
+            expected = -(-close_off // timeframe_minutes)
+            last_grid_offset = (expected - 1) * timeframe_minutes
             session = regular_session_bars(df, day)
             observed = len(session)
             total_expected += expected
@@ -194,7 +199,7 @@ def scan_intraday_readiness(
                         {"session": day.isoformat()},
                     )
                 )
-            if (close_off - timeframe_minutes) not in offsets:
+            if last_grid_offset not in offsets:
                 issues.append(
                     _warn(
                         symbol,
