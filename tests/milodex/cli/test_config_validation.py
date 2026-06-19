@@ -26,6 +26,23 @@ def test_validate_phase1_strategy_configs():
     assert "Detected kind: strategy" in meanrev_lines
 
 
+def test_validate_universe_config_reports_unsupported_kind():
+    """A universe manifest has no top-level 'strategy:' — config validate must report
+    an unsupported kind clearly, not the misleading 'strategy must be a mapping'.
+    (F3 — 2026-06-18 testing day)"""
+    path = Path("configs/universe_spy_only_v1.yaml")
+    with pytest.raises(ValueError, match="[Uu]nsupported config kind"):
+        validate_config_file(path)
+
+
+def test_validate_risk_profile_reports_unsupported_kind():
+    """A risk_profiles/*.yaml overlay (kill_switch/portfolio sections, no 'strategy:')
+    is not a full strategy or risk_defaults config — clear unsupported message. (F3)"""
+    path = Path("configs/risk_profiles/aggressive.yaml")
+    with pytest.raises(ValueError, match="[Uu]nsupported config kind"):
+        validate_config_file(path)
+
+
 def test_validate_rejects_directory_path_with_valueerror(tmp_path):
     """A directory passed where a config file is expected raises a clean ValueError
     (not a raw IsADirectoryError/PermissionError). FIX-1: is_file() guard."""

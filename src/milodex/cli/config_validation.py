@@ -45,13 +45,16 @@ def validate_config_file(path: Path, kind: str | None = None) -> list[str]:
         msg = f"Config root must be a mapping: {path}"
         raise ValueError(msg)
 
-    detected_kind = kind or _infer_kind(path)
+    detected_kind = kind or _infer_kind(path, data)
     if detected_kind == "strategy":
         _validate_strategy_config(data, path)
     elif detected_kind == "risk":
         _validate_risk_config(data, path)
     else:
-        msg = f"Unsupported config kind: {detected_kind}"
+        msg = (
+            f"Unsupported config kind for {path.name}: config validate handles "
+            f"strategy configs (top-level 'strategy:') and risk_defaults.yaml only."
+        )
         raise ValueError(msg)
 
     return [
@@ -60,10 +63,12 @@ def validate_config_file(path: Path, kind: str | None = None) -> list[str]:
     ]
 
 
-def _infer_kind(path: Path) -> str:
+def _infer_kind(path: Path, data: dict[str, Any]) -> str:
     if path.name == "risk_defaults.yaml":
         return "risk"
-    return "strategy"
+    if "strategy" in data:
+        return "strategy"
+    return "unknown"
 
 
 def _validate_strategy_config(data: dict[str, Any], path: Path) -> None:

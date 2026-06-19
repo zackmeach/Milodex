@@ -10,6 +10,7 @@ from io import StringIO
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from milodex.broker.exceptions import BrokerAuthError
 from milodex.broker.models import (
@@ -347,6 +348,38 @@ def test_orders_support_symbol_filter_and_verbose_output():
     assert "MSFT" in output
     assert "AAPL" not in output
     assert "details: limit=$250.00" in output
+
+
+@pytest.mark.parametrize("bad_limit", ["0", "-1"])
+def test_orders_limit_below_one_is_rejected_before_broker_query(bad_limit):
+    """`orders --limit <1` must be rejected with a clean error before the broker is
+    queried, matching the sibling `positions --limit` guard. (F2 — 2026-06-18 testing day)"""
+    broker = StubBroker(
+        orders=[
+            Order(
+                id="order-1234567890",
+                symbol="SPY",
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                quantity=1.0,
+                time_in_force=TimeInForce.DAY,
+                status=OrderStatus.FILLED,
+                submitted_at=datetime(2025, 1, 15, 14, 30, tzinfo=UTC),
+            )
+        ]
+    )
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["orders", "--limit", bad_limit],
+        broker_factory=lambda: broker,
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert broker.order_calls == []
+    assert "--limit must be at least 1" in stderr.getvalue()
 
 
 def test_data_bars_outputs_rows():

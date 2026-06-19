@@ -79,6 +79,8 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         broker = ctx.broker_factory()
         return _build_positions_result(broker.get_positions(), sort_key=args.sort, limit=args.limit)
     if args.command == "orders":
+        if args.limit < 1:
+            raise ValueError("--limit must be at least 1.")
         broker = ctx.broker_factory()
         return _build_orders_result(
             broker.get_orders(status=args.status, limit=args.limit),
