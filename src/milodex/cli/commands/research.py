@@ -29,7 +29,12 @@ from milodex.cli._shared import (
     parse_iso_date,
 )
 from milodex.cli.formatter import CommandResult
-from milodex.strategies.loader import build_default_registry, load_strategy_config
+from milodex.research.fanout import generate_per_symbol_configs
+from milodex.strategies.loader import (
+    build_default_registry,
+    load_strategy_config,
+    resolve_config_path,
+)
 
 
 @dataclass(frozen=True)
@@ -114,12 +119,76 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
+    fanout = research_sub.add_parser(
+        "fan-out",
+        help="Generate one per-symbol config from a base strategy config + universe_ref.",
+    )
+    add_global_flags(fanout)
+    _fanout_id_group = fanout.add_mutually_exclusive_group(required=True)
+    _fanout_id_group.add_argument(
+        "--strategy-id",
+        dest="fanout_strategy_id",
+        default=None,
+        help="Base strategy id (resolved via configs dir).",
+    )
+    _fanout_id_group.add_argument(
+        "--config",
+        dest="fanout_config",
+        default=None,
+        help="Explicit path to the base strategy config YAML.",
+    )
+    fanout.add_argument(
+        "--universe-ref",
+        required=True,
+        dest="fanout_universe_ref",
+        help="Universe ref string, e.g. 'universe.liquid_etf_core.v1'.",
+    )
+    fanout.add_argument(
+        "--out",
+        dest="fanout_out",
+        default="configs",
+        help="Output directory for generated configs (default: configs).",
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.research_command == "screen":
         return _screen(args, ctx)
+    if args.research_command == "fan-out":
+        return _fanout(args, ctx)
     msg = f"Unsupported research command: {args.research_command}"
     raise ValueError(msg)
+
+
+def _fanout(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    """Handle ``research fan-out``: generate per-symbol configs from a base."""
+    if args.fanout_config:
+        base_path = Path(args.fanout_config)
+    else:
+        base_path = resolve_config_path(args.fanout_strategy_id, ctx.config_dir)
+
+    out_dir = Path(args.fanout_out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = generate_per_symbol_configs(
+        base_config_path=base_path,
+        universe_ref=args.fanout_universe_ref,
+        out_dir=out_dir,
+    )
+
+    data: dict[str, Any] = {
+        "base_config": str(base_path),
+        "universe_ref": args.fanout_universe_ref,
+        "out_dir": str(out_dir),
+        "generated_count": len(written),
+        "generated_paths": [str(p) for p in written],
+    }
+    lines = [
+        f"Fan-out: {base_path.name} × {args.fanout_universe_ref}",
+        f"Generated {len(written)} config(s) → {out_dir}",
+        *[f"  {p.name}" for p in written],
+    ]
+    return CommandResult(command="research.fan-out", data=data, human_lines=lines)
 
 
 def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
