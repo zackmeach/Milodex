@@ -195,7 +195,7 @@ def scan_intraday_readiness(
             # off-grid bars excluded — so observed <= expected by construction.
             on_grid = {
                 off
-                for off in raw_offsets
+                for off in offsets
                 if off % timeframe_minutes == 0 and 0 <= off <= last_grid_offset
             }
             observed = len(on_grid)
@@ -203,7 +203,7 @@ def scan_intraday_readiness(
             total_observed += observed
             # Surface off-grid and duplicate bars rather than silently dropping them.
             n_offgrid = sum(1 for off in raw_offsets if off % timeframe_minutes != 0)
-            n_duplicate = len(raw_offsets) - len(set(raw_offsets))
+            n_duplicate = len(raw_offsets) - len(offsets)
             if n_offgrid or n_duplicate:
                 issues.append(
                     _warn(
