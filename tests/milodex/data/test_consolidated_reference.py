@@ -22,21 +22,36 @@ def _intraday_session(day: str, *, high: float, low: float, close: float, n: int
         bar_high = high if i == 5 else (low + high) / 2
         bar_low = low if i == 7 else (low + high) / 2
         bar_close = close if i == n - 1 else (low + high) / 2
-        rows.append({
-            "timestamp": ts, "open": (low + high) / 2, "high": bar_high,
-            "low": bar_low, "close": bar_close, "volume": 1000.0, "vwap": (low + high) / 2,
-        })
+        rows.append(
+            {
+                "timestamp": ts,
+                "open": (low + high) / 2,
+                "high": bar_high,
+                "low": bar_low,
+                "close": bar_close,
+                "volume": 1000.0,
+                "vwap": (low + high) / 2,
+            }
+        )
     return BarSet(pd.DataFrame(rows))
 
 
 def _daily_ref(day: str, *, high: float, low: float, close: float) -> pd.DataFrame:
     # Daily bars are date-labelled at midnight UTC; the bar's calendar date IS its
     # session date (no ET conversion — a daily bar is not a point-in-time).
-    return pd.DataFrame([{
-        "timestamp": pd.Timestamp(day, tz="UTC"),
-        "open": close, "high": high, "low": low, "close": close,
-        "volume": 1_000_000, "vwap": float("nan"),
-    }])
+    return pd.DataFrame(
+        [
+            {
+                "timestamp": pd.Timestamp(day, tz="UTC"),
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1_000_000,
+                "vwap": float("nan"),
+            }
+        ]
+    )
 
 
 def test_inward_bias_flagged():
@@ -88,8 +103,13 @@ def test_fetch_daily_ohlc_reshapes_monkeypatched_yfinance(monkeypatch):
             # Real yfinance daily history names its index "Date".
             idx = pd.DatetimeIndex(pd.to_datetime(["2025-06-16", "2025-06-17"]), name="Date")
             return pd.DataFrame(
-                {"Open": [100.0, 101.0], "High": [102.0, 103.0], "Low": [99.0, 100.0],
-                 "Close": [101.0, 102.0], "Volume": [1_000_000, 1_100_000]},
+                {
+                    "Open": [100.0, 101.0],
+                    "High": [102.0, 103.0],
+                    "Low": [99.0, 100.0],
+                    "Close": [101.0, 102.0],
+                    "Volume": [1_000_000, 1_100_000],
+                },
                 index=idx,
             )
 

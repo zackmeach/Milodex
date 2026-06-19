@@ -106,8 +106,11 @@ class ReadinessReport:
 
 def _warn(symbol: str, code: str, message: str, context: dict[str, Any]) -> DataQualityIssue:
     return DataQualityIssue(
-        code=code, severity=DataQualitySeverity.WARNING, symbol=symbol,
-        message=message, context=context,
+        code=code,
+        severity=DataQualitySeverity.WARNING,
+        symbol=symbol,
+        message=message,
+        context=context,
     )
 
 
@@ -183,57 +186,81 @@ def scan_intraday_readiness(
                 else set()
             )
             if 0 not in offsets:
-                issues.append(_warn(
-                    symbol, "intraday_missing_session_open_bar",
-                    f"{symbol} {day}: missing the 9:30 ET session-open bar.",
-                    {"session": day.isoformat()},
-                ))
+                issues.append(
+                    _warn(
+                        symbol,
+                        "intraday_missing_session_open_bar",
+                        f"{symbol} {day}: missing the 9:30 ET session-open bar.",
+                        {"session": day.isoformat()},
+                    )
+                )
             if (close_off - timeframe_minutes) not in offsets:
-                issues.append(_warn(
-                    symbol, "intraday_missing_session_close_bar",
-                    f"{symbol} {day}: missing the final regular-session bar.",
-                    {"session": day.isoformat()},
-                ))
+                issues.append(
+                    _warn(
+                        symbol,
+                        "intraday_missing_session_close_bar",
+                        f"{symbol} {day}: missing the final regular-session bar.",
+                        {"session": day.isoformat()},
+                    )
+                )
             if expected and observed / expected < SESSION_COVERAGE_FLOOR:
-                issues.append(_warn(
-                    symbol, "intraday_session_coverage_below_threshold",
-                    f"{symbol} {day}: {observed}/{expected} bars ({observed / expected:.0%}).",
-                    {"session": day.isoformat(), "observed": observed, "expected": expected},
-                ))
+                issues.append(
+                    _warn(
+                        symbol,
+                        "intraday_session_coverage_below_threshold",
+                        f"{symbol} {day}: {observed}/{expected} bars ({observed / expected:.0%}).",
+                        {"session": day.isoformat(), "observed": observed, "expected": expected},
+                    )
+                )
             max_gap = _max_intra_session_gap(offsets, timeframe_minutes)
             if max_gap > 1:
-                issues.append(_warn(
-                    symbol, "intraday_intra_session_gap",
-                    f"{symbol} {day}: {max_gap} consecutive missing bars.",
-                    {"session": day.isoformat(), "max_gap_bars": max_gap},
-                ))
+                issues.append(
+                    _warn(
+                        symbol,
+                        "intraday_intra_session_gap",
+                        f"{symbol} {day}: {max_gap} consecutive missing bars.",
+                        {"session": day.isoformat(), "max_gap_bars": max_gap},
+                    )
+                )
             zero_vol = (
                 int((pd.to_numeric(session["volume"], errors="coerce") == 0).sum())
                 if observed
                 else 0
             )
             if zero_vol:
-                issues.append(_warn(
-                    symbol, "intraday_zero_volume_bars",
-                    f"{symbol} {day}: {zero_vol} zero-volume regular-session bar(s).",
-                    {"session": day.isoformat(), "zero_volume_bars": zero_vol},
-                ))
+                issues.append(
+                    _warn(
+                        symbol,
+                        "intraday_zero_volume_bars",
+                        f"{symbol} {day}: {zero_vol} zero-volume regular-session bar(s).",
+                        {"session": day.isoformat(), "zero_volume_bars": zero_vol},
+                    )
+                )
 
         last_session = max(session_days)
         if last_session < requested_end - STALE_TAIL_TOLERANCE:
-            issues.append(_warn(
-                symbol, "intraday_stale_dataset_tail",
-                f"{symbol}: latest session {last_session} is materially before "
-                f"requested_end {requested_end}.",
-                {"last_session": last_session.isoformat(),
-                 "requested_end": requested_end.isoformat()},
-            ))
+            issues.append(
+                _warn(
+                    symbol,
+                    "intraday_stale_dataset_tail",
+                    f"{symbol}: latest session {last_session} is materially before "
+                    f"requested_end {requested_end}.",
+                    {
+                        "last_session": last_session.isoformat(),
+                        "requested_end": requested_end.isoformat(),
+                    },
+                )
+            )
 
-        per_symbol.append(SymbolReadiness(
-            symbol=symbol, content_hash=_content_hash(df),
-            sessions_observed=len(session_days),
-            expected_bars=total_expected, observed_bars=total_observed,
-        ))
+        per_symbol.append(
+            SymbolReadiness(
+                symbol=symbol,
+                content_hash=_content_hash(df),
+                sessions_observed=len(session_days),
+                expected_bars=total_expected,
+                observed_bars=total_observed,
+            )
+        )
 
     if reference_daily_by_symbol:
         # IEX price-fidelity gate (advisory). No feed_label demotion: an inward-bias
@@ -243,10 +270,13 @@ def scan_intraday_readiness(
         issues.extend(cross_check_session_extremes(bars_by_symbol, reference_daily_by_symbol))
 
     return ReadinessReport(
-        requested_start=requested_start, requested_end=requested_end,
-        timeframe_minutes=timeframe_minutes, feed_label=feed_label,
+        requested_start=requested_start,
+        requested_end=requested_end,
+        timeframe_minutes=timeframe_minutes,
+        feed_label=feed_label,
         scanned_symbols=tuple(sorted(bars_by_symbol)),
-        per_symbol=tuple(per_symbol), issues=tuple(issues),
+        per_symbol=tuple(per_symbol),
+        issues=tuple(issues),
     )
 
 

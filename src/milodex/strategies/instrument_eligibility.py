@@ -27,18 +27,69 @@ from collections.abc import Iterable
 FORBIDDEN_ETP_SYMBOLS: frozenset[str] = frozenset(
     {
         # Leveraged long broad-index
-        "SSO", "UPRO", "SPXL", "QLD", "TQQQ", "UDOW", "UWM", "URTY", "DDM",
+        "SSO",
+        "UPRO",
+        "SPXL",
+        "QLD",
+        "TQQQ",
+        "UDOW",
+        "UWM",
+        "URTY",
+        "DDM",
         # Inverse / leveraged-inverse broad-index
-        "SH", "SDS", "SPXU", "SPXS", "PSQ", "QID", "SQQQ", "DOG", "DXD",
-        "SDOW", "RWM", "TWM", "TZA", "TNA",
+        "SH",
+        "SDS",
+        "SPXU",
+        "SPXS",
+        "PSQ",
+        "QID",
+        "SQQQ",
+        "DOG",
+        "DXD",
+        "SDOW",
+        "RWM",
+        "TWM",
+        "TZA",
+        "TNA",
         # Sector / thematic leveraged + inverse
-        "SOXL", "SOXS", "FAS", "FAZ", "LABU", "LABD", "TECL", "TECS",
-        "NUGT", "DUST", "JNUG", "JDST", "ERX", "ERY", "GUSH", "DRIP",
-        "YINN", "YANG", "BOIL", "KOLD", "UCO", "SCO",
+        "SOXL",
+        "SOXS",
+        "FAS",
+        "FAZ",
+        "LABU",
+        "LABD",
+        "TECL",
+        "TECS",
+        "NUGT",
+        "DUST",
+        "JNUG",
+        "JDST",
+        "ERX",
+        "ERY",
+        "GUSH",
+        "DRIP",
+        "YINN",
+        "YANG",
+        "BOIL",
+        "KOLD",
+        "UCO",
+        "SCO",
         # Leveraged bonds
-        "TMF", "TMV", "TBT", "UBT", "TYD", "TYO",
+        "TMF",
+        "TMV",
+        "TBT",
+        "UBT",
+        "TYD",
+        "TYO",
         # Volatility ETPs (decay breaks naive backtest — ADR 0016:34)
-        "VXX", "VIXY", "UVXY", "SVXY", "VIXM", "SVIX", "UVIX", "VXZ",
+        "VXX",
+        "VIXY",
+        "UVXY",
+        "SVXY",
+        "VIXM",
+        "SVIX",
+        "UVIX",
+        "VXZ",
     }
 )
 
@@ -64,9 +115,7 @@ def reject_ineligible_instruments(symbols: Iterable[str], *, source: str) -> Non
     membership. Empty input is a no-op.
     """
     forbidden = sorted(
-        s
-        for s in {str(sym).strip().upper() for sym in symbols}
-        if s in FORBIDDEN_ETP_SYMBOLS
+        s for s in {str(sym).strip().upper() for sym in symbols} if s in FORBIDDEN_ETP_SYMBOLS
     )
     if forbidden:
         msg = (

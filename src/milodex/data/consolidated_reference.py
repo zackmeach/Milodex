@@ -118,17 +118,19 @@ def cross_check_session_extremes(
             if iex_norm / ref_norm < min_range_ratio:
                 inward += 1
         if compared >= min_sessions and inward / compared > 0.5:
-            issues.append(DataQualityIssue(
-                code="iex_inward_price_bias",
-                severity=DataQualitySeverity.WARNING,
-                symbol=symbol,
-                message=(
-                    f"{symbol}: IEX session range inward-biased vs consolidated reference "
-                    f"on {inward}/{compared} sessions — price-action verdicts on this symbol "
-                    f"are non-durable (heuristic; threshold pending real-data calibration)."
-                ),
-                context={"inward_sessions": inward, "compared_sessions": compared},
-            ))
+            issues.append(
+                DataQualityIssue(
+                    code="iex_inward_price_bias",
+                    severity=DataQualitySeverity.WARNING,
+                    symbol=symbol,
+                    message=(
+                        f"{symbol}: IEX session range inward-biased vs consolidated reference "
+                        f"on {inward}/{compared} sessions — price-action verdicts on this symbol "
+                        f"are non-durable (heuristic; threshold pending real-data calibration)."
+                    ),
+                    context={"inward_sessions": inward, "compared_sessions": compared},
+                )
+            )
     return issues
 
 
@@ -150,9 +152,7 @@ def _daily_norm_range_by_session(ref: pd.DataFrame) -> dict[date, float]:
 
 
 def _empty() -> pd.DataFrame:
-    return pd.DataFrame(
-        columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"]
-    )
+    return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"])
 
 
 def _reshape(raw: pd.DataFrame) -> pd.DataFrame:
@@ -161,12 +161,20 @@ def _reshape(raw: pd.DataFrame) -> pd.DataFrame:
     ts_col = next((c for c in ("date", "datetime") if c in df.columns), None)
     if ts_col is None:
         raise KeyError(f"no timestamp column in {list(df.columns)}")
-    return pd.DataFrame({
-        "timestamp": pd.to_datetime(df[ts_col], utc=True),
-        "open": pd.to_numeric(df["open"], errors="coerce").astype("float64"),
-        "high": pd.to_numeric(df["high"], errors="coerce").astype("float64"),
-        "low": pd.to_numeric(df["low"], errors="coerce").astype("float64"),
-        "close": pd.to_numeric(df["close"], errors="coerce").astype("float64"),
-        "volume": pd.to_numeric(df.get("volume", 0), errors="coerce").fillna(0).astype("int64"),
-        "vwap": float("nan"),
-    }).dropna(subset=["close"]).reset_index(drop=True)
+    return (
+        pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(df[ts_col], utc=True),
+                "open": pd.to_numeric(df["open"], errors="coerce").astype("float64"),
+                "high": pd.to_numeric(df["high"], errors="coerce").astype("float64"),
+                "low": pd.to_numeric(df["low"], errors="coerce").astype("float64"),
+                "close": pd.to_numeric(df["close"], errors="coerce").astype("float64"),
+                "volume": pd.to_numeric(df.get("volume", 0), errors="coerce")
+                .fillna(0)
+                .astype("int64"),
+                "vwap": float("nan"),
+            }
+        )
+        .dropna(subset=["close"])
+        .reset_index(drop=True)
+    )

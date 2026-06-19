@@ -32,10 +32,17 @@ def _session_5min(
             continue
         ts = (start + pd.Timedelta(minutes=5 * i)).tz_convert("UTC")
         vol = 0.0 if i < zero_vol_bars else volume
-        rows.append({
-            "timestamp": ts, "open": 100.0, "high": 101.0, "low": 99.0,
-            "close": 100.5, "volume": vol, "vwap": 100.2,
-        })
+        rows.append(
+            {
+                "timestamp": ts,
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.5,
+                "volume": vol,
+                "vwap": 100.2,
+            }
+        )
     return rows
 
 
@@ -56,7 +63,8 @@ def _scan(rows_by_symbol, *, start, end, timeframe_minutes=5, feed_label="fallba
 def test_clean_full_session_passes():
     report = _scan(
         {"SPY": _session_5min("2025-06-17")},
-        start=date(2025, 6, 17), end=date(2025, 6, 17),
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
     )
     assert report.status == "pass"
     sr = report.per_symbol[0]
@@ -76,7 +84,8 @@ def test_content_hash_differs_on_different_data():
     a = _scan({"SPY": _session_5min("2025-06-17")}, start=date(2025, 6, 17), end=date(2025, 6, 17))
     b = _scan(
         {"SPY": _session_5min("2025-06-17", volume=2_000.0)},
-        start=date(2025, 6, 17), end=date(2025, 6, 17),
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
     )
     assert a.per_symbol[0].content_hash != b.per_symbol[0].content_hash
 
@@ -84,7 +93,8 @@ def test_content_hash_differs_on_different_data():
 def test_zero_volume_bars_warn():
     report = _scan(
         {"SPY": _session_5min("2025-06-17", zero_vol_bars=3)},
-        start=date(2025, 6, 17), end=date(2025, 6, 17),
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
     )
     assert "intraday_zero_volume_bars" in report.to_dict()["issue_codes"]
 
@@ -94,7 +104,8 @@ def test_missing_session_open_bar_warns_without_coverage_flag():
     # 0.90 floor, so the coverage code must NOT fire — only the open-bar code.
     report = _scan(
         {"SPY": _session_5min("2025-06-17", open_offset_skip=1)},
-        start=date(2025, 6, 17), end=date(2025, 6, 17),
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
     )
     codes = report.to_dict()["issue_codes"]
     assert "intraday_missing_session_open_bar" in codes
@@ -105,7 +116,8 @@ def test_coverage_below_threshold_warns_when_many_bars_missing():
     # Drop 9 of 78 (open + 8 more) -> 69/78 = 88% < 90% floor.
     report = _scan(
         {"SPY": _session_5min("2025-06-17", open_offset_skip=9)},
-        start=date(2025, 6, 17), end=date(2025, 6, 17),
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
     )
     assert "intraday_session_coverage_below_threshold" in report.to_dict()["issue_codes"]
 
@@ -114,7 +126,8 @@ def test_interior_gap_warns():
     # Drop two consecutive interior bars (offsets 40, 45 = 12:50/12:55-ish).
     report = _scan(
         {"SPY": _session_5min("2025-06-17", drop_offsets=(40, 41))},
-        start=date(2025, 6, 17), end=date(2025, 6, 17),
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
     )
     assert "intraday_intra_session_gap" in report.to_dict()["issue_codes"]
 
@@ -123,7 +136,8 @@ def test_half_day_expected_count_is_42():
     # 2025-11-28 is a known half-day (210 min / 5 = 42 bars).
     report = _scan(
         {"SPY": _session_5min("2025-11-28", n_bars=42)},
-        start=date(2025, 11, 28), end=date(2025, 11, 28),
+        start=date(2025, 11, 28),
+        end=date(2025, 11, 28),
     )
     assert report.per_symbol[0].expected_bars == 42
     assert report.status == "pass"
@@ -134,16 +148,21 @@ def test_stale_dataset_tail_warns():
     # 2025-06-10 < 2025-06-11 -> fires.
     report = _scan(
         {"SPY": _session_5min("2025-06-10")},
-        start=date(2025, 6, 10), end=date(2025, 6, 18),
+        start=date(2025, 6, 10),
+        end=date(2025, 6, 18),
     )
     assert "intraday_stale_dataset_tail" in report.to_dict()["issue_codes"]
 
 
 def test_empty_barset_warns_no_bars():
     report = scan_intraday_readiness(
-        {"SPY": BarSet(pd.DataFrame(
-            columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"]
-        ))},
+        {
+            "SPY": BarSet(
+                pd.DataFrame(
+                    columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"]
+                )
+            )
+        },
         timeframe_minutes=5,
         requested_start=date(2025, 6, 17),
         requested_end=date(2025, 6, 17),
@@ -154,7 +173,9 @@ def test_empty_barset_warns_no_bars():
 def test_feed_label_recorded():
     report = _scan(
         {"SPY": _session_5min("2025-06-17")},
-        start=date(2025, 6, 17), end=date(2025, 6, 17), feed_label="fallback",
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+        feed_label="fallback",
     )
     assert report.to_dict()["feed_label"] == "fallback"
 
@@ -164,11 +185,21 @@ def test_reference_cross_check_folds_inward_bias():
     rows = _session_5min("2025-06-17")
     for r in rows:
         r["high"], r["low"] = 100.5, 99.5
-    reference = {"SPY": pd.DataFrame([{
-        "timestamp": pd.Timestamp("2025-06-17", tz="UTC"),
-        "open": 100.0, "high": 102.0, "low": 98.0, "close": 100.0,
-        "volume": 1_000_000, "vwap": float("nan"),
-    }])}
+    reference = {
+        "SPY": pd.DataFrame(
+            [
+                {
+                    "timestamp": pd.Timestamp("2025-06-17", tz="UTC"),
+                    "open": 100.0,
+                    "high": 102.0,
+                    "low": 98.0,
+                    "close": 100.0,
+                    "volume": 1_000_000,
+                    "vwap": float("nan"),
+                }
+            ]
+        )
+    }
     report = scan_intraday_readiness(
         {"SPY": _barset(rows)},
         timeframe_minutes=5,

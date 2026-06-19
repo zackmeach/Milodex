@@ -390,10 +390,12 @@ def _run_readiness(args: argparse.Namespace, ctx: CommandContext) -> CommandResu
             human_lines=[
                 f"Error: {args.timeframe} is not an intraday timeframe (use 1m/5m/15m/1h)."
             ],
-            errors=[{
-                "code": "invalid_timeframe",
-                "message": "readiness requires an intraday timeframe (1m/5m/15m/1h)",
-            }],
+            errors=[
+                {
+                    "code": "invalid_timeframe",
+                    "message": "readiness requires an intraday timeframe (1m/5m/15m/1h)",
+                }
+            ],
         )
 
     start = parse_iso_date(args.start)

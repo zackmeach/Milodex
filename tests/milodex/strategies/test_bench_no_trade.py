@@ -11,17 +11,25 @@ from milodex.strategies.loader import build_default_registry
 
 
 def _empty_barset() -> BarSet:
-    return BarSet(pd.DataFrame(
-        columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"]
-    ))
+    return BarSet(
+        pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"])
+    )
 
 
 def _ctx() -> StrategyContext:
     return StrategyContext(
-        strategy_id="benchmark.no_trade.spy.v1", family="benchmark",
-        template="no_trade", variant="spy", version=1, config_hash="x",
-        parameters={}, universe=("SPY",), universe_ref="universe.spy_only.v1",
-        disable_conditions=(), config_path="x", manifest={},
+        strategy_id="benchmark.no_trade.spy.v1",
+        family="benchmark",
+        template="no_trade",
+        variant="spy",
+        version=1,
+        config_hash="x",
+        parameters={},
+        universe=("SPY",),
+        universe_ref="universe.spy_only.v1",
+        disable_conditions=(),
+        config_path="x",
+        manifest={},
     )
 
 

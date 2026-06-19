@@ -44,11 +44,18 @@ def config_dir(tmp_path: Path) -> Path:
 
 def _session_5min(day: str = "2025-06-17", n: int = 78) -> BarSet:
     start = pd.Timestamp(f"{day} 09:30", tz="America/New_York")
-    rows = [{
-        "timestamp": (start + pd.Timedelta(minutes=5 * i)).tz_convert("UTC"),
-        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5,
-        "volume": 1000.0, "vwap": 100.2,
-    } for i in range(n)]
+    rows = [
+        {
+            "timestamp": (start + pd.Timedelta(minutes=5 * i)).tz_convert("UTC"),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.5,
+            "volume": 1000.0,
+            "vwap": 100.2,
+        }
+        for i in range(n)
+    ]
     return BarSet(pd.DataFrame(rows))
 
 
@@ -78,8 +85,13 @@ def _args(
     feed_label: str = "fallback",
 ):
     return argparse.Namespace(
-        data_command="readiness", universe_ref=universe_ref, start=start, end=end,
-        timeframe=timeframe, config_dir=str(config_dir), feed_label=feed_label,
+        data_command="readiness",
+        universe_ref=universe_ref,
+        start=start,
+        end=end,
+        timeframe=timeframe,
+        config_dir=str(config_dir),
+        feed_label=feed_label,
         json_output=False,
     )
 
