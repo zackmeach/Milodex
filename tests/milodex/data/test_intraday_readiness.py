@@ -241,3 +241,67 @@ def test_reference_cross_check_folds_inward_bias():
     # min_sessions defaults to 5, so a single session does NOT flag — proves the
     # advisory gate is inert on short windows (documented behaviour).
     assert "iex_inward_price_bias" not in report.to_dict()["issue_codes"]
+
+
+# ---------------------------------------------------------------------------
+# B1: distinct on-grid coverage + dup/off-grid warning
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_bar_does_not_inflate_coverage_above_100():
+    # Full clean session (78 bars) + one duplicate of bar index 0 (9:30 ET).
+    # Without the fix: observed == 79 -> coverage 101.28% -> no warnings (passes silently).
+    # With the fix: observed == 78 (duplicate collapses in the on-grid set) -> 100%.
+    rows = _session_5min("2025-06-17")
+    duplicate = dict(rows[0])  # copy bar index 0 (the 9:30 bar)
+    rows_with_dup = rows + [duplicate]
+    report = _scan(
+        {"SPY": rows_with_dup},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.coverage_pct <= 100.0
+    assert any(w.code == "intraday_offgrid_or_duplicate_bars" for w in report.issues)
+
+
+def test_offgrid_bar_excluded_from_coverage_and_warned():
+    # Drop 8 on-grid bars (indices 0..7) so coverage is 70/78 = 89.7% < 90% floor,
+    # then add one off-grid bar (9:32 ET = offset 2, not divisible by 5).
+    # Without the fix: the off-grid bar increments observed back toward 71/78 = 91.0%,
+    # masking the real coverage hole and suppressing the coverage warning.
+    # With the fix: off-grid bar is excluded from on_grid set -> observed stays 70.
+    base_rows = _session_5min("2025-06-17", open_offset_skip=8)  # 70 bars (indices 8..77)
+    start = pd.Timestamp("2025-06-17 09:30", tz="America/New_York")
+    offgrid_bar = {
+        "timestamp": (start + pd.Timedelta(minutes=2)).tz_convert("UTC"),  # 9:32 ET, offset=2
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 500.0,
+        "vwap": 100.2,
+    }
+    report = _scan(
+        {"SPY": base_rows + [offgrid_bar]},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.coverage_pct < 100.0
+    codes = report.to_dict()["issue_codes"]
+    assert "intraday_session_coverage_below_threshold" in codes
+    assert "intraday_offgrid_or_duplicate_bars" in codes
+
+
+def test_clean_full_session_still_exactly_100_after_fix():
+    # Regression: the on-grid-distinct fix must not disturb a clean 78/78 session.
+    report = _scan(
+        {"SPY": _session_5min("2025-06-17")},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"
+    assert not any(w.code == "intraday_offgrid_or_duplicate_bars" for w in report.issues)
