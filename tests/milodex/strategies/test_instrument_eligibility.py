@@ -5,12 +5,12 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+
 from milodex.strategies.instrument_eligibility import (
     FORBIDDEN_ETP_SYMBOLS,
     InstrumentEligibilityError,
     reject_ineligible_instruments,
 )
-
 from milodex.strategies.loader import resolve_universe_ref
 
 CONFIGS = Path(__file__).resolve().parents[3] / "configs"
