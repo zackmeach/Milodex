@@ -1,0 +1,41 @@
+strategy:
+  id: meanrev.rsi2.intraday.gld.v1
+  family: meanrev
+  template: rsi2.intraday
+  variant: gld
+  version: 1
+  description: 'RSI(2) intraday mean-reversion on SPY, 5-minute bars. Long-only intraday
+    round-trip: buy when the current session''s Wilder RSI(rsi_lookback) is at or
+    below rsi_entry_threshold; exit on stop_loss_pct from entry, RSI reverting to/above
+    rsi_exit_threshold, or the time-stop before the close. One entry per session.
+    Half-day sessions skipped.
+
+    '
+  enabled: true
+  parameters:
+    opening_range_minutes: 30
+    entry_window_minutes: 300
+    rsi_lookback: 2
+    rsi_entry_threshold: 10.0
+    rsi_exit_threshold: 60.0
+    stop_loss_pct: 0.005
+    exit_minutes_before_close: 5
+    per_position_notional_pct: 0.1
+  tempo:
+    bar_size: 5Min
+    min_hold_days: 0
+    max_hold_days: 1
+  risk:
+    max_position_pct: 0.1
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.005
+  stage: paper
+  backtest:
+    commission_per_trade: 0.0
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+  disable_conditions_additional: []
+  universe:
+  - GLD

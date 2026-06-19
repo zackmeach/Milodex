@@ -1,0 +1,34 @@
+strategy:
+  id: benchmark.time_of_day_null.xlv.v1
+  family: benchmark
+  template: time_of_day_null
+  variant: xlv
+  version: 1
+  description: 'Time-of-day null baseline: buy SPY at +180 min after the open (12:30
+    ET), sell at the time-stop bar 5 min before close, every full session. Half-days
+    skipped. A candidate intraday signal must beat this midday-entry null after realistic
+    slippage to claim a time-specific edge.
+
+    '
+  enabled: true
+  parameters:
+    entry_offset_minutes: 180
+    exit_minutes_before_close: 5
+    per_position_notional_pct: 0.1
+  tempo:
+    bar_size: 5Min
+    min_hold_days: 0
+    max_hold_days: 1
+  risk:
+    max_position_pct: 0.1
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+  stage: backtest
+  backtest:
+    commission_per_trade: 0.0
+    slippage_pct: 0.0005
+    min_trades_required: 30
+  disable_conditions_additional: []
+  universe:
+  - XLV
