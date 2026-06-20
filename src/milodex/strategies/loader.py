@@ -40,6 +40,7 @@ class StrategyConfig:
     enabled: bool
     universe: tuple[str, ...]
     universe_ref: str | None
+    baseline_ref: str | None
     parameters: dict[str, Any]
     tempo: dict[str, Any]
     risk: dict[str, Any]
@@ -278,6 +279,12 @@ def load_strategy_config(path: Path) -> StrategyConfig:
             msg = f"{path}: strategy.display_name must be a non-empty string when provided"
             raise ValueError(msg)
         display_name = display_name.strip()
+    baseline_ref = strategy.get("baseline_ref")
+    if baseline_ref is not None:
+        if not isinstance(baseline_ref, str) or not baseline_ref.strip():
+            msg = f"{path}: strategy.baseline_ref must be a non-empty string when provided"
+            raise ValueError(msg)
+        baseline_ref = baseline_ref.strip()
     disable_conditions = strategy.get("disable_conditions_additional")
     if not isinstance(disable_conditions, list) or not all(
         isinstance(item, str) and item.strip() for item in disable_conditions
@@ -309,6 +316,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
         enabled=bool(strategy["enabled"]),
         universe=universe,
         universe_ref=universe_ref,
+        baseline_ref=baseline_ref,
         parameters=dict(parameters),
         tempo=dict(tempo),
         risk=dict(risk),
