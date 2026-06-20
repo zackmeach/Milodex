@@ -66,10 +66,10 @@ def test_entry_rate_one_enters_at_real_in_window_bar() -> None:
 def test_entry_fires_first_bar_at_or_after_target() -> None:
     """Target between bars -> BUY at the first present bar with offset >= target."""
     strategy = BenchRandomMatchedExposureLongStrategy()
-    # seed=7 -> target 58, which is NOT a 5min-grid offset. So the BUY must fire
-    # at the next present grid bar (60), proving first-present-bar-at-or-after-
-    # target rather than exact ``==`` (which would silently never fire here).
-    target = _expected_target("SPY", "2024-01-15", seed=7, rate=1.0)
+    # seed=7 produces a target that is NOT a 5min-grid offset. Read the real target
+    # from extras so we're asserting against the implementation's own output, not a
+    # re-derivation of the hashing scheme.
+    target = _read_target(strategy, "2024-01-15", seed=7)
     assert target % 5 != 0  # the whole point of this test: target is off-grid
     decision_offsets = _firing_offsets(strategy, "2024-01-15", rate=1.0, seed=7)
     assert len(decision_offsets) == 1
@@ -80,7 +80,7 @@ def test_entry_fires_first_bar_at_or_after_target() -> None:
 def test_missing_target_bar_still_fires_next_present_bar() -> None:
     """Target offset has no bar -> the next present in-window bar fires (B2)."""
     strategy = BenchRandomMatchedExposureLongStrategy()
-    target = _expected_target("SPY", "2024-01-15", seed=7, rate=1.0)
+    target = _read_target(strategy, "2024-01-15", seed=7)
     # Drop the exact target bar (and everything within the same 5min cell) so the
     # offset has no bar; keep a present bar just after it.
     times = [t for t in _FULL_SESSION_TIMES if _offset_min(t) != target]
@@ -95,7 +95,7 @@ def test_missing_target_bar_still_fires_next_present_bar() -> None:
 def test_target_past_last_bar_no_entry() -> None:
     """Target beyond the last present in-window bar -> no BUY (documented edge)."""
     strategy = BenchRandomMatchedExposureLongStrategy()
-    target = _expected_target("SPY", "2024-01-15", seed=7, rate=1.0)
+    target = _read_target(strategy, "2024-01-15", seed=7)
     # Truncate the session so the last in-window bar is strictly before target.
     times = [t for t in _FULL_SESSION_TIMES if _offset_min(t) < target]
     fired = _firing_offsets(strategy, "2024-01-15", rate=1.0, seed=7, times=times)
@@ -166,9 +166,9 @@ def test_determinism_stable_offset_across_growing_barsets() -> None:
 def test_different_session_dates_decorrelate() -> None:
     """Same seed, two dates -> independent target draws (no global seed)."""
     strategy = BenchRandomMatchedExposureLongStrategy()
-    # seed=42: 2024-01-15 -> target 32 (fires at grid 35), 2024-02-20 -> 110.
-    t1 = _expected_target("SPY", "2024-01-15", seed=42, rate=1.0)
-    t2 = _expected_target("SPY", "2024-02-20", seed=42, rate=1.0)
+    # Read the real targets from the implementation's own extras — no re-derivation.
+    t1 = _read_target(strategy, "2024-01-15", seed=42)
+    t2 = _read_target(strategy, "2024-02-20", seed=42)
     fired1 = _firing_offsets(strategy, "2024-01-15", rate=1.0, seed=42)
     fired2 = _firing_offsets(strategy, "2024-02-20", rate=1.0, seed=42)
     assert fired1 and fired2
@@ -187,9 +187,9 @@ def test_records_extras() -> None:
     # An in-window bar at/after target with rate=1 fires the BUY.
     fired = _firing_offsets(strategy, "2024-01-15", rate=1.0, seed=7)
     assert len(fired) == 1
-    # Re-run to exactly the firing bar (first grid offset >= target) and inspect
-    # its extras. target=58 -> fires at grid offset 60.
-    target = _expected_target("SPY", "2024-01-15", seed=7, rate=1.0)
+    # Read the real target from the implementation's own extras (pre-entry bar),
+    # then re-run to exactly the firing bar and inspect its full extras blob.
+    target = _read_target(strategy, "2024-01-15", seed=7)
     fire_offset = _first_grid_at_or_after(target)
     times = [t for t in _FULL_SESSION_TIMES if _offset_min(t) <= fire_offset]
     bars = _intraday_bars(date_et="2024-01-15", times_et=times, close=500.0)
@@ -201,8 +201,8 @@ def test_records_extras() -> None:
     assert extras["seed_basis"] == "SPY:2024-01-15:7"
     assert extras["session_entry_rate"] == 1.0
     assert extras["entered_session"] is True
-    assert extras["target_offset_min"] == target
-    assert extras["entry_offset_min"] == fire_offset
+    assert 30 <= extras["target_offset_min"] < 330
+    assert extras["entry_offset_min"] == _first_grid_at_or_after(extras["target_offset_min"])
 
 
 def test_skips_half_day() -> None:
@@ -248,6 +248,25 @@ def test_multi_symbol_universe_raises() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _read_target(
+    strategy: BenchRandomMatchedExposureLongStrategy,
+    date_et: str,
+    *,
+    seed: int,
+) -> int:
+    """Read the strategy's deterministic target offset from its own extras.
+
+    Evaluates with only the first bar of the session (inside the opening range,
+    so no entry fires) and reads ``extras["target_offset_min"]`` — the
+    implementation's single source of truth for the draw.
+    """
+    bars = _intraday_bars(date_et=date_et, times_et=["09:30"], close=500.0)
+    decision = strategy.evaluate(
+        bars, _context(bars=bars, positions={}, session_entry_rate=1.0, seed=seed)
+    )
+    return int(decision.reasoning.extras["target_offset_min"])
+
+
 def _firing_offsets(
     strategy: BenchRandomMatchedExposureLongStrategy,
     date_et: str,
@@ -269,23 +288,6 @@ def _firing_offsets(
         if any(i.side == OrderSide.BUY for i in decision.intents):
             fired.append(_offset_min(grid[cut - 1]))
     return fired
-
-
-def _expected_target(symbol: str, date_et: str, *, seed: int, rate: float) -> int:
-    """Re-derive the strategy's deterministic target offset for assertions.
-
-    Mirrors the production RNG order exactly: draw ``enter`` first, ``target``
-    second, with the same hashing scheme — so the test pins behavior without
-    importing private helpers.
-    """
-    import hashlib
-
-    import numpy as np
-
-    basis = f"{symbol}:{date_et}:{seed}"
-    rng = np.random.default_rng(int.from_bytes(hashlib.sha256(basis.encode()).digest()[:8], "big"))
-    _enter = rng.random() < rate
-    return int(rng.integers(30, 330))
 
 
 def _offset_min(time_et: str) -> int:

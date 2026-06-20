@@ -282,7 +282,7 @@ def _already_entered_this_session(
         return False
     et = pd.DatetimeIndex(df["timestamp"]).tz_convert(ET_TZ)
     same_session = pd.Series(et.date == session_date, index=df.index)
-    offsets = [(t.hour - MARKET_OPEN_ET.hour) * 60 + (t.minute - MARKET_OPEN_ET.minute) for t in et]
+    offsets = [_et_offset_minutes(t) for t in et]
     upper = opening_range_minutes + entry_window_minutes
     in_window = pd.Series([opening_range_minutes <= off < upper for off in offsets], index=df.index)
     at_or_after_target = pd.Series([off >= target_offset_min for off in offsets], index=df.index)
