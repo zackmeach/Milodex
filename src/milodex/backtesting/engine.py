@@ -1335,8 +1335,9 @@ class BacktestEngine:
             #
             # ponytail: fill at the day's last available close — the SAME price
             # _mark_to_market_at_day_end values the position at — so MTM equity
-            # is continuous across the flatten (no synthetic 15:55 bar). The
-            # strategy's own time-stop remains the intended exit; this is the
+            # is continuous across the flatten up to its own slippage/commission
+            # (no synthetic 15:55 bar; a forced exit costs the same as any real
+            # exit). The strategy's own time-stop remains the intended exit; this is the
             # fail-safe when its bar is absent. This is a separate EOD action,
             # NOT routed through the pending/drain T+1 queue, so normal
             # strategy-intent fills are unaffected.

@@ -507,7 +507,9 @@ class BacktestSimulationKernel:
 
         ``closes`` must be the day's last available close per symbol (the same
         price :func:`_mark_to_market_at_day_end` values the position at), so the
-        equity curve is continuous across the flatten. A position whose symbol
+        equity curve is continuous across the flatten up to the liquidation's own
+        slippage/commission (a forced exit costs the same as any real exit;
+        exactly continuous only at zero cost). A position whose symbol
         is absent from ``closes`` (no resolvable close) is left untouched — it
         will be marked-to-market at the prior close exactly as before.
 
