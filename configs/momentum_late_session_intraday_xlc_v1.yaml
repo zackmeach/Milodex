@@ -1,0 +1,39 @@
+strategy:
+  id: momentum.late_session.intraday.xlc.v1
+  family: momentum
+  template: late_session.intraday
+  variant: xlc
+  version: 1
+  description: 'Late-session momentum on XLC, 5-minute bars. Long-only intraday round-trip:
+    buy when the close is above the close momentum_lookback_bars bars ago within the
+    late entry window [14:30, 15:30) ET; ride to the time-stop before the close. Stop
+    on stop_loss_pct from entry. One entry per session. Half-day sessions skipped.
+    No VWAP or volume gate.
+
+    '
+  enabled: true
+  parameters:
+    opening_range_minutes: 300
+    entry_window_minutes: 60
+    momentum_lookback_bars: 6
+    stop_loss_pct: 0.01
+    exit_minutes_before_close: 5
+    per_position_notional_pct: 0.1
+  tempo:
+    bar_size: 5Min
+    min_hold_days: 0
+    max_hold_days: 1
+  risk:
+    max_position_pct: 0.1
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+  stage: backtest
+  backtest:
+    commission_per_trade: 0.0
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+  disable_conditions_additional: []
+  universe:
+  - XLC
