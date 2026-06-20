@@ -53,7 +53,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 14
+    assert store.schema_version == 15
     assert {
         "_schema_version",
         "explanations",
@@ -80,7 +80,7 @@ def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
     db_path = tmp_path / "milodex.db"
     store = EventStore(db_path)
 
-    assert store.schema_version == 14
+    assert store.schema_version == 15
     with sqlite3.connect(db_path) as con:
         batch_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")}
         job_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_jobs)")}
@@ -1317,7 +1317,7 @@ def test_migration_008_backfills_walk_forward_explanations(tmp_path):
 
     # Open with the live EventStore — this triggers migrations 008-012.
     store = EventStore(db_path)
-    assert store.schema_version == 14
+    assert store.schema_version == 15
 
     rows = sorted(store.list_explanations(), key=lambda r: r.recorded_at)
     assert len(rows) == 4
@@ -1434,7 +1434,7 @@ def test_migration_008_is_idempotent(tmp_path):
     rows = store2.list_explanations()
     assert len(rows) == 1
     assert rows[0].backtest_run_id == db_run_id
-    assert store2.schema_version == 14
+    assert store2.schema_version == 15
 
 
 # ─── BacktestEquitySnapshotEvent CRUD (ADR 0053, migration 010) ──────────────

@@ -167,6 +167,41 @@ class PromotionEvent:
 
 
 @dataclass(frozen=True)
+class ExperimentEvent:
+    """Append-only experiment-registry record (R-PRM-011).
+
+    One row captures the terminal state of a strategy *idea* (keyed by the
+    stable ``experiment_id``), per PROMOTION_GOVERNANCE.md "Experiment
+    Registry": the hypothesis under test, the stage it reached, why it ended
+    there, the supporting evidence, and whether it is worth revisiting.
+
+    Like :class:`PromotionEvent`, the table is append-only — a row is never
+    updated or deleted in place. :meth:`EventStore.update_experiment` records a
+    change by appending a *new* row that carries the prior fields forward, so
+    the version history of an ``experiment_id`` is its row sequence and
+    ``get_experiment`` returns the newest.
+
+    ``terminal_status`` is one of ``'promoted'``, ``'rejected'``, ``'failed'``,
+    ``'inconclusive'``, ``'abandoned'``, or ``'active'``. ``stage_reached`` is a
+    promotion stage (``'backtest'`` … ``'live'``). ``strategy_id`` and
+    ``config_hash`` are null until a concrete instance is frozen.
+    """
+
+    experiment_id: str
+    hypothesis: str
+    stage_reached: str
+    terminal_status: str
+    rationale: str
+    recorded_at: datetime
+    strategy_id: str | None = None
+    config_hash: str | None = None
+    evidence_json: dict[str, Any] | None = None
+    lessons: str | None = None
+    revisitable: bool = False
+    id: int | None = None
+
+
+@dataclass(frozen=True)
 class BacktestRunEvent:
     """Lifecycle record for a backtest engine run.
 
@@ -1914,6 +1949,124 @@ class EventStore:
             ).fetchone()
         return None if row is None else _promotion_from_row(row)
 
+    def append_experiment(self, event: ExperimentEvent) -> int:
+        """Insert an experiment-registry record and return its autoincrement id.
+
+        Append-only: callers never update or delete; a change is a new row via
+        :meth:`update_experiment`.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO experiment_registry (
+                    recorded_at,
+                    experiment_id,
+                    strategy_id,
+                    config_hash,
+                    hypothesis,
+                    stage_reached,
+                    terminal_status,
+                    rationale,
+                    evidence_json,
+                    lessons,
+                    revisitable
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dt(event.recorded_at),
+                    event.experiment_id,
+                    event.strategy_id,
+                    event.config_hash,
+                    event.hypothesis,
+                    event.stage_reached,
+                    event.terminal_status,
+                    event.rationale,
+                    None if event.evidence_json is None else _dump_json(event.evidence_json),
+                    event.lessons,
+                    1 if event.revisitable else 0,
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def get_experiment(self, experiment_id: str) -> ExperimentEvent | None:
+        """Return the latest registry row for ``experiment_id``, or ``None``.
+
+        "Latest" is the highest-id row — the append-only sequence's newest
+        version (see :meth:`update_experiment`).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM experiment_registry WHERE experiment_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (experiment_id,),
+            ).fetchone()
+        return None if row is None else _experiment_from_row(row)
+
+    def list_experiments(self, *, terminal_status: str | None = None) -> list[ExperimentEvent]:
+        """Return the latest row per ``experiment_id``, newest experiment first.
+
+        De-duplicates the append-only sequence to one row per ``experiment_id``
+        (the highest id) so each experiment appears once at its current state.
+        When ``terminal_status`` is given, filters to experiments whose *latest*
+        row has that status. Ordering is deterministic (latest row id DESC).
+        """
+        query = """
+            SELECT er.* FROM experiment_registry AS er
+            JOIN (
+                SELECT experiment_id, MAX(id) AS max_id
+                FROM experiment_registry
+                GROUP BY experiment_id
+            ) AS latest
+            ON er.id = latest.max_id
+        """
+        params: tuple[Any, ...] = ()
+        if terminal_status is not None:
+            query += " WHERE er.terminal_status = ?"
+            params = (terminal_status,)
+        query += " ORDER BY er.id DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_experiment_from_row(row) for row in rows]
+
+    def update_experiment(self, experiment_id: str, **changes: Any) -> int:
+        """Record a change to ``experiment_id`` by appending a NEW row.
+
+        Append-only (R-PRM-011): the latest row for ``experiment_id`` is read,
+        its fields are carried forward with ``changes`` applied, a fresh
+        ``recorded_at`` is stamped, and the result is INSERTed as a new row. The
+        prior row is left untouched — there is no in-place UPDATE or DELETE; the
+        row sequence is the version history. Returns the new row's id.
+
+        Raises ``KeyError`` if no row exists for ``experiment_id``, or
+        ``TypeError`` if ``changes`` names a field that is not a mutable
+        ``ExperimentEvent`` column.
+        """
+        current = self.get_experiment(experiment_id)
+        if current is None:
+            raise KeyError(f"no experiment registered for experiment_id={experiment_id!r}")
+
+        mutable = {
+            "experiment_id",
+            "strategy_id",
+            "config_hash",
+            "hypothesis",
+            "stage_reached",
+            "terminal_status",
+            "rationale",
+            "evidence_json",
+            "lessons",
+            "revisitable",
+        }
+        unknown = set(changes) - mutable
+        if unknown:
+            raise TypeError(f"unknown experiment field(s): {sorted(unknown)}")
+
+        carried = {field: getattr(current, field) for field in mutable}
+        carried.update(changes)
+        return self.append_experiment(ExperimentEvent(recorded_at=datetime.now(tz=UTC), **carried))
+
     def get_backtest_run(self, run_id: str) -> BacktestRunEvent | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2458,6 +2611,23 @@ def _promotion_from_row(row: sqlite3.Row) -> PromotionEvent:
             None if row["reverses_event_id"] is None else int(row["reverses_event_id"])
         ),
         evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
+    )
+
+
+def _experiment_from_row(row: sqlite3.Row) -> ExperimentEvent:
+    return ExperimentEvent(
+        id=int(row["id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        experiment_id=str(row["experiment_id"]),
+        strategy_id=row["strategy_id"],
+        config_hash=row["config_hash"],
+        hypothesis=str(row["hypothesis"]),
+        stage_reached=str(row["stage_reached"]),
+        terminal_status=str(row["terminal_status"]),
+        rationale=str(row["rationale"]),
+        evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
+        lessons=row["lessons"],
+        revisitable=bool(row["revisitable"]),
     )
 
 
