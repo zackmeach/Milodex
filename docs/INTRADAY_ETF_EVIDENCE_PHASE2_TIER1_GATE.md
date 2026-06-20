@@ -128,3 +128,5 @@ Operator answered the §5 decisions: **1 approve · 2 confirm time-stop-only · 
 **Latent bug the smoke caught (not in §5):** `_warmup_calendar_days` heuristic treated the null's `seed: 20260619` as a 20M-day lookback → `OverflowError`. Fixed `09e92c2` — null declares `max_lookback_periods()=78`; heuristic capped at 3650 days.
 
 **Tier-1 evidence:** the working-lane run (rsi2 candidate + 3 trading baselines × 17 ETFs = 68 cells, walk-forward [2024-01-01, 2026-06-18], parallel) is running. Smoke confirmed the expected exploratory shape (rsi2 sharpe −9.17, *worse* than the −1.4/−2.2 nulls → no durable edge), as expected for an IEX canary. Verdicts remain **IEX-exploratory / non-durable** (ADR 0017).
+
+**Methodology note (saturation):** when a candidate's measured `session_entry_rate` saturates near 1.0 (e.g. 0.971 for `meanrev.rsi2.intraday`), the random-matched null's COUNT/exposure match is non-discriminating and reduces to an entry-timing + held-to-close comparison — so the verdict rests on **return/Sharpe separation, not exposure separation**, for near-daily candidates.

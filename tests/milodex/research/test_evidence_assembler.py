@@ -668,23 +668,153 @@ def test_writer_invariant_refuses_rejected_with_durable_true(tmp_path):
         _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
     )
     config_dir = tmp_path / "configs"
-    # Poison the report: claim it is durable, then drive it back through the
-    # writer. The terminal_status derives to "rejected" again, so the writer
-    # invariant must fire.
-    poisoned = dataclasses.replace(report, durable=True)
-    provider = _StubProvider({sym: _full_session_barset() for sym in _UNIVERSE})
-    fresh_store = EventStore(tmp_path / "data2" / "milodex.db")
-    ctx = _StubCtx(config_dir, fresh_store, provider)
     candidate_spy_path = config_dir / _BASE_CONFIG.name
-    with pytest.raises((AssertionError, ValueError)):
+
+    def _drive_poisoned(poisoned_report, store_subdir: str) -> None:
+        provider = _StubProvider({sym: _full_session_barset() for sym in _UNIVERSE})
+        fresh_store = EventStore(tmp_path / store_subdir / "milodex.db")
+        ctx = _StubCtx(config_dir, fresh_store, provider)
         _write_registry_row(
             ctx=ctx,
-            report=poisoned,
-            experiment_id="poison-test",
+            report=poisoned_report,
+            experiment_id=f"poison-{store_subdir}",
             hypothesis="poison",
             candidate_spy_id=_CANDIDATE_SPY_ID,
             candidate_spy_config_path=candidate_spy_path,
         )
+
+    # Case 1: durable=True poisons the marker coherence check.
+    with pytest.raises(AssertionError, match="durable"):
+        _drive_poisoned(dataclasses.replace(report, durable=True), "data2")
+
+    # Case 2: feed="sip" poisons the marker coherence check.
+    with pytest.raises(AssertionError, match="feed"):
+        _drive_poisoned(dataclasses.replace(report, feed="sip"), "data3")
+
+    # Case 3: iex_exploratory=False poisons the marker coherence check.
+    with pytest.raises(AssertionError, match="iex_exploratory"):
+        _drive_poisoned(dataclasses.replace(report, iex_exploratory=False), "data4")
+
+    # Sanity: un-poisoned report writes without error.
+    provider = _StubProvider({sym: _full_session_barset() for sym in _UNIVERSE})
+    clean_store = EventStore(tmp_path / "data5" / "milodex.db")
+    ctx = _StubCtx(config_dir, clean_store, provider)
+    row_id = _write_registry_row(
+        ctx=ctx,
+        report=report,
+        experiment_id="poison-clean",
+        hypothesis="clean",
+        candidate_spy_id=_CANDIDATE_SPY_ID,
+        candidate_spy_config_path=candidate_spy_path,
+    )
+    assert isinstance(row_id, int)
+
+
+# ---------------------------------------------------------------------------
+# Block 7b — decisive-loss predicate boundary tests (pins >= operators + constants)
+# ---------------------------------------------------------------------------
+
+
+def _below_all_overrides(
+    n_below: int,
+    *,
+    below_candidate_sharpe: float = -3.0,
+    above_candidate_sharpe: float = 1.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build overrides where exactly ``n_below`` symbols are below all three nulls.
+
+    The ``n_below`` symbols use ``below_candidate_sharpe`` (default −3.0) so
+    they fall below all three nulls (0.0/−0.5/−0.5). The remaining symbols use
+    ``above_candidate_sharpe`` (default 1.0), beating the strongest null (0.0).
+    All null Sharpes are fixed: unconditional=0.0, time_of_day=−0.5,
+    random_matched=−0.5 → strongest null is always 0.0 → margin = −candidate.
+    """
+    below_syms = list(_UNIVERSE[:n_below])
+    above_syms = list(_UNIVERSE[n_below:])
+    overrides: dict[str, Any] = {}
+    for sym in below_syms:
+        overrides[sym] = {"oos_sharpe": below_candidate_sharpe}
+    for sym in above_syms:
+        overrides[sym] = {"oos_sharpe": above_candidate_sharpe}
+    bov: dict[tuple[str, str], Any] = {}
+    for sym in _UNIVERSE:
+        bov[(sym, "unconditional_intraday_long")] = {"oos_sharpe": 0.0}
+        bov[(sym, "time_of_day_null")] = {"oos_sharpe": -0.5}
+        bov[(sym, "random_matched_exposure.intraday")] = {"oos_sharpe": -0.5}
+    return overrides, bov
+
+
+def test_predicate_boundary_13_symbols_below_no_fire(tmp_path):
+    # 13 < 14 → predicate must NOT fire → terminal_status inconclusive.
+    overrides, bov = _below_all_overrides(13)
+    report, _row_id, store = _assemble(
+        tmp_path,
+        _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
+        experiment_id="boundary-13",
+    )
+    pred = report.as_dict().get("decisive_loss_predicate")
+    # decisive_loss_predicate is folded in by _write_registry_row, not as_dict;
+    # read it from the stored event instead.
+    ev = store.get_experiment("boundary-13")
+    assert ev is not None
+    pred = ev.evidence_json["decisive_loss_predicate"]
+    assert pred["symbols_below_all_nulls"] == 13
+    assert pred["passed"] is False
+    assert ev.terminal_status == "inconclusive"
+
+
+def test_predicate_boundary_14_symbols_below_fires(tmp_path):
+    # 14 >= 14 + margin 3.0 >= 2.0 → predicate fires → terminal_status rejected.
+    overrides, bov = _below_all_overrides(14)
+    report, _row_id, store = _assemble(
+        tmp_path,
+        _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
+        experiment_id="boundary-14",
+    )
+    ev = store.get_experiment("boundary-14")
+    assert ev is not None
+    pred = ev.evidence_json["decisive_loss_predicate"]
+    assert pred["symbols_below_all_nulls"] == 14
+    assert pred["passed"] is True
+    assert ev.terminal_status == "rejected"
+
+
+def test_predicate_boundary_margin_1_9_no_fire(tmp_path):
+    # 17 symbols below all nulls, but tightest margin is 1.9 (< 2.0) → no fire.
+    # One symbol has candidate=-1.9 (margin 0.0-(-1.9)=1.9); others have -3.0 (margin 3.0).
+    overrides, bov = _below_all_overrides(17, below_candidate_sharpe=-3.0)
+    # Override one symbol to produce the tight margin.
+    tight_sym = _UNIVERSE[0]
+    overrides[tight_sym] = {"oos_sharpe": -1.9}
+    report, _row_id, store = _assemble(
+        tmp_path,
+        _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
+        experiment_id="boundary-margin-1.9",
+    )
+    ev = store.get_experiment("boundary-margin-1.9")
+    assert ev is not None
+    pred = ev.evidence_json["decisive_loss_predicate"]
+    assert pred["min_margin_sharpe"] == pytest.approx(1.9)
+    assert pred["passed"] is False
+    assert ev.terminal_status == "inconclusive"
+
+
+def test_predicate_boundary_margin_2_0_fires(tmp_path):
+    # 17 symbols below all nulls, tightest margin is exactly 2.0 → fires.
+    overrides, bov = _below_all_overrides(17, below_candidate_sharpe=-3.0)
+    tight_sym = _UNIVERSE[0]
+    overrides[tight_sym] = {"oos_sharpe": -2.0}
+    report, _row_id, store = _assemble(
+        tmp_path,
+        _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
+        experiment_id="boundary-margin-2.0",
+    )
+    ev = store.get_experiment("boundary-margin-2.0")
+    assert ev is not None
+    pred = ev.evidence_json["decisive_loss_predicate"]
+    assert pred["min_margin_sharpe"] == pytest.approx(2.0)
+    assert pred["passed"] is True
+    assert ev.terminal_status == "rejected"
 
 
 # ---------------------------------------------------------------------------

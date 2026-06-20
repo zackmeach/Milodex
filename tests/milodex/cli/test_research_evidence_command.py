@@ -65,7 +65,7 @@ def _evidence_args(**overrides) -> argparse.Namespace:
         "experiment_id": "test-exp-001",
         "hypothesis": "RSI(2) intraday edge hypothesis",
         "screen_json": None,
-        "feed_label": "iex",
+        # feed_label removed: lane is IEX-only, label is hardcoded in handler.
     }
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
@@ -90,13 +90,20 @@ def test_evidence_argparse_accepts_required_args():
     argv = [
         "research",
         "evidence",
-        "--candidate-family", "meanrev",
-        "--candidate-template", "rsi2.intraday",
-        "--universe-ref", "universe.liquid_etf_core.v1",
-        "--start", "2024-01-01",
-        "--end", "2024-06-30",
-        "--experiment-id", "exp-xyz",
-        "--hypothesis", "Test hypothesis",
+        "--candidate-family",
+        "meanrev",
+        "--candidate-template",
+        "rsi2.intraday",
+        "--universe-ref",
+        "universe.liquid_etf_core.v1",
+        "--start",
+        "2024-01-01",
+        "--end",
+        "2024-06-30",
+        "--experiment-id",
+        "exp-xyz",
+        "--hypothesis",
+        "Test hypothesis",
     ]
     ns = top.parse_args(argv)
     assert ns.research_command == "evidence"
@@ -104,7 +111,7 @@ def test_evidence_argparse_accepts_required_args():
     assert ns.candidate_template == "rsi2.intraday"
     assert ns.universe_ref == "universe.liquid_etf_core.v1"
     assert ns.experiment_id == "exp-xyz"
-    assert ns.feed_label == "iex"  # default
+    assert not hasattr(ns, "feed_label")  # removed: lane is IEX-only
     assert ns.screen_json is None  # optional, default None
 
 
@@ -113,20 +120,29 @@ def test_evidence_argparse_accepts_optional_screen_json():
     top_sub = top.add_subparsers(dest="command")
     research.register(top_sub)
     argv = [
-        "research", "evidence",
-        "--candidate-family", "meanrev",
-        "--candidate-template", "rsi2.intraday",
-        "--universe-ref", "universe.liquid_etf_core.v1",
-        "--start", "2024-01-01",
-        "--end", "2024-06-30",
-        "--experiment-id", "e",
-        "--hypothesis", "h",
-        "--screen-json", "docs/reviews/some.json",
-        "--feed-label", "alpaca",
+        "research",
+        "evidence",
+        "--candidate-family",
+        "meanrev",
+        "--candidate-template",
+        "rsi2.intraday",
+        "--universe-ref",
+        "universe.liquid_etf_core.v1",
+        "--start",
+        "2024-01-01",
+        "--end",
+        "2024-06-30",
+        "--experiment-id",
+        "e",
+        "--hypothesis",
+        "h",
+        "--screen-json",
+        "docs/reviews/some.json",
+        # --feed-label removed: lane is IEX-only, label is fixed in handler.
     ]
     ns = top.parse_args(argv)
     assert ns.screen_json == "docs/reviews/some.json"
-    assert ns.feed_label == "alpaca"
+    assert not hasattr(ns, "feed_label")
 
 
 def test_run_dispatches_evidence_to_handler(monkeypatch):

@@ -144,7 +144,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         dest="screen_json",
         help="Path to a prior 'research screen --report-out' JSON sibling.",
     )
-    evidence.add_argument("--feed-label", default="iex", dest="feed_label")
+    # ponytail: lane is permanently IEX — feed label is fixed, not a CLI arg.
 
     fanout = research_sub.add_parser(
         "fan-out",
@@ -204,9 +204,7 @@ def _batch_result_from_screen_json(path: Path) -> BatchResult:
     for r in data.get("rows", []):
         raw_curve = r.get("oos_equity_curve", _BATCH_ROW_DEFAULTS["oos_equity_curve"])
         # Curve entries are {"date": "YYYY-MM-DD", "equity": float}
-        curve = tuple(
-            (date.fromisoformat(pt["date"]), float(pt["equity"])) for pt in raw_curve
-        )
+        curve = tuple((date.fromisoformat(pt["date"]), float(pt["equity"])) for pt in raw_curve)
         rows.append(
             BatchRow(
                 strategy_id=r["strategy_id"],
@@ -257,7 +255,7 @@ def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         hypothesis=args.hypothesis,
         ctx=ctx,
         batch_result=batch_result,
-        feed_label=args.feed_label,
+        feed_label="iex",  # ponytail: lane is IEX-only — label is fixed.
     )
 
     agg = report.aggregate

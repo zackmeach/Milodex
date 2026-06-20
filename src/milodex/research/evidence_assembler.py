@@ -17,7 +17,9 @@ report is permanently exploratory: ``iex_exploratory`` is always ``True`` and
 ``durable`` always ``False`` (ADR 0017). A decisive *win* under IEX is therefore
 never durable here — it can only ever read ``inconclusive``; only a decisive
 *loss* is trustworthy enough to ``reject``. These markers are load-bearing —
-serialized on every report and asserted before any ``rejected`` row is written.
+serialized on every report and the writer asserts the full coherent set
+(``durable is False`` AND ``iex_exploratory is True`` AND ``feed == "iex"``)
+before any ``rejected`` row is written.
 
 This module does NOT reuse :class:`milodex.promotion.evidence.EvidencePackage`:
 that structure is promotion-staged, frozen, and demands operator-authored inputs
@@ -642,12 +644,24 @@ def _write_registry_row(
 
     revisitable = True  # IEX is non-durable — always revisitable.
 
-    # Writer invariant: a rejected IEX row MUST carry the non-durable markers.
-    if terminal_status == "rejected" and not (report.durable is False and revisitable is True):
+    # Writer invariant: a rejected IEX row MUST carry the full coherent
+    # non-durable marker set on the report object itself (not just the
+    # hardcoded locals above) — so a poisoned report (e.g. via
+    # dataclasses.replace(report, durable=True)) is caught here, not
+    # silently written.
+    if terminal_status == "rejected" and not (
+        report.durable is False and report.iex_exploratory is True and report.feed == "iex"
+    ):
+        failing = []
+        if report.durable is not False:
+            failing.append(f"durable={report.durable!r} (want False)")
+        if report.iex_exploratory is not True:
+            failing.append(f"iex_exploratory={report.iex_exploratory!r} (want True)")
+        if report.feed != "iex":
+            failing.append(f"feed={report.feed!r} (want 'iex')")
         msg = (
-            "Refusing to write a 'rejected' IEX row that is durable or "
-            "non-revisitable — an IEX rejection must always be non-durable + "
-            "revisitable (ADR 0017)."
+            "Refusing to write a 'rejected' IEX row: report fails non-durable "
+            f"marker coherence check — {'; '.join(failing)} (ADR 0017)."
         )
         raise AssertionError(msg)
 
