@@ -244,7 +244,7 @@ def scan_intraday_readiness(
                         {"session": day.isoformat(), "observed": observed, "expected": expected},
                     )
                 )
-            max_gap = _max_intra_session_gap(offsets, timeframe_minutes)
+            max_gap = _max_intra_session_gap(on_grid, timeframe_minutes)
             if max_gap > 1:
                 issues.append(
                     _warn(

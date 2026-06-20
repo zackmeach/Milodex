@@ -67,6 +67,10 @@ from milodex.strategies.base import (
     single_symbol,
 )
 
+# ponytail: all intraday ETF strategies are 5Min; promote to a config param if a
+# non-5min variant appears.
+_BAR_MINUTES = 5
+
 
 class BenchRandomMatchedExposureLongStrategy(Strategy):
     """Random-entry, held-to-close intraday long baseline (single-name, long-only)."""
@@ -159,7 +163,10 @@ class BenchRandomMatchedExposureLongStrategy(Strategy):
         # across the session's growing barsets.
         entered_session = bool(rng.random() < session_entry_rate)
         target_offset_min = int(
-            rng.integers(opening_range_minutes, opening_range_minutes + entry_window_minutes)
+            rng.integers(
+                opening_range_minutes,
+                opening_range_minutes + entry_window_minutes - _BAR_MINUTES + 1,
+            )
         )
 
         def reasoning(entry_offset_min: int | None) -> dict[str, Any]:

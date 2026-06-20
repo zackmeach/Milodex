@@ -118,6 +118,13 @@ def generate_per_symbol_configs(
                 base_sym_upper, sym.upper()
             )
 
+        # ponytail: token-swap on baseline_ref — the variant is the penultimate dotted
+        # component, ".v" anchors the version, so this is unambiguous.
+        if "baseline_ref" in strategy_section:
+            strategy_section["baseline_ref"] = strategy_section["baseline_ref"].replace(
+                f".{variant.lower()}.v", f".{sym_lower}.v"
+            )
+
         # ponytail: per-symbol param injection over a second config-rewrite pass —
         # a plain dict.update on the already-deep-copied parameters block. Default
         # None short-circuits, so the Tier-0 fan-out callers stay byte-identical.

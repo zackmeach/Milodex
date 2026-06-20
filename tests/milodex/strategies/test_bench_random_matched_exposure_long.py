@@ -230,6 +230,39 @@ def test_empty_universe_no_signal() -> None:
     assert decision.reasoning.rule == "no_signal"
 
 
+def test_target_draw_clamped_to_firable_grid() -> None:
+    """N1: drawn target is always <= OR + EW - _BAR_MINUTES (last on-grid in-window bar).
+
+    OR=30, EW=300, _BAR_MINUTES=5 -> max firable = 325. Targets 326-329 are
+    off-grid and can never fire; the clamped high bound (326 exclusive = 325+1)
+    prevents drawing them.
+    """
+    from milodex.strategies.bench_random_matched_exposure_long import _BAR_MINUTES
+
+    strategy = BenchRandomMatchedExposureLongStrategy()
+    opening_range = 30
+    entry_window = 300
+    max_firable = opening_range + entry_window - _BAR_MINUTES  # 325
+
+    # Collect targets from 500 distinct seed bases; all must be <= max_firable.
+    targets: set[int] = set()
+    for seed in range(500):
+        target = _read_target(strategy, "2024-01-15", seed=seed)
+        assert target <= max_firable, (
+            f"seed={seed}: target {target} > max firable {max_firable}"
+        )
+        targets.add(target)
+
+    # The max bound itself (325) must be reachable and is on-grid and in-window.
+    assert max_firable % _BAR_MINUTES == 0, "max firable must be on-grid"
+    assert opening_range <= max_firable < opening_range + entry_window, (
+        "max firable must be inside the entry window"
+    )
+    assert max_firable in targets, (
+        f"max firable {max_firable} never drawn across 500 seeds — clamping too tight"
+    )
+
+
 def test_multi_symbol_universe_raises() -> None:
     """A >1 universe trips the single_symbol cardinality guard."""
     import pytest

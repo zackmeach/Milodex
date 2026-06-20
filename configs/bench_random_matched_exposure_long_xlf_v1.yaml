@@ -13,7 +13,7 @@ strategy:
 
     '
   enabled: true
-  baseline_ref: meanrev.rsi2.intraday.spy.v1
+  baseline_ref: meanrev.rsi2.intraday.xlf.v1
   parameters:
     opening_range_minutes: 30
     entry_window_minutes: 300

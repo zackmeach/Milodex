@@ -327,6 +327,37 @@ def test_2026_half_day_nov27_expected_count_is_42():
     assert report.status == "pass"
 
 
+def test_offgrid_bar_does_not_produce_spurious_gap_warning() -> None:
+    """N4: an off-grid bar in an otherwise gap-free session must NOT trigger
+    intraday_intra_session_gap.  Before the fix, _max_intra_session_gap received
+    the raw ``offsets`` set (which could include an off-grid value like offset=2),
+    causing range(min=2, max=...) to walk a non-grid start and report a spurious gap.
+    """
+    # Full clean 5-min session (78 bars) plus one off-grid bar at 9:32 ET (offset=2).
+    start = pd.Timestamp("2025-06-17 09:30", tz="America/New_York")
+    offgrid_bar = {
+        "timestamp": (start + pd.Timedelta(minutes=2)).tz_convert("UTC"),  # offset=2
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 500.0,
+        "vwap": 100.2,
+    }
+    rows = _session_5min("2025-06-17") + [offgrid_bar]
+    report = _scan(
+        {"SPY": rows},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    codes = report.to_dict()["issue_codes"]
+    # The off-grid bar is warned about — but must NOT produce a gap warning.
+    assert "intraday_offgrid_or_duplicate_bars" in codes
+    assert "intraday_intra_session_gap" not in codes, (
+        "off-grid bar produced a spurious gap warning — gap scan received raw offsets"
+    )
+
+
 def test_2026_half_day_dec24_expected_count_is_42():
     # 2026-12-24 is Christmas Eve (Thursday) — should be a half-day.
     report = _scan(

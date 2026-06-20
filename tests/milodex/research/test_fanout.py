@@ -147,6 +147,68 @@ def test_fanout_raises_on_off_convention_filename(tmp_path: Path) -> None:
         )
 
 
+def test_fanout_baseline_ref_rewritten_per_symbol(tmp_path: Path) -> None:
+    """N3: baseline_ref variant token is swapped to the generated symbol, not left as spy."""
+    import yaml
+
+    shutil.copy(_UNIVERSE_MANIFEST, tmp_path / _UNIVERSE_MANIFEST.name)
+    # Inject a baseline_ref into the base config so the rewrite logic fires.
+    # The rsi2 base does not have one; add it synthetically (mirrors how the bench
+    # configs are structured: baseline_ref names a dotted id ending in .spy.v1).
+    with _BASE_CONFIG.open(encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    raw["strategy"]["baseline_ref"] = "some.other.strategy.spy.v1"
+    base_with_ref = tmp_path / _BASE_CONFIG.name
+    with base_with_ref.open("w", encoding="utf-8") as fh:
+        yaml.safe_dump(raw, fh, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    written = generate_per_symbol_configs(
+        base_config_path=base_with_ref,
+        universe_ref="universe.liquid_etf_core.v1",
+        out_dir=tmp_path,
+    )
+    assert len(written) == 16
+
+    for path in written:
+        with path.open(encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        section = data["strategy"]
+        sym_lower = section["variant"]  # e.g. "qqq"
+        assert "baseline_ref" in section, f"{path.name}: missing baseline_ref"
+        ref = section["baseline_ref"]
+        assert f".{sym_lower}.v" in ref, (
+            f"{path.name}: baseline_ref '{ref}' does not contain '.{sym_lower}.v'"
+        )
+        assert ".spy.v" not in ref, (
+            f"{path.name}: baseline_ref '{ref}' still references spy variant"
+        )
+
+
+def test_fanout_baseline_ref_absent_generates_without_error(tmp_path: Path) -> None:
+    """N3: a base config without baseline_ref generates all symbols cleanly."""
+    import yaml
+
+    # The rsi2 base config has no baseline_ref — use it as-is to confirm the
+    # generator doesn't error on absent baseline_ref.
+    base = _setup_tmp(tmp_path)
+    with base.open(encoding="utf-8") as fh:
+        data = yaml.safe_load(fh)
+    assert "baseline_ref" not in data["strategy"], (
+        "test precondition: rsi2 base must not have baseline_ref"
+    )
+
+    written = generate_per_symbol_configs(
+        base_config_path=base,
+        universe_ref="universe.liquid_etf_core.v1",
+        out_dir=tmp_path,
+    )
+    assert len(written) == 16
+    for path in written:
+        with path.open(encoding="utf-8") as fh:
+            d = yaml.safe_load(fh)
+        assert "baseline_ref" not in d["strategy"]
+
+
 def test_fanout_rejects_ineligible_symbol(tmp_path: Path) -> None:
     # a universe_ref pointing at a manifest with a forbidden ETP must raise
     # (proves the generator does not bypass ADR 0016).
