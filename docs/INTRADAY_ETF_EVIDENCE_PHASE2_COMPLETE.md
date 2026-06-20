@@ -1,7 +1,41 @@
 # Intraday ETF Evidence — Phase 2 Complete (Tiers 0–4)
 
 **Branch:** `intraday-etf-evidence-phase2` — **NOT merged. Operator reviews and merges.**
-Off master `b5962e0`. **38 commits, 170 files, +14,659 / −96.** Suite **3176 passed, 1 skipped, 4 xfailed**. Master untouched.
+Off master `b5962e0`. Suite **3190 passed, 1 skipped, 4 xfailed**. Master untouched. **Post-review corrections (2026-06-20) below** — an outside review caught a BLOCKER + 4 MAJOR this gate's thermonuclear missed.
+
+---
+
+## Post-review corrections (2026-06-20) — an outside review found a BLOCKER the gate missed
+
+An external adversarial review (Codex) found **1 BLOCKER + 4 MAJOR + 2 MINOR** that the thermonuclear
+gate (which had called this "merge-ready, zero BLOCKER/MAJOR") missed. All seven were independently
+re-derived against the code and **confirmed real**, then fixed on this branch.
+
+| Finding | Sev | Fix |
+|---|---|---|
+| Nulls held **overnight** — a final-bar exit filled at next session's open, not at the close → "held-to-close intraday null" was false; asymmetric overnight-drift confound vs the intraday-exiting candidate | **BLOCKER** | `acd96a4` — engine realizes final-bar intraday exits at the session close; **risk-invariant SAFE** |
+| 3 H strategies used `sorted(universe)[0]` on a 17-ETF base config → silently evaluated **DIA** while labeled SPY (fan-out doubled DIA, omitted SPY) | MAJOR | `05a5e80` — `single_symbol` guard + `spy_only` base configs + 17-symbol bijection test |
+| Decisive-loss margin measured against the **strongest** null, not the nearest | MAJOR | `b53c6e2` — `min(nulls) − candidate` + boundary tests |
+| ORB-retest accepted a **partial** opening range → manufactured breakouts on a missing bar | MAJOR | `05a5e80` — requires all on-grid opening-range bars |
+| `research evidence` trusted screen-JSON metrics without provenance validation | MAJOR (MINOR blast radius — non-durable registry) | `b53c6e2` — run_id + date-consistency validation |
+| Buffered no-action explanations mis-order in id-ordered reads | MINOR | `b53c6e2` — documented; no live reader affected |
+| 2 unsorted import blocks (falsified the "clean lint" claim) | MINOR | `05a5e80` — ruff clean |
+
+**Why the gate missed the BLOCKER:** the N2 docstring asserted the overnight hold was "by design,"
+which disarmed the thermonuclear finders — they accepted a confident comment instead of challenging
+the methodology. The gate was strong on *risk-layer safety* (Codex independently re-confirmed that
+held — risk/promotion/broker/kill-switch untouched) and weak on *statistical/methodology correctness*.
+
+**Corrected evidence (held-to-close engine + fixed predicate).** The 68-cell screen was re-run on the
+corrected engine and re-assembled (experiment registry **row 2**, append-only — row 1 preserved).
+Verdict still **`rejected`** (rsi2 below all three nulls on **17/17** symbols), but the decisiveness
+was overstated: tightest margin **4.90 → 2.47 Sharpe** (still ≥ 2.0; the nulls dropped once their
+overnight-drift return was removed — e.g. random-matched TLT −3.37 → −5.16). The no-edge conclusion
+holds; its apparent margin was nearly 2× inflated. Evidence: `docs/reviews/working_lane_evidence_phase2.md`.
+
+**Verification after fixes:** suite **3190 passed, 1 skipped, 4 xfailed**; ruff clean; engine fix
+risk-invariant SAFE (attack log). The "merge-ready" verdict below is **superseded** by this section —
+merge-readiness now rests on these fixes + the corrected rerun, not the original thermonuclear pass.
 
 ---
 

@@ -1,861 +1,875 @@
 # Research Screen — 2024-01-01 → 2026-06-18
 
-Generated: 2026-06-20T14:43:29.766051-04:00
+> **Corrected-engine evidence (held-to-close).** Supersedes the prior run computed on the
+> overnight-hold backtest engine (Codex BLOCKER, fixed in `acd96a4`). Candidate
+> `meanrev.rsi2.intraday` is below all three nulls on **17/17** symbols; tightest decisive-loss
+> margin **2.47 Sharpe** (the prior run's 4.90 was overstated by both the overnight-held nulls and a
+> max-null margin bug). terminal_status **`rejected`** (registry row 2). The nulls dropped vs the
+> prior run (e.g. random-matched TLT −3.37 → −5.16) because the overnight-drift return that inflated
+> them is gone. IEX-exploratory / non-durable (ADR 0017).
+
+Generated: 2026-06-20T19:06:44.208599-04:00
 Strategies: 68
 
 | strategy_id | family | trades | oos_sharpe | oos_max_dd | fragile | surv_corr | gate |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| `benchmark.random_matched_exposure.intraday.gld.v1` | benchmark | 947 | 0.81 | 1.65% | no | no | pass (statistical) |
-| `benchmark.time_of_day_null.gld.v1` | benchmark | 907 | 0.77 | 1.37% | no | no | pass (statistical) |
-| `benchmark.unconditional_intraday_long.gld.v1` | benchmark | 967 | 0.73 | 2.01% | no | no | pass (statistical) |
-| `benchmark.unconditional_intraday_long.xli.v1` | benchmark | 969 | -0.02 | 2.23% | yes | no | block |
-| `benchmark.time_of_day_null.xli.v1` | benchmark | 953 | -0.23 | 2.17% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xli.v1` | benchmark | 950 | -0.55 | 3.03% | no | no | block |
-| `benchmark.time_of_day_null.xlk.v1` | benchmark | 914 | -0.59 | 7.87% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlk.v1` | benchmark | 962 | -0.72 | 9.01% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlk.v1` | benchmark | 918 | -0.77 | 9.34% | no | no | block |
-| `benchmark.time_of_day_null.xlf.v1` | benchmark | 967 | -0.79 | 2.92% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlf.v1` | benchmark | 969 | -0.84 | 3.61% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlu.v1` | benchmark | 969 | -0.89 | 7.96% | no | no | block |
-| `benchmark.time_of_day_null.xlu.v1` | benchmark | 957 | -0.91 | 7.03% | no | no | block |
-| `benchmark.unconditional_intraday_long.xle.v1` | benchmark | 969 | -0.92 | 8.07% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlu.v1` | benchmark | 951 | -0.93 | 7.65% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xly.v1` | benchmark | 907 | -0.96 | 8.04% | no | no | block |
-| `benchmark.unconditional_intraday_long.xly.v1` | benchmark | 949 | -0.97 | 8.45% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlc.v1` | benchmark | 961 | -0.99 | 3.38% | no | no | block |
-| `benchmark.time_of_day_null.xly.v1` | benchmark | 875 | -1.02 | 8.79% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlb.v1` | benchmark | 967 | -1.04 | 8.74% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlc.v1` | benchmark | 937 | -1.12 | 3.55% | no | no | block |
-| `benchmark.time_of_day_null.xlb.v1` | benchmark | 941 | -1.13 | 8.85% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlb.v1` | benchmark | 935 | -1.14 | 9.03% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xle.v1` | benchmark | 941 | -1.18 | 8.82% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlre.v1` | benchmark | 927 | -1.19 | 3.29% | no | no | block |
-| `benchmark.unconditional_intraday_long.dia.v1` | benchmark | 847 | -1.22 | 3.75% | no | no | block |
-| `benchmark.time_of_day_null.xle.v1` | benchmark | 967 | -1.23 | 9.28% | no | no | block |
-| `benchmark.time_of_day_null.xlc.v1` | benchmark | 903 | -1.26 | 3.54% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlf.v1` | benchmark | 953 | -1.27 | 4.14% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.dia.v1` | benchmark | 873 | -1.31 | 3.57% | no | no | block |
-| `benchmark.unconditional_intraday_long.iwm.v1` | benchmark | 971 | -1.31 | 5.31% | no | no | block |
-| `benchmark.unconditional_intraday_long.spy.v1` | benchmark | 971 | -1.36 | 3.96% | no | yes | block |
-| `benchmark.time_of_day_null.dia.v1` | benchmark | 723 | -1.38 | 3.10% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlre.v1` | benchmark | 965 | -1.38 | 4.30% | no | no | block |
-| `benchmark.time_of_day_null.spy.v1` | benchmark | 969 | -1.57 | 3.63% | no | yes | block |
-| `benchmark.time_of_day_null.xlre.v1` | benchmark | 885 | -1.57 | 4.16% | no | no | block |
-| `benchmark.time_of_day_null.iwm.v1` | benchmark | 967 | -1.65 | 5.26% | no | no | block |
-| `benchmark.unconditional_intraday_long.qqq.v1` | benchmark | 972 | -1.74 | 5.61% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.spy.v1` | benchmark | 941 | -1.81 | 4.23% | no | yes | block |
-| `benchmark.random_matched_exposure.intraday.qqq.v1` | benchmark | 942 | -1.92 | 4.66% | no | no | block |
-| `benchmark.time_of_day_null.qqq.v1` | benchmark | 970 | -1.98 | 4.81% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlp.v1` | benchmark | 969 | -2.00 | 4.47% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.iwm.v1` | benchmark | 949 | -2.12 | 5.55% | no | no | block |
-| `benchmark.unconditional_intraday_long.tlt.v1` | benchmark | 972 | -2.31 | 4.07% | no | no | block |
-| `benchmark.unconditional_intraday_long.xlv.v1` | benchmark | 963 | -2.42 | 6.47% | no | no | block |
-| `benchmark.time_of_day_null.xlv.v1` | benchmark | 957 | -2.62 | 5.92% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlv.v1` | benchmark | 949 | -2.66 | 6.42% | no | no | block |
-| `benchmark.time_of_day_null.xlp.v1` | benchmark | 959 | -2.76 | 4.80% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.xlp.v1` | benchmark | 929 | -2.86 | 4.81% | no | no | block |
-| `benchmark.time_of_day_null.tlt.v1` | benchmark | 968 | -3.15 | 4.39% | no | no | block |
-| `benchmark.random_matched_exposure.intraday.tlt.v1` | benchmark | 954 | -3.37 | 4.90% | no | no | block |
+| `benchmark.unconditional_intraday_long.xlk.v1` | benchmark | 964 | -1.37 | 5.97% | no | no | block |
+| `benchmark.unconditional_intraday_long.iwm.v1` | benchmark | 972 | -1.38 | 4.41% | no | no | block |
+| `benchmark.time_of_day_null.xlk.v1` | benchmark | 916 | -1.49 | 4.63% | no | no | block |
+| `benchmark.unconditional_intraday_long.xle.v1` | benchmark | 972 | -1.58 | 4.79% | no | no | block |
+| `benchmark.unconditional_intraday_long.dia.v1` | benchmark | 850 | -1.62 | 3.49% | no | no | block |
+| `benchmark.unconditional_intraday_long.qqq.v1` | benchmark | 972 | -1.64 | 5.31% | no | no | block |
+| `benchmark.unconditional_intraday_long.xly.v1` | benchmark | 952 | -1.68 | 4.92% | no | no | block |
+| `benchmark.unconditional_intraday_long.spy.v1` | benchmark | 972 | -1.76 | 4.28% | no | yes | block |
+| `benchmark.unconditional_intraday_long.xlb.v1` | benchmark | 970 | -1.78 | 4.64% | no | no | block |
+| `benchmark.unconditional_intraday_long.xli.v1` | benchmark | 972 | -1.79 | 4.37% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.qqq.v1` | benchmark | 942 | -1.82 | 4.35% | no | no | block |
+| `benchmark.time_of_day_null.iwm.v1` | benchmark | 968 | -1.85 | 4.36% | no | no | block |
+| `benchmark.time_of_day_null.qqq.v1` | benchmark | 970 | -1.96 | 4.52% | no | no | block |
+| `benchmark.unconditional_intraday_long.gld.v1` | benchmark | 970 | -1.98 | 4.08% | no | no | block |
+| `benchmark.time_of_day_null.xly.v1` | benchmark | 878 | -2.05 | 4.55% | no | no | block |
+| `benchmark.time_of_day_null.spy.v1` | benchmark | 970 | -2.17 | 4.05% | no | yes | block |
+| `benchmark.unconditional_intraday_long.xlre.v1` | benchmark | 968 | -2.17 | 5.26% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlre.v1` | benchmark | 930 | -2.21 | 4.00% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xly.v1` | benchmark | 910 | -2.22 | 5.10% | no | no | block |
+| `benchmark.time_of_day_null.dia.v1` | benchmark | 726 | -2.22 | 3.25% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.spy.v1` | benchmark | 942 | -2.23 | 4.58% | no | yes | block |
+| `benchmark.unconditional_intraday_long.xlf.v1` | benchmark | 972 | -2.30 | 5.71% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlk.v1` | benchmark | 920 | -2.31 | 5.57% | no | no | block |
+| `benchmark.unconditional_intraday_long.xlu.v1` | benchmark | 972 | -2.34 | 5.30% | no | no | block |
+| `benchmark.unconditional_intraday_long.xlc.v1` | benchmark | 964 | -2.34 | 5.65% | no | no | block |
+| `benchmark.unconditional_intraday_long.xlp.v1` | benchmark | 972 | -2.45 | 4.47% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.gld.v1` | benchmark | 950 | -2.49 | 3.70% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.iwm.v1` | benchmark | 950 | -2.53 | 5.37% | no | no | block |
+| `benchmark.time_of_day_null.xlb.v1` | benchmark | 944 | -2.54 | 4.67% | no | no | block |
+| `benchmark.time_of_day_null.xli.v1` | benchmark | 956 | -2.55 | 4.66% | no | no | block |
+| `benchmark.time_of_day_null.gld.v1` | benchmark | 910 | -2.57 | 3.28% | no | no | block |
+| `benchmark.unconditional_intraday_long.xlv.v1` | benchmark | 966 | -2.66 | 5.70% | no | no | block |
+| `benchmark.time_of_day_null.xlf.v1` | benchmark | 970 | -2.73 | 5.01% | no | no | block |
+| `benchmark.time_of_day_null.xlre.v1` | benchmark | 888 | -2.79 | 5.10% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xli.v1` | benchmark | 952 | -2.96 | 5.61% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.dia.v1` | benchmark | 876 | -3.01 | 4.51% | no | no | block |
+| `benchmark.time_of_day_null.xlc.v1` | benchmark | 906 | -3.02 | 5.51% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlb.v1` | benchmark | 938 | -3.10 | 4.85% | no | no | block |
+| `benchmark.time_of_day_null.xle.v1` | benchmark | 970 | -3.16 | 6.58% | no | no | block |
+| `benchmark.time_of_day_null.xlu.v1` | benchmark | 960 | -3.16 | 5.07% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlf.v1` | benchmark | 956 | -3.18 | 6.00% | no | no | block |
+| `benchmark.time_of_day_null.xlv.v1` | benchmark | 960 | -3.21 | 4.96% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlv.v1` | benchmark | 952 | -3.25 | 5.32% | no | no | block |
+| `benchmark.unconditional_intraday_long.tlt.v1` | benchmark | 972 | -3.27 | 4.68% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlu.v1` | benchmark | 954 | -3.28 | 5.29% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xle.v1` | benchmark | 944 | -3.35 | 5.94% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlc.v1` | benchmark | 940 | -3.53 | 5.49% | no | no | block |
+| `benchmark.time_of_day_null.xlp.v1` | benchmark | 962 | -3.88 | 4.79% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.xlp.v1` | benchmark | 932 | -4.24 | 4.96% | no | no | block |
+| `benchmark.time_of_day_null.tlt.v1` | benchmark | 968 | -4.95 | 4.95% | no | no | block |
+| `benchmark.random_matched_exposure.intraday.tlt.v1` | benchmark | 954 | -5.16 | 5.48% | no | no | block |
 | `meanrev.rsi2.intraday.xlk.v1` | meanrev | 958 | -5.56 | 4.75% | no | no | block |
 | `meanrev.rsi2.intraday.xle.v1` | meanrev | 958 | -5.82 | 4.38% | no | no | block |
-| `meanrev.rsi2.intraday.iwm.v1` | meanrev | 960 | -6.24 | 4.91% | no | no | block |
-| `meanrev.rsi2.intraday.gld.v1` | meanrev | 968 | -6.82 | 5.03% | no | no | block |
+| `meanrev.rsi2.intraday.iwm.v1` | meanrev | 960 | -6.40 | 4.98% | no | no | block |
+| `meanrev.rsi2.intraday.gld.v1` | meanrev | 968 | -6.84 | 5.05% | no | no | block |
 | `meanrev.rsi2.intraday.xly.v1` | meanrev | 948 | -6.95 | 5.15% | no | no | block |
 | `meanrev.rsi2.intraday.qqq.v1` | meanrev | 954 | -7.04 | 5.15% | no | no | block |
 | `meanrev.rsi2.intraday.xlf.v1` | meanrev | 964 | -7.09 | 4.69% | no | no | block |
 | `meanrev.rsi2.intraday.xlc.v1` | meanrev | 970 | -7.22 | 4.51% | no | no | block |
 | `meanrev.rsi2.intraday.xlre.v1` | meanrev | 958 | -7.49 | 4.63% | no | no | block |
 | `meanrev.rsi2.intraday.dia.v1` | meanrev | 898 | -7.87 | 4.46% | no | no | block |
-| `meanrev.rsi2.intraday.xli.v1` | meanrev | 958 | -7.88 | 5.05% | no | no | block |
-| `meanrev.rsi2.intraday.spy.v1` | meanrev | 956 | -7.90 | 4.68% | no | yes | block |
+| `meanrev.rsi2.intraday.xli.v1` | meanrev | 958 | -8.00 | 5.09% | no | no | block |
 | `meanrev.rsi2.intraday.xlu.v1` | meanrev | 958 | -8.10 | 4.68% | no | no | block |
 | `meanrev.rsi2.intraday.xlv.v1` | meanrev | 958 | -8.13 | 4.46% | no | no | block |
 | `meanrev.rsi2.intraday.xlb.v1` | meanrev | 954 | -8.21 | 5.26% | no | no | block |
+| `meanrev.rsi2.intraday.spy.v1` | meanrev | 956 | -8.44 | 4.79% | no | yes | block |
 | `meanrev.rsi2.intraday.xlp.v1` | meanrev | 956 | -9.04 | 4.53% | no | no | block |
 | `meanrev.rsi2.intraday.tlt.v1` | meanrev | 968 | -10.59 | 4.79% | no | no | block |
 
 ## OOS Return Correlation Matrix
 
-| strategy | benchmark.random_matched_exposure.intraday.gld.v1 | benchmark.time_of_day_null.gld.v1 | benchmark.unconditional_intraday_long.gld.v1 | benchmark.unconditional_intraday_long.xli.v1 | benchmark.time_of_day_null.xli.v1 | benchmark.random_matched_exposure.intraday.xli.v1 | benchmark.time_of_day_null.xlk.v1 | benchmark.unconditional_intraday_long.xlk.v1 | benchmark.random_matched_exposure.intraday.xlk.v1 | benchmark.time_of_day_null.xlf.v1 | benchmark.unconditional_intraday_long.xlf.v1 | benchmark.unconditional_intraday_long.xlu.v1 | benchmark.time_of_day_null.xlu.v1 | benchmark.unconditional_intraday_long.xle.v1 | benchmark.random_matched_exposure.intraday.xlu.v1 | benchmark.random_matched_exposure.intraday.xly.v1 | benchmark.unconditional_intraday_long.xly.v1 | benchmark.unconditional_intraday_long.xlc.v1 | benchmark.time_of_day_null.xly.v1 | benchmark.unconditional_intraday_long.xlb.v1 | benchmark.random_matched_exposure.intraday.xlc.v1 | benchmark.time_of_day_null.xlb.v1 | benchmark.random_matched_exposure.intraday.xlb.v1 | benchmark.random_matched_exposure.intraday.xle.v1 | benchmark.random_matched_exposure.intraday.xlre.v1 | benchmark.unconditional_intraday_long.dia.v1 | benchmark.time_of_day_null.xle.v1 | benchmark.time_of_day_null.xlc.v1 | benchmark.random_matched_exposure.intraday.xlf.v1 | benchmark.random_matched_exposure.intraday.dia.v1 | benchmark.unconditional_intraday_long.iwm.v1 | benchmark.unconditional_intraday_long.spy.v1 | benchmark.time_of_day_null.dia.v1 | benchmark.unconditional_intraday_long.xlre.v1 | benchmark.time_of_day_null.spy.v1 | benchmark.time_of_day_null.xlre.v1 | benchmark.time_of_day_null.iwm.v1 | benchmark.unconditional_intraday_long.qqq.v1 | benchmark.random_matched_exposure.intraday.spy.v1 | benchmark.random_matched_exposure.intraday.qqq.v1 | benchmark.time_of_day_null.qqq.v1 | benchmark.unconditional_intraday_long.xlp.v1 | benchmark.random_matched_exposure.intraday.iwm.v1 | benchmark.unconditional_intraday_long.tlt.v1 | benchmark.unconditional_intraday_long.xlv.v1 | benchmark.time_of_day_null.xlv.v1 | benchmark.random_matched_exposure.intraday.xlv.v1 | benchmark.time_of_day_null.xlp.v1 | benchmark.random_matched_exposure.intraday.xlp.v1 | benchmark.time_of_day_null.tlt.v1 | benchmark.random_matched_exposure.intraday.tlt.v1 | meanrev.rsi2.intraday.xlk.v1 | meanrev.rsi2.intraday.xle.v1 | meanrev.rsi2.intraday.iwm.v1 | meanrev.rsi2.intraday.gld.v1 | meanrev.rsi2.intraday.xly.v1 | meanrev.rsi2.intraday.qqq.v1 | meanrev.rsi2.intraday.xlf.v1 | meanrev.rsi2.intraday.xlc.v1 | meanrev.rsi2.intraday.xlre.v1 | meanrev.rsi2.intraday.dia.v1 | meanrev.rsi2.intraday.xli.v1 | meanrev.rsi2.intraday.spy.v1 | meanrev.rsi2.intraday.xlu.v1 | meanrev.rsi2.intraday.xlv.v1 | meanrev.rsi2.intraday.xlb.v1 | meanrev.rsi2.intraday.xlp.v1 | meanrev.rsi2.intraday.tlt.v1 |
+| strategy | benchmark.unconditional_intraday_long.xlk.v1 | benchmark.unconditional_intraday_long.iwm.v1 | benchmark.time_of_day_null.xlk.v1 | benchmark.unconditional_intraday_long.xle.v1 | benchmark.unconditional_intraday_long.dia.v1 | benchmark.unconditional_intraday_long.qqq.v1 | benchmark.unconditional_intraday_long.xly.v1 | benchmark.unconditional_intraday_long.spy.v1 | benchmark.unconditional_intraday_long.xlb.v1 | benchmark.unconditional_intraday_long.xli.v1 | benchmark.random_matched_exposure.intraday.qqq.v1 | benchmark.time_of_day_null.iwm.v1 | benchmark.time_of_day_null.qqq.v1 | benchmark.unconditional_intraday_long.gld.v1 | benchmark.time_of_day_null.xly.v1 | benchmark.time_of_day_null.spy.v1 | benchmark.unconditional_intraday_long.xlre.v1 | benchmark.random_matched_exposure.intraday.xlre.v1 | benchmark.random_matched_exposure.intraday.xly.v1 | benchmark.time_of_day_null.dia.v1 | benchmark.random_matched_exposure.intraday.spy.v1 | benchmark.unconditional_intraday_long.xlf.v1 | benchmark.random_matched_exposure.intraday.xlk.v1 | benchmark.unconditional_intraday_long.xlu.v1 | benchmark.unconditional_intraday_long.xlc.v1 | benchmark.unconditional_intraday_long.xlp.v1 | benchmark.random_matched_exposure.intraday.gld.v1 | benchmark.random_matched_exposure.intraday.iwm.v1 | benchmark.time_of_day_null.xlb.v1 | benchmark.time_of_day_null.xli.v1 | benchmark.time_of_day_null.gld.v1 | benchmark.unconditional_intraday_long.xlv.v1 | benchmark.time_of_day_null.xlf.v1 | benchmark.time_of_day_null.xlre.v1 | benchmark.random_matched_exposure.intraday.xli.v1 | benchmark.random_matched_exposure.intraday.dia.v1 | benchmark.time_of_day_null.xlc.v1 | benchmark.random_matched_exposure.intraday.xlb.v1 | benchmark.time_of_day_null.xle.v1 | benchmark.time_of_day_null.xlu.v1 | benchmark.random_matched_exposure.intraday.xlf.v1 | benchmark.time_of_day_null.xlv.v1 | benchmark.random_matched_exposure.intraday.xlv.v1 | benchmark.unconditional_intraday_long.tlt.v1 | benchmark.random_matched_exposure.intraday.xlu.v1 | benchmark.random_matched_exposure.intraday.xle.v1 | benchmark.random_matched_exposure.intraday.xlc.v1 | benchmark.time_of_day_null.xlp.v1 | benchmark.random_matched_exposure.intraday.xlp.v1 | benchmark.time_of_day_null.tlt.v1 | benchmark.random_matched_exposure.intraday.tlt.v1 | meanrev.rsi2.intraday.xlk.v1 | meanrev.rsi2.intraday.xle.v1 | meanrev.rsi2.intraday.iwm.v1 | meanrev.rsi2.intraday.gld.v1 | meanrev.rsi2.intraday.xly.v1 | meanrev.rsi2.intraday.qqq.v1 | meanrev.rsi2.intraday.xlf.v1 | meanrev.rsi2.intraday.xlc.v1 | meanrev.rsi2.intraday.xlre.v1 | meanrev.rsi2.intraday.dia.v1 | meanrev.rsi2.intraday.xli.v1 | meanrev.rsi2.intraday.xlu.v1 | meanrev.rsi2.intraday.xlv.v1 | meanrev.rsi2.intraday.xlb.v1 | meanrev.rsi2.intraday.spy.v1 | meanrev.rsi2.intraday.xlp.v1 | meanrev.rsi2.intraday.tlt.v1 |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `benchmark.random_matched_exposure.intraday.gld.v1` | 1.00 | 0.91 | 0.89 | 0.18 | 0.16 | 0.18 | 0.07 | 0.07 | 0.04 | 0.03 | 0.04 | 0.06 | 0.04 | 0.04 | 0.04 | 0.02 | 0.05 | 0.12 | 0.05 | 0.10 | 0.07 | 0.08 | 0.07 | 0.02 | 0.16 | 0.19 | 0.03 | 0.10 | 0.01 | 0.07 | 0.14 | 0.22 | 0.19 | 0.16 | 0.25 | 0.16 | 0.15 | 0.16 | 0.21 | 0.18 | 0.19 | 0.05 | 0.09 | 0.18 | 0.11 | 0.12 | 0.07 | 0.02 | 0.02 | 0.15 | 0.14 | -0.03 | -0.05 | 0.06 | 0.07 | 0.02 | -0.03 | -0.00 | 0.04 | 0.02 | 0.05 | 0.11 | -0.00 | 0.02 | -0.04 | -0.02 | 0.08 | 0.04 |
-| `benchmark.time_of_day_null.gld.v1` | 0.91 | 1.00 | 0.85 | 0.14 | 0.15 | 0.16 | 0.07 | 0.06 | 0.04 | 0.02 | 0.00 | 0.05 | 0.04 | 0.03 | 0.04 | 0.02 | 0.03 | 0.08 | 0.05 | 0.08 | 0.06 | 0.08 | 0.06 | 0.01 | 0.16 | 0.15 | 0.03 | 0.08 | -0.01 | 0.05 | 0.08 | 0.16 | 0.18 | 0.13 | 0.21 | 0.14 | 0.11 | 0.09 | 0.17 | 0.13 | 0.15 | 0.03 | 0.04 | 0.14 | 0.09 | 0.11 | 0.07 | 0.00 | 0.02 | 0.12 | 0.10 | -0.04 | -0.11 | 0.04 | 0.06 | 0.01 | -0.06 | -0.05 | 0.03 | 0.00 | 0.04 | 0.10 | -0.03 | 0.02 | -0.08 | -0.02 | 0.05 | 0.03 |
-| `benchmark.unconditional_intraday_long.gld.v1` | 0.89 | 0.85 | 1.00 | 0.19 | 0.12 | 0.15 | 0.08 | 0.11 | 0.08 | 0.04 | 0.06 | 0.09 | 0.06 | 0.07 | 0.07 | 0.06 | 0.08 | 0.12 | 0.07 | 0.13 | 0.06 | 0.09 | 0.08 | 0.05 | 0.14 | 0.20 | 0.06 | 0.08 | 0.01 | 0.05 | 0.19 | 0.24 | 0.16 | 0.14 | 0.23 | 0.14 | 0.15 | 0.21 | 0.20 | 0.18 | 0.19 | 0.02 | 0.10 | 0.20 | 0.10 | 0.11 | 0.07 | 0.02 | 0.01 | 0.16 | 0.14 | 0.02 | -0.02 | 0.09 | 0.29 | 0.05 | 0.01 | 0.04 | 0.07 | 0.04 | 0.08 | 0.17 | 0.09 | 0.06 | -0.04 | 0.06 | 0.01 | 0.07 |
-| `benchmark.unconditional_intraday_long.xli.v1` | 0.18 | 0.14 | 0.19 | 1.00 | 0.83 | 0.85 | 0.35 | 0.43 | 0.30 | 0.67 | 0.75 | 0.17 | 0.14 | 0.20 | 0.14 | 0.32 | 0.41 | 0.71 | 0.34 | 0.34 | 0.60 | 0.27 | 0.24 | 0.09 | 0.50 | 0.81 | 0.15 | 0.62 | 0.67 | 0.71 | 0.68 | 0.67 | 0.62 | 0.58 | 0.56 | 0.53 | 0.57 | 0.61 | 0.55 | 0.48 | 0.49 | 0.34 | 0.53 | 0.18 | 0.58 | 0.55 | 0.55 | 0.37 | 0.38 | 0.22 | 0.17 | 0.12 | 0.11 | 0.20 | 0.09 | 0.14 | 0.20 | 0.18 | 0.19 | 0.12 | 0.27 | 0.26 | 0.19 | 0.03 | 0.06 | 0.12 | -0.11 | 0.03 |
-| `benchmark.time_of_day_null.xli.v1` | 0.16 | 0.15 | 0.12 | 0.83 | 1.00 | 0.91 | 0.39 | 0.36 | 0.29 | 0.79 | 0.60 | 0.12 | 0.13 | 0.13 | 0.13 | 0.33 | 0.35 | 0.67 | 0.37 | 0.26 | 0.67 | 0.28 | 0.22 | 0.06 | 0.59 | 0.68 | 0.14 | 0.77 | 0.73 | 0.79 | 0.45 | 0.49 | 0.75 | 0.52 | 0.65 | 0.65 | 0.67 | 0.44 | 0.52 | 0.53 | 0.61 | 0.30 | 0.50 | 0.18 | 0.48 | 0.62 | 0.56 | 0.42 | 0.41 | 0.24 | 0.19 | -0.04 | -0.02 | 0.04 | -0.04 | -0.01 | 0.08 | -0.01 | 0.05 | 0.04 | 0.07 | 0.03 | 0.00 | -0.07 | -0.04 | -0.04 | -0.09 | -0.01 |
-| `benchmark.random_matched_exposure.intraday.xli.v1` | 0.18 | 0.16 | 0.15 | 0.85 | 0.91 | 1.00 | 0.36 | 0.37 | 0.28 | 0.69 | 0.60 | 0.12 | 0.12 | 0.16 | 0.13 | 0.32 | 0.35 | 0.66 | 0.35 | 0.27 | 0.63 | 0.26 | 0.22 | 0.07 | 0.53 | 0.70 | 0.15 | 0.70 | 0.65 | 0.78 | 0.48 | 0.49 | 0.69 | 0.47 | 0.55 | 0.55 | 0.61 | 0.47 | 0.49 | 0.49 | 0.54 | 0.30 | 0.48 | 0.18 | 0.50 | 0.59 | 0.57 | 0.38 | 0.41 | 0.23 | 0.19 | 0.00 | 0.02 | 0.06 | 0.02 | -0.02 | 0.11 | 0.05 | 0.06 | 0.06 | 0.11 | 0.05 | 0.02 | -0.06 | -0.06 | -0.04 | -0.09 | 0.04 |
-| `benchmark.time_of_day_null.xlk.v1` | 0.07 | 0.07 | 0.08 | 0.35 | 0.39 | 0.36 | 1.00 | 0.95 | 0.95 | 0.31 | 0.25 | 0.85 | 0.87 | 0.81 | 0.87 | 0.94 | 0.92 | 0.33 | 0.95 | 0.91 | 0.31 | 0.93 | 0.90 | 0.81 | 0.23 | 0.33 | 0.84 | 0.36 | 0.30 | 0.36 | 0.23 | 0.28 | 0.31 | 0.20 | 0.34 | 0.25 | 0.31 | 0.26 | 0.29 | 0.29 | 0.33 | 0.10 | 0.24 | 0.10 | 0.18 | 0.21 | 0.20 | 0.12 | 0.14 | 0.10 | 0.07 | -0.02 | 0.01 | 0.03 | 0.12 | -0.02 | 0.06 | 0.00 | 0.06 | 0.03 | 0.04 | 0.02 | 0.03 | -0.04 | -0.03 | 0.03 | 0.01 | 0.01 |
-| `benchmark.unconditional_intraday_long.xlk.v1` | 0.07 | 0.06 | 0.11 | 0.43 | 0.36 | 0.37 | 0.95 | 1.00 | 0.94 | 0.30 | 0.31 | 0.82 | 0.84 | 0.80 | 0.83 | 0.91 | 0.93 | 0.40 | 0.90 | 0.89 | 0.32 | 0.89 | 0.87 | 0.79 | 0.21 | 0.39 | 0.82 | 0.34 | 0.31 | 0.35 | 0.36 | 0.41 | 0.29 | 0.21 | 0.32 | 0.22 | 0.29 | 0.43 | 0.34 | 0.30 | 0.30 | 0.08 | 0.26 | 0.10 | 0.20 | 0.19 | 0.21 | 0.12 | 0.12 | 0.11 | 0.08 | 0.12 | 0.06 | 0.13 | 0.15 | 0.07 | 0.17 | 0.06 | 0.15 | 0.05 | 0.11 | 0.09 | 0.14 | -0.00 | -0.02 | 0.10 | -0.03 | 0.01 |
-| `benchmark.random_matched_exposure.intraday.xlk.v1` | 0.04 | 0.04 | 0.08 | 0.30 | 0.29 | 0.28 | 0.95 | 0.94 | 1.00 | 0.23 | 0.20 | 0.86 | 0.87 | 0.81 | 0.88 | 0.91 | 0.90 | 0.25 | 0.91 | 0.89 | 0.25 | 0.90 | 0.90 | 0.83 | 0.14 | 0.24 | 0.84 | 0.25 | 0.22 | 0.28 | 0.20 | 0.17 | 0.22 | 0.12 | 0.16 | 0.15 | 0.21 | 0.21 | 0.16 | 0.20 | 0.20 | 0.02 | 0.22 | 0.09 | 0.10 | 0.10 | 0.11 | 0.05 | 0.07 | 0.07 | 0.06 | 0.01 | 0.05 | 0.03 | 0.14 | -0.01 | 0.07 | 0.04 | 0.06 | 0.00 | 0.02 | 0.01 | 0.05 | 0.00 | -0.02 | 0.04 | 0.01 | 0.04 |
-| `benchmark.time_of_day_null.xlf.v1` | 0.03 | 0.02 | 0.04 | 0.67 | 0.79 | 0.69 | 0.31 | 0.30 | 0.23 | 1.00 | 0.83 | 0.13 | 0.15 | 0.16 | 0.13 | 0.32 | 0.33 | 0.60 | 0.34 | 0.27 | 0.58 | 0.28 | 0.22 | 0.08 | 0.58 | 0.67 | 0.17 | 0.67 | 0.93 | 0.72 | 0.45 | 0.52 | 0.69 | 0.51 | 0.63 | 0.63 | 0.62 | 0.46 | 0.54 | 0.53 | 0.58 | 0.38 | 0.50 | 0.19 | 0.51 | 0.62 | 0.58 | 0.50 | 0.45 | 0.26 | 0.19 | -0.01 | 0.00 | 0.04 | -0.00 | 0.02 | 0.11 | 0.02 | 0.04 | 0.07 | 0.10 | 0.04 | 0.06 | -0.05 | -0.05 | 0.04 | -0.09 | -0.03 |
-| `benchmark.unconditional_intraday_long.xlf.v1` | 0.04 | 0.00 | 0.06 | 0.75 | 0.60 | 0.60 | 0.25 | 0.31 | 0.20 | 0.83 | 1.00 | 0.15 | 0.12 | 0.21 | 0.12 | 0.28 | 0.36 | 0.63 | 0.27 | 0.30 | 0.50 | 0.23 | 0.21 | 0.10 | 0.45 | 0.77 | 0.15 | 0.50 | 0.84 | 0.61 | 0.59 | 0.66 | 0.52 | 0.55 | 0.52 | 0.48 | 0.48 | 0.55 | 0.54 | 0.43 | 0.43 | 0.44 | 0.47 | 0.15 | 0.56 | 0.50 | 0.51 | 0.44 | 0.39 | 0.22 | 0.17 | 0.16 | 0.16 | 0.20 | 0.06 | 0.18 | 0.25 | 0.26 | 0.22 | 0.13 | 0.33 | 0.25 | 0.25 | 0.05 | 0.08 | 0.22 | -0.04 | -0.05 |
-| `benchmark.unconditional_intraday_long.xlu.v1` | 0.06 | 0.05 | 0.09 | 0.17 | 0.12 | 0.12 | 0.85 | 0.82 | 0.86 | 0.13 | 0.15 | 1.00 | 0.98 | 0.87 | 0.98 | 0.89 | 0.87 | 0.10 | 0.88 | 0.92 | 0.08 | 0.92 | 0.92 | 0.88 | 0.18 | 0.15 | 0.89 | 0.08 | 0.13 | 0.11 | 0.12 | 0.13 | 0.10 | 0.21 | 0.11 | 0.17 | 0.09 | 0.10 | 0.12 | 0.09 | 0.08 | 0.18 | 0.09 | 0.11 | 0.16 | 0.10 | 0.12 | 0.16 | 0.16 | 0.09 | 0.09 | 0.01 | 0.05 | 0.05 | 0.16 | -0.01 | 0.04 | 0.03 | 0.07 | 0.04 | 0.03 | 0.04 | 0.03 | 0.06 | 0.03 | 0.06 | 0.05 | 0.02 |
-| `benchmark.time_of_day_null.xlu.v1` | 0.04 | 0.04 | 0.06 | 0.14 | 0.13 | 0.12 | 0.87 | 0.84 | 0.87 | 0.15 | 0.12 | 0.98 | 1.00 | 0.87 | 0.99 | 0.90 | 0.88 | 0.08 | 0.90 | 0.92 | 0.08 | 0.94 | 0.94 | 0.90 | 0.18 | 0.12 | 0.91 | 0.09 | 0.14 | 0.12 | 0.09 | 0.10 | 0.11 | 0.15 | 0.11 | 0.18 | 0.10 | 0.09 | 0.11 | 0.10 | 0.10 | 0.14 | 0.09 | 0.09 | 0.12 | 0.11 | 0.11 | 0.16 | 0.15 | 0.09 | 0.07 | 0.01 | 0.03 | 0.03 | 0.16 | -0.01 | 0.05 | -0.00 | 0.06 | 0.01 | -0.00 | 0.01 | 0.02 | -0.03 | 0.00 | 0.04 | 0.03 | -0.00 |
-| `benchmark.unconditional_intraday_long.xle.v1` | 0.04 | 0.03 | 0.07 | 0.20 | 0.13 | 0.16 | 0.81 | 0.80 | 0.81 | 0.16 | 0.21 | 0.87 | 0.87 | 1.00 | 0.87 | 0.84 | 0.84 | 0.13 | 0.83 | 0.88 | 0.09 | 0.87 | 0.86 | 0.95 | 0.14 | 0.16 | 0.96 | 0.10 | 0.16 | 0.14 | 0.17 | 0.18 | 0.05 | 0.15 | 0.13 | 0.14 | 0.11 | 0.15 | 0.17 | 0.11 | 0.09 | 0.12 | 0.12 | 0.03 | 0.14 | 0.09 | 0.12 | 0.11 | 0.09 | 0.03 | 0.02 | 0.05 | 0.11 | 0.10 | 0.16 | 0.07 | 0.12 | 0.05 | 0.12 | 0.05 | 0.09 | 0.06 | 0.09 | -0.01 | 0.01 | 0.13 | 0.01 | 0.02 |
-| `benchmark.random_matched_exposure.intraday.xlu.v1` | 0.04 | 0.04 | 0.07 | 0.14 | 0.13 | 0.13 | 0.87 | 0.83 | 0.88 | 0.13 | 0.12 | 0.98 | 0.99 | 0.87 | 1.00 | 0.90 | 0.88 | 0.08 | 0.90 | 0.92 | 0.07 | 0.94 | 0.94 | 0.89 | 0.18 | 0.12 | 0.91 | 0.08 | 0.13 | 0.12 | 0.10 | 0.09 | 0.11 | 0.15 | 0.09 | 0.17 | 0.10 | 0.08 | 0.10 | 0.09 | 0.09 | 0.14 | 0.09 | 0.09 | 0.12 | 0.10 | 0.11 | 0.15 | 0.15 | 0.08 | 0.07 | -0.00 | 0.02 | 0.04 | 0.16 | -0.03 | 0.04 | 0.01 | 0.06 | 0.01 | 0.00 | 0.01 | 0.01 | -0.01 | -0.00 | 0.03 | 0.03 | 0.01 |
-| `benchmark.random_matched_exposure.intraday.xly.v1` | 0.02 | 0.02 | 0.06 | 0.32 | 0.33 | 0.32 | 0.94 | 0.91 | 0.91 | 0.32 | 0.28 | 0.89 | 0.90 | 0.84 | 0.90 | 1.00 | 0.96 | 0.30 | 0.97 | 0.93 | 0.28 | 0.94 | 0.92 | 0.83 | 0.24 | 0.32 | 0.87 | 0.31 | 0.32 | 0.33 | 0.24 | 0.26 | 0.28 | 0.20 | 0.27 | 0.24 | 0.27 | 0.24 | 0.27 | 0.25 | 0.25 | 0.15 | 0.24 | 0.10 | 0.20 | 0.20 | 0.20 | 0.18 | 0.19 | 0.10 | 0.09 | 0.00 | 0.05 | 0.05 | 0.12 | -0.02 | 0.07 | 0.01 | 0.08 | 0.02 | 0.03 | 0.03 | 0.05 | -0.03 | 0.01 | 0.06 | 0.00 | 0.02 |
-| `benchmark.unconditional_intraday_long.xly.v1` | 0.05 | 0.03 | 0.08 | 0.41 | 0.35 | 0.35 | 0.92 | 0.93 | 0.90 | 0.33 | 0.36 | 0.87 | 0.88 | 0.84 | 0.88 | 0.96 | 1.00 | 0.38 | 0.96 | 0.93 | 0.31 | 0.92 | 0.91 | 0.83 | 0.24 | 0.39 | 0.86 | 0.32 | 0.34 | 0.34 | 0.32 | 0.35 | 0.28 | 0.25 | 0.29 | 0.25 | 0.27 | 0.33 | 0.29 | 0.25 | 0.25 | 0.17 | 0.26 | 0.10 | 0.23 | 0.20 | 0.21 | 0.19 | 0.20 | 0.10 | 0.08 | 0.08 | 0.07 | 0.12 | 0.14 | 0.08 | 0.14 | 0.07 | 0.16 | 0.03 | 0.10 | 0.11 | 0.13 | -0.02 | 0.03 | 0.12 | -0.00 | 0.01 |
-| `benchmark.unconditional_intraday_long.xlc.v1` | 0.12 | 0.08 | 0.12 | 0.71 | 0.67 | 0.66 | 0.33 | 0.40 | 0.25 | 0.60 | 0.63 | 0.10 | 0.08 | 0.13 | 0.08 | 0.30 | 0.38 | 1.00 | 0.31 | 0.24 | 0.83 | 0.20 | 0.16 | 0.04 | 0.45 | 0.73 | 0.11 | 0.84 | 0.60 | 0.66 | 0.52 | 0.68 | 0.58 | 0.52 | 0.59 | 0.49 | 0.49 | 0.66 | 0.58 | 0.50 | 0.56 | 0.30 | 0.42 | 0.18 | 0.43 | 0.45 | 0.45 | 0.35 | 0.36 | 0.24 | 0.19 | 0.11 | 0.09 | 0.18 | 0.04 | 0.11 | 0.24 | 0.08 | 0.28 | 0.13 | 0.22 | 0.15 | 0.15 | 0.04 | -0.04 | 0.12 | -0.10 | 0.01 |
-| `benchmark.time_of_day_null.xly.v1` | 0.05 | 0.05 | 0.07 | 0.34 | 0.37 | 0.35 | 0.95 | 0.90 | 0.91 | 0.34 | 0.27 | 0.88 | 0.90 | 0.83 | 0.90 | 0.97 | 0.96 | 0.31 | 1.00 | 0.92 | 0.32 | 0.95 | 0.93 | 0.84 | 0.26 | 0.31 | 0.87 | 0.35 | 0.33 | 0.35 | 0.20 | 0.24 | 0.30 | 0.22 | 0.29 | 0.28 | 0.27 | 0.23 | 0.25 | 0.25 | 0.28 | 0.15 | 0.21 | 0.10 | 0.20 | 0.22 | 0.21 | 0.20 | 0.21 | 0.10 | 0.08 | 0.00 | 0.02 | 0.04 | 0.11 | -0.01 | 0.07 | -0.01 | 0.06 | 0.00 | 0.02 | 0.04 | 0.04 | -0.05 | -0.01 | 0.04 | -0.00 | 0.01 |
-| `benchmark.unconditional_intraday_long.xlb.v1` | 0.10 | 0.08 | 0.13 | 0.34 | 0.26 | 0.27 | 0.91 | 0.89 | 0.89 | 0.27 | 0.30 | 0.92 | 0.92 | 0.88 | 0.92 | 0.93 | 0.93 | 0.24 | 0.92 | 1.00 | 0.19 | 0.97 | 0.97 | 0.87 | 0.23 | 0.32 | 0.89 | 0.20 | 0.27 | 0.25 | 0.29 | 0.27 | 0.20 | 0.25 | 0.22 | 0.23 | 0.22 | 0.24 | 0.23 | 0.20 | 0.19 | 0.21 | 0.22 | 0.11 | 0.26 | 0.20 | 0.21 | 0.19 | 0.20 | 0.09 | 0.07 | 0.05 | 0.06 | 0.10 | 0.17 | 0.06 | 0.09 | 0.07 | 0.11 | 0.04 | 0.11 | 0.10 | 0.09 | -0.02 | 0.05 | 0.11 | 0.03 | 0.03 |
-| `benchmark.random_matched_exposure.intraday.xlc.v1` | 0.07 | 0.06 | 0.06 | 0.60 | 0.67 | 0.63 | 0.31 | 0.32 | 0.25 | 0.58 | 0.50 | 0.08 | 0.08 | 0.09 | 0.07 | 0.28 | 0.31 | 0.83 | 0.32 | 0.19 | 1.00 | 0.19 | 0.18 | 0.05 | 0.44 | 0.57 | 0.09 | 0.87 | 0.56 | 0.63 | 0.33 | 0.42 | 0.52 | 0.44 | 0.49 | 0.50 | 0.42 | 0.37 | 0.42 | 0.37 | 0.45 | 0.25 | 0.38 | 0.12 | 0.34 | 0.41 | 0.39 | 0.33 | 0.33 | 0.15 | 0.13 | -0.05 | 0.06 | 0.06 | 0.03 | -0.04 | 0.11 | 0.05 | 0.03 | 0.07 | 0.08 | 0.05 | 0.01 | 0.03 | -0.05 | -0.01 | -0.11 | -0.01 |
-| `benchmark.time_of_day_null.xlb.v1` | 0.08 | 0.08 | 0.09 | 0.27 | 0.28 | 0.26 | 0.93 | 0.89 | 0.90 | 0.28 | 0.23 | 0.92 | 0.94 | 0.87 | 0.94 | 0.94 | 0.92 | 0.20 | 0.95 | 0.97 | 0.19 | 1.00 | 0.98 | 0.88 | 0.24 | 0.24 | 0.91 | 0.22 | 0.26 | 0.26 | 0.17 | 0.19 | 0.23 | 0.20 | 0.21 | 0.24 | 0.21 | 0.17 | 0.19 | 0.18 | 0.20 | 0.17 | 0.17 | 0.09 | 0.20 | 0.20 | 0.20 | 0.20 | 0.19 | 0.07 | 0.05 | -0.00 | 0.01 | 0.05 | 0.13 | 0.01 | 0.05 | 0.01 | 0.06 | 0.00 | 0.03 | 0.02 | 0.02 | -0.05 | 0.02 | 0.04 | 0.03 | 0.01 |
-| `benchmark.random_matched_exposure.intraday.xlb.v1` | 0.07 | 0.06 | 0.08 | 0.24 | 0.22 | 0.22 | 0.90 | 0.87 | 0.90 | 0.22 | 0.21 | 0.92 | 0.94 | 0.86 | 0.94 | 0.92 | 0.91 | 0.16 | 0.93 | 0.97 | 0.18 | 0.98 | 1.00 | 0.89 | 0.18 | 0.20 | 0.89 | 0.16 | 0.21 | 0.22 | 0.15 | 0.12 | 0.15 | 0.17 | 0.12 | 0.19 | 0.14 | 0.11 | 0.10 | 0.10 | 0.10 | 0.15 | 0.15 | 0.07 | 0.17 | 0.14 | 0.15 | 0.16 | 0.17 | 0.03 | 0.03 | -0.01 | 0.04 | 0.05 | 0.13 | -0.00 | 0.05 | 0.05 | 0.05 | -0.02 | 0.01 | 0.03 | 0.02 | -0.03 | 0.03 | 0.04 | 0.02 | 0.01 |
-| `benchmark.random_matched_exposure.intraday.xle.v1` | 0.02 | 0.01 | 0.05 | 0.09 | 0.06 | 0.07 | 0.81 | 0.79 | 0.83 | 0.08 | 0.10 | 0.88 | 0.90 | 0.95 | 0.89 | 0.83 | 0.83 | 0.04 | 0.84 | 0.87 | 0.05 | 0.88 | 0.89 | 1.00 | 0.07 | 0.05 | 0.97 | 0.03 | 0.09 | 0.07 | 0.06 | 0.07 | -0.02 | 0.06 | 0.04 | 0.07 | 0.03 | 0.05 | 0.06 | 0.01 | 0.01 | 0.04 | 0.05 | 0.01 | 0.06 | 0.03 | 0.03 | 0.06 | 0.04 | -0.01 | -0.01 | 0.02 | 0.05 | 0.07 | 0.15 | 0.06 | 0.08 | 0.05 | 0.08 | -0.01 | 0.02 | 0.03 | 0.05 | -0.04 | 0.00 | 0.08 | -0.00 | -0.01 |
-| `benchmark.random_matched_exposure.intraday.xlre.v1` | 0.16 | 0.16 | 0.14 | 0.50 | 0.59 | 0.53 | 0.23 | 0.21 | 0.14 | 0.58 | 0.45 | 0.18 | 0.18 | 0.14 | 0.18 | 0.24 | 0.24 | 0.45 | 0.26 | 0.23 | 0.44 | 0.24 | 0.18 | 0.07 | 1.00 | 0.48 | 0.14 | 0.53 | 0.52 | 0.52 | 0.37 | 0.43 | 0.50 | 0.82 | 0.55 | 0.90 | 0.52 | 0.33 | 0.50 | 0.43 | 0.46 | 0.46 | 0.41 | 0.23 | 0.49 | 0.59 | 0.55 | 0.56 | 0.53 | 0.30 | 0.28 | -0.08 | -0.02 | 0.04 | 0.01 | -0.07 | -0.01 | -0.11 | 0.00 | 0.10 | 0.02 | 0.06 | -0.02 | -0.05 | -0.02 | -0.02 | -0.02 | 0.03 |
-| `benchmark.unconditional_intraday_long.dia.v1` | 0.19 | 0.15 | 0.20 | 0.81 | 0.68 | 0.70 | 0.33 | 0.39 | 0.24 | 0.67 | 0.77 | 0.15 | 0.12 | 0.16 | 0.12 | 0.32 | 0.39 | 0.73 | 0.31 | 0.32 | 0.57 | 0.24 | 0.20 | 0.05 | 0.48 | 1.00 | 0.12 | 0.62 | 0.68 | 0.73 | 0.63 | 0.72 | 0.67 | 0.58 | 0.61 | 0.51 | 0.54 | 0.65 | 0.61 | 0.52 | 0.53 | 0.41 | 0.49 | 0.24 | 0.63 | 0.59 | 0.60 | 0.40 | 0.42 | 0.25 | 0.22 | 0.13 | 0.09 | 0.18 | 0.06 | 0.07 | 0.22 | 0.14 | 0.21 | 0.14 | 0.31 | 0.21 | 0.19 | 0.03 | 0.02 | 0.15 | -0.06 | 0.05 |
-| `benchmark.time_of_day_null.xle.v1` | 0.03 | 0.03 | 0.06 | 0.15 | 0.14 | 0.15 | 0.84 | 0.82 | 0.84 | 0.17 | 0.15 | 0.89 | 0.91 | 0.96 | 0.91 | 0.87 | 0.86 | 0.11 | 0.87 | 0.89 | 0.09 | 0.91 | 0.89 | 0.97 | 0.14 | 0.12 | 1.00 | 0.12 | 0.16 | 0.15 | 0.10 | 0.14 | 0.07 | 0.11 | 0.13 | 0.15 | 0.11 | 0.12 | 0.14 | 0.11 | 0.11 | 0.09 | 0.08 | 0.06 | 0.11 | 0.10 | 0.10 | 0.10 | 0.09 | 0.04 | 0.03 | 0.03 | 0.02 | 0.07 | 0.14 | 0.04 | 0.10 | 0.03 | 0.09 | 0.01 | 0.04 | 0.02 | 0.05 | -0.05 | -0.01 | 0.08 | 0.01 | 0.02 |
-| `benchmark.time_of_day_null.xlc.v1` | 0.10 | 0.08 | 0.08 | 0.62 | 0.77 | 0.70 | 0.36 | 0.34 | 0.25 | 0.67 | 0.50 | 0.08 | 0.09 | 0.10 | 0.08 | 0.31 | 0.32 | 0.84 | 0.35 | 0.20 | 0.87 | 0.22 | 0.16 | 0.03 | 0.53 | 0.62 | 0.12 | 1.00 | 0.63 | 0.70 | 0.37 | 0.50 | 0.64 | 0.48 | 0.66 | 0.58 | 0.57 | 0.47 | 0.55 | 0.54 | 0.65 | 0.25 | 0.40 | 0.17 | 0.39 | 0.53 | 0.48 | 0.36 | 0.38 | 0.19 | 0.14 | -0.06 | 0.01 | 0.01 | -0.01 | -0.08 | 0.06 | -0.06 | 0.00 | 0.07 | 0.05 | 0.00 | -0.05 | -0.03 | -0.13 | -0.05 | -0.09 | 0.05 |
-| `benchmark.random_matched_exposure.intraday.xlf.v1` | 0.01 | -0.01 | 0.01 | 0.67 | 0.73 | 0.65 | 0.30 | 0.31 | 0.22 | 0.93 | 0.84 | 0.13 | 0.14 | 0.16 | 0.13 | 0.32 | 0.34 | 0.60 | 0.33 | 0.27 | 0.56 | 0.26 | 0.21 | 0.09 | 0.52 | 0.68 | 0.16 | 0.63 | 1.00 | 0.67 | 0.46 | 0.54 | 0.64 | 0.47 | 0.59 | 0.55 | 0.56 | 0.47 | 0.56 | 0.52 | 0.54 | 0.37 | 0.51 | 0.15 | 0.48 | 0.55 | 0.53 | 0.46 | 0.41 | 0.25 | 0.16 | -0.01 | 0.02 | 0.06 | 0.00 | 0.04 | 0.12 | 0.06 | 0.06 | 0.09 | 0.15 | 0.06 | 0.08 | -0.03 | -0.02 | 0.08 | -0.10 | -0.05 |
-| `benchmark.random_matched_exposure.intraday.dia.v1` | 0.07 | 0.05 | 0.05 | 0.71 | 0.79 | 0.78 | 0.36 | 0.35 | 0.28 | 0.72 | 0.61 | 0.11 | 0.12 | 0.14 | 0.12 | 0.33 | 0.34 | 0.66 | 0.35 | 0.25 | 0.63 | 0.26 | 0.22 | 0.07 | 0.52 | 0.73 | 0.15 | 0.70 | 0.67 | 1.00 | 0.43 | 0.45 | 0.76 | 0.48 | 0.52 | 0.56 | 0.57 | 0.47 | 0.42 | 0.51 | 0.55 | 0.32 | 0.45 | 0.16 | 0.52 | 0.63 | 0.62 | 0.42 | 0.45 | 0.18 | 0.16 | -0.02 | 0.01 | 0.01 | 0.01 | -0.07 | 0.10 | 0.03 | 0.06 | 0.04 | 0.10 | 0.04 | 0.03 | -0.06 | -0.07 | 0.01 | -0.07 | 0.06 |
-| `benchmark.unconditional_intraday_long.iwm.v1` | 0.14 | 0.08 | 0.19 | 0.68 | 0.45 | 0.48 | 0.23 | 0.36 | 0.20 | 0.45 | 0.59 | 0.12 | 0.09 | 0.17 | 0.10 | 0.24 | 0.32 | 0.52 | 0.20 | 0.29 | 0.33 | 0.17 | 0.15 | 0.06 | 0.37 | 0.63 | 0.10 | 0.37 | 0.46 | 0.43 | 1.00 | 0.72 | 0.41 | 0.50 | 0.52 | 0.38 | 0.75 | 0.70 | 0.59 | 0.49 | 0.48 | 0.25 | 0.77 | 0.20 | 0.46 | 0.37 | 0.38 | 0.27 | 0.24 | 0.29 | 0.25 | 0.19 | 0.12 | 0.24 | 0.14 | 0.13 | 0.23 | 0.10 | 0.23 | 0.24 | 0.29 | 0.20 | 0.27 | 0.10 | 0.10 | 0.16 | -0.07 | 0.05 |
-| `benchmark.unconditional_intraday_long.spy.v1` | 0.22 | 0.16 | 0.24 | 0.67 | 0.49 | 0.49 | 0.28 | 0.41 | 0.17 | 0.52 | 0.66 | 0.13 | 0.10 | 0.18 | 0.09 | 0.26 | 0.35 | 0.68 | 0.24 | 0.27 | 0.42 | 0.19 | 0.12 | 0.07 | 0.43 | 0.72 | 0.14 | 0.50 | 0.54 | 0.45 | 0.72 | 1.00 | 0.44 | 0.52 | 0.83 | 0.44 | 0.56 | 0.83 | 0.87 | 0.60 | 0.61 | 0.37 | 0.48 | 0.19 | 0.52 | 0.46 | 0.45 | 0.37 | 0.31 | 0.27 | 0.23 | 0.24 | 0.10 | 0.27 | 0.11 | 0.22 | 0.28 | 0.09 | 0.30 | 0.24 | 0.37 | 0.28 | 0.31 | 0.09 | 0.08 | 0.22 | -0.05 | -0.04 |
-| `benchmark.time_of_day_null.dia.v1` | 0.19 | 0.18 | 0.16 | 0.62 | 0.75 | 0.69 | 0.31 | 0.29 | 0.22 | 0.69 | 0.52 | 0.10 | 0.11 | 0.05 | 0.11 | 0.28 | 0.28 | 0.58 | 0.30 | 0.20 | 0.52 | 0.23 | 0.15 | -0.02 | 0.50 | 0.67 | 0.07 | 0.64 | 0.64 | 0.76 | 0.41 | 0.44 | 1.00 | 0.43 | 0.56 | 0.55 | 0.62 | 0.45 | 0.46 | 0.51 | 0.59 | 0.28 | 0.43 | 0.20 | 0.48 | 0.62 | 0.59 | 0.39 | 0.41 | 0.28 | 0.23 | -0.04 | -0.02 | 0.03 | -0.01 | -0.05 | 0.10 | -0.04 | 0.05 | 0.04 | 0.08 | -0.00 | 0.02 | -0.06 | -0.11 | 0.00 | -0.07 | 0.04 |
-| `benchmark.unconditional_intraday_long.xlre.v1` | 0.16 | 0.13 | 0.14 | 0.58 | 0.52 | 0.47 | 0.20 | 0.21 | 0.12 | 0.51 | 0.55 | 0.21 | 0.15 | 0.15 | 0.15 | 0.20 | 0.25 | 0.52 | 0.22 | 0.25 | 0.44 | 0.20 | 0.17 | 0.06 | 0.82 | 0.58 | 0.11 | 0.48 | 0.47 | 0.48 | 0.50 | 0.52 | 0.43 | 1.00 | 0.49 | 0.82 | 0.48 | 0.39 | 0.48 | 0.36 | 0.40 | 0.58 | 0.44 | 0.29 | 0.60 | 0.54 | 0.52 | 0.53 | 0.53 | 0.32 | 0.31 | -0.01 | 0.04 | 0.13 | 0.02 | 0.03 | 0.07 | 0.02 | 0.09 | 0.25 | 0.16 | 0.14 | 0.06 | 0.07 | 0.09 | 0.11 | 0.01 | 0.05 |
-| `benchmark.time_of_day_null.spy.v1` | 0.25 | 0.21 | 0.23 | 0.56 | 0.65 | 0.55 | 0.34 | 0.32 | 0.16 | 0.63 | 0.52 | 0.11 | 0.11 | 0.13 | 0.09 | 0.27 | 0.29 | 0.59 | 0.29 | 0.22 | 0.49 | 0.21 | 0.12 | 0.04 | 0.55 | 0.61 | 0.13 | 0.66 | 0.59 | 0.52 | 0.52 | 0.83 | 0.56 | 0.49 | 1.00 | 0.57 | 0.69 | 0.63 | 0.90 | 0.70 | 0.80 | 0.33 | 0.47 | 0.20 | 0.47 | 0.57 | 0.49 | 0.42 | 0.35 | 0.29 | 0.23 | -0.00 | -0.03 | 0.09 | 0.03 | 0.02 | 0.07 | -0.08 | 0.09 | 0.18 | 0.18 | 0.12 | 0.10 | 0.00 | -0.01 | 0.05 | -0.02 | -0.05 |
-| `benchmark.time_of_day_null.xlre.v1` | 0.16 | 0.14 | 0.14 | 0.53 | 0.65 | 0.55 | 0.25 | 0.22 | 0.15 | 0.63 | 0.48 | 0.17 | 0.18 | 0.14 | 0.17 | 0.24 | 0.25 | 0.49 | 0.28 | 0.23 | 0.50 | 0.24 | 0.19 | 0.07 | 0.90 | 0.51 | 0.15 | 0.58 | 0.55 | 0.56 | 0.38 | 0.44 | 0.55 | 0.82 | 0.57 | 1.00 | 0.57 | 0.37 | 0.49 | 0.45 | 0.51 | 0.46 | 0.44 | 0.22 | 0.50 | 0.63 | 0.56 | 0.58 | 0.54 | 0.31 | 0.26 | -0.08 | -0.01 | 0.05 | -0.01 | -0.06 | 0.04 | -0.09 | -0.01 | 0.07 | 0.02 | 0.04 | -0.02 | -0.06 | -0.02 | -0.01 | -0.03 | 0.02 |
-| `benchmark.time_of_day_null.iwm.v1` | 0.15 | 0.11 | 0.15 | 0.57 | 0.67 | 0.61 | 0.31 | 0.29 | 0.21 | 0.62 | 0.48 | 0.09 | 0.10 | 0.11 | 0.10 | 0.27 | 0.27 | 0.49 | 0.27 | 0.22 | 0.42 | 0.21 | 0.14 | 0.03 | 0.52 | 0.54 | 0.11 | 0.57 | 0.56 | 0.57 | 0.75 | 0.56 | 0.62 | 0.48 | 0.69 | 0.57 | 1.00 | 0.53 | 0.62 | 0.63 | 0.69 | 0.25 | 0.83 | 0.25 | 0.41 | 0.51 | 0.46 | 0.34 | 0.31 | 0.35 | 0.30 | -0.05 | -0.02 | 0.01 | 0.02 | -0.12 | 0.03 | -0.09 | 0.05 | 0.18 | 0.08 | -0.00 | 0.03 | -0.00 | -0.00 | -0.02 | -0.02 | 0.02 |
-| `benchmark.unconditional_intraday_long.qqq.v1` | 0.16 | 0.09 | 0.21 | 0.61 | 0.44 | 0.47 | 0.26 | 0.43 | 0.21 | 0.46 | 0.55 | 0.10 | 0.09 | 0.15 | 0.08 | 0.24 | 0.33 | 0.66 | 0.23 | 0.24 | 0.37 | 0.17 | 0.11 | 0.05 | 0.33 | 0.65 | 0.12 | 0.47 | 0.47 | 0.47 | 0.70 | 0.83 | 0.45 | 0.39 | 0.63 | 0.37 | 0.53 | 1.00 | 0.67 | 0.74 | 0.75 | 0.25 | 0.46 | 0.22 | 0.42 | 0.42 | 0.42 | 0.32 | 0.30 | 0.31 | 0.25 | 0.28 | 0.08 | 0.26 | 0.11 | 0.20 | 0.36 | 0.08 | 0.25 | 0.17 | 0.29 | 0.26 | 0.31 | -0.01 | -0.03 | 0.18 | -0.10 | 0.05 |
-| `benchmark.random_matched_exposure.intraday.spy.v1` | 0.21 | 0.17 | 0.20 | 0.55 | 0.52 | 0.49 | 0.29 | 0.34 | 0.16 | 0.54 | 0.54 | 0.12 | 0.11 | 0.17 | 0.10 | 0.27 | 0.29 | 0.58 | 0.25 | 0.23 | 0.42 | 0.19 | 0.10 | 0.06 | 0.50 | 0.61 | 0.14 | 0.55 | 0.56 | 0.42 | 0.59 | 0.87 | 0.46 | 0.48 | 0.90 | 0.49 | 0.62 | 0.67 | 1.00 | 0.64 | 0.66 | 0.32 | 0.47 | 0.22 | 0.45 | 0.47 | 0.45 | 0.36 | 0.29 | 0.32 | 0.28 | 0.08 | 0.03 | 0.14 | 0.05 | 0.07 | 0.11 | -0.06 | 0.14 | 0.21 | 0.24 | 0.14 | 0.16 | 0.06 | 0.04 | 0.10 | -0.04 | -0.03 |
-| `benchmark.random_matched_exposure.intraday.qqq.v1` | 0.18 | 0.13 | 0.18 | 0.48 | 0.53 | 0.49 | 0.29 | 0.30 | 0.20 | 0.53 | 0.43 | 0.09 | 0.10 | 0.11 | 0.09 | 0.25 | 0.25 | 0.50 | 0.25 | 0.20 | 0.37 | 0.18 | 0.10 | 0.01 | 0.43 | 0.52 | 0.11 | 0.54 | 0.52 | 0.51 | 0.49 | 0.60 | 0.51 | 0.36 | 0.70 | 0.45 | 0.63 | 0.74 | 0.64 | 1.00 | 0.88 | 0.25 | 0.45 | 0.23 | 0.37 | 0.47 | 0.42 | 0.33 | 0.34 | 0.30 | 0.24 | 0.02 | -0.05 | 0.08 | 0.04 | -0.01 | 0.08 | -0.05 | 0.04 | 0.14 | 0.10 | 0.14 | 0.09 | -0.10 | -0.08 | 0.04 | -0.01 | 0.11 |
-| `benchmark.time_of_day_null.qqq.v1` | 0.19 | 0.15 | 0.19 | 0.49 | 0.61 | 0.54 | 0.33 | 0.30 | 0.20 | 0.58 | 0.43 | 0.08 | 0.10 | 0.09 | 0.09 | 0.25 | 0.25 | 0.56 | 0.28 | 0.19 | 0.45 | 0.20 | 0.10 | 0.01 | 0.46 | 0.53 | 0.11 | 0.65 | 0.54 | 0.55 | 0.48 | 0.61 | 0.59 | 0.40 | 0.80 | 0.51 | 0.69 | 0.75 | 0.66 | 0.88 | 1.00 | 0.26 | 0.46 | 0.25 | 0.41 | 0.55 | 0.48 | 0.38 | 0.37 | 0.34 | 0.28 | -0.03 | -0.06 | 0.05 | 0.03 | -0.04 | 0.10 | -0.09 | -0.02 | 0.13 | 0.08 | 0.10 | 0.04 | -0.11 | -0.11 | -0.01 | -0.04 | 0.07 |
-| `benchmark.unconditional_intraday_long.xlp.v1` | 0.05 | 0.03 | 0.02 | 0.34 | 0.30 | 0.30 | 0.10 | 0.08 | 0.02 | 0.38 | 0.44 | 0.18 | 0.14 | 0.12 | 0.14 | 0.15 | 0.17 | 0.30 | 0.15 | 0.21 | 0.25 | 0.17 | 0.15 | 0.04 | 0.46 | 0.41 | 0.09 | 0.25 | 0.37 | 0.32 | 0.25 | 0.37 | 0.28 | 0.58 | 0.33 | 0.46 | 0.25 | 0.25 | 0.32 | 0.25 | 0.26 | 1.00 | 0.24 | 0.17 | 0.54 | 0.41 | 0.42 | 0.80 | 0.77 | 0.19 | 0.20 | 0.01 | 0.05 | 0.06 | -0.00 | 0.05 | 0.04 | 0.06 | 0.10 | 0.11 | 0.16 | 0.10 | 0.06 | 0.07 | 0.11 | 0.13 | 0.14 | 0.04 |
-| `benchmark.random_matched_exposure.intraday.iwm.v1` | 0.09 | 0.04 | 0.10 | 0.53 | 0.50 | 0.48 | 0.24 | 0.26 | 0.22 | 0.50 | 0.47 | 0.09 | 0.09 | 0.12 | 0.09 | 0.24 | 0.26 | 0.42 | 0.21 | 0.22 | 0.38 | 0.17 | 0.15 | 0.05 | 0.41 | 0.49 | 0.08 | 0.40 | 0.51 | 0.45 | 0.77 | 0.48 | 0.43 | 0.44 | 0.47 | 0.44 | 0.83 | 0.46 | 0.47 | 0.45 | 0.46 | 0.24 | 1.00 | 0.17 | 0.35 | 0.35 | 0.34 | 0.28 | 0.23 | 0.27 | 0.26 | -0.04 | 0.09 | 0.01 | 0.05 | -0.08 | 0.08 | -0.02 | 0.08 | 0.21 | 0.10 | -0.01 | 0.08 | 0.08 | 0.07 | 0.01 | -0.02 | 0.02 |
-| `benchmark.unconditional_intraday_long.tlt.v1` | 0.18 | 0.14 | 0.20 | 0.18 | 0.18 | 0.18 | 0.10 | 0.10 | 0.09 | 0.19 | 0.15 | 0.11 | 0.09 | 0.03 | 0.09 | 0.10 | 0.10 | 0.18 | 0.10 | 0.11 | 0.12 | 0.09 | 0.07 | 0.01 | 0.23 | 0.24 | 0.06 | 0.17 | 0.15 | 0.16 | 0.20 | 0.19 | 0.20 | 0.29 | 0.20 | 0.22 | 0.25 | 0.22 | 0.22 | 0.23 | 0.25 | 0.17 | 0.17 | 1.00 | 0.21 | 0.21 | 0.23 | 0.13 | 0.16 | 0.77 | 0.81 | -0.02 | -0.03 | 0.08 | 0.04 | -0.05 | 0.01 | -0.01 | 0.01 | 0.10 | 0.03 | 0.01 | -0.02 | 0.01 | 0.02 | -0.02 | 0.00 | 0.34 |
-| `benchmark.unconditional_intraday_long.xlv.v1` | 0.11 | 0.09 | 0.10 | 0.58 | 0.48 | 0.50 | 0.18 | 0.20 | 0.10 | 0.51 | 0.56 | 0.16 | 0.12 | 0.14 | 0.12 | 0.20 | 0.23 | 0.43 | 0.20 | 0.26 | 0.34 | 0.20 | 0.17 | 0.06 | 0.49 | 0.63 | 0.11 | 0.39 | 0.48 | 0.52 | 0.46 | 0.52 | 0.48 | 0.60 | 0.47 | 0.50 | 0.41 | 0.42 | 0.45 | 0.37 | 0.41 | 0.54 | 0.35 | 0.21 | 1.00 | 0.82 | 0.85 | 0.48 | 0.49 | 0.23 | 0.23 | 0.07 | 0.03 | 0.09 | 0.06 | 0.06 | 0.15 | 0.02 | 0.10 | 0.16 | 0.20 | 0.16 | 0.09 | 0.01 | 0.18 | 0.11 | -0.07 | 0.03 |
-| `benchmark.time_of_day_null.xlv.v1` | 0.12 | 0.11 | 0.11 | 0.55 | 0.62 | 0.59 | 0.21 | 0.19 | 0.10 | 0.62 | 0.50 | 0.10 | 0.11 | 0.09 | 0.10 | 0.20 | 0.20 | 0.45 | 0.22 | 0.20 | 0.41 | 0.20 | 0.14 | 0.03 | 0.59 | 0.59 | 0.10 | 0.53 | 0.55 | 0.63 | 0.37 | 0.46 | 0.62 | 0.54 | 0.57 | 0.63 | 0.51 | 0.42 | 0.47 | 0.47 | 0.55 | 0.41 | 0.35 | 0.21 | 0.82 | 1.00 | 0.92 | 0.54 | 0.53 | 0.25 | 0.22 | 0.02 | -0.02 | 0.04 | 0.02 | -0.01 | 0.11 | -0.04 | 0.01 | 0.07 | 0.09 | 0.07 | 0.02 | -0.09 | -0.06 | 0.02 | -0.10 | 0.05 |
-| `benchmark.random_matched_exposure.intraday.xlv.v1` | 0.07 | 0.07 | 0.07 | 0.55 | 0.56 | 0.57 | 0.20 | 0.21 | 0.11 | 0.58 | 0.51 | 0.12 | 0.11 | 0.12 | 0.11 | 0.20 | 0.21 | 0.45 | 0.21 | 0.21 | 0.39 | 0.20 | 0.15 | 0.03 | 0.55 | 0.60 | 0.10 | 0.48 | 0.53 | 0.62 | 0.38 | 0.45 | 0.59 | 0.52 | 0.49 | 0.56 | 0.46 | 0.42 | 0.45 | 0.42 | 0.48 | 0.42 | 0.34 | 0.23 | 0.85 | 0.92 | 1.00 | 0.50 | 0.51 | 0.26 | 0.24 | 0.03 | 0.01 | 0.06 | 0.01 | -0.01 | 0.13 | -0.05 | 0.03 | 0.10 | 0.13 | 0.07 | 0.01 | -0.04 | -0.01 | 0.05 | -0.11 | 0.08 |
-| `benchmark.time_of_day_null.xlp.v1` | 0.02 | 0.00 | 0.02 | 0.37 | 0.42 | 0.38 | 0.12 | 0.12 | 0.05 | 0.50 | 0.44 | 0.16 | 0.16 | 0.11 | 0.15 | 0.18 | 0.19 | 0.35 | 0.20 | 0.19 | 0.33 | 0.20 | 0.16 | 0.06 | 0.56 | 0.40 | 0.10 | 0.36 | 0.46 | 0.42 | 0.27 | 0.37 | 0.39 | 0.53 | 0.42 | 0.58 | 0.34 | 0.32 | 0.36 | 0.33 | 0.38 | 0.80 | 0.28 | 0.13 | 0.48 | 0.54 | 0.50 | 1.00 | 0.89 | 0.23 | 0.19 | 0.03 | 0.01 | 0.05 | 0.04 | 0.03 | 0.07 | 0.00 | 0.04 | 0.05 | 0.04 | 0.07 | 0.07 | -0.05 | 0.00 | 0.06 | -0.07 | 0.02 |
-| `benchmark.random_matched_exposure.intraday.xlp.v1` | 0.02 | 0.02 | 0.01 | 0.38 | 0.41 | 0.41 | 0.14 | 0.12 | 0.07 | 0.45 | 0.39 | 0.16 | 0.15 | 0.09 | 0.15 | 0.19 | 0.20 | 0.36 | 0.21 | 0.20 | 0.33 | 0.19 | 0.17 | 0.04 | 0.53 | 0.42 | 0.09 | 0.38 | 0.41 | 0.45 | 0.24 | 0.31 | 0.41 | 0.53 | 0.35 | 0.54 | 0.31 | 0.30 | 0.29 | 0.34 | 0.37 | 0.77 | 0.23 | 0.16 | 0.49 | 0.53 | 0.51 | 0.89 | 1.00 | 0.19 | 0.18 | -0.03 | -0.01 | 0.01 | 0.02 | -0.02 | 0.03 | 0.01 | -0.00 | 0.04 | 0.04 | 0.04 | -0.01 | -0.08 | -0.02 | 0.03 | -0.02 | 0.09 |
-| `benchmark.time_of_day_null.tlt.v1` | 0.15 | 0.12 | 0.16 | 0.22 | 0.24 | 0.23 | 0.10 | 0.11 | 0.07 | 0.26 | 0.22 | 0.09 | 0.09 | 0.03 | 0.08 | 0.10 | 0.10 | 0.24 | 0.10 | 0.09 | 0.15 | 0.07 | 0.03 | -0.01 | 0.30 | 0.25 | 0.04 | 0.19 | 0.25 | 0.18 | 0.29 | 0.27 | 0.28 | 0.32 | 0.29 | 0.31 | 0.35 | 0.31 | 0.32 | 0.30 | 0.34 | 0.19 | 0.27 | 0.77 | 0.23 | 0.25 | 0.26 | 0.23 | 0.19 | 1.00 | 0.87 | -0.02 | 0.05 | 0.11 | 0.03 | 0.00 | 0.09 | -0.01 | 0.02 | 0.05 | 0.07 | 0.01 | 0.06 | 0.01 | -0.01 | -0.00 | -0.04 | 0.07 |
-| `benchmark.random_matched_exposure.intraday.tlt.v1` | 0.14 | 0.10 | 0.14 | 0.17 | 0.19 | 0.19 | 0.07 | 0.08 | 0.06 | 0.19 | 0.17 | 0.09 | 0.07 | 0.02 | 0.07 | 0.09 | 0.08 | 0.19 | 0.08 | 0.07 | 0.13 | 0.05 | 0.03 | -0.01 | 0.28 | 0.22 | 0.03 | 0.14 | 0.16 | 0.16 | 0.25 | 0.23 | 0.23 | 0.31 | 0.23 | 0.26 | 0.30 | 0.25 | 0.28 | 0.24 | 0.28 | 0.20 | 0.26 | 0.81 | 0.23 | 0.22 | 0.24 | 0.19 | 0.18 | 0.87 | 1.00 | 0.00 | 0.03 | 0.14 | 0.01 | -0.05 | 0.07 | -0.01 | 0.03 | 0.05 | 0.04 | -0.00 | 0.04 | 0.03 | 0.06 | 0.02 | -0.03 | 0.12 |
-| `meanrev.rsi2.intraday.xlk.v1` | -0.03 | -0.04 | 0.02 | 0.12 | -0.04 | 0.00 | -0.02 | 0.12 | 0.01 | -0.01 | 0.16 | 0.01 | 0.01 | 0.05 | -0.00 | 0.00 | 0.08 | 0.11 | 0.00 | 0.05 | -0.05 | -0.00 | -0.01 | 0.02 | -0.08 | 0.13 | 0.03 | -0.06 | -0.01 | -0.02 | 0.19 | 0.24 | -0.04 | -0.01 | -0.00 | -0.08 | -0.05 | 0.28 | 0.08 | 0.02 | -0.03 | 0.01 | -0.04 | -0.02 | 0.07 | 0.02 | 0.03 | 0.03 | -0.03 | -0.02 | 0.00 | 1.00 | 0.12 | 0.32 | 0.05 | 0.34 | 0.65 | 0.19 | 0.44 | 0.09 | 0.39 | 0.31 | 0.56 | 0.04 | 0.11 | 0.21 | -0.00 | -0.05 |
-| `meanrev.rsi2.intraday.xle.v1` | -0.05 | -0.11 | -0.02 | 0.11 | -0.02 | 0.02 | 0.01 | 0.06 | 0.05 | 0.00 | 0.16 | 0.05 | 0.03 | 0.11 | 0.02 | 0.05 | 0.07 | 0.09 | 0.02 | 0.06 | 0.06 | 0.01 | 0.04 | 0.05 | -0.02 | 0.09 | 0.02 | 0.01 | 0.02 | 0.01 | 0.12 | 0.10 | -0.02 | 0.04 | -0.03 | -0.01 | -0.02 | 0.08 | 0.03 | -0.05 | -0.06 | 0.05 | 0.09 | -0.03 | 0.03 | -0.02 | 0.01 | 0.01 | -0.01 | 0.05 | 0.03 | 0.12 | 1.00 | 0.11 | 0.02 | 0.14 | 0.16 | 0.23 | 0.13 | 0.01 | 0.18 | 0.21 | 0.22 | 0.12 | 0.05 | 0.16 | 0.02 | 0.02 |
-| `meanrev.rsi2.intraday.iwm.v1` | 0.06 | 0.04 | 0.09 | 0.20 | 0.04 | 0.06 | 0.03 | 0.13 | 0.03 | 0.04 | 0.20 | 0.05 | 0.03 | 0.10 | 0.04 | 0.05 | 0.12 | 0.18 | 0.04 | 0.10 | 0.06 | 0.05 | 0.05 | 0.07 | 0.04 | 0.18 | 0.07 | 0.01 | 0.06 | 0.01 | 0.24 | 0.27 | 0.03 | 0.13 | 0.09 | 0.05 | 0.01 | 0.26 | 0.14 | 0.08 | 0.05 | 0.06 | 0.01 | 0.08 | 0.09 | 0.04 | 0.06 | 0.05 | 0.01 | 0.11 | 0.14 | 0.32 | 0.11 | 1.00 | 0.05 | 0.39 | 0.38 | 0.32 | 0.29 | 0.09 | 0.34 | 0.40 | 0.50 | 0.05 | 0.06 | 0.34 | -0.03 | 0.07 |
-| `meanrev.rsi2.intraday.gld.v1` | 0.07 | 0.06 | 0.29 | 0.09 | -0.04 | 0.02 | 0.12 | 0.15 | 0.14 | -0.00 | 0.06 | 0.16 | 0.16 | 0.16 | 0.16 | 0.12 | 0.14 | 0.04 | 0.11 | 0.17 | 0.03 | 0.13 | 0.13 | 0.15 | 0.01 | 0.06 | 0.14 | -0.01 | 0.00 | 0.01 | 0.14 | 0.11 | -0.01 | 0.02 | 0.03 | -0.01 | 0.02 | 0.11 | 0.05 | 0.04 | 0.03 | -0.00 | 0.05 | 0.04 | 0.06 | 0.02 | 0.01 | 0.04 | 0.02 | 0.03 | 0.01 | 0.05 | 0.02 | 0.05 | 1.00 | 0.07 | 0.07 | 0.07 | 0.00 | 0.09 | 0.08 | 0.21 | 0.19 | 0.03 | 0.10 | 0.16 | -0.07 | 0.07 |
-| `meanrev.rsi2.intraday.xly.v1` | 0.02 | 0.01 | 0.05 | 0.14 | -0.01 | -0.02 | -0.02 | 0.07 | -0.01 | 0.02 | 0.18 | -0.01 | -0.01 | 0.07 | -0.03 | -0.02 | 0.08 | 0.11 | -0.01 | 0.06 | -0.04 | 0.01 | -0.00 | 0.06 | -0.07 | 0.07 | 0.04 | -0.08 | 0.04 | -0.07 | 0.13 | 0.22 | -0.05 | 0.03 | 0.02 | -0.06 | -0.12 | 0.20 | 0.07 | -0.01 | -0.04 | 0.05 | -0.08 | -0.05 | 0.06 | -0.01 | -0.01 | 0.03 | -0.02 | 0.00 | -0.05 | 0.34 | 0.14 | 0.39 | 0.07 | 1.00 | 0.36 | 0.31 | 0.32 | 0.10 | 0.34 | 0.37 | 0.44 | 0.04 | 0.07 | 0.25 | -0.02 | -0.03 |
-| `meanrev.rsi2.intraday.qqq.v1` | -0.03 | -0.06 | 0.01 | 0.20 | 0.08 | 0.11 | 0.06 | 0.17 | 0.07 | 0.11 | 0.25 | 0.04 | 0.05 | 0.12 | 0.04 | 0.07 | 0.14 | 0.24 | 0.07 | 0.09 | 0.11 | 0.05 | 0.05 | 0.08 | -0.01 | 0.22 | 0.10 | 0.06 | 0.12 | 0.10 | 0.23 | 0.28 | 0.10 | 0.07 | 0.07 | 0.04 | 0.03 | 0.36 | 0.11 | 0.08 | 0.10 | 0.04 | 0.08 | 0.01 | 0.15 | 0.11 | 0.13 | 0.07 | 0.03 | 0.09 | 0.07 | 0.65 | 0.16 | 0.38 | 0.07 | 0.36 | 1.00 | 0.24 | 0.45 | 0.16 | 0.37 | 0.30 | 0.64 | 0.01 | 0.05 | 0.26 | -0.07 | -0.01 |
-| `meanrev.rsi2.intraday.xlf.v1` | -0.00 | -0.05 | 0.04 | 0.18 | -0.01 | 0.05 | 0.00 | 0.06 | 0.04 | 0.02 | 0.26 | 0.03 | -0.00 | 0.05 | 0.01 | 0.01 | 0.07 | 0.08 | -0.01 | 0.07 | 0.05 | 0.01 | 0.05 | 0.05 | -0.11 | 0.14 | 0.03 | -0.06 | 0.06 | 0.03 | 0.10 | 0.09 | -0.04 | 0.02 | -0.08 | -0.09 | -0.09 | 0.08 | -0.06 | -0.05 | -0.09 | 0.06 | -0.02 | -0.01 | 0.02 | -0.04 | -0.05 | 0.00 | 0.01 | -0.01 | -0.01 | 0.19 | 0.23 | 0.32 | 0.07 | 0.31 | 0.24 | 1.00 | 0.19 | 0.03 | 0.42 | 0.40 | 0.37 | 0.04 | 0.16 | 0.26 | 0.02 | -0.01 |
-| `meanrev.rsi2.intraday.xlc.v1` | 0.04 | 0.03 | 0.07 | 0.19 | 0.05 | 0.06 | 0.06 | 0.15 | 0.06 | 0.04 | 0.22 | 0.07 | 0.06 | 0.12 | 0.06 | 0.08 | 0.16 | 0.28 | 0.06 | 0.11 | 0.03 | 0.06 | 0.05 | 0.08 | 0.00 | 0.21 | 0.09 | 0.00 | 0.06 | 0.06 | 0.23 | 0.30 | 0.05 | 0.09 | 0.09 | -0.01 | 0.05 | 0.25 | 0.14 | 0.04 | -0.02 | 0.10 | 0.08 | 0.01 | 0.10 | 0.01 | 0.03 | 0.04 | -0.00 | 0.02 | 0.03 | 0.44 | 0.13 | 0.29 | 0.00 | 0.32 | 0.45 | 0.19 | 1.00 | 0.13 | 0.36 | 0.22 | 0.43 | 0.07 | 0.13 | 0.26 | 0.03 | -0.08 |
-| `meanrev.rsi2.intraday.xlre.v1` | 0.02 | 0.00 | 0.04 | 0.12 | 0.04 | 0.06 | 0.03 | 0.05 | 0.00 | 0.07 | 0.13 | 0.04 | 0.01 | 0.05 | 0.01 | 0.02 | 0.03 | 0.13 | 0.00 | 0.04 | 0.07 | 0.00 | -0.02 | -0.01 | 0.10 | 0.14 | 0.01 | 0.07 | 0.09 | 0.04 | 0.24 | 0.24 | 0.04 | 0.25 | 0.18 | 0.07 | 0.18 | 0.17 | 0.21 | 0.14 | 0.13 | 0.11 | 0.21 | 0.10 | 0.16 | 0.07 | 0.10 | 0.05 | 0.04 | 0.05 | 0.05 | 0.09 | 0.01 | 0.09 | 0.09 | 0.10 | 0.16 | 0.03 | 0.13 | 1.00 | 0.16 | 0.09 | 0.15 | 0.11 | 0.11 | 0.21 | 0.06 | 0.01 |
-| `meanrev.rsi2.intraday.dia.v1` | 0.05 | 0.04 | 0.08 | 0.27 | 0.07 | 0.11 | 0.04 | 0.11 | 0.02 | 0.10 | 0.33 | 0.03 | -0.00 | 0.09 | 0.00 | 0.03 | 0.10 | 0.22 | 0.02 | 0.11 | 0.08 | 0.03 | 0.01 | 0.02 | 0.02 | 0.31 | 0.04 | 0.05 | 0.15 | 0.10 | 0.29 | 0.37 | 0.08 | 0.16 | 0.18 | 0.02 | 0.08 | 0.29 | 0.24 | 0.10 | 0.08 | 0.16 | 0.10 | 0.03 | 0.20 | 0.09 | 0.13 | 0.04 | 0.04 | 0.07 | 0.04 | 0.39 | 0.18 | 0.34 | 0.08 | 0.34 | 0.37 | 0.42 | 0.36 | 0.16 | 1.00 | 0.42 | 0.45 | 0.09 | 0.14 | 0.36 | 0.02 | -0.02 |
-| `meanrev.rsi2.intraday.xli.v1` | 0.11 | 0.10 | 0.17 | 0.26 | 0.03 | 0.05 | 0.02 | 0.09 | 0.01 | 0.04 | 0.25 | 0.04 | 0.01 | 0.06 | 0.01 | 0.03 | 0.11 | 0.15 | 0.04 | 0.10 | 0.05 | 0.02 | 0.03 | 0.03 | 0.06 | 0.21 | 0.02 | 0.00 | 0.06 | 0.04 | 0.20 | 0.28 | -0.00 | 0.14 | 0.12 | 0.04 | -0.00 | 0.26 | 0.14 | 0.14 | 0.10 | 0.10 | -0.01 | 0.01 | 0.16 | 0.07 | 0.07 | 0.07 | 0.04 | 0.01 | -0.00 | 0.31 | 0.21 | 0.40 | 0.21 | 0.37 | 0.30 | 0.40 | 0.22 | 0.09 | 0.42 | 1.00 | 0.49 | 0.05 | 0.11 | 0.38 | -0.02 | -0.04 |
-| `meanrev.rsi2.intraday.spy.v1` | -0.00 | -0.03 | 0.09 | 0.19 | 0.00 | 0.02 | 0.03 | 0.14 | 0.05 | 0.06 | 0.25 | 0.03 | 0.02 | 0.09 | 0.01 | 0.05 | 0.13 | 0.15 | 0.04 | 0.09 | 0.01 | 0.02 | 0.02 | 0.05 | -0.02 | 0.19 | 0.05 | -0.05 | 0.08 | 0.03 | 0.27 | 0.31 | 0.02 | 0.06 | 0.10 | -0.02 | 0.03 | 0.31 | 0.16 | 0.09 | 0.04 | 0.06 | 0.08 | -0.02 | 0.09 | 0.02 | 0.01 | 0.07 | -0.01 | 0.06 | 0.04 | 0.56 | 0.22 | 0.50 | 0.19 | 0.44 | 0.64 | 0.37 | 0.43 | 0.15 | 0.45 | 0.49 | 1.00 | 0.06 | 0.14 | 0.42 | -0.05 | -0.05 |
-| `meanrev.rsi2.intraday.xlu.v1` | 0.02 | 0.02 | 0.06 | 0.03 | -0.07 | -0.06 | -0.04 | -0.00 | 0.00 | -0.05 | 0.05 | 0.06 | -0.03 | -0.01 | -0.01 | -0.03 | -0.02 | 0.04 | -0.05 | -0.02 | 0.03 | -0.05 | -0.03 | -0.04 | -0.05 | 0.03 | -0.05 | -0.03 | -0.03 | -0.06 | 0.10 | 0.09 | -0.06 | 0.07 | 0.00 | -0.06 | -0.00 | -0.01 | 0.06 | -0.10 | -0.11 | 0.07 | 0.08 | 0.01 | 0.01 | -0.09 | -0.04 | -0.05 | -0.08 | 0.01 | 0.03 | 0.04 | 0.12 | 0.05 | 0.03 | 0.04 | 0.01 | 0.04 | 0.07 | 0.11 | 0.09 | 0.05 | 0.06 | 1.00 | 0.12 | 0.03 | 0.17 | -0.01 |
-| `meanrev.rsi2.intraday.xlv.v1` | -0.04 | -0.08 | -0.04 | 0.06 | -0.04 | -0.06 | -0.03 | -0.02 | -0.02 | -0.05 | 0.08 | 0.03 | 0.00 | 0.01 | -0.00 | 0.01 | 0.03 | -0.04 | -0.01 | 0.05 | -0.05 | 0.02 | 0.03 | 0.00 | -0.02 | 0.02 | -0.01 | -0.13 | -0.02 | -0.07 | 0.10 | 0.08 | -0.11 | 0.09 | -0.01 | -0.02 | -0.00 | -0.03 | 0.04 | -0.08 | -0.11 | 0.11 | 0.07 | 0.02 | 0.18 | -0.06 | -0.01 | 0.00 | -0.02 | -0.01 | 0.06 | 0.11 | 0.05 | 0.06 | 0.10 | 0.07 | 0.05 | 0.16 | 0.13 | 0.11 | 0.14 | 0.11 | 0.14 | 0.12 | 1.00 | 0.16 | 0.10 | -0.14 |
-| `meanrev.rsi2.intraday.xlb.v1` | -0.02 | -0.02 | 0.06 | 0.12 | -0.04 | -0.04 | 0.03 | 0.10 | 0.04 | 0.04 | 0.22 | 0.06 | 0.04 | 0.13 | 0.03 | 0.06 | 0.12 | 0.12 | 0.04 | 0.11 | -0.01 | 0.04 | 0.04 | 0.08 | -0.02 | 0.15 | 0.08 | -0.05 | 0.08 | 0.01 | 0.16 | 0.22 | 0.00 | 0.11 | 0.05 | -0.01 | -0.02 | 0.18 | 0.10 | 0.04 | -0.01 | 0.13 | 0.01 | -0.02 | 0.11 | 0.02 | 0.05 | 0.06 | 0.03 | -0.00 | 0.02 | 0.21 | 0.16 | 0.34 | 0.16 | 0.25 | 0.26 | 0.26 | 0.26 | 0.21 | 0.36 | 0.38 | 0.42 | 0.03 | 0.16 | 1.00 | 0.09 | -0.07 |
-| `meanrev.rsi2.intraday.xlp.v1` | 0.08 | 0.05 | 0.01 | -0.11 | -0.09 | -0.09 | 0.01 | -0.03 | 0.01 | -0.09 | -0.04 | 0.05 | 0.03 | 0.01 | 0.03 | 0.00 | -0.00 | -0.10 | -0.00 | 0.03 | -0.11 | 0.03 | 0.02 | -0.00 | -0.02 | -0.06 | 0.01 | -0.09 | -0.10 | -0.07 | -0.07 | -0.05 | -0.07 | 0.01 | -0.02 | -0.03 | -0.02 | -0.10 | -0.04 | -0.01 | -0.04 | 0.14 | -0.02 | 0.00 | -0.07 | -0.10 | -0.11 | -0.07 | -0.02 | -0.04 | -0.03 | -0.00 | 0.02 | -0.03 | -0.07 | -0.02 | -0.07 | 0.02 | 0.03 | 0.06 | 0.02 | -0.02 | -0.05 | 0.17 | 0.10 | 0.09 | 1.00 | 0.04 |
-| `meanrev.rsi2.intraday.tlt.v1` | 0.04 | 0.03 | 0.07 | 0.03 | -0.01 | 0.04 | 0.01 | 0.01 | 0.04 | -0.03 | -0.05 | 0.02 | -0.00 | 0.02 | 0.01 | 0.02 | 0.01 | 0.01 | 0.01 | 0.03 | -0.01 | 0.01 | 0.01 | -0.01 | 0.03 | 0.05 | 0.02 | 0.05 | -0.05 | 0.06 | 0.05 | -0.04 | 0.04 | 0.05 | -0.05 | 0.02 | 0.02 | 0.05 | -0.03 | 0.11 | 0.07 | 0.04 | 0.02 | 0.34 | 0.03 | 0.05 | 0.08 | 0.02 | 0.09 | 0.07 | 0.12 | -0.05 | 0.02 | 0.07 | 0.07 | -0.03 | -0.01 | -0.01 | -0.08 | 0.01 | -0.02 | -0.04 | -0.05 | -0.01 | -0.14 | -0.07 | 0.04 | 1.00 |
+| `benchmark.unconditional_intraday_long.xlk.v1` | 1.00 | 0.78 | 0.71 | 0.40 | 0.78 | 0.97 | 0.81 | 0.93 | 0.67 | 0.76 | 0.70 | 0.61 | 0.72 | 0.29 | 0.64 | 0.72 | 0.50 | 0.50 | 0.71 | 0.61 | 0.77 | 0.66 | 0.68 | 0.32 | 0.78 | 0.27 | 0.25 | 0.57 | 0.57 | 0.62 | 0.17 | 0.46 | 0.60 | 0.51 | 0.63 | 0.65 | 0.64 | 0.42 | 0.43 | 0.41 | 0.62 | 0.53 | 0.52 | 0.21 | 0.40 | 0.24 | 0.56 | 0.42 | 0.35 | 0.37 | 0.29 | 0.33 | 0.07 | 0.26 | 0.09 | 0.25 | 0.33 | 0.05 | 0.28 | 0.17 | 0.32 | 0.26 | 0.03 | -0.01 | 0.19 | 0.35 | -0.09 | -0.02 |
+| `benchmark.unconditional_intraday_long.iwm.v1` | 0.78 | 1.00 | 0.58 | 0.48 | 0.82 | 0.80 | 0.80 | 0.84 | 0.80 | 0.85 | 0.59 | 0.70 | 0.60 | 0.31 | 0.59 | 0.63 | 0.63 | 0.54 | 0.64 | 0.55 | 0.68 | 0.75 | 0.50 | 0.40 | 0.72 | 0.34 | 0.26 | 0.73 | 0.56 | 0.59 | 0.20 | 0.59 | 0.61 | 0.54 | 0.63 | 0.61 | 0.58 | 0.50 | 0.41 | 0.42 | 0.61 | 0.54 | 0.50 | 0.22 | 0.41 | 0.28 | 0.55 | 0.43 | 0.37 | 0.36 | 0.30 | 0.25 | 0.09 | 0.30 | 0.15 | 0.24 | 0.24 | 0.12 | 0.27 | 0.23 | 0.34 | 0.29 | 0.06 | 0.12 | 0.20 | 0.32 | -0.06 | 0.01 |
+| `benchmark.time_of_day_null.xlk.v1` | 0.71 | 0.58 | 1.00 | 0.37 | 0.65 | 0.71 | 0.64 | 0.72 | 0.59 | 0.62 | 0.82 | 0.84 | 0.96 | 0.21 | 0.84 | 0.93 | 0.50 | 0.59 | 0.75 | 0.78 | 0.79 | 0.57 | 0.65 | 0.34 | 0.63 | 0.31 | 0.27 | 0.61 | 0.76 | 0.85 | 0.25 | 0.47 | 0.78 | 0.63 | 0.70 | 0.74 | 0.82 | 0.42 | 0.53 | 0.52 | 0.72 | 0.67 | 0.55 | 0.21 | 0.49 | 0.23 | 0.59 | 0.45 | 0.43 | 0.38 | 0.29 | 0.01 | -0.05 | 0.04 | -0.01 | 0.04 | 0.07 | -0.10 | 0.06 | 0.16 | 0.16 | 0.11 | -0.05 | -0.05 | 0.02 | 0.07 | 0.01 | -0.05 |
+| `benchmark.unconditional_intraday_long.xle.v1` | 0.40 | 0.48 | 0.37 | 1.00 | 0.51 | 0.44 | 0.42 | 0.53 | 0.55 | 0.52 | 0.39 | 0.39 | 0.40 | 0.03 | 0.38 | 0.46 | 0.45 | 0.45 | 0.45 | 0.38 | 0.54 | 0.54 | 0.23 | 0.41 | 0.43 | 0.34 | -0.03 | 0.36 | 0.42 | 0.41 | -0.02 | 0.41 | 0.44 | 0.42 | 0.45 | 0.43 | 0.42 | 0.24 | 0.70 | 0.40 | 0.45 | 0.40 | 0.43 | 0.07 | 0.40 | 0.59 | 0.37 | 0.38 | 0.31 | 0.25 | 0.21 | 0.07 | 0.18 | 0.17 | 0.08 | 0.10 | 0.12 | 0.02 | 0.14 | 0.16 | 0.27 | 0.12 | 0.07 | 0.04 | 0.20 | 0.16 | -0.04 | 0.00 |
+| `benchmark.unconditional_intraday_long.dia.v1` | 0.78 | 0.82 | 0.65 | 0.51 | 1.00 | 0.83 | 0.84 | 0.91 | 0.84 | 0.89 | 0.66 | 0.66 | 0.69 | 0.31 | 0.69 | 0.74 | 0.69 | 0.59 | 0.72 | 0.69 | 0.78 | 0.89 | 0.50 | 0.51 | 0.80 | 0.53 | 0.27 | 0.63 | 0.66 | 0.70 | 0.20 | 0.70 | 0.72 | 0.62 | 0.71 | 0.73 | 0.67 | 0.50 | 0.50 | 0.54 | 0.73 | 0.66 | 0.64 | 0.26 | 0.51 | 0.28 | 0.62 | 0.57 | 0.49 | 0.38 | 0.32 | 0.24 | 0.11 | 0.28 | 0.13 | 0.23 | 0.25 | 0.16 | 0.26 | 0.22 | 0.42 | 0.36 | 0.07 | 0.10 | 0.24 | 0.33 | -0.00 | -0.00 |
+| `benchmark.unconditional_intraday_long.qqq.v1` | 0.97 | 0.80 | 0.71 | 0.44 | 0.83 | 1.00 | 0.87 | 0.96 | 0.71 | 0.80 | 0.74 | 0.64 | 0.75 | 0.29 | 0.68 | 0.75 | 0.55 | 0.53 | 0.75 | 0.63 | 0.80 | 0.72 | 0.65 | 0.39 | 0.85 | 0.35 | 0.25 | 0.59 | 0.60 | 0.65 | 0.16 | 0.52 | 0.64 | 0.55 | 0.66 | 0.69 | 0.68 | 0.43 | 0.47 | 0.46 | 0.65 | 0.56 | 0.55 | 0.22 | 0.44 | 0.25 | 0.62 | 0.47 | 0.40 | 0.40 | 0.31 | 0.33 | 0.07 | 0.28 | 0.10 | 0.27 | 0.35 | 0.07 | 0.31 | 0.19 | 0.34 | 0.28 | 0.04 | 0.03 | 0.20 | 0.37 | -0.07 | -0.02 |
+| `benchmark.unconditional_intraday_long.xly.v1` | 0.81 | 0.80 | 0.64 | 0.42 | 0.84 | 0.87 | 1.00 | 0.89 | 0.76 | 0.80 | 0.68 | 0.64 | 0.68 | 0.26 | 0.74 | 0.71 | 0.61 | 0.55 | 0.77 | 0.62 | 0.75 | 0.76 | 0.52 | 0.40 | 0.82 | 0.43 | 0.23 | 0.61 | 0.61 | 0.64 | 0.15 | 0.55 | 0.63 | 0.56 | 0.64 | 0.66 | 0.66 | 0.47 | 0.45 | 0.46 | 0.67 | 0.55 | 0.52 | 0.22 | 0.44 | 0.25 | 0.61 | 0.50 | 0.44 | 0.36 | 0.29 | 0.27 | 0.08 | 0.28 | 0.10 | 0.30 | 0.26 | 0.10 | 0.30 | 0.20 | 0.34 | 0.30 | 0.01 | 0.09 | 0.22 | 0.32 | -0.02 | -0.01 |
+| `benchmark.unconditional_intraday_long.spy.v1` | 0.93 | 0.84 | 0.72 | 0.53 | 0.91 | 0.96 | 0.89 | 1.00 | 0.80 | 0.87 | 0.73 | 0.67 | 0.75 | 0.27 | 0.71 | 0.80 | 0.66 | 0.60 | 0.77 | 0.69 | 0.85 | 0.84 | 0.59 | 0.49 | 0.88 | 0.46 | 0.24 | 0.61 | 0.66 | 0.71 | 0.16 | 0.65 | 0.71 | 0.61 | 0.71 | 0.73 | 0.71 | 0.47 | 0.53 | 0.53 | 0.73 | 0.64 | 0.64 | 0.24 | 0.51 | 0.29 | 0.65 | 0.54 | 0.47 | 0.41 | 0.33 | 0.30 | 0.09 | 0.28 | 0.11 | 0.28 | 0.30 | 0.09 | 0.32 | 0.22 | 0.39 | 0.30 | 0.07 | 0.07 | 0.24 | 0.36 | -0.05 | -0.03 |
+| `benchmark.unconditional_intraday_long.xlb.v1` | 0.67 | 0.80 | 0.59 | 0.55 | 0.84 | 0.71 | 0.76 | 0.80 | 1.00 | 0.85 | 0.59 | 0.64 | 0.62 | 0.35 | 0.63 | 0.66 | 0.68 | 0.58 | 0.65 | 0.61 | 0.69 | 0.77 | 0.43 | 0.51 | 0.70 | 0.54 | 0.28 | 0.63 | 0.73 | 0.65 | 0.25 | 0.66 | 0.65 | 0.59 | 0.68 | 0.64 | 0.61 | 0.63 | 0.49 | 0.50 | 0.64 | 0.59 | 0.59 | 0.26 | 0.50 | 0.30 | 0.57 | 0.54 | 0.48 | 0.36 | 0.29 | 0.15 | 0.07 | 0.23 | 0.15 | 0.20 | 0.16 | 0.11 | 0.21 | 0.24 | 0.36 | 0.29 | 0.05 | 0.11 | 0.26 | 0.25 | 0.01 | 0.05 |
+| `benchmark.unconditional_intraday_long.xli.v1` | 0.76 | 0.85 | 0.62 | 0.52 | 0.89 | 0.80 | 0.80 | 0.87 | 0.85 | 1.00 | 0.64 | 0.66 | 0.65 | 0.32 | 0.65 | 0.70 | 0.67 | 0.58 | 0.67 | 0.65 | 0.74 | 0.83 | 0.50 | 0.52 | 0.74 | 0.46 | 0.29 | 0.62 | 0.65 | 0.72 | 0.22 | 0.65 | 0.68 | 0.60 | 0.75 | 0.68 | 0.63 | 0.53 | 0.45 | 0.51 | 0.70 | 0.61 | 0.59 | 0.24 | 0.51 | 0.27 | 0.59 | 0.53 | 0.48 | 0.36 | 0.28 | 0.22 | 0.09 | 0.27 | 0.15 | 0.24 | 0.21 | 0.15 | 0.23 | 0.24 | 0.38 | 0.37 | 0.05 | 0.10 | 0.21 | 0.30 | -0.05 | 0.01 |
+| `benchmark.random_matched_exposure.intraday.qqq.v1` | 0.70 | 0.59 | 0.82 | 0.39 | 0.66 | 0.74 | 0.68 | 0.73 | 0.59 | 0.64 | 1.00 | 0.74 | 0.87 | 0.20 | 0.77 | 0.84 | 0.45 | 0.59 | 0.77 | 0.70 | 0.79 | 0.57 | 0.60 | 0.36 | 0.64 | 0.34 | 0.22 | 0.57 | 0.68 | 0.76 | 0.16 | 0.46 | 0.72 | 0.59 | 0.67 | 0.72 | 0.75 | 0.37 | 0.52 | 0.51 | 0.70 | 0.63 | 0.53 | 0.25 | 0.46 | 0.21 | 0.58 | 0.46 | 0.43 | 0.40 | 0.31 | 0.08 | -0.06 | 0.11 | 0.02 | 0.10 | 0.06 | -0.05 | 0.12 | 0.16 | 0.17 | 0.17 | -0.04 | -0.01 | 0.08 | 0.15 | 0.02 | 0.01 |
+| `benchmark.time_of_day_null.iwm.v1` | 0.61 | 0.70 | 0.84 | 0.39 | 0.66 | 0.64 | 0.64 | 0.67 | 0.64 | 0.66 | 0.74 | 1.00 | 0.85 | 0.25 | 0.83 | 0.87 | 0.56 | 0.67 | 0.74 | 0.76 | 0.73 | 0.60 | 0.52 | 0.35 | 0.60 | 0.34 | 0.28 | 0.76 | 0.79 | 0.87 | 0.27 | 0.51 | 0.83 | 0.73 | 0.74 | 0.76 | 0.80 | 0.51 | 0.57 | 0.55 | 0.74 | 0.73 | 0.59 | 0.26 | 0.50 | 0.30 | 0.56 | 0.52 | 0.46 | 0.42 | 0.34 | 0.00 | -0.07 | 0.06 | 0.02 | 0.00 | 0.03 | -0.08 | 0.07 | 0.17 | 0.13 | 0.09 | -0.06 | 0.02 | -0.00 | 0.07 | -0.00 | -0.04 |
+| `benchmark.time_of_day_null.qqq.v1` | 0.72 | 0.60 | 0.96 | 0.40 | 0.69 | 0.75 | 0.68 | 0.75 | 0.62 | 0.65 | 0.87 | 0.85 | 1.00 | 0.22 | 0.89 | 0.97 | 0.50 | 0.63 | 0.80 | 0.80 | 0.82 | 0.60 | 0.63 | 0.38 | 0.68 | 0.35 | 0.26 | 0.61 | 0.78 | 0.89 | 0.22 | 0.50 | 0.82 | 0.67 | 0.74 | 0.78 | 0.88 | 0.44 | 0.57 | 0.58 | 0.76 | 0.72 | 0.60 | 0.23 | 0.53 | 0.26 | 0.65 | 0.54 | 0.49 | 0.41 | 0.31 | 0.03 | -0.07 | 0.08 | 0.01 | 0.06 | 0.08 | -0.10 | 0.06 | 0.15 | 0.16 | 0.13 | -0.05 | -0.05 | 0.03 | 0.10 | -0.00 | -0.03 |
+| `benchmark.unconditional_intraday_long.gld.v1` | 0.29 | 0.31 | 0.21 | 0.03 | 0.31 | 0.29 | 0.26 | 0.27 | 0.35 | 0.32 | 0.20 | 0.25 | 0.22 | 1.00 | 0.26 | 0.21 | 0.22 | 0.16 | 0.23 | 0.23 | 0.18 | 0.21 | 0.29 | 0.18 | 0.24 | 0.07 | 0.71 | 0.26 | 0.23 | 0.20 | 0.65 | 0.18 | 0.18 | 0.20 | 0.23 | 0.21 | 0.18 | 0.26 | 0.06 | 0.15 | 0.15 | 0.20 | 0.16 | 0.29 | 0.18 | 0.06 | 0.21 | 0.14 | 0.11 | 0.27 | 0.22 | 0.06 | 0.07 | 0.09 | 0.41 | 0.09 | 0.11 | 0.11 | 0.11 | 0.11 | 0.10 | 0.17 | 0.05 | 0.01 | 0.12 | 0.21 | -0.04 | 0.10 |
+| `benchmark.time_of_day_null.xly.v1` | 0.64 | 0.59 | 0.84 | 0.38 | 0.69 | 0.68 | 0.74 | 0.71 | 0.63 | 0.65 | 0.77 | 0.83 | 0.89 | 0.26 | 1.00 | 0.90 | 0.52 | 0.63 | 0.83 | 0.80 | 0.78 | 0.61 | 0.50 | 0.38 | 0.66 | 0.39 | 0.27 | 0.59 | 0.78 | 0.85 | 0.23 | 0.52 | 0.83 | 0.69 | 0.72 | 0.75 | 0.84 | 0.45 | 0.56 | 0.56 | 0.76 | 0.72 | 0.60 | 0.25 | 0.52 | 0.23 | 0.63 | 0.58 | 0.51 | 0.42 | 0.32 | 0.05 | -0.06 | 0.09 | 0.03 | 0.07 | 0.07 | -0.10 | 0.08 | 0.14 | 0.17 | 0.13 | -0.05 | -0.01 | 0.06 | 0.11 | 0.00 | -0.05 |
+| `benchmark.time_of_day_null.spy.v1` | 0.72 | 0.63 | 0.93 | 0.46 | 0.74 | 0.75 | 0.71 | 0.80 | 0.66 | 0.70 | 0.84 | 0.87 | 0.97 | 0.21 | 0.90 | 1.00 | 0.56 | 0.68 | 0.82 | 0.85 | 0.87 | 0.67 | 0.58 | 0.44 | 0.71 | 0.41 | 0.24 | 0.61 | 0.83 | 0.93 | 0.21 | 0.58 | 0.89 | 0.73 | 0.79 | 0.83 | 0.90 | 0.46 | 0.64 | 0.64 | 0.82 | 0.80 | 0.68 | 0.24 | 0.58 | 0.30 | 0.66 | 0.61 | 0.54 | 0.43 | 0.32 | 0.05 | -0.06 | 0.09 | 0.02 | 0.08 | 0.08 | -0.10 | 0.09 | 0.16 | 0.19 | 0.12 | -0.04 | -0.03 | 0.05 | 0.12 | -0.02 | -0.04 |
+| `benchmark.unconditional_intraday_long.xlre.v1` | 0.50 | 0.63 | 0.50 | 0.45 | 0.69 | 0.55 | 0.61 | 0.66 | 0.68 | 0.67 | 0.45 | 0.56 | 0.50 | 0.22 | 0.52 | 0.56 | 1.00 | 0.76 | 0.55 | 0.51 | 0.57 | 0.68 | 0.37 | 0.65 | 0.61 | 0.62 | 0.21 | 0.54 | 0.56 | 0.57 | 0.17 | 0.65 | 0.58 | 0.76 | 0.53 | 0.54 | 0.53 | 0.46 | 0.41 | 0.58 | 0.57 | 0.56 | 0.54 | 0.31 | 0.57 | 0.24 | 0.53 | 0.57 | 0.51 | 0.37 | 0.35 | 0.12 | 0.02 | 0.17 | 0.06 | 0.13 | 0.12 | 0.06 | 0.19 | 0.36 | 0.28 | 0.22 | 0.10 | 0.13 | 0.21 | 0.17 | 0.04 | 0.01 |
+| `benchmark.random_matched_exposure.intraday.xlre.v1` | 0.50 | 0.54 | 0.59 | 0.45 | 0.59 | 0.53 | 0.55 | 0.60 | 0.58 | 0.58 | 0.59 | 0.67 | 0.63 | 0.16 | 0.63 | 0.68 | 0.76 | 1.00 | 0.65 | 0.65 | 0.66 | 0.56 | 0.41 | 0.50 | 0.54 | 0.47 | 0.15 | 0.55 | 0.68 | 0.70 | 0.16 | 0.54 | 0.70 | 0.86 | 0.62 | 0.64 | 0.64 | 0.44 | 0.54 | 0.65 | 0.66 | 0.67 | 0.61 | 0.24 | 0.61 | 0.30 | 0.52 | 0.63 | 0.54 | 0.38 | 0.35 | 0.04 | -0.08 | 0.09 | 0.04 | 0.03 | 0.04 | -0.09 | 0.10 | 0.23 | 0.13 | 0.14 | -0.02 | 0.03 | 0.07 | 0.09 | 0.02 | -0.02 |
+| `benchmark.random_matched_exposure.intraday.xly.v1` | 0.71 | 0.64 | 0.75 | 0.45 | 0.72 | 0.75 | 0.77 | 0.77 | 0.65 | 0.67 | 0.77 | 0.74 | 0.80 | 0.23 | 0.83 | 0.82 | 0.55 | 0.65 | 1.00 | 0.71 | 0.83 | 0.62 | 0.54 | 0.40 | 0.69 | 0.40 | 0.21 | 0.61 | 0.70 | 0.76 | 0.14 | 0.54 | 0.73 | 0.63 | 0.70 | 0.72 | 0.75 | 0.45 | 0.56 | 0.54 | 0.72 | 0.65 | 0.61 | 0.30 | 0.50 | 0.25 | 0.61 | 0.56 | 0.49 | 0.45 | 0.41 | 0.09 | 0.04 | 0.12 | 0.02 | 0.05 | 0.09 | -0.08 | 0.12 | 0.18 | 0.18 | 0.13 | 0.01 | 0.05 | 0.07 | 0.12 | -0.02 | 0.02 |
+| `benchmark.time_of_day_null.dia.v1` | 0.61 | 0.55 | 0.78 | 0.38 | 0.69 | 0.63 | 0.62 | 0.69 | 0.61 | 0.65 | 0.70 | 0.76 | 0.80 | 0.23 | 0.80 | 0.85 | 0.51 | 0.65 | 0.71 | 1.00 | 0.74 | 0.62 | 0.42 | 0.38 | 0.64 | 0.42 | 0.24 | 0.52 | 0.83 | 0.85 | 0.27 | 0.54 | 0.83 | 0.69 | 0.71 | 0.79 | 0.79 | 0.39 | 0.55 | 0.59 | 0.77 | 0.78 | 0.67 | 0.23 | 0.54 | 0.20 | 0.56 | 0.64 | 0.55 | 0.43 | 0.30 | 0.05 | -0.05 | 0.14 | 0.04 | 0.14 | 0.10 | -0.05 | 0.09 | 0.16 | 0.21 | 0.14 | -0.07 | -0.05 | 0.08 | 0.14 | -0.04 | -0.03 |
+| `benchmark.random_matched_exposure.intraday.spy.v1` | 0.77 | 0.68 | 0.79 | 0.54 | 0.78 | 0.80 | 0.75 | 0.85 | 0.69 | 0.74 | 0.79 | 0.73 | 0.82 | 0.18 | 0.78 | 0.87 | 0.57 | 0.66 | 0.83 | 0.74 | 1.00 | 0.71 | 0.56 | 0.45 | 0.74 | 0.41 | 0.17 | 0.59 | 0.71 | 0.78 | 0.12 | 0.58 | 0.77 | 0.65 | 0.75 | 0.73 | 0.78 | 0.39 | 0.63 | 0.58 | 0.78 | 0.69 | 0.66 | 0.26 | 0.55 | 0.30 | 0.62 | 0.54 | 0.47 | 0.45 | 0.37 | 0.14 | 0.00 | 0.14 | 0.05 | 0.13 | 0.13 | -0.07 | 0.15 | 0.18 | 0.25 | 0.15 | 0.03 | 0.02 | 0.11 | 0.18 | -0.04 | -0.02 |
+| `benchmark.unconditional_intraday_long.xlf.v1` | 0.66 | 0.75 | 0.57 | 0.54 | 0.89 | 0.72 | 0.76 | 0.84 | 0.77 | 0.83 | 0.57 | 0.60 | 0.60 | 0.21 | 0.61 | 0.67 | 0.68 | 0.56 | 0.62 | 0.62 | 0.71 | 1.00 | 0.41 | 0.51 | 0.76 | 0.52 | 0.21 | 0.57 | 0.60 | 0.63 | 0.14 | 0.65 | 0.73 | 0.58 | 0.64 | 0.66 | 0.62 | 0.48 | 0.46 | 0.50 | 0.76 | 0.60 | 0.57 | 0.18 | 0.47 | 0.29 | 0.61 | 0.52 | 0.42 | 0.34 | 0.27 | 0.24 | 0.15 | 0.29 | 0.09 | 0.24 | 0.24 | 0.25 | 0.28 | 0.21 | 0.45 | 0.37 | 0.09 | 0.13 | 0.29 | 0.34 | 0.01 | -0.08 |
+| `benchmark.random_matched_exposure.intraday.xlk.v1` | 0.68 | 0.50 | 0.65 | 0.23 | 0.50 | 0.65 | 0.52 | 0.59 | 0.43 | 0.50 | 0.60 | 0.52 | 0.63 | 0.29 | 0.50 | 0.58 | 0.37 | 0.41 | 0.54 | 0.42 | 0.56 | 0.41 | 1.00 | 0.23 | 0.48 | 0.16 | 0.27 | 0.58 | 0.43 | 0.51 | 0.22 | 0.31 | 0.45 | 0.44 | 0.43 | 0.48 | 0.47 | 0.42 | 0.26 | 0.32 | 0.44 | 0.39 | 0.35 | 0.21 | 0.30 | 0.25 | 0.44 | 0.29 | 0.27 | 0.30 | 0.26 | 0.07 | 0.07 | 0.05 | 0.05 | 0.08 | 0.12 | -0.02 | 0.10 | 0.14 | 0.13 | 0.11 | 0.04 | -0.03 | 0.07 | 0.15 | -0.02 | 0.08 |
+| `benchmark.unconditional_intraday_long.xlu.v1` | 0.32 | 0.40 | 0.34 | 0.41 | 0.51 | 0.39 | 0.40 | 0.49 | 0.51 | 0.52 | 0.36 | 0.35 | 0.38 | 0.18 | 0.38 | 0.44 | 0.65 | 0.50 | 0.40 | 0.38 | 0.45 | 0.51 | 0.23 | 1.00 | 0.44 | 0.56 | 0.13 | 0.31 | 0.43 | 0.42 | 0.09 | 0.54 | 0.45 | 0.48 | 0.44 | 0.43 | 0.40 | 0.33 | 0.37 | 0.73 | 0.42 | 0.45 | 0.46 | 0.24 | 0.74 | 0.20 | 0.40 | 0.48 | 0.45 | 0.26 | 0.27 | 0.04 | 0.06 | 0.10 | 0.09 | 0.03 | 0.02 | 0.06 | 0.09 | 0.27 | 0.18 | 0.19 | 0.29 | 0.05 | 0.08 | 0.06 | 0.05 | 0.05 |
+| `benchmark.unconditional_intraday_long.xlc.v1` | 0.78 | 0.72 | 0.63 | 0.43 | 0.80 | 0.85 | 0.82 | 0.88 | 0.70 | 0.74 | 0.64 | 0.60 | 0.68 | 0.24 | 0.66 | 0.71 | 0.61 | 0.54 | 0.69 | 0.64 | 0.74 | 0.76 | 0.48 | 0.44 | 1.00 | 0.44 | 0.22 | 0.53 | 0.63 | 0.64 | 0.15 | 0.55 | 0.66 | 0.58 | 0.62 | 0.67 | 0.76 | 0.41 | 0.47 | 0.50 | 0.67 | 0.56 | 0.55 | 0.21 | 0.48 | 0.22 | 0.73 | 0.54 | 0.46 | 0.38 | 0.29 | 0.25 | 0.06 | 0.28 | 0.08 | 0.29 | 0.30 | 0.10 | 0.40 | 0.20 | 0.34 | 0.28 | 0.08 | 0.05 | 0.24 | 0.31 | -0.06 | -0.03 |
+| `benchmark.unconditional_intraday_long.xlp.v1` | 0.27 | 0.34 | 0.31 | 0.34 | 0.53 | 0.35 | 0.43 | 0.46 | 0.54 | 0.46 | 0.34 | 0.34 | 0.35 | 0.07 | 0.39 | 0.41 | 0.62 | 0.47 | 0.40 | 0.42 | 0.41 | 0.52 | 0.16 | 0.56 | 0.44 | 1.00 | 0.09 | 0.32 | 0.47 | 0.43 | 0.04 | 0.63 | 0.44 | 0.47 | 0.40 | 0.44 | 0.39 | 0.36 | 0.32 | 0.48 | 0.43 | 0.49 | 0.52 | 0.23 | 0.46 | 0.14 | 0.40 | 0.71 | 0.66 | 0.25 | 0.26 | 0.06 | 0.04 | 0.09 | 0.01 | 0.08 | 0.06 | 0.04 | 0.16 | 0.19 | 0.23 | 0.14 | 0.15 | 0.12 | 0.17 | 0.10 | 0.21 | 0.03 |
+| `benchmark.random_matched_exposure.intraday.gld.v1` | 0.25 | 0.26 | 0.27 | -0.03 | 0.27 | 0.25 | 0.23 | 0.24 | 0.28 | 0.29 | 0.22 | 0.28 | 0.26 | 0.71 | 0.27 | 0.24 | 0.21 | 0.15 | 0.21 | 0.24 | 0.17 | 0.21 | 0.27 | 0.13 | 0.22 | 0.09 | 1.00 | 0.28 | 0.24 | 0.27 | 0.76 | 0.17 | 0.20 | 0.19 | 0.25 | 0.23 | 0.19 | 0.34 | 0.00 | 0.15 | 0.18 | 0.18 | 0.14 | 0.26 | 0.18 | 0.02 | 0.19 | 0.11 | 0.09 | 0.27 | 0.22 | -0.02 | 0.03 | 0.04 | 0.07 | 0.05 | 0.07 | 0.07 | 0.09 | 0.08 | 0.06 | 0.07 | -0.01 | 0.01 | -0.01 | 0.08 | 0.06 | 0.05 |
+| `benchmark.random_matched_exposure.intraday.iwm.v1` | 0.57 | 0.73 | 0.61 | 0.36 | 0.63 | 0.59 | 0.61 | 0.61 | 0.63 | 0.62 | 0.57 | 0.76 | 0.61 | 0.26 | 0.59 | 0.61 | 0.54 | 0.55 | 0.61 | 0.52 | 0.59 | 0.57 | 0.58 | 0.31 | 0.53 | 0.32 | 0.28 | 1.00 | 0.56 | 0.62 | 0.25 | 0.47 | 0.61 | 0.59 | 0.55 | 0.58 | 0.54 | 0.56 | 0.37 | 0.42 | 0.64 | 0.53 | 0.45 | 0.19 | 0.39 | 0.35 | 0.53 | 0.44 | 0.35 | 0.34 | 0.31 | 0.02 | 0.04 | 0.06 | 0.05 | 0.05 | 0.08 | -0.00 | 0.12 | 0.21 | 0.16 | 0.09 | 0.03 | 0.11 | 0.04 | 0.13 | -0.00 | -0.04 |
+| `benchmark.time_of_day_null.xlb.v1` | 0.57 | 0.56 | 0.76 | 0.42 | 0.66 | 0.60 | 0.61 | 0.66 | 0.73 | 0.65 | 0.68 | 0.79 | 0.78 | 0.23 | 0.78 | 0.83 | 0.56 | 0.68 | 0.70 | 0.83 | 0.71 | 0.60 | 0.43 | 0.43 | 0.63 | 0.47 | 0.24 | 0.56 | 1.00 | 0.86 | 0.31 | 0.56 | 0.81 | 0.71 | 0.73 | 0.75 | 0.77 | 0.60 | 0.62 | 0.63 | 0.73 | 0.75 | 0.66 | 0.23 | 0.58 | 0.30 | 0.59 | 0.66 | 0.57 | 0.38 | 0.28 | 0.01 | -0.09 | 0.06 | 0.02 | 0.06 | 0.05 | -0.09 | 0.06 | 0.15 | 0.16 | 0.09 | -0.08 | 0.01 | 0.03 | 0.06 | -0.01 | -0.01 |
+| `benchmark.time_of_day_null.xli.v1` | 0.62 | 0.59 | 0.85 | 0.41 | 0.70 | 0.65 | 0.64 | 0.71 | 0.65 | 0.72 | 0.76 | 0.87 | 0.89 | 0.20 | 0.85 | 0.93 | 0.57 | 0.70 | 0.76 | 0.85 | 0.78 | 0.63 | 0.51 | 0.42 | 0.64 | 0.43 | 0.27 | 0.62 | 0.86 | 1.00 | 0.26 | 0.55 | 0.89 | 0.75 | 0.83 | 0.81 | 0.84 | 0.51 | 0.61 | 0.65 | 0.80 | 0.79 | 0.66 | 0.24 | 0.59 | 0.29 | 0.62 | 0.65 | 0.56 | 0.42 | 0.30 | 0.03 | -0.09 | 0.07 | -0.00 | 0.06 | 0.06 | -0.10 | 0.06 | 0.17 | 0.16 | 0.11 | -0.08 | -0.02 | 0.02 | 0.07 | -0.01 | -0.05 |
+| `benchmark.time_of_day_null.gld.v1` | 0.17 | 0.20 | 0.25 | -0.02 | 0.20 | 0.16 | 0.15 | 0.16 | 0.25 | 0.22 | 0.16 | 0.27 | 0.22 | 0.65 | 0.23 | 0.21 | 0.17 | 0.16 | 0.14 | 0.27 | 0.12 | 0.14 | 0.22 | 0.09 | 0.15 | 0.04 | 0.76 | 0.25 | 0.31 | 0.26 | 1.00 | 0.15 | 0.18 | 0.18 | 0.22 | 0.18 | 0.15 | 0.31 | 0.03 | 0.14 | 0.14 | 0.19 | 0.15 | 0.24 | 0.16 | 0.04 | 0.17 | 0.10 | 0.08 | 0.26 | 0.19 | -0.03 | -0.04 | 0.03 | 0.07 | 0.05 | 0.03 | -0.00 | 0.07 | 0.07 | 0.07 | 0.06 | -0.01 | -0.03 | 0.01 | 0.06 | 0.00 | 0.03 |
+| `benchmark.unconditional_intraday_long.xlv.v1` | 0.46 | 0.59 | 0.47 | 0.41 | 0.70 | 0.52 | 0.55 | 0.65 | 0.66 | 0.65 | 0.46 | 0.51 | 0.50 | 0.18 | 0.52 | 0.58 | 0.65 | 0.54 | 0.54 | 0.54 | 0.58 | 0.65 | 0.31 | 0.54 | 0.55 | 0.63 | 0.17 | 0.47 | 0.56 | 0.55 | 0.15 | 1.00 | 0.58 | 0.53 | 0.54 | 0.58 | 0.50 | 0.44 | 0.38 | 0.48 | 0.55 | 0.73 | 0.77 | 0.23 | 0.47 | 0.20 | 0.46 | 0.55 | 0.51 | 0.33 | 0.31 | 0.13 | 0.02 | 0.13 | 0.08 | 0.14 | 0.14 | 0.04 | 0.15 | 0.23 | 0.27 | 0.21 | 0.07 | 0.28 | 0.17 | 0.20 | -0.02 | -0.04 |
+| `benchmark.time_of_day_null.xlf.v1` | 0.60 | 0.61 | 0.78 | 0.44 | 0.72 | 0.64 | 0.63 | 0.71 | 0.65 | 0.68 | 0.72 | 0.83 | 0.82 | 0.18 | 0.83 | 0.89 | 0.58 | 0.70 | 0.73 | 0.83 | 0.77 | 0.73 | 0.45 | 0.45 | 0.66 | 0.44 | 0.20 | 0.61 | 0.81 | 0.89 | 0.18 | 0.58 | 1.00 | 0.76 | 0.74 | 0.80 | 0.83 | 0.49 | 0.62 | 0.65 | 0.88 | 0.79 | 0.66 | 0.23 | 0.57 | 0.29 | 0.63 | 0.65 | 0.52 | 0.41 | 0.31 | 0.06 | -0.05 | 0.12 | 0.02 | 0.07 | 0.07 | -0.07 | 0.07 | 0.16 | 0.20 | 0.13 | -0.04 | -0.01 | 0.09 | 0.12 | -0.04 | -0.07 |
+| `benchmark.time_of_day_null.xlre.v1` | 0.51 | 0.54 | 0.63 | 0.42 | 0.62 | 0.55 | 0.56 | 0.61 | 0.59 | 0.60 | 0.59 | 0.73 | 0.67 | 0.20 | 0.69 | 0.73 | 0.76 | 0.86 | 0.63 | 0.69 | 0.65 | 0.58 | 0.44 | 0.48 | 0.58 | 0.47 | 0.19 | 0.59 | 0.71 | 0.75 | 0.18 | 0.53 | 0.76 | 1.00 | 0.63 | 0.65 | 0.70 | 0.48 | 0.54 | 0.68 | 0.68 | 0.71 | 0.60 | 0.25 | 0.61 | 0.32 | 0.59 | 0.67 | 0.56 | 0.43 | 0.35 | 0.05 | -0.05 | 0.10 | 0.03 | 0.05 | 0.09 | -0.04 | 0.09 | 0.18 | 0.15 | 0.13 | -0.05 | 0.02 | 0.08 | 0.10 | -0.00 | -0.04 |
+| `benchmark.random_matched_exposure.intraday.xli.v1` | 0.63 | 0.63 | 0.70 | 0.45 | 0.71 | 0.66 | 0.64 | 0.71 | 0.68 | 0.75 | 0.67 | 0.74 | 0.74 | 0.23 | 0.72 | 0.79 | 0.53 | 0.62 | 0.70 | 0.71 | 0.75 | 0.64 | 0.43 | 0.44 | 0.62 | 0.40 | 0.25 | 0.55 | 0.73 | 0.83 | 0.22 | 0.54 | 0.74 | 0.63 | 1.00 | 0.77 | 0.71 | 0.49 | 0.56 | 0.58 | 0.68 | 0.68 | 0.62 | 0.26 | 0.59 | 0.26 | 0.54 | 0.55 | 0.52 | 0.43 | 0.34 | 0.10 | -0.05 | 0.09 | 0.08 | 0.05 | 0.10 | -0.00 | 0.08 | 0.19 | 0.21 | 0.13 | -0.07 | -0.05 | 0.01 | 0.10 | -0.02 | 0.03 |
+| `benchmark.random_matched_exposure.intraday.dia.v1` | 0.65 | 0.61 | 0.74 | 0.43 | 0.73 | 0.69 | 0.66 | 0.73 | 0.64 | 0.68 | 0.72 | 0.76 | 0.78 | 0.21 | 0.75 | 0.83 | 0.54 | 0.64 | 0.72 | 0.79 | 0.73 | 0.66 | 0.48 | 0.43 | 0.67 | 0.44 | 0.23 | 0.58 | 0.75 | 0.81 | 0.18 | 0.58 | 0.80 | 0.65 | 0.77 | 1.00 | 0.75 | 0.48 | 0.59 | 0.59 | 0.73 | 0.76 | 0.69 | 0.23 | 0.55 | 0.26 | 0.55 | 0.63 | 0.57 | 0.37 | 0.31 | 0.08 | -0.02 | 0.11 | 0.04 | 0.05 | 0.10 | -0.03 | 0.13 | 0.18 | 0.21 | 0.17 | -0.07 | -0.03 | 0.12 | 0.17 | -0.03 | -0.04 |
+| `benchmark.time_of_day_null.xlc.v1` | 0.64 | 0.58 | 0.82 | 0.42 | 0.67 | 0.68 | 0.66 | 0.71 | 0.61 | 0.63 | 0.75 | 0.80 | 0.88 | 0.18 | 0.84 | 0.90 | 0.53 | 0.64 | 0.75 | 0.79 | 0.78 | 0.62 | 0.47 | 0.40 | 0.76 | 0.39 | 0.19 | 0.54 | 0.77 | 0.84 | 0.15 | 0.50 | 0.83 | 0.70 | 0.71 | 0.75 | 1.00 | 0.41 | 0.60 | 0.60 | 0.77 | 0.71 | 0.60 | 0.21 | 0.55 | 0.26 | 0.75 | 0.59 | 0.52 | 0.38 | 0.26 | 0.03 | -0.06 | 0.08 | 0.04 | 0.08 | 0.08 | -0.08 | 0.06 | 0.15 | 0.18 | 0.14 | -0.04 | -0.05 | 0.04 | 0.09 | -0.04 | -0.02 |
+| `benchmark.random_matched_exposure.intraday.xlb.v1` | 0.42 | 0.50 | 0.42 | 0.24 | 0.50 | 0.43 | 0.47 | 0.47 | 0.63 | 0.53 | 0.37 | 0.51 | 0.44 | 0.26 | 0.45 | 0.46 | 0.46 | 0.44 | 0.45 | 0.39 | 0.39 | 0.48 | 0.42 | 0.33 | 0.41 | 0.36 | 0.34 | 0.56 | 0.60 | 0.51 | 0.31 | 0.44 | 0.49 | 0.48 | 0.49 | 0.48 | 0.41 | 1.00 | 0.32 | 0.39 | 0.45 | 0.45 | 0.39 | 0.17 | 0.37 | 0.33 | 0.48 | 0.46 | 0.39 | 0.19 | 0.18 | -0.02 | 0.03 | 0.08 | 0.04 | 0.02 | 0.07 | 0.06 | 0.05 | 0.07 | 0.09 | 0.13 | 0.02 | 0.07 | 0.06 | 0.08 | -0.02 | 0.01 |
+| `benchmark.time_of_day_null.xle.v1` | 0.43 | 0.41 | 0.53 | 0.70 | 0.50 | 0.47 | 0.45 | 0.53 | 0.49 | 0.45 | 0.52 | 0.57 | 0.57 | 0.06 | 0.56 | 0.64 | 0.41 | 0.54 | 0.56 | 0.55 | 0.63 | 0.46 | 0.26 | 0.37 | 0.47 | 0.32 | 0.00 | 0.37 | 0.62 | 0.61 | 0.03 | 0.38 | 0.62 | 0.54 | 0.56 | 0.59 | 0.60 | 0.32 | 1.00 | 0.52 | 0.58 | 0.55 | 0.48 | 0.18 | 0.47 | 0.67 | 0.43 | 0.48 | 0.42 | 0.31 | 0.26 | 0.04 | -0.11 | 0.08 | 0.02 | 0.03 | 0.08 | -0.07 | 0.08 | 0.09 | 0.15 | 0.02 | -0.05 | -0.02 | 0.07 | 0.06 | -0.04 | -0.03 |
+| `benchmark.time_of_day_null.xlu.v1` | 0.41 | 0.42 | 0.52 | 0.40 | 0.54 | 0.46 | 0.46 | 0.53 | 0.50 | 0.51 | 0.51 | 0.55 | 0.58 | 0.15 | 0.56 | 0.64 | 0.58 | 0.65 | 0.54 | 0.59 | 0.58 | 0.50 | 0.32 | 0.73 | 0.50 | 0.48 | 0.15 | 0.42 | 0.63 | 0.65 | 0.14 | 0.48 | 0.65 | 0.68 | 0.58 | 0.59 | 0.60 | 0.39 | 0.52 | 1.00 | 0.59 | 0.65 | 0.56 | 0.20 | 0.85 | 0.29 | 0.49 | 0.66 | 0.53 | 0.36 | 0.28 | 0.03 | -0.02 | 0.06 | 0.09 | 0.02 | 0.04 | -0.07 | 0.05 | 0.21 | 0.08 | 0.12 | -0.01 | -0.06 | 0.03 | 0.04 | -0.03 | -0.02 |
+| `benchmark.random_matched_exposure.intraday.xlf.v1` | 0.62 | 0.61 | 0.72 | 0.45 | 0.73 | 0.65 | 0.67 | 0.73 | 0.64 | 0.70 | 0.70 | 0.74 | 0.76 | 0.15 | 0.76 | 0.82 | 0.57 | 0.66 | 0.72 | 0.77 | 0.78 | 0.76 | 0.44 | 0.42 | 0.67 | 0.43 | 0.18 | 0.64 | 0.73 | 0.80 | 0.14 | 0.55 | 0.88 | 0.68 | 0.68 | 0.73 | 0.77 | 0.45 | 0.58 | 0.59 | 1.00 | 0.70 | 0.62 | 0.19 | 0.53 | 0.32 | 0.61 | 0.59 | 0.49 | 0.40 | 0.28 | 0.05 | -0.03 | 0.14 | 0.03 | 0.09 | 0.08 | -0.01 | 0.10 | 0.18 | 0.25 | 0.15 | -0.01 | 0.02 | 0.14 | 0.15 | -0.05 | -0.09 |
+| `benchmark.time_of_day_null.xlv.v1` | 0.53 | 0.54 | 0.67 | 0.40 | 0.66 | 0.56 | 0.55 | 0.64 | 0.59 | 0.61 | 0.63 | 0.73 | 0.72 | 0.20 | 0.72 | 0.80 | 0.56 | 0.67 | 0.65 | 0.78 | 0.69 | 0.60 | 0.39 | 0.45 | 0.56 | 0.49 | 0.18 | 0.53 | 0.75 | 0.79 | 0.19 | 0.73 | 0.79 | 0.71 | 0.68 | 0.76 | 0.71 | 0.45 | 0.55 | 0.65 | 0.70 | 1.00 | 0.85 | 0.23 | 0.57 | 0.26 | 0.53 | 0.71 | 0.61 | 0.39 | 0.30 | 0.08 | -0.04 | 0.09 | 0.05 | 0.07 | 0.10 | -0.03 | 0.06 | 0.15 | 0.16 | 0.14 | -0.05 | -0.00 | 0.07 | 0.14 | -0.06 | -0.05 |
+| `benchmark.random_matched_exposure.intraday.xlv.v1` | 0.52 | 0.50 | 0.55 | 0.43 | 0.64 | 0.55 | 0.52 | 0.64 | 0.59 | 0.59 | 0.53 | 0.59 | 0.60 | 0.16 | 0.60 | 0.68 | 0.54 | 0.61 | 0.61 | 0.67 | 0.66 | 0.57 | 0.35 | 0.46 | 0.55 | 0.52 | 0.14 | 0.45 | 0.66 | 0.66 | 0.15 | 0.77 | 0.66 | 0.60 | 0.62 | 0.69 | 0.60 | 0.39 | 0.48 | 0.56 | 0.62 | 0.85 | 1.00 | 0.26 | 0.54 | 0.20 | 0.48 | 0.64 | 0.58 | 0.39 | 0.33 | 0.09 | 0.01 | 0.12 | 0.02 | 0.07 | 0.13 | -0.04 | 0.10 | 0.18 | 0.21 | 0.13 | 0.02 | 0.06 | 0.11 | 0.13 | -0.07 | 0.01 |
+| `benchmark.unconditional_intraday_long.tlt.v1` | 0.21 | 0.22 | 0.21 | 0.07 | 0.26 | 0.22 | 0.22 | 0.24 | 0.26 | 0.24 | 0.25 | 0.26 | 0.23 | 0.29 | 0.25 | 0.24 | 0.31 | 0.24 | 0.30 | 0.23 | 0.26 | 0.18 | 0.21 | 0.24 | 0.21 | 0.23 | 0.26 | 0.19 | 0.23 | 0.24 | 0.24 | 0.23 | 0.23 | 0.25 | 0.26 | 0.23 | 0.21 | 0.17 | 0.18 | 0.20 | 0.19 | 0.23 | 0.26 | 1.00 | 0.22 | -0.02 | 0.13 | 0.20 | 0.25 | 0.67 | 0.74 | 0.03 | -0.05 | 0.05 | 0.02 | -0.03 | -0.02 | -0.03 | 0.05 | 0.14 | 0.05 | 0.00 | -0.01 | 0.02 | -0.05 | -0.04 | -0.01 | 0.40 |
+| `benchmark.random_matched_exposure.intraday.xlu.v1` | 0.40 | 0.41 | 0.49 | 0.40 | 0.51 | 0.44 | 0.44 | 0.51 | 0.50 | 0.51 | 0.46 | 0.50 | 0.53 | 0.18 | 0.52 | 0.58 | 0.57 | 0.61 | 0.50 | 0.54 | 0.55 | 0.47 | 0.30 | 0.74 | 0.48 | 0.46 | 0.18 | 0.39 | 0.58 | 0.59 | 0.16 | 0.47 | 0.57 | 0.61 | 0.59 | 0.55 | 0.55 | 0.37 | 0.47 | 0.85 | 0.53 | 0.57 | 0.54 | 0.22 | 1.00 | 0.24 | 0.44 | 0.56 | 0.53 | 0.33 | 0.28 | 0.01 | -0.05 | 0.07 | 0.09 | -0.04 | 0.04 | -0.04 | 0.04 | 0.22 | 0.10 | 0.12 | 0.05 | -0.08 | -0.01 | 0.01 | -0.03 | 0.04 |
+| `benchmark.random_matched_exposure.intraday.xle.v1` | 0.24 | 0.28 | 0.23 | 0.59 | 0.28 | 0.25 | 0.25 | 0.29 | 0.30 | 0.27 | 0.21 | 0.30 | 0.26 | 0.06 | 0.23 | 0.30 | 0.24 | 0.30 | 0.25 | 0.20 | 0.30 | 0.29 | 0.25 | 0.20 | 0.22 | 0.14 | 0.02 | 0.35 | 0.30 | 0.29 | 0.04 | 0.20 | 0.29 | 0.32 | 0.26 | 0.26 | 0.26 | 0.33 | 0.67 | 0.29 | 0.32 | 0.26 | 0.20 | -0.02 | 0.24 | 1.00 | 0.33 | 0.27 | 0.20 | 0.05 | 0.04 | -0.03 | -0.04 | 0.06 | 0.07 | 0.08 | 0.05 | -0.00 | 0.03 | 0.05 | 0.06 | 0.03 | 0.00 | -0.00 | 0.05 | 0.05 | -0.06 | -0.06 |
+| `benchmark.random_matched_exposure.intraday.xlc.v1` | 0.56 | 0.55 | 0.59 | 0.37 | 0.62 | 0.62 | 0.61 | 0.65 | 0.57 | 0.59 | 0.58 | 0.56 | 0.65 | 0.21 | 0.63 | 0.66 | 0.53 | 0.52 | 0.61 | 0.56 | 0.62 | 0.61 | 0.44 | 0.40 | 0.73 | 0.40 | 0.19 | 0.53 | 0.59 | 0.62 | 0.17 | 0.46 | 0.63 | 0.59 | 0.54 | 0.55 | 0.75 | 0.48 | 0.43 | 0.49 | 0.61 | 0.53 | 0.48 | 0.13 | 0.44 | 0.33 | 1.00 | 0.52 | 0.39 | 0.28 | 0.21 | 0.09 | 0.01 | 0.17 | 0.09 | 0.17 | 0.16 | 0.10 | 0.12 | 0.17 | 0.23 | 0.22 | 0.07 | 0.08 | 0.11 | 0.19 | -0.07 | -0.07 |
+| `benchmark.time_of_day_null.xlp.v1` | 0.42 | 0.43 | 0.45 | 0.38 | 0.57 | 0.47 | 0.50 | 0.54 | 0.54 | 0.53 | 0.46 | 0.52 | 0.54 | 0.14 | 0.58 | 0.61 | 0.57 | 0.63 | 0.56 | 0.64 | 0.54 | 0.52 | 0.29 | 0.48 | 0.54 | 0.71 | 0.11 | 0.44 | 0.66 | 0.65 | 0.10 | 0.55 | 0.65 | 0.67 | 0.55 | 0.63 | 0.59 | 0.46 | 0.48 | 0.66 | 0.59 | 0.71 | 0.64 | 0.20 | 0.56 | 0.27 | 0.52 | 1.00 | 0.80 | 0.36 | 0.28 | 0.10 | -0.02 | 0.09 | 0.07 | 0.07 | 0.11 | -0.03 | 0.11 | 0.15 | 0.12 | 0.13 | 0.01 | -0.01 | 0.10 | 0.13 | -0.03 | -0.01 |
+| `benchmark.random_matched_exposure.intraday.xlp.v1` | 0.35 | 0.37 | 0.43 | 0.31 | 0.49 | 0.40 | 0.44 | 0.47 | 0.48 | 0.48 | 0.43 | 0.46 | 0.49 | 0.11 | 0.51 | 0.54 | 0.51 | 0.54 | 0.49 | 0.55 | 0.47 | 0.42 | 0.27 | 0.45 | 0.46 | 0.66 | 0.09 | 0.35 | 0.57 | 0.56 | 0.08 | 0.51 | 0.52 | 0.56 | 0.52 | 0.57 | 0.52 | 0.39 | 0.42 | 0.53 | 0.49 | 0.61 | 0.58 | 0.25 | 0.53 | 0.20 | 0.39 | 0.80 | 1.00 | 0.30 | 0.26 | 0.02 | -0.05 | 0.05 | 0.04 | 0.00 | 0.06 | -0.04 | 0.06 | 0.15 | 0.10 | 0.09 | -0.04 | -0.04 | 0.06 | 0.01 | 0.03 | 0.11 |
+| `benchmark.time_of_day_null.tlt.v1` | 0.37 | 0.36 | 0.38 | 0.25 | 0.38 | 0.40 | 0.36 | 0.41 | 0.36 | 0.36 | 0.40 | 0.42 | 0.41 | 0.27 | 0.42 | 0.43 | 0.37 | 0.38 | 0.45 | 0.43 | 0.45 | 0.34 | 0.30 | 0.26 | 0.38 | 0.25 | 0.27 | 0.34 | 0.38 | 0.42 | 0.26 | 0.33 | 0.41 | 0.43 | 0.43 | 0.37 | 0.38 | 0.19 | 0.31 | 0.36 | 0.40 | 0.39 | 0.39 | 0.67 | 0.33 | 0.05 | 0.28 | 0.36 | 0.30 | 1.00 | 0.79 | 0.06 | 0.04 | 0.08 | 0.00 | 0.05 | 0.08 | -0.04 | 0.08 | 0.09 | 0.11 | 0.00 | -0.01 | -0.02 | -0.04 | 0.06 | -0.06 | 0.10 |
+| `benchmark.random_matched_exposure.intraday.tlt.v1` | 0.29 | 0.30 | 0.29 | 0.21 | 0.32 | 0.31 | 0.29 | 0.33 | 0.29 | 0.28 | 0.31 | 0.34 | 0.31 | 0.22 | 0.32 | 0.32 | 0.35 | 0.35 | 0.41 | 0.30 | 0.37 | 0.27 | 0.26 | 0.27 | 0.29 | 0.26 | 0.22 | 0.31 | 0.28 | 0.30 | 0.19 | 0.31 | 0.31 | 0.35 | 0.34 | 0.31 | 0.26 | 0.18 | 0.26 | 0.28 | 0.28 | 0.30 | 0.33 | 0.74 | 0.28 | 0.04 | 0.21 | 0.28 | 0.26 | 0.79 | 1.00 | 0.08 | 0.01 | 0.12 | -0.03 | -0.03 | 0.05 | -0.04 | 0.10 | 0.10 | 0.07 | -0.02 | 0.02 | 0.07 | -0.00 | 0.03 | -0.05 | 0.16 |
+| `meanrev.rsi2.intraday.xlk.v1` | 0.33 | 0.25 | 0.01 | 0.07 | 0.24 | 0.33 | 0.27 | 0.30 | 0.15 | 0.22 | 0.08 | 0.00 | 0.03 | 0.06 | 0.05 | 0.05 | 0.12 | 0.04 | 0.09 | 0.05 | 0.14 | 0.24 | 0.07 | 0.04 | 0.25 | 0.06 | -0.02 | 0.02 | 0.01 | 0.03 | -0.03 | 0.13 | 0.06 | 0.05 | 0.10 | 0.08 | 0.03 | -0.02 | 0.04 | 0.03 | 0.05 | 0.08 | 0.09 | 0.03 | 0.01 | -0.03 | 0.09 | 0.10 | 0.02 | 0.06 | 0.08 | 1.00 | 0.12 | 0.32 | 0.05 | 0.34 | 0.65 | 0.19 | 0.44 | 0.09 | 0.39 | 0.31 | 0.04 | 0.11 | 0.21 | 0.58 | -0.00 | -0.05 |
+| `meanrev.rsi2.intraday.xle.v1` | 0.07 | 0.09 | -0.05 | 0.18 | 0.11 | 0.07 | 0.08 | 0.09 | 0.07 | 0.09 | -0.06 | -0.07 | -0.07 | 0.07 | -0.06 | -0.06 | 0.02 | -0.08 | 0.04 | -0.05 | 0.00 | 0.15 | 0.07 | 0.06 | 0.06 | 0.04 | 0.03 | 0.04 | -0.09 | -0.09 | -0.04 | 0.02 | -0.05 | -0.05 | -0.05 | -0.02 | -0.06 | 0.03 | -0.11 | -0.02 | -0.03 | -0.04 | 0.01 | -0.05 | -0.05 | -0.04 | 0.01 | -0.02 | -0.05 | 0.04 | 0.01 | 0.12 | 1.00 | 0.11 | 0.02 | 0.14 | 0.16 | 0.23 | 0.13 | 0.01 | 0.18 | 0.21 | 0.12 | 0.05 | 0.16 | 0.22 | 0.02 | 0.02 |
+| `meanrev.rsi2.intraday.iwm.v1` | 0.26 | 0.30 | 0.04 | 0.17 | 0.28 | 0.28 | 0.28 | 0.28 | 0.23 | 0.27 | 0.11 | 0.06 | 0.08 | 0.09 | 0.09 | 0.09 | 0.17 | 0.09 | 0.12 | 0.14 | 0.14 | 0.29 | 0.05 | 0.10 | 0.28 | 0.09 | 0.04 | 0.06 | 0.06 | 0.07 | 0.03 | 0.13 | 0.12 | 0.10 | 0.09 | 0.11 | 0.08 | 0.08 | 0.08 | 0.06 | 0.14 | 0.09 | 0.12 | 0.05 | 0.07 | 0.06 | 0.17 | 0.09 | 0.05 | 0.08 | 0.12 | 0.32 | 0.11 | 1.00 | 0.04 | 0.39 | 0.38 | 0.32 | 0.29 | 0.09 | 0.34 | 0.39 | 0.04 | 0.06 | 0.34 | 0.48 | -0.03 | 0.07 |
+| `meanrev.rsi2.intraday.gld.v1` | 0.09 | 0.15 | -0.01 | 0.08 | 0.13 | 0.10 | 0.10 | 0.11 | 0.15 | 0.15 | 0.02 | 0.02 | 0.01 | 0.41 | 0.03 | 0.02 | 0.06 | 0.04 | 0.02 | 0.04 | 0.05 | 0.09 | 0.05 | 0.09 | 0.08 | 0.01 | 0.07 | 0.05 | 0.02 | -0.00 | 0.07 | 0.08 | 0.02 | 0.03 | 0.08 | 0.04 | 0.04 | 0.04 | 0.02 | 0.09 | 0.03 | 0.05 | 0.02 | 0.02 | 0.09 | 0.07 | 0.09 | 0.07 | 0.04 | 0.00 | -0.03 | 0.05 | 0.02 | 0.04 | 1.00 | 0.07 | 0.07 | 0.07 | 0.00 | 0.09 | 0.08 | 0.21 | 0.03 | 0.09 | 0.16 | 0.19 | -0.07 | 0.07 |
+| `meanrev.rsi2.intraday.xly.v1` | 0.25 | 0.24 | 0.04 | 0.10 | 0.23 | 0.27 | 0.30 | 0.28 | 0.20 | 0.24 | 0.10 | 0.00 | 0.06 | 0.09 | 0.07 | 0.08 | 0.13 | 0.03 | 0.05 | 0.14 | 0.13 | 0.24 | 0.08 | 0.03 | 0.29 | 0.08 | 0.05 | 0.05 | 0.06 | 0.06 | 0.05 | 0.14 | 0.07 | 0.05 | 0.05 | 0.05 | 0.08 | 0.02 | 0.03 | 0.02 | 0.09 | 0.07 | 0.07 | -0.03 | -0.04 | 0.08 | 0.17 | 0.07 | 0.00 | 0.05 | -0.03 | 0.34 | 0.14 | 0.39 | 0.07 | 1.00 | 0.36 | 0.31 | 0.32 | 0.10 | 0.34 | 0.36 | 0.03 | 0.07 | 0.25 | 0.45 | -0.02 | -0.03 |
+| `meanrev.rsi2.intraday.qqq.v1` | 0.33 | 0.24 | 0.07 | 0.12 | 0.25 | 0.35 | 0.26 | 0.30 | 0.16 | 0.21 | 0.06 | 0.03 | 0.08 | 0.11 | 0.07 | 0.08 | 0.12 | 0.04 | 0.09 | 0.10 | 0.13 | 0.24 | 0.12 | 0.02 | 0.30 | 0.06 | 0.07 | 0.08 | 0.05 | 0.06 | 0.03 | 0.14 | 0.07 | 0.09 | 0.10 | 0.10 | 0.08 | 0.07 | 0.08 | 0.04 | 0.08 | 0.10 | 0.13 | -0.02 | 0.04 | 0.05 | 0.16 | 0.11 | 0.06 | 0.08 | 0.05 | 0.65 | 0.16 | 0.38 | 0.07 | 0.36 | 1.00 | 0.24 | 0.45 | 0.16 | 0.37 | 0.30 | 0.01 | 0.05 | 0.26 | 0.67 | -0.07 | -0.01 |
+| `meanrev.rsi2.intraday.xlf.v1` | 0.05 | 0.12 | -0.10 | 0.02 | 0.16 | 0.07 | 0.10 | 0.09 | 0.11 | 0.15 | -0.05 | -0.08 | -0.10 | 0.11 | -0.10 | -0.10 | 0.06 | -0.09 | -0.08 | -0.05 | -0.07 | 0.25 | -0.02 | 0.06 | 0.10 | 0.04 | 0.07 | -0.00 | -0.09 | -0.10 | -0.00 | 0.04 | -0.07 | -0.04 | -0.00 | -0.03 | -0.08 | 0.06 | -0.07 | -0.07 | -0.01 | -0.03 | -0.04 | -0.03 | -0.04 | -0.00 | 0.10 | -0.03 | -0.04 | -0.04 | -0.04 | 0.19 | 0.23 | 0.32 | 0.07 | 0.31 | 0.24 | 1.00 | 0.19 | 0.03 | 0.42 | 0.41 | 0.04 | 0.16 | 0.26 | 0.38 | 0.02 | -0.01 |
+| `meanrev.rsi2.intraday.xlc.v1` | 0.28 | 0.27 | 0.06 | 0.14 | 0.26 | 0.31 | 0.30 | 0.32 | 0.21 | 0.23 | 0.12 | 0.07 | 0.06 | 0.11 | 0.08 | 0.09 | 0.19 | 0.10 | 0.12 | 0.09 | 0.15 | 0.28 | 0.10 | 0.09 | 0.40 | 0.16 | 0.09 | 0.12 | 0.06 | 0.06 | 0.07 | 0.15 | 0.07 | 0.09 | 0.08 | 0.13 | 0.06 | 0.05 | 0.08 | 0.05 | 0.10 | 0.06 | 0.10 | 0.05 | 0.04 | 0.03 | 0.12 | 0.11 | 0.06 | 0.08 | 0.10 | 0.44 | 0.13 | 0.29 | 0.00 | 0.32 | 0.45 | 0.19 | 1.00 | 0.13 | 0.36 | 0.22 | 0.07 | 0.13 | 0.26 | 0.44 | 0.03 | -0.08 |
+| `meanrev.rsi2.intraday.xlre.v1` | 0.17 | 0.23 | 0.16 | 0.16 | 0.22 | 0.19 | 0.20 | 0.22 | 0.24 | 0.24 | 0.16 | 0.17 | 0.15 | 0.11 | 0.14 | 0.16 | 0.36 | 0.23 | 0.18 | 0.16 | 0.18 | 0.21 | 0.14 | 0.27 | 0.20 | 0.19 | 0.08 | 0.21 | 0.15 | 0.17 | 0.07 | 0.23 | 0.16 | 0.18 | 0.19 | 0.18 | 0.15 | 0.07 | 0.09 | 0.21 | 0.18 | 0.15 | 0.18 | 0.14 | 0.22 | 0.05 | 0.17 | 0.15 | 0.15 | 0.09 | 0.10 | 0.09 | 0.01 | 0.09 | 0.09 | 0.10 | 0.16 | 0.03 | 0.13 | 1.00 | 0.16 | 0.09 | 0.11 | 0.11 | 0.21 | 0.15 | 0.06 | 0.01 |
+| `meanrev.rsi2.intraday.dia.v1` | 0.32 | 0.34 | 0.16 | 0.27 | 0.42 | 0.34 | 0.34 | 0.39 | 0.36 | 0.38 | 0.17 | 0.13 | 0.16 | 0.10 | 0.17 | 0.19 | 0.28 | 0.13 | 0.18 | 0.21 | 0.25 | 0.45 | 0.13 | 0.18 | 0.34 | 0.23 | 0.06 | 0.16 | 0.16 | 0.16 | 0.07 | 0.27 | 0.20 | 0.15 | 0.21 | 0.21 | 0.18 | 0.09 | 0.15 | 0.08 | 0.25 | 0.16 | 0.21 | 0.05 | 0.10 | 0.06 | 0.23 | 0.12 | 0.10 | 0.11 | 0.07 | 0.39 | 0.18 | 0.34 | 0.08 | 0.34 | 0.37 | 0.42 | 0.36 | 0.16 | 1.00 | 0.42 | 0.09 | 0.14 | 0.36 | 0.46 | 0.02 | -0.02 |
+| `meanrev.rsi2.intraday.xli.v1` | 0.26 | 0.29 | 0.11 | 0.12 | 0.36 | 0.28 | 0.30 | 0.30 | 0.29 | 0.37 | 0.17 | 0.09 | 0.13 | 0.17 | 0.13 | 0.12 | 0.22 | 0.14 | 0.13 | 0.14 | 0.15 | 0.37 | 0.11 | 0.19 | 0.28 | 0.14 | 0.07 | 0.09 | 0.09 | 0.11 | 0.06 | 0.21 | 0.13 | 0.13 | 0.13 | 0.17 | 0.14 | 0.13 | 0.02 | 0.12 | 0.15 | 0.14 | 0.13 | 0.00 | 0.12 | 0.03 | 0.22 | 0.13 | 0.09 | 0.00 | -0.02 | 0.31 | 0.21 | 0.39 | 0.21 | 0.36 | 0.30 | 0.41 | 0.22 | 0.09 | 0.42 | 1.00 | 0.05 | 0.10 | 0.38 | 0.48 | -0.02 | -0.04 |
+| `meanrev.rsi2.intraday.xlu.v1` | 0.03 | 0.06 | -0.05 | 0.07 | 0.07 | 0.04 | 0.01 | 0.07 | 0.05 | 0.05 | -0.04 | -0.06 | -0.05 | 0.05 | -0.05 | -0.04 | 0.10 | -0.02 | 0.01 | -0.07 | 0.03 | 0.09 | 0.04 | 0.29 | 0.08 | 0.15 | -0.01 | 0.03 | -0.08 | -0.08 | -0.01 | 0.07 | -0.04 | -0.05 | -0.07 | -0.07 | -0.04 | 0.02 | -0.05 | -0.01 | -0.01 | -0.05 | 0.02 | -0.01 | 0.05 | 0.00 | 0.07 | 0.01 | -0.04 | -0.01 | 0.02 | 0.04 | 0.12 | 0.04 | 0.03 | 0.03 | 0.01 | 0.04 | 0.07 | 0.11 | 0.09 | 0.05 | 1.00 | 0.12 | 0.03 | 0.05 | 0.17 | -0.01 |
+| `meanrev.rsi2.intraday.xlv.v1` | -0.01 | 0.12 | -0.05 | 0.04 | 0.10 | 0.03 | 0.09 | 0.07 | 0.11 | 0.10 | -0.01 | 0.02 | -0.05 | 0.01 | -0.01 | -0.03 | 0.13 | 0.03 | 0.05 | -0.05 | 0.02 | 0.13 | -0.03 | 0.05 | 0.05 | 0.12 | 0.01 | 0.11 | 0.01 | -0.02 | -0.03 | 0.28 | -0.01 | 0.02 | -0.05 | -0.03 | -0.05 | 0.07 | -0.02 | -0.06 | 0.02 | -0.00 | 0.06 | 0.02 | -0.08 | -0.00 | 0.08 | -0.01 | -0.04 | -0.02 | 0.07 | 0.11 | 0.05 | 0.06 | 0.09 | 0.07 | 0.05 | 0.16 | 0.13 | 0.11 | 0.14 | 0.10 | 0.12 | 1.00 | 0.16 | 0.14 | 0.10 | -0.14 |
+| `meanrev.rsi2.intraday.xlb.v1` | 0.19 | 0.20 | 0.02 | 0.20 | 0.24 | 0.20 | 0.22 | 0.24 | 0.26 | 0.21 | 0.08 | -0.00 | 0.03 | 0.12 | 0.06 | 0.05 | 0.21 | 0.07 | 0.07 | 0.08 | 0.11 | 0.29 | 0.07 | 0.08 | 0.24 | 0.17 | -0.01 | 0.04 | 0.03 | 0.02 | 0.01 | 0.17 | 0.09 | 0.08 | 0.01 | 0.12 | 0.04 | 0.06 | 0.07 | 0.03 | 0.14 | 0.07 | 0.11 | -0.05 | -0.01 | 0.05 | 0.11 | 0.10 | 0.06 | -0.04 | -0.00 | 0.21 | 0.16 | 0.34 | 0.16 | 0.25 | 0.26 | 0.26 | 0.26 | 0.21 | 0.36 | 0.38 | 0.03 | 0.16 | 1.00 | 0.43 | 0.09 | -0.07 |
+| `meanrev.rsi2.intraday.spy.v1` | 0.35 | 0.32 | 0.07 | 0.16 | 0.33 | 0.37 | 0.32 | 0.36 | 0.25 | 0.30 | 0.15 | 0.07 | 0.10 | 0.21 | 0.11 | 0.12 | 0.17 | 0.09 | 0.12 | 0.14 | 0.18 | 0.34 | 0.15 | 0.06 | 0.31 | 0.10 | 0.08 | 0.13 | 0.06 | 0.07 | 0.06 | 0.20 | 0.12 | 0.10 | 0.10 | 0.17 | 0.09 | 0.08 | 0.06 | 0.04 | 0.15 | 0.14 | 0.13 | -0.04 | 0.01 | 0.05 | 0.19 | 0.13 | 0.01 | 0.06 | 0.03 | 0.58 | 0.22 | 0.48 | 0.19 | 0.45 | 0.67 | 0.38 | 0.44 | 0.15 | 0.46 | 0.48 | 0.05 | 0.14 | 0.43 | 1.00 | -0.04 | -0.06 |
+| `meanrev.rsi2.intraday.xlp.v1` | -0.09 | -0.06 | 0.01 | -0.04 | -0.00 | -0.07 | -0.02 | -0.05 | 0.01 | -0.05 | 0.02 | -0.00 | -0.00 | -0.04 | 0.00 | -0.02 | 0.04 | 0.02 | -0.02 | -0.04 | -0.04 | 0.01 | -0.02 | 0.05 | -0.06 | 0.21 | 0.06 | -0.00 | -0.01 | -0.01 | 0.00 | -0.02 | -0.04 | -0.00 | -0.02 | -0.03 | -0.04 | -0.02 | -0.04 | -0.03 | -0.05 | -0.06 | -0.07 | -0.01 | -0.03 | -0.06 | -0.07 | -0.03 | 0.03 | -0.06 | -0.05 | -0.00 | 0.02 | -0.03 | -0.07 | -0.02 | -0.07 | 0.02 | 0.03 | 0.06 | 0.02 | -0.02 | 0.17 | 0.10 | 0.09 | -0.04 | 1.00 | 0.04 |
+| `meanrev.rsi2.intraday.tlt.v1` | -0.02 | 0.01 | -0.05 | 0.00 | -0.00 | -0.02 | -0.01 | -0.03 | 0.05 | 0.01 | 0.01 | -0.04 | -0.03 | 0.10 | -0.05 | -0.04 | 0.01 | -0.02 | 0.02 | -0.03 | -0.02 | -0.08 | 0.08 | 0.05 | -0.03 | 0.03 | 0.05 | -0.04 | -0.01 | -0.05 | 0.03 | -0.04 | -0.07 | -0.04 | 0.03 | -0.04 | -0.02 | 0.01 | -0.03 | -0.02 | -0.09 | -0.05 | 0.01 | 0.40 | 0.04 | -0.06 | -0.07 | -0.01 | 0.11 | 0.10 | 0.16 | -0.05 | 0.02 | 0.07 | 0.07 | -0.03 | -0.01 | -0.01 | -0.08 | 0.01 | -0.02 | -0.04 | -0.01 | -0.14 | -0.07 | -0.06 | 0.04 | 1.00 |
 
 ## Per-strategy detail
-
-### `benchmark.random_matched_exposure.intraday.gld.v1`
-
-- Family: benchmark
-- Trades: 947
-- OOS Sharpe: 0.8093
-- OOS Max DD: 1.65%
-- OOS Total Return: +2.27%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=True
-- Run ID: 4fa028b2-c57a-46d9-9424-33d9e0d204a5
-
-### `benchmark.time_of_day_null.gld.v1`
-
-- Family: benchmark
-- Trades: 907
-- OOS Sharpe: 0.7658
-- OOS Max DD: 1.37%
-- OOS Total Return: +2.03%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=True
-- Run ID: 5e4fbf67-1aed-47bf-9a52-7d7947f02080
-
-### `benchmark.unconditional_intraday_long.gld.v1`
-
-- Family: benchmark
-- Trades: 967
-- OOS Sharpe: 0.7324
-- OOS Max DD: 2.01%
-- OOS Total Return: +2.35%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=True
-- Run ID: 86ccfa11-9f55-4431-ab3d-f97f2f76afce
-
-### `benchmark.unconditional_intraday_long.xli.v1`
-
-- Family: benchmark
-- Trades: 969
-- OOS Sharpe: -0.0195
-- OOS Max DD: 2.23%
-- OOS Total Return: -0.08%
-- Single-window dependency: True
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.01950349809058833 must be > 0.0 (got -0.01950349809058833)
-- Run ID: 47bc7c77-5a86-4218-9bb3-05b429aef131
-
-### `benchmark.time_of_day_null.xli.v1`
-
-- Family: benchmark
-- Trades: 953
-- OOS Sharpe: -0.2341
-- OOS Max DD: 2.17%
-- OOS Total Return: -0.63%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.23406185329350515 must be > 0.0 (got -0.23406185329350515)
-- Run ID: 587df9a2-95b0-4349-8933-4ed8d1456580
-
-### `benchmark.random_matched_exposure.intraday.xli.v1`
-
-- Family: benchmark
-- Trades: 950
-- OOS Sharpe: -0.5491
-- OOS Max DD: 3.03%
-- OOS Total Return: -1.48%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.5491287822227723 must be > 0.0 (got -0.5491287822227723)
-- Run ID: a148d78b-9893-4df7-b452-736cf96b49b5
-
-### `benchmark.time_of_day_null.xlk.v1`
-
-- Family: benchmark
-- Trades: 914
-- OOS Sharpe: -0.5897
-- OOS Max DD: 7.87%
-- OOS Total Return: -4.70%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.5896587795418472 must be > 0.0 (got -0.5896587795418472)
-- Run ID: 91cc853f-a816-4d23-86e5-6b2b360a5306
 
 ### `benchmark.unconditional_intraday_long.xlk.v1`
 
 - Family: benchmark
-- Trades: 962
-- OOS Sharpe: -0.7240
-- OOS Max DD: 9.01%
-- OOS Total Return: -5.99%
+- Trades: 964
+- OOS Sharpe: -1.3706
+- OOS Max DD: 5.97%
+- OOS Total Return: -4.67%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -0.7239966769900142 must be > 0.0 (got -0.7239966769900142)
-- Run ID: 19b8c3bb-9c17-4fad-95f6-1e1dd6067a3c
-
-### `benchmark.random_matched_exposure.intraday.xlk.v1`
-
-- Family: benchmark
-- Trades: 918
-- OOS Sharpe: -0.7708
-- OOS Max DD: 9.34%
-- OOS Total Return: -5.97%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.7708489095053578 must be > 0.0 (got -0.7708489095053578)
-- Run ID: fe306637-13bc-4ae0-a846-efb3dea5eafb
-
-### `benchmark.time_of_day_null.xlf.v1`
-
-- Family: benchmark
-- Trades: 967
-- OOS Sharpe: -0.7943
-- OOS Max DD: 2.92%
-- OOS Total Return: -1.96%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.7942902937489679 must be > 0.0 (got -0.7942902937489679)
-- Run ID: ced13d85-0d4e-46c2-ba8a-eb60ac368d5a
-
-### `benchmark.unconditional_intraday_long.xlf.v1`
-
-- Family: benchmark
-- Trades: 969
-- OOS Sharpe: -0.8392
-- OOS Max DD: 3.61%
-- OOS Total Return: -2.45%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.8392364306041397 must be > 0.0 (got -0.8392364306041397)
-- Run ID: f8b71e2f-5520-4f35-a907-537f3c527959
-
-### `benchmark.unconditional_intraday_long.xlu.v1`
-
-- Family: benchmark
-- Trades: 969
-- OOS Sharpe: -0.8937
-- OOS Max DD: 7.96%
-- OOS Total Return: -6.58%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.8937254630821504 must be > 0.0 (got -0.8937254630821504)
-- Run ID: fd0cd76c-69b7-43e2-9a4e-e5d73812cf55
-
-### `benchmark.time_of_day_null.xlu.v1`
-
-- Family: benchmark
-- Trades: 957
-- OOS Sharpe: -0.9088
-- OOS Max DD: 7.03%
-- OOS Total Return: -6.49%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.9088116605482546 must be > 0.0 (got -0.9088116605482546)
-- Run ID: 795a47a4-a1df-4705-95ff-dba09405dd46
-
-### `benchmark.unconditional_intraday_long.xle.v1`
-
-- Family: benchmark
-- Trades: 969
-- OOS Sharpe: -0.9235
-- OOS Max DD: 8.07%
-- OOS Total Return: -7.36%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.9235139857471694 must be > 0.0 (got -0.9235139857471694)
-- Run ID: 2e7fdd0a-74b2-487e-b269-ee1e56030cb4
-
-### `benchmark.random_matched_exposure.intraday.xlu.v1`
-
-- Family: benchmark
-- Trades: 951
-- OOS Sharpe: -0.9336
-- OOS Max DD: 7.65%
-- OOS Total Return: -6.68%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.9336419559068857 must be > 0.0 (got -0.9336419559068857)
-- Run ID: c2c2da2b-4756-42bc-bbff-d6c0becc63ed
-
-### `benchmark.random_matched_exposure.intraday.xly.v1`
-
-- Family: benchmark
-- Trades: 907
-- OOS Sharpe: -0.9572
-- OOS Max DD: 8.04%
-- OOS Total Return: -7.35%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.9571529247793633 must be > 0.0 (got -0.9571529247793633)
-- Run ID: cc9ea617-0559-49a2-b202-77f9c134db02
-
-### `benchmark.unconditional_intraday_long.xly.v1`
-
-- Family: benchmark
-- Trades: 949
-- OOS Sharpe: -0.9720
-- OOS Max DD: 8.45%
-- OOS Total Return: -7.61%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.971987007137354 must be > 0.0 (got -0.971987007137354)
-- Run ID: 907fef59-134b-4517-ba23-2da68fd4f30f
-
-### `benchmark.unconditional_intraday_long.xlc.v1`
-
-- Family: benchmark
-- Trades: 961
-- OOS Sharpe: -0.9874
-- OOS Max DD: 3.38%
-- OOS Total Return: -2.96%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -0.9874258999854238 must be > 0.0 (got -0.9874258999854238)
-- Run ID: 92501084-f2a5-4992-9b75-d6e1c10e0632
-
-### `benchmark.time_of_day_null.xly.v1`
-
-- Family: benchmark
-- Trades: 875
-- OOS Sharpe: -1.0166
-- OOS Max DD: 8.79%
-- OOS Total Return: -7.78%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.016561308337861 must be > 0.0 (got -1.016561308337861)
-- Run ID: 8780e421-bb6c-42b1-a1d2-4a5df3b24112
-
-### `benchmark.unconditional_intraday_long.xlb.v1`
-
-- Family: benchmark
-- Trades: 967
-- OOS Sharpe: -1.0413
-- OOS Max DD: 8.74%
-- OOS Total Return: -7.84%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.0412505763568725 must be > 0.0 (got -1.0412505763568725)
-- Run ID: a2fda626-86ca-4e92-bdc2-b48054de37c5
-
-### `benchmark.random_matched_exposure.intraday.xlc.v1`
-
-- Family: benchmark
-- Trades: 937
-- OOS Sharpe: -1.1173
-- OOS Max DD: 3.55%
-- OOS Total Return: -2.76%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.117253437803126 must be > 0.0 (got -1.117253437803126)
-- Run ID: ddf77e35-e2fb-4365-adee-4bae69089b79
-
-### `benchmark.time_of_day_null.xlb.v1`
-
-- Family: benchmark
-- Trades: 941
-- OOS Sharpe: -1.1308
-- OOS Max DD: 8.85%
-- OOS Total Return: -8.24%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.1308111239374805 must be > 0.0 (got -1.1308111239374805)
-- Run ID: fc26cb8d-151b-4295-bd6a-ea71b9bfb2fc
-
-### `benchmark.random_matched_exposure.intraday.xlb.v1`
-
-- Family: benchmark
-- Trades: 935
-- OOS Sharpe: -1.1420
-- OOS Max DD: 9.03%
-- OOS Total Return: -8.27%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.1419894966321162 must be > 0.0 (got -1.1419894966321162)
-- Run ID: 29ec635e-4326-4a26-b908-46f7479882f8
-
-### `benchmark.random_matched_exposure.intraday.xle.v1`
-
-- Family: benchmark
-- Trades: 941
-- OOS Sharpe: -1.1817
-- OOS Max DD: 8.82%
-- OOS Total Return: -8.79%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.1817124763623532 must be > 0.0 (got -1.1817124763623532)
-- Run ID: 8a54e084-9b02-4076-bd90-57d85ee15617
-
-### `benchmark.random_matched_exposure.intraday.xlre.v1`
-
-- Family: benchmark
-- Trades: 927
-- OOS Sharpe: -1.1888
-- OOS Max DD: 3.29%
-- OOS Total Return: -2.75%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.1888370595769764 must be > 0.0 (got -1.1888370595769764)
-- Run ID: e7d68637-1ee5-4d3d-b73e-a8a713ac09ff
-
-### `benchmark.unconditional_intraday_long.dia.v1`
-
-- Family: benchmark
-- Trades: 847
-- OOS Sharpe: -1.2244
-- OOS Max DD: 3.75%
-- OOS Total Return: -2.92%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.2243540177575567 must be > 0.0 (got -1.2243540177575567)
-- Run ID: cae74286-88db-42b4-b16b-311724736c41
-
-### `benchmark.time_of_day_null.xle.v1`
-
-- Family: benchmark
-- Trades: 967
-- OOS Sharpe: -1.2290
-- OOS Max DD: 9.28%
-- OOS Total Return: -9.24%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.2290349898687827 must be > 0.0 (got -1.2290349898687827)
-- Run ID: b3f34fe0-1796-4720-a46e-37e81f304e44
-
-### `benchmark.time_of_day_null.xlc.v1`
-
-- Family: benchmark
-- Trades: 903
-- OOS Sharpe: -1.2587
-- OOS Max DD: 3.54%
-- OOS Total Return: -3.34%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.2586989559344504 must be > 0.0 (got -1.2586989559344504)
-- Run ID: ad191ad9-6e12-41c9-8e52-e59312155c2a
-
-### `benchmark.random_matched_exposure.intraday.xlf.v1`
-
-- Family: benchmark
-- Trades: 953
-- OOS Sharpe: -1.2732
-- OOS Max DD: 4.14%
-- OOS Total Return: -3.20%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.2732091073486107 must be > 0.0 (got -1.2732091073486107)
-- Run ID: 268f3b1a-4b09-42c8-99ee-145d37f8475a
-
-### `benchmark.random_matched_exposure.intraday.dia.v1`
-
-- Family: benchmark
-- Trades: 873
-- OOS Sharpe: -1.3064
-- OOS Max DD: 3.57%
-- OOS Total Return: -2.86%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.3064051649852237 must be > 0.0 (got -1.3064051649852237)
-- Run ID: 8c89cda1-b655-4924-9cbd-add41978dd7c
+  - Sharpe -1.3706401707685998 must be > 0.0 (got -1.3706401707685998)
+- Run ID: e5a4adc6-e287-4f93-bca0-17144712efc3
 
 ### `benchmark.unconditional_intraday_long.iwm.v1`
 
 - Family: benchmark
-- Trades: 971
-- OOS Sharpe: -1.3088
-- OOS Max DD: 5.31%
-- OOS Total Return: -4.26%
+- Trades: 972
+- OOS Sharpe: -1.3827
+- OOS Max DD: 4.41%
+- OOS Total Return: -4.17%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.3088315392942638 must be > 0.0 (got -1.3088315392942638)
-- Run ID: c6830d97-e957-420b-93c4-95f938b21308
+  - Sharpe -1.382677048113348 must be > 0.0 (got -1.382677048113348)
+- Run ID: c91491ec-4cbf-471f-9bc1-de96c09066c3
 
-### `benchmark.unconditional_intraday_long.spy.v1`
-
-- Family: benchmark
-- Trades: 971
-- OOS Sharpe: -1.3571
-- OOS Max DD: 3.96%
-- OOS Total Return: -3.47%
-- Single-window dependency: False
-- Survivorship-corrected universe: True
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.3570574957618138 must be > 0.0 (got -1.3570574957618138)
-- Run ID: 7cbfe8dc-6e8f-4364-9679-5dc9dbd2e9a2
-
-### `benchmark.time_of_day_null.dia.v1`
+### `benchmark.time_of_day_null.xlk.v1`
 
 - Family: benchmark
-- Trades: 723
-- OOS Sharpe: -1.3754
-- OOS Max DD: 3.10%
-- OOS Total Return: -2.53%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.37544720073518 must be > 0.0 (got -1.37544720073518)
-- Run ID: fc2cab0b-2fce-41a9-93e4-96f5a874bc83
-
-### `benchmark.unconditional_intraday_long.xlre.v1`
-
-- Family: benchmark
-- Trades: 965
-- OOS Sharpe: -1.3759
-- OOS Max DD: 4.30%
+- Trades: 916
+- OOS Sharpe: -1.4890
+- OOS Max DD: 4.63%
 - OOS Total Return: -3.77%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.3758745258917966 must be > 0.0 (got -1.3758745258917966)
-- Run ID: 7c3de7c0-56d6-4d2d-b451-94cad16ae6d3
+  - Sharpe -1.4889860164696733 must be > 0.0 (got -1.4889860164696733)
+- Run ID: 6f3ba1b0-ac37-4fd2-bb6a-2386bfd40c7c
 
-### `benchmark.time_of_day_null.spy.v1`
-
-- Family: benchmark
-- Trades: 969
-- OOS Sharpe: -1.5674
-- OOS Max DD: 3.63%
-- OOS Total Return: -3.38%
-- Single-window dependency: False
-- Survivorship-corrected universe: True
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -1.5674199983045956 must be > 0.0 (got -1.5674199983045956)
-- Run ID: 36b01001-e018-4564-9145-2f66d834af23
-
-### `benchmark.time_of_day_null.xlre.v1`
+### `benchmark.unconditional_intraday_long.xle.v1`
 
 - Family: benchmark
-- Trades: 885
-- OOS Sharpe: -1.5687
-- OOS Max DD: 4.16%
-- OOS Total Return: -3.72%
+- Trades: 972
+- OOS Sharpe: -1.5788
+- OOS Max DD: 4.79%
+- OOS Total Return: -4.62%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.5687158935164558 must be > 0.0 (got -1.5687158935164558)
-- Run ID: d85395eb-2740-44fb-a384-a3d2fe880c10
+  - Sharpe -1.5788131580299078 must be > 0.0 (got -1.5788131580299078)
+- Run ID: 85b2dd59-8ede-4674-a3f6-89cd7182cfbc
 
-### `benchmark.time_of_day_null.iwm.v1`
+### `benchmark.unconditional_intraday_long.dia.v1`
 
 - Family: benchmark
-- Trades: 967
-- OOS Sharpe: -1.6514
-- OOS Max DD: 5.26%
-- OOS Total Return: -4.40%
+- Trades: 850
+- OOS Sharpe: -1.6242
+- OOS Max DD: 3.49%
+- OOS Total Return: -3.32%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.6513892996480783 must be > 0.0 (got -1.6513892996480783)
-- Run ID: 077cbd5d-c19f-4c0f-bd18-e2ac4449a050
+  - Sharpe -1.624162269260292 must be > 0.0 (got -1.624162269260292)
+- Run ID: e89364e5-21c7-4c2d-a95f-eacf373288a6
 
 ### `benchmark.unconditional_intraday_long.qqq.v1`
 
 - Family: benchmark
 - Trades: 972
-- OOS Sharpe: -1.7411
-- OOS Max DD: 5.61%
-- OOS Total Return: -4.95%
+- OOS Sharpe: -1.6378
+- OOS Max DD: 5.31%
+- OOS Total Return: -4.65%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.7411296723188594 must be > 0.0 (got -1.7411296723188594)
-- Run ID: 12d70b57-17c0-4f15-a63d-9bb94896677b
+  - Sharpe -1.6378479303265587 must be > 0.0 (got -1.6378479303265587)
+- Run ID: 310a4a8d-dcfe-4710-bbc1-edd7dc5b65ad
 
-### `benchmark.random_matched_exposure.intraday.spy.v1`
+### `benchmark.unconditional_intraday_long.xly.v1`
 
 - Family: benchmark
-- Trades: 941
-- OOS Sharpe: -1.8114
-- OOS Max DD: 4.23%
+- Trades: 952
+- OOS Sharpe: -1.6815
+- OOS Max DD: 4.92%
+- OOS Total Return: -4.82%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -1.68149563237162 must be > 0.0 (got -1.68149563237162)
+- Run ID: db4f82c7-a44d-439a-a254-f73f7534d759
+
+### `benchmark.unconditional_intraday_long.spy.v1`
+
+- Family: benchmark
+- Trades: 972
+- OOS Sharpe: -1.7572
+- OOS Max DD: 4.28%
 - OOS Total Return: -4.12%
 - Single-window dependency: False
 - Survivorship-corrected universe: True
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.8113631201982683 must be > 0.0 (got -1.8113631201982683)
-- Run ID: 79070914-32dd-4c98-921b-bef1dd2579e2
+  - Sharpe -1.7571837360138367 must be > 0.0 (got -1.7571837360138367)
+- Run ID: 159e6a90-3a3f-41d7-8697-62485b6443d9
+
+### `benchmark.unconditional_intraday_long.xlb.v1`
+
+- Family: benchmark
+- Trades: 970
+- OOS Sharpe: -1.7828
+- OOS Max DD: 4.64%
+- OOS Total Return: -4.44%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -1.7827614754164924 must be > 0.0 (got -1.7827614754164924)
+- Run ID: 7cac2cc2-d885-4398-8bbe-2e604608c9d6
+
+### `benchmark.unconditional_intraday_long.xli.v1`
+
+- Family: benchmark
+- Trades: 972
+- OOS Sharpe: -1.7850
+- OOS Max DD: 4.37%
+- OOS Total Return: -4.29%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -1.7850109847914364 must be > 0.0 (got -1.7850109847914364)
+- Run ID: fd7447db-a9a5-483d-879e-9020a7864843
 
 ### `benchmark.random_matched_exposure.intraday.qqq.v1`
 
 - Family: benchmark
 - Trades: 942
-- OOS Sharpe: -1.9174
-- OOS Max DD: 4.66%
-- OOS Total Return: -4.35%
+- OOS Sharpe: -1.8240
+- OOS Max DD: 4.35%
+- OOS Total Return: -4.04%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.9173555700514038 must be > 0.0 (got -1.9173555700514038)
-- Run ID: 70bbb812-f88b-4642-aa69-4ecf1ebbdcc0
+  - Sharpe -1.8239742486445227 must be > 0.0 (got -1.8239742486445227)
+- Run ID: 8bdb6cee-fdb0-4f47-93f0-cd96bdcef583
+
+### `benchmark.time_of_day_null.iwm.v1`
+
+- Family: benchmark
+- Trades: 968
+- OOS Sharpe: -1.8502
+- OOS Max DD: 4.36%
+- OOS Total Return: -4.22%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -1.8502287199715464 must be > 0.0 (got -1.8502287199715464)
+- Run ID: c7f13ca6-5765-4357-8dfc-522c670b1269
 
 ### `benchmark.time_of_day_null.qqq.v1`
 
 - Family: benchmark
 - Trades: 970
-- OOS Sharpe: -1.9839
-- OOS Max DD: 4.81%
-- OOS Total Return: -4.57%
+- OOS Sharpe: -1.9582
+- OOS Max DD: 4.52%
+- OOS Total Return: -4.28%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.9839218272526105 must be > 0.0 (got -1.9839218272526105)
-- Run ID: c81a3e1a-8814-4f0e-aa36-5fdee7f001fd
+  - Sharpe -1.9582018261630156 must be > 0.0 (got -1.9582018261630156)
+- Run ID: 2c3d4ef1-8c85-4f44-9729-a1af3e22acec
+
+### `benchmark.unconditional_intraday_long.gld.v1`
+
+- Family: benchmark
+- Trades: 970
+- OOS Sharpe: -1.9833
+- OOS Max DD: 4.08%
+- OOS Total Return: -4.04%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -1.9832616928936113 must be > 0.0 (got -1.9832616928936113)
+- Run ID: 0a308d00-b040-49fb-9b40-9116ae89d3d5
+
+### `benchmark.time_of_day_null.xly.v1`
+
+- Family: benchmark
+- Trades: 878
+- OOS Sharpe: -2.0531
+- OOS Max DD: 4.55%
+- OOS Total Return: -4.50%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.0530626590866943 must be > 0.0 (got -2.0530626590866943)
+- Run ID: 47fb45e0-6119-43d0-a808-ee217ed37fcb
+
+### `benchmark.time_of_day_null.spy.v1`
+
+- Family: benchmark
+- Trades: 970
+- OOS Sharpe: -2.1687
+- OOS Max DD: 4.05%
+- OOS Total Return: -4.03%
+- Single-window dependency: False
+- Survivorship-corrected universe: True
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.168698103642573 must be > 0.0 (got -2.168698103642573)
+- Run ID: defd7938-d147-49f8-a9f8-d2109e053f8e
+
+### `benchmark.unconditional_intraday_long.xlre.v1`
+
+- Family: benchmark
+- Trades: 968
+- OOS Sharpe: -2.1720
+- OOS Max DD: 5.26%
+- OOS Total Return: -5.09%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.1720044982530418 must be > 0.0 (got -2.1720044982530418)
+- Run ID: 721b7b3b-ab3a-4271-a0e3-de39b68f7f36
+
+### `benchmark.random_matched_exposure.intraday.xlre.v1`
+
+- Family: benchmark
+- Trades: 930
+- OOS Sharpe: -2.2139
+- OOS Max DD: 4.00%
+- OOS Total Return: -3.93%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.213941879691019 must be > 0.0 (got -2.213941879691019)
+- Run ID: 207a79cf-cfe6-4bc6-b5c2-7082701fe753
+
+### `benchmark.random_matched_exposure.intraday.xly.v1`
+
+- Family: benchmark
+- Trades: 910
+- OOS Sharpe: -2.2184
+- OOS Max DD: 5.10%
+- OOS Total Return: -5.05%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.2184329344524443 must be > 0.0 (got -2.2184329344524443)
+- Run ID: 1608f1d7-d083-4fab-9082-6a45cdabdd70
+
+### `benchmark.time_of_day_null.dia.v1`
+
+- Family: benchmark
+- Trades: 726
+- OOS Sharpe: -2.2249
+- OOS Max DD: 3.25%
+- OOS Total Return: -3.21%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.22493004672065 must be > 0.0 (got -2.22493004672065)
+- Run ID: 73065f9b-a135-492e-8550-86e90c0d8914
+
+### `benchmark.random_matched_exposure.intraday.spy.v1`
+
+- Family: benchmark
+- Trades: 942
+- OOS Sharpe: -2.2292
+- OOS Max DD: 4.58%
+- OOS Total Return: -4.53%
+- Single-window dependency: False
+- Survivorship-corrected universe: True
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.229235808489315 must be > 0.0 (got -2.229235808489315)
+- Run ID: ce65c296-735f-4757-8b70-95e90d57673c
+
+### `benchmark.unconditional_intraday_long.xlf.v1`
+
+- Family: benchmark
+- Trades: 972
+- OOS Sharpe: -2.2961
+- OOS Max DD: 5.71%
+- OOS Total Return: -5.43%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.296099095182854 must be > 0.0 (got -2.296099095182854)
+- Run ID: 4d04d652-7956-4460-9ab4-d643cf4cbbf5
+
+### `benchmark.random_matched_exposure.intraday.xlk.v1`
+
+- Family: benchmark
+- Trades: 920
+- OOS Sharpe: -2.3083
+- OOS Max DD: 5.57%
+- OOS Total Return: -4.87%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.308270348979202 must be > 0.0 (got -2.308270348979202)
+- Run ID: 6b1a24c2-0943-44f2-b045-06b9bb9df0ed
+
+### `benchmark.unconditional_intraday_long.xlu.v1`
+
+- Family: benchmark
+- Trades: 972
+- OOS Sharpe: -2.3424
+- OOS Max DD: 5.30%
+- OOS Total Return: -5.17%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.3423835122382908 must be > 0.0 (got -2.3423835122382908)
+- Run ID: 584dfcb5-9b9a-4251-b8be-6454906c10e0
+
+### `benchmark.unconditional_intraday_long.xlc.v1`
+
+- Family: benchmark
+- Trades: 964
+- OOS Sharpe: -2.3436
+- OOS Max DD: 5.65%
+- OOS Total Return: -5.55%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.343579706763083 must be > 0.0 (got -2.343579706763083)
+- Run ID: fa06b19d-0f19-46d4-bc3f-b828265ff633
 
 ### `benchmark.unconditional_intraday_long.xlp.v1`
 
 - Family: benchmark
-- Trades: 969
-- OOS Sharpe: -1.9966
+- Trades: 972
+- OOS Sharpe: -2.4542
 - OOS Max DD: 4.47%
-- OOS Total Return: -4.21%
+- OOS Total Return: -4.37%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -1.9965864204207309 must be > 0.0 (got -1.9965864204207309)
-- Run ID: 6da4086e-7b60-4cc9-a029-f7a330595fcb
+  - Sharpe -2.454188856380517 must be > 0.0 (got -2.454188856380517)
+- Run ID: 830da663-deab-4d2a-94b0-677f7563e07b
+
+### `benchmark.random_matched_exposure.intraday.gld.v1`
+
+- Family: benchmark
+- Trades: 950
+- OOS Sharpe: -2.4903
+- OOS Max DD: 3.70%
+- OOS Total Return: -3.67%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.490329155887883 must be > 0.0 (got -2.490329155887883)
+- Run ID: 366df8c5-4441-462e-b9cc-99f3f3c58641
 
 ### `benchmark.random_matched_exposure.intraday.iwm.v1`
 
 - Family: benchmark
-- Trades: 949
-- OOS Sharpe: -2.1243
-- OOS Max DD: 5.55%
-- OOS Total Return: -5.28%
+- Trades: 950
+- OOS Sharpe: -2.5312
+- OOS Max DD: 5.37%
+- OOS Total Return: -5.21%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -2.124340159060585 must be > 0.0 (got -2.124340159060585)
-- Run ID: a3e58759-3cb5-483a-a741-5c86c808c91b
+  - Sharpe -2.531151314612466 must be > 0.0 (got -2.531151314612466)
+- Run ID: aa41300e-1e13-4165-b72b-22990a74f1e4
+
+### `benchmark.time_of_day_null.xlb.v1`
+
+- Family: benchmark
+- Trades: 944
+- OOS Sharpe: -2.5415
+- OOS Max DD: 4.67%
+- OOS Total Return: -4.64%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.541546907721721 must be > 0.0 (got -2.541546907721721)
+- Run ID: 370f1516-a662-4db4-b940-ecf9922ec5ca
+
+### `benchmark.time_of_day_null.xli.v1`
+
+- Family: benchmark
+- Trades: 956
+- OOS Sharpe: -2.5458
+- OOS Max DD: 4.66%
+- OOS Total Return: -4.66%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.545841462937042 must be > 0.0 (got -2.545841462937042)
+- Run ID: 4bca8e63-aaab-4cab-a045-00bfcd362422
+
+### `benchmark.time_of_day_null.gld.v1`
+
+- Family: benchmark
+- Trades: 910
+- OOS Sharpe: -2.5718
+- OOS Max DD: 3.28%
+- OOS Total Return: -3.26%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.5718375492443184 must be > 0.0 (got -2.5718375492443184)
+- Run ID: e2158799-bd7d-4ecd-b114-326a12649e62
+
+### `benchmark.unconditional_intraday_long.xlv.v1`
+
+- Family: benchmark
+- Trades: 966
+- OOS Sharpe: -2.6554
+- OOS Max DD: 5.70%
+- OOS Total Return: -5.52%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.65540842134145 must be > 0.0 (got -2.65540842134145)
+- Run ID: 21dba274-41eb-4842-b005-2c4f72cdc531
+
+### `benchmark.time_of_day_null.xlf.v1`
+
+- Family: benchmark
+- Trades: 970
+- OOS Sharpe: -2.7318
+- OOS Max DD: 5.01%
+- OOS Total Return: -4.95%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.7317527053651482 must be > 0.0 (got -2.7317527053651482)
+- Run ID: 4897b1ac-d271-4853-a71a-89e3b96c969e
+
+### `benchmark.time_of_day_null.xlre.v1`
+
+- Family: benchmark
+- Trades: 888
+- OOS Sharpe: -2.7884
+- OOS Max DD: 5.10%
+- OOS Total Return: -5.01%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.7884407749711517 must be > 0.0 (got -2.7884407749711517)
+- Run ID: 9764b9e1-ffba-4b96-9cdf-0be14fbdea49
+
+### `benchmark.random_matched_exposure.intraday.xli.v1`
+
+- Family: benchmark
+- Trades: 952
+- OOS Sharpe: -2.9609
+- OOS Max DD: 5.61%
+- OOS Total Return: -5.56%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -2.9608706728465393 must be > 0.0 (got -2.9608706728465393)
+- Run ID: cc739a0a-4e78-4226-9b35-fca6da1f7a8c
+
+### `benchmark.random_matched_exposure.intraday.dia.v1`
+
+- Family: benchmark
+- Trades: 876
+- OOS Sharpe: -3.0136
+- OOS Max DD: 4.51%
+- OOS Total Return: -4.44%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.0136170352630294 must be > 0.0 (got -3.0136170352630294)
+- Run ID: 07c56a7c-d34d-4d6e-92be-c4d1aa483004
+
+### `benchmark.time_of_day_null.xlc.v1`
+
+- Family: benchmark
+- Trades: 906
+- OOS Sharpe: -3.0206
+- OOS Max DD: 5.51%
+- OOS Total Return: -5.47%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.020591707155158 must be > 0.0 (got -3.020591707155158)
+- Run ID: 091072be-8ee9-4e5e-92f6-640eaa11d7f6
+
+### `benchmark.random_matched_exposure.intraday.xlb.v1`
+
+- Family: benchmark
+- Trades: 938
+- OOS Sharpe: -3.0952
+- OOS Max DD: 4.85%
+- OOS Total Return: -4.85%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.0952460035575453 must be > 0.0 (got -3.0952460035575453)
+- Run ID: bc565a2b-a210-40db-97b5-5fc368b52bc1
+
+### `benchmark.time_of_day_null.xle.v1`
+
+- Family: benchmark
+- Trades: 970
+- OOS Sharpe: -3.1618
+- OOS Max DD: 6.58%
+- OOS Total Return: -6.55%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.1618236237874364 must be > 0.0 (got -3.1618236237874364)
+- Run ID: 8cbff8ad-a589-4e9b-afb4-db5b9641c186
+
+### `benchmark.time_of_day_null.xlu.v1`
+
+- Family: benchmark
+- Trades: 960
+- OOS Sharpe: -3.1632
+- OOS Max DD: 5.07%
+- OOS Total Return: -5.07%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.163166461916475 must be > 0.0 (got -3.163166461916475)
+- Run ID: 249362ca-19e8-4db8-b074-cb09ae770920
+
+### `benchmark.random_matched_exposure.intraday.xlf.v1`
+
+- Family: benchmark
+- Trades: 956
+- OOS Sharpe: -3.1786
+- OOS Max DD: 6.00%
+- OOS Total Return: -6.00%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.1786443555739705 must be > 0.0 (got -3.1786443555739705)
+- Run ID: 6780df6b-771f-4068-9bcd-dc5e7ff4b3f1
+
+### `benchmark.time_of_day_null.xlv.v1`
+
+- Family: benchmark
+- Trades: 960
+- OOS Sharpe: -3.2135
+- OOS Max DD: 4.96%
+- OOS Total Return: -4.92%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.2134644792105354 must be > 0.0 (got -3.2134644792105354)
+- Run ID: 3faa3ff1-c602-4ae6-95f3-60ba2e7afc04
+
+### `benchmark.random_matched_exposure.intraday.xlv.v1`
+
+- Family: benchmark
+- Trades: 952
+- OOS Sharpe: -3.2543
+- OOS Max DD: 5.32%
+- OOS Total Return: -5.22%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -3.254325842919284 must be > 0.0 (got -3.254325842919284)
+- Run ID: a584d5ca-8d71-4393-869e-daf9797bc9fb
 
 ### `benchmark.unconditional_intraday_long.tlt.v1`
 
 - Family: benchmark
 - Trades: 972
-- OOS Sharpe: -2.3108
-- OOS Max DD: 4.07%
-- OOS Total Return: -3.68%
+- OOS Sharpe: -3.2743
+- OOS Max DD: 4.68%
+- OOS Total Return: -4.52%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -2.3107672439925677 must be > 0.0 (got -2.3107672439925677)
-- Run ID: fb07eef2-b6b5-4c30-8873-61023972b85f
+  - Sharpe -3.2743128396500754 must be > 0.0 (got -3.2743128396500754)
+- Run ID: a245d52e-9abd-4f1c-88a0-af902b0332f1
 
-### `benchmark.unconditional_intraday_long.xlv.v1`
+### `benchmark.random_matched_exposure.intraday.xlu.v1`
 
 - Family: benchmark
-- Trades: 963
-- OOS Sharpe: -2.4167
-- OOS Max DD: 6.47%
-- OOS Total Return: -6.06%
+- Trades: 954
+- OOS Sharpe: -3.2762
+- OOS Max DD: 5.29%
+- OOS Total Return: -5.26%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -2.416682475097155 must be > 0.0 (got -2.416682475097155)
-- Run ID: 9730f624-2f44-407d-9f16-f661fb6a1c16
+  - Sharpe -3.2762229021764595 must be > 0.0 (got -3.2762229021764595)
+- Run ID: 19638324-6878-4b0c-ac70-08b08468b4df
 
-### `benchmark.time_of_day_null.xlv.v1`
+### `benchmark.random_matched_exposure.intraday.xle.v1`
 
 - Family: benchmark
-- Trades: 957
-- OOS Sharpe: -2.6222
-- OOS Max DD: 5.92%
-- OOS Total Return: -5.61%
+- Trades: 944
+- OOS Sharpe: -3.3470
+- OOS Max DD: 5.94%
+- OOS Total Return: -5.93%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -2.6221842865883294 must be > 0.0 (got -2.6221842865883294)
-- Run ID: 8f6cd05a-d4e4-4a8b-8679-88baa651be14
+  - Sharpe -3.346980606742335 must be > 0.0 (got -3.346980606742335)
+- Run ID: 6f57332c-4d1c-40c6-abb5-49b64d30953c
 
-### `benchmark.random_matched_exposure.intraday.xlv.v1`
+### `benchmark.random_matched_exposure.intraday.xlc.v1`
 
 - Family: benchmark
-- Trades: 949
-- OOS Sharpe: -2.6638
-- OOS Max DD: 6.42%
-- OOS Total Return: -5.86%
+- Trades: 940
+- OOS Sharpe: -3.5274
+- OOS Max DD: 5.49%
+- OOS Total Return: -5.45%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -2.663776846026489 must be > 0.0 (got -2.663776846026489)
-- Run ID: 77adab06-bcc7-4bc4-a2c2-8488794fd8df
+  - Sharpe -3.527355191803759 must be > 0.0 (got -3.527355191803759)
+- Run ID: 70ecb9d3-35ff-44cc-8f57-83bb412c6a51
 
 ### `benchmark.time_of_day_null.xlp.v1`
 
 - Family: benchmark
-- Trades: 959
-- OOS Sharpe: -2.7631
-- OOS Max DD: 4.80%
-- OOS Total Return: -4.56%
-- Single-window dependency: False
-- Survivorship-corrected universe: False
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -2.7630681564281256 must be > 0.0 (got -2.7630681564281256)
-- Run ID: 9bfea035-2b22-4185-bc28-d85cdc2e0c94
-
-### `benchmark.random_matched_exposure.intraday.xlp.v1`
-
-- Family: benchmark
-- Trades: 929
-- OOS Sharpe: -2.8602
-- OOS Max DD: 4.81%
+- Trades: 962
+- OOS Sharpe: -3.8846
+- OOS Max DD: 4.79%
 - OOS Total Return: -4.70%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -2.860197634913128 must be > 0.0 (got -2.860197634913128)
-- Run ID: 44c696a1-9dcd-4063-82c2-b1dcd7d7d361
+  - Sharpe -3.8846175826387124 must be > 0.0 (got -3.8846175826387124)
+- Run ID: 8695116a-d1c7-4006-bc40-ab8343623bcd
+
+### `benchmark.random_matched_exposure.intraday.xlp.v1`
+
+- Family: benchmark
+- Trades: 932
+- OOS Sharpe: -4.2369
+- OOS Max DD: 4.96%
+- OOS Total Return: -4.89%
+- Single-window dependency: False
+- Survivorship-corrected universe: False
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -4.236917033580089 must be > 0.0 (got -4.236917033580089)
+- Run ID: a5807ace-f04a-416e-b7cb-936dd8409a63
 
 ### `benchmark.time_of_day_null.tlt.v1`
 
 - Family: benchmark
 - Trades: 968
-- OOS Sharpe: -3.1482
-- OOS Max DD: 4.39%
-- OOS Total Return: -4.15%
+- OOS Sharpe: -4.9477
+- OOS Max DD: 4.95%
+- OOS Total Return: -4.94%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -3.1482235526503484 must be > 0.0 (got -3.1482235526503484)
-- Run ID: ff3a390c-e6df-46d4-92eb-811e7f7472a7
+  - Sharpe -4.947684659306839 must be > 0.0 (got -4.947684659306839)
+- Run ID: 731de116-38ae-4359-a28c-3b8e38b709a9
 
 ### `benchmark.random_matched_exposure.intraday.tlt.v1`
 
 - Family: benchmark
 - Trades: 954
-- OOS Sharpe: -3.3664
-- OOS Max DD: 4.90%
-- OOS Total Return: -4.53%
+- OOS Sharpe: -5.1554
+- OOS Max DD: 5.48%
+- OOS Total Return: -5.39%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -3.366357294727164 must be > 0.0 (got -3.366357294727164)
-- Run ID: 78fdc8ca-fe2a-4a79-a6ff-9efbae69669a
+  - Sharpe -5.155356613836149 must be > 0.0 (got -5.155356613836149)
+- Run ID: 969dc2a6-e38b-4d7a-a633-c07e4f3271d9
 
 ### `meanrev.rsi2.intraday.xlk.v1`
 
@@ -869,7 +883,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -5.559392145224659 must be > 0.0 (got -5.559392145224659)
-- Run ID: 0a6e576b-ba31-438e-9608-e89f3789299e
+- Run ID: 95cd0231-c1f3-415e-99d4-bce0d35d877f
 
 ### `meanrev.rsi2.intraday.xle.v1`
 
@@ -883,49 +897,49 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -5.819937592872197 must be > 0.0 (got -5.819937592872197)
-- Run ID: 4e4a6741-1a41-4dd2-bcc1-0ffaa366bd30
+- Run ID: a4d6393c-0c88-4989-8a5d-d7ee61d5147f
 
 ### `meanrev.rsi2.intraday.iwm.v1`
 
 - Family: meanrev
 - Trades: 960
-- OOS Sharpe: -6.2439
-- OOS Max DD: 4.91%
-- OOS Total Return: -4.90%
+- OOS Sharpe: -6.4031
+- OOS Max DD: 4.98%
+- OOS Total Return: -4.98%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -6.24387580395785 must be > 0.0 (got -6.24387580395785)
-- Run ID: 5636319c-b90d-4634-a108-94f6b661de61
+  - Sharpe -6.403084215748959 must be > 0.0 (got -6.403084215748959)
+- Run ID: a28418e7-994b-4fb3-b619-6f97ec4dfd7d
 
 ### `meanrev.rsi2.intraday.gld.v1`
 
 - Family: meanrev
 - Trades: 968
-- OOS Sharpe: -6.8161
-- OOS Max DD: 5.03%
-- OOS Total Return: -4.99%
+- OOS Sharpe: -6.8389
+- OOS Max DD: 5.05%
+- OOS Total Return: -5.00%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -6.816133413606398 must be > 0.0 (got -6.816133413606398)
-- Run ID: 46d133b8-9a5f-4980-a840-c87a646d2a05
+  - Sharpe -6.838889295810135 must be > 0.0 (got -6.838889295810135)
+- Run ID: 6ecb1432-0b1a-4c0f-a113-0a1ac417dbfb
 
 ### `meanrev.rsi2.intraday.xly.v1`
 
 - Family: meanrev
 - Trades: 948
-- OOS Sharpe: -6.9457
+- OOS Sharpe: -6.9536
 - OOS Max DD: 5.15%
 - OOS Total Return: -5.15%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -6.945730269021538 must be > 0.0 (got -6.945730269021538)
-- Run ID: c7c8bc43-5c1a-438d-83e1-10f45c18455e
+  - Sharpe -6.953581336152161 must be > 0.0 (got -6.953581336152161)
+- Run ID: 155376bb-41d4-46a3-afb9-611e7b75018f
 
 ### `meanrev.rsi2.intraday.qqq.v1`
 
@@ -939,7 +953,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -7.037128904739208 must be > 0.0 (got -7.037128904739208)
-- Run ID: 65ebd67b-ecd1-45c9-9a8e-f79c303a4397
+- Run ID: 1b9ce53c-10ad-45e3-8759-511b1215f234
 
 ### `meanrev.rsi2.intraday.xlf.v1`
 
@@ -953,7 +967,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -7.0910624023021995 must be > 0.0 (got -7.0910624023021995)
-- Run ID: 488d091e-66e1-4c14-823d-d8d81f859335
+- Run ID: 96d5d077-f8fc-4eb5-b1f9-a517db154590
 
 ### `meanrev.rsi2.intraday.xlc.v1`
 
@@ -967,7 +981,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -7.224130983880266 must be > 0.0 (got -7.224130983880266)
-- Run ID: bd395481-9a6b-429e-81dd-e9116e41d857
+- Run ID: a1eb0849-bec2-4589-9514-68f80eda3583
 
 ### `meanrev.rsi2.intraday.xlre.v1`
 
@@ -981,7 +995,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -7.487223105005408 must be > 0.0 (got -7.487223105005408)
-- Run ID: 3bc2c221-5a6d-401b-8d81-711c185ebebd
+- Run ID: 153e16ee-dbd4-493c-9607-b0da16e34df1
 
 ### `meanrev.rsi2.intraday.dia.v1`
 
@@ -995,35 +1009,21 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -7.870908216687158 must be > 0.0 (got -7.870908216687158)
-- Run ID: 9c434798-4381-4f94-8549-636c4d61979f
+- Run ID: 029fd0e3-5231-4b42-a837-477cca4fbccb
 
 ### `meanrev.rsi2.intraday.xli.v1`
 
 - Family: meanrev
 - Trades: 958
-- OOS Sharpe: -7.8832
-- OOS Max DD: 5.05%
-- OOS Total Return: -5.05%
+- OOS Sharpe: -7.9961
+- OOS Max DD: 5.09%
+- OOS Total Return: -5.09%
 - Single-window dependency: False
 - Survivorship-corrected universe: False
 - Gate: statistical — allowed=False
 - Gate failures:
-  - Sharpe -7.883200837253979 must be > 0.0 (got -7.883200837253979)
-- Run ID: af5eddaa-3893-4160-9582-51f439192a3f
-
-### `meanrev.rsi2.intraday.spy.v1`
-
-- Family: meanrev
-- Trades: 956
-- OOS Sharpe: -7.8981
-- OOS Max DD: 4.68%
-- OOS Total Return: -4.68%
-- Single-window dependency: False
-- Survivorship-corrected universe: True
-- Gate: statistical — allowed=False
-- Gate failures:
-  - Sharpe -7.898137936336852 must be > 0.0 (got -7.898137936336852)
-- Run ID: f7fed461-b847-44c4-9348-bba74aaf90c8
+  - Sharpe -7.99605862723467 must be > 0.0 (got -7.99605862723467)
+- Run ID: c2562abf-8bd6-428c-9220-df7fc1ca47ba
 
 ### `meanrev.rsi2.intraday.xlu.v1`
 
@@ -1037,7 +1037,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -8.095566069081412 must be > 0.0 (got -8.095566069081412)
-- Run ID: d6642cef-59ee-4465-9c4f-a2e4fd7ad302
+- Run ID: 5d1c4db7-a4a6-48f3-bd95-6d9700be7287
 
 ### `meanrev.rsi2.intraday.xlv.v1`
 
@@ -1051,7 +1051,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -8.127792392476666 must be > 0.0 (got -8.127792392476666)
-- Run ID: 77bc91de-26d2-489a-91c8-0b7c7c32da47
+- Run ID: cfe90c58-dc35-404e-bfb9-646d1406265d
 
 ### `meanrev.rsi2.intraday.xlb.v1`
 
@@ -1065,7 +1065,21 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -8.214878756671325 must be > 0.0 (got -8.214878756671325)
-- Run ID: 01015339-74cb-452b-a215-81d0591e7751
+- Run ID: 5fd156d7-b3cd-4b0b-bd73-8f7894747b72
+
+### `meanrev.rsi2.intraday.spy.v1`
+
+- Family: meanrev
+- Trades: 956
+- OOS Sharpe: -8.4416
+- OOS Max DD: 4.79%
+- OOS Total Return: -4.79%
+- Single-window dependency: False
+- Survivorship-corrected universe: True
+- Gate: statistical — allowed=False
+- Gate failures:
+  - Sharpe -8.441616514534392 must be > 0.0 (got -8.441616514534392)
+- Run ID: 8c377d78-46f6-4200-9089-90f5dd9b6bbb
 
 ### `meanrev.rsi2.intraday.xlp.v1`
 
@@ -1079,7 +1093,7 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -9.03840661291878 must be > 0.0 (got -9.03840661291878)
-- Run ID: 9df116b2-5bb2-4a61-9389-0cad1a0c76c5
+- Run ID: e8baf2e3-9ec4-4a00-901d-d5e02f1a28f7
 
 ### `meanrev.rsi2.intraday.tlt.v1`
 
@@ -1093,4 +1107,4 @@ Strategies: 68
 - Gate: statistical — allowed=False
 - Gate failures:
   - Sharpe -10.585378356396022 must be > 0.0 (got -10.585378356396022)
-- Run ID: cfe42088-b7a8-4b43-9aa6-5b30ce94941e
+- Run ID: f9c4f51c-ee0a-41d4-b330-c47f1c454193
