@@ -95,6 +95,44 @@ def test_fanout_description_names_target_symbol(tmp_path: Path) -> None:
             )
 
 
+def test_fanout_param_overrides_injected_per_symbol(tmp_path: Path) -> None:
+    """A per-symbol param override lands only on that symbol's generated config."""
+    base = _setup_tmp(tmp_path)
+    # Override an existing meanrev param so the value round-trips through the
+    # loader's parameter validation. The production use injects session_entry_rate
+    # into the random-matched base via the identical mechanism.
+    written = generate_per_symbol_configs(
+        base_config_path=base,
+        universe_ref="universe.liquid_etf_core.v1",
+        out_dir=tmp_path,
+        param_overrides={"XLF": {"rsi_entry_threshold": 7.5}},
+    )
+    xlf_path = next(p for p in written if "xlf" in p.name)
+    xlf_cfg = load_strategy_config(xlf_path)
+    assert xlf_cfg.parameters["rsi_entry_threshold"] == 7.5
+
+    # A symbol with NO override keeps the base value (10.0 from the SPY base).
+    other_path = next(p for p in written if "qqq" in p.name)
+    other_cfg = load_strategy_config(other_path)
+    assert other_cfg.parameters["rsi_entry_threshold"] == 10.0
+    # And it still resolves to exactly one eligible symbol.
+    assert len(other_cfg.universe) == 1
+
+
+def test_fanout_param_overrides_default_none_is_noop(tmp_path: Path) -> None:
+    """Omitting param_overrides leaves every generated config's params unchanged."""
+    base = _setup_tmp(tmp_path)
+    base_cfg = load_strategy_config(base)
+    written = generate_per_symbol_configs(
+        base_config_path=base,
+        universe_ref="universe.liquid_etf_core.v1",
+        out_dir=tmp_path,
+    )
+    for path in written:
+        cfg = load_strategy_config(path)
+        assert cfg.parameters == base_cfg.parameters
+
+
 def test_fanout_raises_on_off_convention_filename(tmp_path: Path) -> None:
     """A base config saved under an off-convention filename must raise ValueError."""
     shutil.copy(_UNIVERSE_MANIFEST, tmp_path / _UNIVERSE_MANIFEST.name)

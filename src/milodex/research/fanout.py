@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -25,6 +26,7 @@ def generate_per_symbol_configs(
     base_config_path: Path,
     universe_ref: str,
     out_dir: Path,
+    param_overrides: dict[str, dict[str, Any]] | None = None,
 ) -> list[Path]:
     """Generate one single-symbol config per non-base symbol in ``universe_ref``.
 
@@ -35,6 +37,14 @@ def generate_per_symbol_configs(
     ``out_dir/<stem>_<sym-lower>_v<version>.yaml``.
 
     The base config is never overwritten.  Returns the list of written paths.
+
+    ``param_overrides`` (optional) maps ``SYMBOL -> {param: value}``; each
+    generated config has the matching symbol's params overwritten after the
+    id/universe/description rewrites. Used to inject the per-symbol matched
+    ``session_entry_rate`` into the random-matched baseline (E-PR2). Default
+    ``None`` is a no-op. The base-variant symbol is skipped by the per-symbol
+    loop (its config already exists), so its override — if any — is the caller's
+    responsibility to apply to the base config separately.
 
     Raises ``ValueError`` if the base variant symbol is not in the resolved
     universe (base config is mis-paired with this universe_ref).
@@ -107,6 +117,12 @@ def generate_per_symbol_configs(
             strategy_section["description"] = strategy_section["description"].replace(
                 base_sym_upper, sym.upper()
             )
+
+        # ponytail: per-symbol param injection over a second config-rewrite pass —
+        # a plain dict.update on the already-deep-copied parameters block. Default
+        # None short-circuits, so the Tier-0 fan-out callers stay byte-identical.
+        for key, value in (param_overrides or {}).get(sym.upper(), {}).items():
+            strategy_section["parameters"][key] = value
 
         out_path = out_dir / f"{stem}_{sym_lower}_v{version}.yaml"
         with out_path.open("w", encoding="utf-8") as fh:
