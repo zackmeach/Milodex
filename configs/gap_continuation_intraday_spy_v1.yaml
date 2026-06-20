@@ -1,0 +1,63 @@
+# Gap-Continuation Intraday SPY — v1  (BACKTEST-ONLY CANDIDATE)
+#
+# Overnight intraday-expansion candidate. Long-only, single-name SPY,
+# 5-minute bars, intraday round-trip. Enters when an overnight gap-up is
+# holding (close > today_open) within the early entry window. Exits on
+# stop_loss_pct, gap-fill invalidation (close < today_open), or the time-stop.
+#
+# Cross-session read: uses the prior session's close to compute gap_pct.
+# max_lookback_periods=156 (two full RTH sessions).
+#
+# Rules in code: src/milodex/strategies/gap_continuation_intraday.py
+# Session helpers: src/milodex/strategies/_session_intraday.py
+
+strategy:
+  id: "gap.gap_continuation.intraday.spy.v1"
+  family: "gap"
+  template: "gap_continuation.intraday"
+  variant: "spy"
+  version: 1
+  description: >
+    Gap-continuation on SPY, 5-minute bars. Long-only intraday round-trip:
+    buy when an overnight gap-up (>= min_gap_pct) is holding/extending
+    (close > today_open) within the early entry window; exit on stop_loss_pct
+    from entry, gap-fill invalidation, or the time-stop before the close.
+    One entry per session. Half-day sessions skipped.
+  enabled: true
+
+  universe_ref: "universe.liquid_etf_core.v1"
+
+  parameters:
+    # Opening range = first 15 min (3 bars) — short range to enter early.
+    opening_range_minutes: 15
+    # Entry window = [15, 75) min after 9:30 ET → [09:45, 10:45) ET.
+    entry_window_minutes: 60
+    # Minimum overnight gap (open vs prior close) to qualify.
+    min_gap_pct: 0.003
+    # Cut the loser at 1% below the fill price.
+    stop_loss_pct: 0.01
+    # Forced exit 5 min before the close.
+    exit_minutes_before_close: 5
+    # 10% of equity into the single position.
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []
