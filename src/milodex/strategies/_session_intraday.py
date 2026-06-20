@@ -155,7 +155,17 @@ def session_bars_et(df: pd.DataFrame, session_date: date) -> pd.DataFrame:
     if df.empty:
         return df.iloc[:0]
     et = pd.DatetimeIndex(df["timestamp"]).tz_convert(ET_TZ)
-    mask = pd.Series(et.date == session_date, index=df.index)
+    # Compare ET year/month/day as int arrays instead of the pandas ``.date``
+    # accessor, which materializes a Python ``date`` per element (a hot-path
+    # cost: this runs 3x/bar over the visible window in the intraday backtest).
+    # RTH 9:30-16:00 ET never crosses midnight, so the component comparison is
+    # bit-identical to ``et.date == session_date``.
+    day_match = (
+        (et.year == session_date.year)
+        & (et.month == session_date.month)
+        & (et.day == session_date.day)
+    )
+    mask = pd.Series(day_match, index=df.index)
     return df.loc[mask].sort_values("timestamp").reset_index(drop=True)
 
 
