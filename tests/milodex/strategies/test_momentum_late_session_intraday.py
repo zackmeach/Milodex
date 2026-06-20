@@ -5,13 +5,13 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
-from milodex.strategies.momentum_late_session_intraday import (
-    MomentumLateSessionIntradayStrategy,
-)
 
 from milodex.broker.models import OrderSide
 from milodex.data.models import BarSet
 from milodex.strategies.base import StrategyContext
+from milodex.strategies.momentum_late_session_intraday import (
+    MomentumLateSessionIntradayStrategy,
+)
 
 # ---------------------------------------------------------------------------
 # Fixture helpers

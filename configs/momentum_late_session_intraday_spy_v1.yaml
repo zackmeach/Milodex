@@ -22,7 +22,7 @@ strategy:
     Half-day sessions skipped. No VWAP or volume gate.
   enabled: true
 
-  universe_ref: "universe.liquid_etf_core.v1"
+  universe_ref: "universe.spy_only.v1"
 
   parameters:
     # opening_range_minutes=300 → entry window starts at 14:30 ET.

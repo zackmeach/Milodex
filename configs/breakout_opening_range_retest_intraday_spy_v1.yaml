@@ -24,7 +24,7 @@ strategy:
     Half-day sessions skipped.
   enabled: true
 
-  universe_ref: "universe.liquid_etf_core.v1"
+  universe_ref: "universe.spy_only.v1"
 
   parameters:
     # Opening range = first 30 min (6 bars at 5Min).

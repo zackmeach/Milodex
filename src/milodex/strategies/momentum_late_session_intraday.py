@@ -40,6 +40,7 @@ from milodex.strategies.base import (
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+    single_symbol,
 )
 
 
@@ -81,10 +82,9 @@ class MomentumLateSessionIntradayStrategy(Strategy):
 
         parameters = _validated_parameters(context)
 
-        universe_symbols = sorted({symbol.upper() for symbol in context.universe})
-        if not universe_symbols:
+        primary_symbol = single_symbol(context.universe)
+        if primary_symbol is None:
             return _no_signal("empty universe")
-        primary_symbol = universe_symbols[0]
 
         barset = context.bars_by_symbol.get(primary_symbol)
         if barset is None or len(barset) == 0:

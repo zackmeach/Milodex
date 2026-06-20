@@ -47,6 +47,7 @@ from milodex.strategies.base import (
     StrategyContext,
     StrategyDecision,
     StrategyParameterSpec,
+    single_symbol,
 )
 
 
@@ -88,10 +89,9 @@ class BreakoutOpeningRangeRetestIntradayStrategy(Strategy):
 
         parameters = _validated_parameters(context)
 
-        universe_symbols = sorted({symbol.upper() for symbol in context.universe})
-        if not universe_symbols:
+        primary_symbol = single_symbol(context.universe)
+        if primary_symbol is None:
             return _no_signal("empty universe")
-        primary_symbol = universe_symbols[0]
 
         barset = context.bars_by_symbol.get(primary_symbol)
         if barset is None or len(barset) == 0:
@@ -123,8 +123,16 @@ class BreakoutOpeningRangeRetestIntradayStrategy(Strategy):
 
         opening_range_minutes = parameters["opening_range_minutes"]
         range_bars = opening_range_bars(df, session_date, opening_range_minutes)
-        if range_bars.empty:
-            return _no_signal("no bars present in opening range window (data gap?)")
+        # Require ALL expected on-grid bars; a partial range understates range_high
+        # and manufactures false breakouts on data gaps.
+        # ponytail: bar size is 5Min for all intraday ETF strategies in this family.
+        bar_minutes = 5
+        expected_range_bars = opening_range_minutes // bar_minutes
+        if len(range_bars) < expected_range_bars:
+            return _no_signal(
+                f"incomplete opening range: {len(range_bars)}/{expected_range_bars} bars "
+                f"present (data gap?)"
+            )
         range_high = float(range_bars["high"].max())
         range_low = float(range_bars["low"].min())
 

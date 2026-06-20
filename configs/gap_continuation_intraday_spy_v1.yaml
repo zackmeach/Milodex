@@ -25,7 +25,7 @@ strategy:
     One entry per session. Half-day sessions skipped.
   enabled: true
 
-  universe_ref: "universe.liquid_etf_core.v1"
+  universe_ref: "universe.spy_only.v1"
 
   parameters:
     # Opening range = first 15 min (3 bars) — short range to enter early.
