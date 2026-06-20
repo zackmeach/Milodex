@@ -248,9 +248,7 @@ def test_target_draw_clamped_to_firable_grid() -> None:
     targets: set[int] = set()
     for seed in range(500):
         target = _read_target(strategy, "2024-01-15", seed=seed)
-        assert target <= max_firable, (
-            f"seed={seed}: target {target} > max firable {max_firable}"
-        )
+        assert target <= max_firable, f"seed={seed}: target {target} > max firable {max_firable}"
         targets.add(target)
 
     # The max bound itself (325) must be reachable and is on-grid and in-window.
@@ -261,6 +259,13 @@ def test_target_draw_clamped_to_firable_grid() -> None:
     assert max_firable in targets, (
         f"max firable {max_firable} never drawn across 500 seeds — clamping too tight"
     )
+
+
+def test_max_lookback_periods_is_78() -> None:
+    """The null declares its one-session bar bound so the warmup heuristic
+    never treats the large ``seed`` parameter as a lookback period."""
+    strategy = BenchRandomMatchedExposureLongStrategy()
+    assert strategy.max_lookback_periods() == 78
 
 
 def test_multi_symbol_universe_raises() -> None:

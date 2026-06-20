@@ -99,6 +99,13 @@ class BenchRandomMatchedExposureLongStrategy(Strategy):
         StrategyParameterSpec("seed", expected_types=(int,)),
     )
 
+    def max_lookback_periods(self) -> int:
+        # The null is session-reset: _already_entered_this_session scans only the
+        # current session, so cross-session warmup is unnecessary. Declaring the
+        # one-session bar bound (390min RTH / 5min = 78) keeps the warmup heuristic
+        # from treating the large `seed` parameter as a lookback period.
+        return 78
+
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         _ = bars
 

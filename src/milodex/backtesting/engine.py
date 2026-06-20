@@ -1503,7 +1503,10 @@ class BacktestEngine:
             and float(v) == int(v)
         ]
         largest = max(numeric_params, default=30)
-        return max(365, largest * 3)
+        # ponytail: cap at 10 years — no real strategy needs more lookback, and an
+        # un-capped heuristic lets a large non-lookback param (e.g. a seed) explode
+        # `start - timedelta(days=...)` into an OverflowError.
+        return min(3650, max(365, largest * 3))
 
 
 # ---------------------------------------------------------------------------
