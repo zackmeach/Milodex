@@ -1,0 +1,62 @@
+# Opening-Range Retest Intraday SPY — v1  (BACKTEST-ONLY CANDIDATE)
+#
+# Overnight intraday-expansion candidate. Long-only, single-name SPY,
+# 5-minute bars, intraday round-trip. Distinct from ORB first-cross: waits
+# for a 3-phase breakout-retest-reclaim sequence before entering.
+# Structural stop on range_low re-entry; also stop_loss_pct and time-stop.
+#
+# Rules in code: src/milodex/strategies/breakout_opening_range_retest_intraday.py
+# Session helpers: src/milodex/strategies/_session_intraday.py
+
+strategy:
+  id: "breakout.opening_range_retest.intraday.spy.v1"
+  family: "breakout"
+  template: "opening_range_retest.intraday"
+  variant: "spy"
+  version: 1
+  description: >
+    Opening-range retest on SPY, 5-minute bars. Long-only intraday round-trip:
+    buy when the 3-phase retest sequence completes — (a) a prior in-window bar
+    broke above range_high, (b) a subsequent bar dipped back to <= range_high,
+    (c) the latest bar reclaims (close > range_high, low >= range_high *
+    (1-retest_band_pct)). Structural stop on range_low re-entry, secondary
+    stop_loss_pct, time-stop before close. One entry per session.
+    Half-day sessions skipped.
+  enabled: true
+
+  universe_ref: "universe.liquid_etf_core.v1"
+
+  parameters:
+    # Opening range = first 30 min (6 bars at 5Min).
+    opening_range_minutes: 30
+    # Entry window = [30, 120) min after 9:30 ET → [10:00, 11:30) ET.
+    entry_window_minutes: 90
+    # Retest band: low must stay within 0.3% below range_high for the reclaim to count.
+    retest_band_pct: 0.003
+    # Cut the loser at 1% below the fill price (secondary to structural stop).
+    stop_loss_pct: 0.01
+    # Forced exit 5 min before the close.
+    exit_minutes_before_close: 5
+    # 10% of equity into the single position.
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []
