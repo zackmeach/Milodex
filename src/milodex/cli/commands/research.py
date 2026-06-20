@@ -36,6 +36,13 @@ from milodex.strategies.loader import (
     resolve_config_path,
 )
 
+# ponytail: only truly optional BatchRow keys (those with dataclass defaults)
+_BATCH_ROW_DEFAULTS: dict = {
+    "oos_equity_curve": [],
+    "error": None,
+    "survivorship_corrected": False,
+}
+
 
 @dataclass(frozen=True)
 class SkippedConfig:
@@ -119,6 +126,26 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
+    evidence = research_sub.add_parser(
+        "evidence",
+        help="Assemble an intraday evidence report and write one experiment-registry row.",
+    )
+    add_global_flags(evidence)
+    evidence.add_argument("--candidate-family", required=True, dest="candidate_family")
+    evidence.add_argument("--candidate-template", required=True, dest="candidate_template")
+    evidence.add_argument("--universe-ref", required=True, dest="universe_ref")
+    evidence.add_argument("--start", required=True, help="Start date YYYY-MM-DD.")
+    evidence.add_argument("--end", required=True, help="End date YYYY-MM-DD.")
+    evidence.add_argument("--experiment-id", required=True, dest="experiment_id")
+    evidence.add_argument("--hypothesis", required=True)
+    evidence.add_argument(
+        "--screen-json",
+        default=None,
+        dest="screen_json",
+        help="Path to a prior 'research screen --report-out' JSON sibling.",
+    )
+    evidence.add_argument("--feed-label", default="iex", dest="feed_label")
+
     fanout = research_sub.add_parser(
         "fan-out",
         help="Generate one per-symbol config from a base strategy config + universe_ref.",
@@ -156,8 +183,100 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _screen(args, ctx)
     if args.research_command == "fan-out":
         return _fanout(args, ctx)
+    if args.research_command == "evidence":
+        return _evidence(args, ctx)
     msg = f"Unsupported research command: {args.research_command}"
     raise ValueError(msg)
+
+
+def _batch_result_from_screen_json(path: Path) -> BatchResult:
+    """Rehydrate a BatchResult from a 'research screen --report-out' JSON sibling.
+
+    Inverse of _write_report's JSON serialisation. Local to this module — the
+    BatchResult dataclass intentionally has no from_dict classmethod (ponytail).
+    Tolerates missing optional keys by falling back to _BATCH_ROW_DEFAULTS.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    start_date = date.fromisoformat(data["start_date"])
+    end_date = date.fromisoformat(data["end_date"])
+
+    rows: list[BatchRow] = []
+    for r in data.get("rows", []):
+        raw_curve = r.get("oos_equity_curve", _BATCH_ROW_DEFAULTS["oos_equity_curve"])
+        # Curve entries are {"date": "YYYY-MM-DD", "equity": float}
+        curve = tuple(
+            (date.fromisoformat(pt["date"]), float(pt["equity"])) for pt in raw_curve
+        )
+        rows.append(
+            BatchRow(
+                strategy_id=r["strategy_id"],
+                family=r.get("family", ""),
+                trade_count=r.get("trade_count", 0),
+                oos_sharpe=r.get("oos_sharpe"),
+                oos_max_drawdown_pct=r.get("oos_max_drawdown_pct", 0.0),
+                oos_total_return_pct=r.get("oos_total_return_pct", 0.0),
+                single_window_dependency=r.get("single_window_dependency", False),
+                gate_allowed=r.get("gate_allowed", False),
+                gate_promotion_type=r.get("gate_promotion_type", ""),
+                gate_failures=tuple(r.get("gate_failures", [])),
+                run_id=r.get("run_id"),
+                oos_equity_curve=curve,
+                error=r.get("error", _BATCH_ROW_DEFAULTS["error"]),
+                survivorship_corrected=r.get(
+                    "survivorship_corrected", _BATCH_ROW_DEFAULTS["survivorship_corrected"]
+                ),
+            )
+        )
+
+    return BatchResult(
+        start_date=start_date,
+        end_date=end_date,
+        rows=tuple(rows),
+        correlation_matrix=data.get("correlation_matrix", {}),
+    )
+
+
+def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    """Handle ``research evidence``: thin facade over assemble_intraday_evidence."""
+    from milodex.research.evidence_assembler import assemble_intraday_evidence
+
+    start = parse_iso_date(args.start)
+    end = parse_iso_date(args.end)
+
+    batch_result: BatchResult | None = None
+    if args.screen_json is not None:
+        batch_result = _batch_result_from_screen_json(Path(args.screen_json))
+
+    report, row_id = assemble_intraday_evidence(
+        candidate_family=args.candidate_family,
+        candidate_template=args.candidate_template,
+        universe_ref=args.universe_ref,
+        start_date=start,
+        end_date=end,
+        experiment_id=args.experiment_id,
+        hypothesis=args.hypothesis,
+        ctx=ctx,
+        batch_result=batch_result,
+        feed_label=args.feed_label,
+    )
+
+    agg = report.aggregate
+    verdict = agg.get("verdict", "n/a")
+    terminal_status = ctx.get_event_store().get_experiment(args.experiment_id).terminal_status
+    n_symbols = len(report.symbols)
+
+    data = report.as_dict()
+    data["experiment_registry_row_id"] = row_id
+
+    human_lines = [
+        f"Verdict:         {verdict}",
+        f"Terminal status: {terminal_status}",
+        f"Symbols:         {n_symbols}",
+        f"Registry row id: {row_id}",
+        "Note: IEX is a single-venue, non-consolidated feed — results are"
+        " non-durable (ADR 0017). A decisive win is inconclusive here.",
+    ]
+    return CommandResult(command="research.evidence", data=data, human_lines=human_lines)
 
 
 def _fanout(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
