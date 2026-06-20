@@ -45,6 +45,7 @@ from milodex.backtesting.intraday_simulation import (
     _advance_cursors,
     _build_intraday_event_timeline,
     _build_visible_bars,
+    _last_closes_on_day,
     _latest_close_at_ts,
     _mark_to_market_at_day_end,
     _opens_at_timestamp,
@@ -65,6 +66,7 @@ from milodex.backtesting.simulation_kernel import (
 from milodex.backtesting.simulation_kernel import (
     day_to_dt as _day_to_dt,
 )
+from milodex.broker.models import OrderSide
 from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.bar_quality import DataQualityError, scan_backtest_bars
 from milodex.data.models import BarSet, Timeframe
@@ -78,7 +80,7 @@ from milodex.risk import (
     RiskPolicy,
     load_backtesting_defaults,
 )
-from milodex.strategies.base import StrategyDecision
+from milodex.strategies.base import DecisionReasoning, StrategyDecision
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
@@ -1320,7 +1322,63 @@ class BacktestEngine:
                     pending = drain.remaining
 
             # ------------------------------------------------------------------
-            # 4. Day-end: mark-to-market (equity_curve records EOD value).
+            # 4. Session-end force-flatten (N2 strand fix).
+            #
+            # An intraday strategy is expected to self-exit via its time-stop
+            # bar, but that check is exact ET-time equality
+            # (strategies/_session_intraday.py is_time_stop_bar). On a thin
+            # symbol whose time-stop bar is MISSING from the feed, the strategy
+            # is never evaluated on that bar and never emits its exit, so the
+            # position would carry overnight — spurious exposure for a
+            # max_hold_days:1 strategy. Engine-level liquidation (NOT a strategy
+            # intent) guarantees every open position is flat by session close.
+            #
+            # ponytail: fill at the day's last available close — the SAME price
+            # _mark_to_market_at_day_end values the position at — so MTM equity
+            # is continuous across the flatten (no synthetic 15:55 bar). The
+            # strategy's own time-stop remains the intended exit; this is the
+            # fail-safe when its bar is absent. This is a separate EOD action,
+            # NOT routed through the pending/drain T+1 queue, so normal
+            # strategy-intent fills are unaffected.
+            # A symbol with a pending SELL self-exited correctly (the benchmark
+            # queues its 15:55 time-stop SELL to fill at the next session's
+            # 9:30 open). Exclude those so the flatten never double-sells a
+            # self-exiting strategy — it fires ONLY for a stranded position
+            # with no queued exit.
+            pending_sell_symbols = frozenset(
+                order.intent.normalized_symbol()
+                for order in pending
+                if order.intent.side is OrderSide.SELL
+            )
+            flatten_closes = _last_closes_on_day(
+                symbols=list(kernel.positions.keys()),
+                per_symbol_df=per_symbol_df,
+                per_symbol_ts_utc=per_symbol_ts_utc,
+                day=day,
+            )
+            flattened = kernel.liquidate_open_positions(
+                closes=flatten_closes,
+                day=day,
+                session_id=session_id,
+                db_run_id=db_run_id,
+                reason=DecisionReasoning(
+                    rule="backtest.intraday_session_end_flatten",
+                    narrative=(
+                        "Engine force-flattened an open intraday position at "
+                        "session end (strategy did not self-exit; e.g. missing "
+                        "time-stop bar)."
+                    ),
+                ),
+                skip_symbols=pending_sell_symbols,
+            )
+            sell_count += flattened
+            trade_count += flattened
+
+            # ------------------------------------------------------------------
+            # 5. Day-end: mark-to-market (equity_curve records EOD value).
+            # After the force-flatten the position set is normally empty, so
+            # EOD equity == cash; any position the flatten could not price
+            # (no day-end close) is still marked at the prior close here.
             # ------------------------------------------------------------------
             eod_equity = _mark_to_market_at_day_end(
                 positions=kernel.positions,
