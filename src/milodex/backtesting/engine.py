@@ -1322,42 +1322,53 @@ class BacktestEngine:
                     pending = drain.remaining
 
             # ------------------------------------------------------------------
-            # 4. Session-end force-flatten (N2 strand fix).
+            # 4. Session-end force-flatten — realize ALL open intraday positions
+            #    at the day's close (overnight-null fix).
             #
-            # An intraday strategy is expected to self-exit via its time-stop
-            # bar, but that check is exact ET-time equality
-            # (strategies/_session_intraday.py is_time_stop_bar). On a thin
-            # symbol whose time-stop bar is MISSING from the feed, the strategy
-            # is never evaluated on that bar and never emits its exit, so the
-            # position would carry overnight — spurious exposure for a
-            # max_hold_days:1 strategy. Engine-level liquidation (NOT a strategy
-            # intent) guarantees every open position is flat by session close.
+            # A max_hold_days:1 intraday position must be FLAT by session close.
+            # Two ways a position is still open here:
+            #   (a) the strategy never emitted an exit — e.g. a missing time-stop
+            #       bar (strategies/_session_intraday.is_time_stop_bar is exact
+            #       ET-time equality), the N2 strand; OR
+            #   (b) the strategy DID emit its exit on the session's LAST bar (a
+            #       time-stop fires on the final RTH bar, e.g. 15:55 for 5Min with
+            #       exit_minutes_before_close=5), so the SELL has no same-session
+            #       T+1 bar and its `pending` entry would otherwise fill at the
+            #       NEXT session's 9:30 open — i.e. carry the position overnight.
+            # Both are closed HERE, at the day's last close, so neither carries
+            # overnight. (Carrying (b) overnight was an asymmetric-exposure
+            # confound for the held-to-close intraday null.)
+            #
+            # At the day boundary `pending` only holds orders with no
+            # same-session future bar: step 3c drains every order that HAS a
+            # same-session T+1 inside the per-ts loop. So an ordinary mid-session
+            # SELL has already filled and is not in `pending` — this block does
+            # NOT touch mid-session fill semantics; it only sweeps boundary
+            # orders that would otherwise leak into the next session.
             #
             # ponytail: fill at the day's last available close — the SAME price
             # _mark_to_market_at_day_end values the position at — so MTM equity
             # is continuous across the flatten up to its own slippage/commission
             # (no synthetic 15:55 bar; a forced exit costs the same as any real
-            # exit). The strategy's own time-stop remains the intended exit; this is the
-            # fail-safe when its bar is absent. This is a separate EOD action,
-            # NOT routed through the pending/drain T+1 queue, so normal
-            # strategy-intent fills are unaffected.
-            # A symbol with a pending SELL self-exited correctly (the benchmark
-            # queues its 15:55 time-stop SELL to fill at the next session's
-            # 9:30 open). Exclude those so the flatten never double-sells a
-            # self-exiting strategy — it fires ONLY for a stranded position
-            # with no queued exit.
-            pending_sell_symbols = frozenset(
-                order.intent.normalized_symbol()
-                for order in pending
-                if order.intent.side is OrderSide.SELL
-            )
+            # exit).
+            # ponytail (accepted ceilings):
+            #   (a) full-position exit only — intraday benchmarks/candidates exit
+            #       the whole lot. A partial-exit intraday strategy would need qty
+            #       reconciliation against the queued SELL.
+            #   (b) a PRICE-conditional exit (stop-loss) that happens to land on
+            #       the final bar fills at that bar's close — a one-bar
+            #       approximation. A pure time-stop is TIME-conditional, so
+            #       realizing it at the close is not look-ahead.
+            #   (c) pending BUYs at the boundary are LEFT to the existing
+            #       next-open path — a final-bar ENTRY is a separate, rarer
+            #       concern, explicitly out of scope here.
             flatten_closes = _last_closes_on_day(
                 symbols=list(kernel.positions.keys()),
                 per_symbol_df=per_symbol_df,
                 per_symbol_ts_utc=per_symbol_ts_utc,
                 day=day,
             )
-            flattened = kernel.liquidate_open_positions(
+            flattened_symbols = kernel.liquidate_open_positions(
                 closes=flatten_closes,
                 day=day,
                 session_id=session_id,
@@ -1366,12 +1377,27 @@ class BacktestEngine:
                     rule="backtest.intraday_session_end_flatten",
                     narrative=(
                         "Engine force-flattened an open intraday position at "
-                        "session end (strategy did not self-exit; e.g. missing "
-                        "time-stop bar)."
+                        "session close (realizing any final-bar / un-exited "
+                        "position so it is flat by close, not carried overnight)."
                     ),
                 ),
-                skip_symbols=pending_sell_symbols,
             )
+            # Drop the now-redundant pending SELL for every symbol the flatten
+            # actually closed, so it does NOT also fill at the next session's
+            # open (double-sell / negative position). A symbol the flatten could
+            # NOT close (no day-end close) keeps its pending SELL as the
+            # next-open fallback. Only SELLs are dropped — a pending BUY at the
+            # boundary is left to the next-open path (ponytail (c) above).
+            if flattened_symbols:
+                pending = [
+                    order
+                    for order in pending
+                    if not (
+                        order.intent.side is OrderSide.SELL
+                        and order.intent.normalized_symbol() in flattened_symbols
+                    )
+                ]
+            flattened = len(flattened_symbols)
             sell_count += flattened
             trade_count += flattened
 

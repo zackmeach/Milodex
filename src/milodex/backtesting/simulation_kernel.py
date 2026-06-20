@@ -483,50 +483,53 @@ class BacktestSimulationKernel:
         session_id: str,
         db_run_id: int,
         reason: DecisionReasoning,
-        skip_symbols: frozenset[str] = frozenset(),
-    ) -> int:
-        """Force-flatten open positions at ``closes`` and return the sell count.
+    ) -> set[str]:
+        """Force-flatten open positions at ``closes``; return the symbols closed.
 
         Engine-level liquidation (NOT a strategy intent). Used by the intraday
-        path to guarantee an intraday position is flat at session end even when
-        the strategy never emits its own exit (e.g. a missing time-stop bar —
-        the N2 strand). Each open position is sold in full at its entry in
-        ``closes`` via the SAME execution + cash/position/ledger accounting that
+        path to guarantee an intraday position is flat at session end. This is
+        the close-out for ANY position still open at session end: a position
+        whose strategy never emitted an exit (e.g. a missing time-stop bar — the
+        N2 strand) AND a position with a queued exit (SELL) whose T+1 fill would
+        otherwise land in the NEXT session (a final-bar time-stop has no
+        same-session future bar). Both are realized HERE, at the day's close, so
+        a max_hold_days:1 intraday position is flat by close rather than carried
+        overnight.
+
+        Each open position is sold in full at its entry in ``closes`` via the
+        SAME execution + cash/position/ledger accounting that
         :meth:`drain_pending_orders` uses for a normal SELL fill — submit through
         ``submit_backtest``, then ``cash += fill_price*qty - commission``, clear
         the position and its entry_state, and bump ``sym_fills[...]["sells"]`` so
         the liquidation counts as a real trade / round-trip in the metrics.
 
-        ``skip_symbols`` are symbols that already have a pending exit (SELL)
-        queued for the normal T+1 drain — i.e. the strategy DID self-exit and
-        the fill is merely deferred to the next session's open. Those are left
-        untouched so the flatten never double-sells a self-exiting strategy
-        (the benchmark holds overnight by design: SELL queued at 15:55 fills at
-        the next session's 9:30 open). The flatten is the fail-safe ONLY for a
-        position with no queued exit.
-
         ``closes`` must be the day's last available close per symbol (the same
         price :func:`_mark_to_market_at_day_end` values the position at), so the
         equity curve is continuous across the flatten up to the liquidation's own
         slippage/commission (a forced exit costs the same as any real exit;
-        exactly continuous only at zero cost). A position whose symbol
-        is absent from ``closes`` (no resolvable close) is left untouched — it
-        will be marked-to-market at the prior close exactly as before.
+        exactly continuous only at zero cost). A position whose symbol is absent
+        from ``closes`` (no resolvable, finite, positive close) is left untouched
+        — it is NOT reported flattened and is marked-to-market at the prior close
+        exactly as before. The caller keeps that symbol's pending SELL (if any)
+        as the next-open fallback.
 
-        Does NOT touch the pending/drain queue: this is a separate EOD action
-        and the T+1 fill model for strategy-intent trades is unaffected.
+        The returned set is exactly the symbols this call closed; the caller uses
+        it to drop those symbols' now-redundant pending SELLs so they do not also
+        fill at the next session's open (double-sell / negative position).
+
+        Does NOT touch the pending/drain queue itself: this is a separate EOD
+        action and the T+1 fill model for ordinary mid-session strategy-intent
+        trades is unaffected.
         """
         if not self.positions:
-            return 0
+            return set()
         # Snapshot symbols first: the loop mutates self.positions.
         symbols = list(self.positions.keys())
         equity_pre = compute_equity(self.cash, self.positions, closes)
         self.sync_broker_state(day=day, closes=closes, equity=equity_pre)
 
-        sell_count = 0
+        flattened: set[str] = set()
         for sym in symbols:
-            if sym in skip_symbols:
-                continue
             latest_close = closes.get(sym)
             if latest_close is None or not math.isfinite(latest_close) or latest_close <= 0:
                 # No honest day-end price to fill at → leave the position open;
@@ -553,9 +556,9 @@ class BacktestSimulationKernel:
             self.cash += proceeds
             del self.positions[sym]
             self.entry_state.pop(sym, None)
-            sell_count += 1
+            flattened.add(sym)
             self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
-        return sell_count
+        return flattened
 
     def record_stranded_orders(
         self,

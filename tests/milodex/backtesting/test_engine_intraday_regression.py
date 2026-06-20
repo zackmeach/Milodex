@@ -201,17 +201,18 @@ def _make_intraday_engine(
 #
 # Strategy logic: on the first ``evaluate`` call within each session, emit a
 # BUY 5-share intent; on the last evaluate of each session (the ~15:55 ET
-# bar), emit a SELL.  Per the existing intraday engine semantics:
+# bar), emit a SELL.  Per the intraday engine semantics (overnight-null fix):
 #   - BUY at bar T fills at bar T+1's open
-#   - SELL at the final bar of a session fills at the next session's 9:30 open
-#   - SELL at the final bar of the FINAL session has no next session → stranded
+#   - SELL on the final bar of a session has no same-session T+1 bar → it is
+#     realized at that session's CLOSE by the session-end flatten (NOT deferred
+#     to the next session's 9:30 open; NOT stranded at run end).
 #
 # Universe: SPY only. 2 sessions (Mon 2024-01-08, Tue 2024-01-09).
 # ---------------------------------------------------------------------------
 
 
 def test_intraday_regression_cross_day_round_trip() -> None:
-    """One round trip per session over 2 sessions; final SELL is stranded.
+    """One round trip per session over 2 sessions; each closes at its own close.
 
     Pinned counts AND equity_curve shape are baselined from the current
     kernel — any drift surfaces here before it lands in production audit data.
@@ -286,23 +287,23 @@ def test_intraday_regression_cross_day_round_trip() -> None:
     engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
     result = engine.run(start_date, end_date)
 
-    # --- Encoded from baseline run (intraday kernel as of 2026-05-24) ---
+    # --- Encoded from baseline run (intraday kernel, overnight-null fix) ---
     # Each session emits 1 BUY + 1 SELL.
     # Day 1 BUY: fills at next-bar open (9:35 ET on Day 1).
-    # Day 1 SELL: fills at next session's 9:30 open (Day 2).
+    # Day 1 SELL (15:55 final bar): realized at Day 1's CLOSE by the flatten.
     # Day 2 BUY: fills at next-bar open (9:35 ET on Day 2).
-    # Day 2 SELL: NO next session → stranded → skipped_count = 1.
-    # Net: 2 BUY fills, 1 SELL fill, 1 stranded SELL.
+    # Day 2 SELL (15:55 final bar): realized at Day 2's CLOSE by the flatten.
+    # Net: 2 BUY fills, 2 SELL fills, nothing stranded.
     assert result.buy_count == 2, f"expected 2 BUY fills, got {result.buy_count}"
-    assert result.sell_count == 1, f"expected 1 SELL fill, got {result.sell_count}"
-    assert result.trade_count == 3, f"expected 3 total fills, got {result.trade_count}"
-    assert result.skipped_count == 1, (
-        f"expected 1 stranded SELL (last session's SELL has no next bar), "
-        f"got {result.skipped_count}"
+    assert result.sell_count == 2, f"expected 2 SELL fills, got {result.sell_count}"
+    assert result.trade_count == 4, f"expected 4 total fills, got {result.trade_count}"
+    assert result.skipped_count == 0, (
+        f"expected 0 stranded SELLs (each final-bar SELL realized at its own "
+        f"close), got {result.skipped_count}"
     )
-    assert result.round_trip_count == 1, (
-        f"expected 1 round trip (Day 1 BUY closed by Day 2 SELL fill); "
-        f"Day 2 BUY never closes; got {result.round_trip_count}"
+    assert result.round_trip_count == 2, (
+        f"expected 2 round trips (each session's BUY closed by its own "
+        f"session-close SELL); got {result.round_trip_count}"
     )
 
     # Equity-curve shape: one point per outer trading day (sync_broker_state
@@ -316,11 +317,11 @@ def test_intraday_regression_cross_day_round_trip() -> None:
     assert result.equity_curve[0][0] == start_date
     assert result.equity_curve[1][0] == end_date
 
-    # Final equity: 1 closed round trip (5 shares × ~$0.39 spread between
-    # entry fill at Day 1 9:35 open and exit fill at Day 2 9:30 open) +
-    # 1 open position marked to last seen close.  Loose bound: P&L is
-    # bounded in [-10, +10] dollars over $100,000.  Any value outside that
-    # range indicates a serious arithmetic drift.
+    # Final equity: 2 closed round trips (each session's BUY at its ~9:35 entry
+    # open closed by a SELL realized at that session's last close, 5 shares).
+    # Position is flat at run end (no open lot). Loose bound: P&L is bounded in
+    # [-10, +10] dollars over $100,000 on these cent-scale deterministic bars.
+    # Any value outside that range indicates a serious arithmetic drift.
     pnl = result.final_equity - 100_000.0
     assert -10.0 < pnl < 10.0, (
         f"intraday round trip P&L should be in [-10, +10] over deterministic "
