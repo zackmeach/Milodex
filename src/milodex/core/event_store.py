@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -339,6 +340,18 @@ have no run ancestry by design and pass through unchecked.
 """
 
 
+_BUFFERED_EXPLANATION_ID = -1
+"""Sentinel returned by ``append_explanation`` while inside ``EventStore.batched()``.
+
+In buffer mode the real autoincrement id is not known until the single flush at
+context exit, so a placeholder is returned. This is only sound because the
+buffered (backtest no-action) path discards the id —
+``ExecutionService.record_no_action`` returns ``None`` and the simulation kernel
+calls it as a bare statement. No code path that consumes the returned id may
+enter ``batched()``.
+"""
+
+
 STALE_PENDING_ATTEMPT_MINUTES = 15
 """Age threshold (minutes) past which a 'pending' execution attempt is stale.
 
@@ -378,6 +391,13 @@ class EventStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Backtest-scoped explanation buffer (see ``batched``). ``None`` outside
+        # a ``batched()`` context — every ``append_explanation`` then commits
+        # immediately (the live/paper path). A list while batching — buffered
+        # rows are held in memory and flushed once at context exit. ``_batch_depth``
+        # tracks nesting so only the outermost ``batched()`` owns the flush.
+        self._explanation_buffer: list[ExplanationEvent] | None = None
+        self._batch_depth: int = 0
         self._apply_migrations()
         sv = self.schema_version
         if sv < MIN_COMPATIBLE_SCHEMA_VERSION:
@@ -405,7 +425,7 @@ class EventStore:
             ).fetchall()
         return [str(row["name"]) for row in rows]
 
-    def append_explanation(self, event: ExplanationEvent) -> int:
+    def append_explanation(self, event: ExplanationEvent, *, bufferable: bool = False) -> int:
         """Insert an explanation row and return its autoincrement id.
 
         Enforces the dual-ancestor rule (migration 008) for explanations
@@ -421,12 +441,85 @@ class EventStore:
         gap surfaced by the 2026-05-07 EOD audit — see migration 008's
         header for the full rationale, including why we do not use a SQLite
         CHECK constraint here.
+
+        ``bufferable`` (default ``False``): when ``True`` AND a ``batched()``
+        context is active, the INSERT is deferred to the single flush at
+        context exit and a SENTINEL id is returned (the real id is unknown
+        until flush). A caller may set this ONLY if it discards the returned
+        id — the backtest per-bar no-action path
+        (``ExecutionService.record_no_action``) is the sole such caller. Every
+        other caller (e.g. the skip-audit path that links a trade to the
+        returned explanation id) leaves it ``False`` and commits immediately
+        even inside ``batched()``, so its id is real and its trade FK holds.
         """
         self._require_explanation_ancestor(event)
+        if bufferable and self._explanation_buffer is not None:
+            # Buffer mode (inside ``batched()``, backtest no-action only): defer
+            # the INSERT to the single flush at context exit. NO connection is
+            # opened or held here, so concurrent same-process writes that use
+            # their own connection (equity snapshots, skip-audit trades) never
+            # contend with a held batch transaction. The returned id is a
+            # sentinel — sound only because this caller discards it.
+            self._explanation_buffer.append(event)
+            return _BUFFERED_EXPLANATION_ID
         with self._connect() as connection:
             explanation_id = self._insert_explanation(connection, event)
             connection.commit()
             return explanation_id
+
+    @contextmanager
+    def batched(self) -> Iterator[None]:
+        """Buffer ``append_explanation`` writes in memory, flush once at exit.
+
+        OPT-IN and BACKTEST-SCOPED. While this context is active,
+        :meth:`append_explanation` validates the dual-ancestor rule (unchanged)
+        then appends the event to an in-memory buffer and returns a sentinel id
+        WITHOUT opening or holding any connection. At context exit a single
+        connection is opened, every buffered event is inserted in order, one
+        ``commit()`` is issued, and the connection closes.
+
+        Why buffer-and-flush rather than hold one open connection: SQLite is a
+        single writer. The backtest sim also writes equity snapshots and trades
+        on their own connections mid-loop; holding an uncommitted batch
+        transaction across the whole sim would collide with those
+        (``database is locked``). Buffering in memory holds NO lock during the
+        sim, so those immediate writes proceed with zero contention.
+
+        Durability: the commit lives in ``finally``, so a mid-sim exception
+        still flushes everything buffered so far, then the exception re-raises.
+        This matches today's per-bar-commit behaviour (rows up to a failure
+        already persist). The buffered rows order by insertion, identical to the
+        per-bar commit order.
+
+        Re-entrancy: nested ``batched()`` is a no-op inner — the outermost
+        context owns the buffer and the single flush.
+
+        The LIVE/paper runner must NEVER enter this context: it relies on
+        per-decision durability and (unlike the no-action path) may consume the
+        returned explanation id via :meth:`append_explanation_and_trade`, which
+        is deliberately NOT routed through the buffer.
+        """
+        self._batch_depth += 1
+        if self._batch_depth > 1:
+            # Inner no-op: the outermost context owns the buffer and the flush.
+            try:
+                yield
+            finally:
+                self._batch_depth -= 1
+            return
+
+        self._explanation_buffer = []
+        try:
+            yield
+        finally:
+            buffered = self._explanation_buffer
+            self._explanation_buffer = None
+            self._batch_depth -= 1
+            if buffered:
+                with self._connect() as connection:
+                    for event in buffered:
+                        self._insert_explanation(connection, event)
+                    connection.commit()
 
     @staticmethod
     def _require_explanation_ancestor(event: ExplanationEvent) -> None:

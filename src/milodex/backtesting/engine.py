@@ -781,14 +781,18 @@ class BacktestEngine:
         """
         equity = initial_equity if initial_equity is not None else self._initial_equity
         _timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
-        return self._simulate(
-            all_bars=all_bars,
-            trading_days=trading_days,
-            db_run_id=db_run_id,
-            session_id=session_id,
-            initial_equity=equity,
-            timeframe=_timeframe,
-        )
+        # Buffer per-bar no-action explanations in memory and flush once at the
+        # end of this window (perf: ~one fsync per window, not per bar). Backtest
+        # only — the live runner never calls simulate_window.
+        with self._event_store.batched():
+            return self._simulate(
+                all_bars=all_bars,
+                trading_days=trading_days,
+                db_run_id=db_run_id,
+                session_id=session_id,
+                initial_equity=equity,
+                timeframe=_timeframe,
+            )
 
     def _execute(
         self,
@@ -833,14 +837,20 @@ class BacktestEngine:
                 run_manifest=run_manifest,
             )
 
-        output = self._simulate(
-            all_bars=all_bars,
-            trading_days=trading_days,
-            db_run_id=db_run_id,
-            session_id=run_id,
-            initial_equity=self._initial_equity,
-            timeframe=_timeframe,
-        )
+        # Buffer per-bar no-action explanations in memory and flush once at the
+        # end of the sim (perf: ~one fsync per backtest, not per bar). Backtest
+        # only — the live runner never calls _execute. The BacktestResult reads
+        # (list_trades / list_explanations) all happen after this CM exits, so
+        # the flushed rows are visible to them.
+        with self._event_store.batched():
+            output = self._simulate(
+                all_bars=all_bars,
+                trading_days=trading_days,
+                db_run_id=db_run_id,
+                session_id=run_id,
+                initial_equity=self._initial_equity,
+                timeframe=_timeframe,
+            )
         total_return = (output.final_equity - self._initial_equity) / self._initial_equity
         return BacktestResult(
             run_id=run_id,
