@@ -575,6 +575,7 @@ def canonicalize_config_data(value: Any) -> Any:
         if isinstance(strategy, dict):
             strategy = dict(strategy)
             strategy.pop("display_name", None)
+            strategy.pop("baseline_ref", None)
             canonical = dict(canonical)
             canonical["strategy"] = strategy
     return canonical
