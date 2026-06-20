@@ -780,12 +780,12 @@ def test_predicate_boundary_14_symbols_below_fires(tmp_path):
 
 
 def test_predicate_boundary_margin_1_9_no_fire(tmp_path):
-    # 17 symbols below all nulls, but tightest margin is 1.9 (< 2.0) → no fire.
-    # One symbol has candidate=-1.9 (margin 0.0-(-1.9)=1.9); others have -3.0 (margin 3.0).
+    # 17 symbols below all nulls, but tightest margin vs nearest null is 1.9 (< 2.0) → no fire.
+    # Nulls: unconditional=0.0, time_of_day=-0.5, random_matched=-0.5 → nearest null=-0.5.
+    # Tight symbol candidate = -0.5 - 1.9 = -2.4 → margin vs nearest null = -0.5-(-2.4) = 1.9.
     overrides, bov = _below_all_overrides(17, below_candidate_sharpe=-3.0)
-    # Override one symbol to produce the tight margin.
     tight_sym = _UNIVERSE[0]
-    overrides[tight_sym] = {"oos_sharpe": -1.9}
+    overrides[tight_sym] = {"oos_sharpe": -2.4}
     report, _row_id, store = _assemble(
         tmp_path,
         _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
@@ -800,10 +800,12 @@ def test_predicate_boundary_margin_1_9_no_fire(tmp_path):
 
 
 def test_predicate_boundary_margin_2_0_fires(tmp_path):
-    # 17 symbols below all nulls, tightest margin is exactly 2.0 → fires.
+    # 17 symbols below all nulls, tightest margin vs nearest null is exactly 2.0 → fires.
+    # Nulls: unconditional=0.0, time_of_day=-0.5, random_matched=-0.5 → nearest null=-0.5.
+    # Tight symbol candidate = -0.5 - 2.0 = -2.5 → margin vs nearest null = -0.5-(-2.5) = 2.0.
     overrides, bov = _below_all_overrides(17, below_candidate_sharpe=-3.0)
     tight_sym = _UNIVERSE[0]
-    overrides[tight_sym] = {"oos_sharpe": -2.0}
+    overrides[tight_sym] = {"oos_sharpe": -2.5}
     report, _row_id, store = _assemble(
         tmp_path,
         _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
@@ -815,6 +817,38 @@ def test_predicate_boundary_margin_2_0_fires(tmp_path):
     assert pred["min_margin_sharpe"] == pytest.approx(2.0)
     assert pred["passed"] is True
     assert ev.terminal_status == "rejected"
+
+
+def test_predicate_boundary_margin_old_max_vs_new_min(tmp_path):
+    # Smoking-gun: candidate just below nearest null but far below strongest null.
+    # Old (wrong) code measures margin vs max(nulls) — this would fire.
+    # Correct code measures margin vs min(nulls) — this must NOT fire.
+    #
+    # Nulls: unconditional=1.5 (strong), time_of_day=-0.5, random_matched=-0.5.
+    # nearest null = -0.5; strongest null = 1.5.
+    # candidate = -0.6 → below all three.
+    # old margin = 1.5 - (-0.6) = 2.1 → would fire under old code.
+    # new margin = -0.5 - (-0.6) = 0.1 → correctly does NOT fire.
+    overrides: dict[str, Any] = {sym: {"oos_sharpe": -0.6} for sym in _UNIVERSE}
+    bov: dict[tuple[str, str], Any] = {}
+    for sym in _UNIVERSE:
+        bov[(sym, "unconditional_intraday_long")] = {"oos_sharpe": 1.5}
+        bov[(sym, "time_of_day_null")] = {"oos_sharpe": -0.5}
+        bov[(sym, "random_matched_exposure.intraday")] = {"oos_sharpe": -0.5}
+    report, _row_id, store = _assemble(
+        tmp_path,
+        _make_batch_result(candidate_overrides=overrides, baseline_overrides=bov),
+        experiment_id="boundary-max-vs-min",
+    )
+    ev = store.get_experiment("boundary-max-vs-min")
+    assert ev is not None
+    pred = ev.evidence_json["decisive_loss_predicate"]
+    # All 17 symbols are below all three nulls, so symbol count passes the gate.
+    assert pred["symbols_below_all_nulls"] == 17
+    # But the margin to the nearest null is tiny (0.1), so the predicate must NOT fire.
+    assert pred["min_margin_sharpe"] == pytest.approx(0.1)
+    assert pred["passed"] is False
+    assert ev.terminal_status == "inconclusive"
 
 
 # ---------------------------------------------------------------------------

@@ -551,7 +551,8 @@ def _decisive_loss_predicate(per_symbol: list[SymbolDelta]) -> dict[str, Any]:
 
     Fires when the candidate's Sharpe is below ALL THREE nulls on ≥14 of the 17
     symbols where the candidate + all three nulls are present, AND on those
-    symbols the margin below the *strongest* (highest) null is ≥ 2.0 Sharpe.
+    symbols the margin below the nearest (least-beaten) null, i.e.
+    ``min(nulls) - candidate``, is ≥ 2.0 Sharpe.
     """
     symbols_below_all = 0
     n_evaluated = 0
@@ -569,10 +570,10 @@ def _decisive_loss_predicate(per_symbol: list[SymbolDelta]) -> dict[str, Any]:
         if not null_sharpes:
             continue  # not all three nulls present for this symbol
         n_evaluated += 1
-        strongest = max(null_sharpes)
-        if d.candidate_sharpe < min(null_sharpes):
+        nearest = min(null_sharpes)
+        if d.candidate_sharpe < nearest:
             symbols_below_all += 1
-            margins.append(strongest - d.candidate_sharpe)
+            margins.append(nearest - d.candidate_sharpe)
 
     min_margin = min(margins) if margins else None
     passed = (

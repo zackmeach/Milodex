@@ -389,3 +389,127 @@ def test_evidence_handler_passes_rehydrated_batch_result(tmp_path: Path, monkeyp
     assert len(passed_batch.rows) == 1
     assert passed_batch.rows[0].strategy_id == "meanrev.rsi2.intraday.spy.v1"
     assert result.data["experiment_registry_row_id"] == 7
+
+
+# ---------------------------------------------------------------------------
+# Block 4: provenance validation (Bug 2 fix)
+# ---------------------------------------------------------------------------
+
+
+def _make_batch_row_no_run_id(strategy_id: str) -> BatchRow:
+    """A row missing run_id — simulates an uncommitted / fabricated screen JSON row."""
+    return BatchRow(
+        strategy_id=strategy_id,
+        family="meanrev",
+        trade_count=40,
+        oos_sharpe=0.3,
+        oos_max_drawdown_pct=5.0,
+        oos_total_return_pct=8.0,
+        single_window_dependency=False,
+        gate_allowed=False,
+        gate_promotion_type="statistical",
+        gate_failures=(),
+        run_id=None,  # missing
+        oos_equity_curve=(),
+        error=None,
+        survivorship_corrected=False,
+    )
+
+
+def test_screen_json_missing_run_id_raises(tmp_path: Path):
+    """_batch_result_from_screen_json raises ValueError when any row has no run_id."""
+    row = _make_batch_row_no_run_id("meanrev.rsi2.intraday.spy.v1")
+    batch = _make_batch_result((row,))
+
+    # Write JSON with run_id explicitly null
+    payload = {
+        "start_date": batch.start_date.isoformat(),
+        "end_date": batch.end_date.isoformat(),
+        "rows": [
+            {
+                "strategy_id": "meanrev.rsi2.intraday.spy.v1",
+                "family": "meanrev",
+                "trade_count": 40,
+                "oos_sharpe": 0.3,
+                "oos_max_drawdown_pct": 5.0,
+                "oos_total_return_pct": 8.0,
+                "single_window_dependency": False,
+                "gate_allowed": False,
+                "gate_promotion_type": "statistical",
+                "gate_failures": [],
+                "run_id": None,  # null in JSON
+            }
+        ],
+        "correlation_matrix": {},
+    }
+    json_path = tmp_path / "no_run_id.json"
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="run_id"):
+        _batch_result_from_screen_json(json_path)
+
+
+def test_screen_json_missing_run_id_key_raises(tmp_path: Path):
+    """_batch_result_from_screen_json raises ValueError when run_id key is absent."""
+    payload = {
+        "start_date": "2024-01-01",
+        "end_date": "2024-06-30",
+        "rows": [
+            {
+                "strategy_id": "meanrev.rsi2.intraday.spy.v1",
+                "family": "meanrev",
+                "trade_count": 40,
+                "oos_sharpe": 0.3,
+                "oos_max_drawdown_pct": 5.0,
+                "oos_total_return_pct": 8.0,
+                "single_window_dependency": False,
+                "gate_allowed": False,
+                "gate_promotion_type": "statistical",
+                "gate_failures": [],
+                # run_id key entirely absent
+            }
+        ],
+        "correlation_matrix": {},
+    }
+    json_path = tmp_path / "absent_run_id.json"
+    json_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="run_id"):
+        _batch_result_from_screen_json(json_path)
+
+
+def test_screen_json_date_mismatch_raises(tmp_path: Path):
+    """_evidence raises ValueError when JSON dates don't match CLI start/end args."""
+    row = _make_batch_row("meanrev.rsi2.intraday.spy.v1")
+    # JSON has 2024-01-01 – 2024-06-30; CLI args will say 2025-01-01 – 2025-06-30.
+    batch = _make_batch_result((row,))
+    json_path = tmp_path / "screen.json"
+    _write_screen_json(json_path, batch)
+
+    store = _stub_store()
+    ctx = _stub_ctx(store=store)
+    # CLI args with different dates than the JSON
+    args = _evidence_args(
+        screen_json=str(json_path),
+        start="2025-01-01",
+        end="2025-06-30",
+    )
+
+    from milodex.cli.commands.research import _evidence
+
+    with pytest.raises(ValueError, match="does not match"):
+        _evidence(args, ctx)
+
+
+def test_screen_json_consistent_provenance_succeeds(tmp_path: Path):
+    """A well-formed screen JSON with matching dates passes provenance validation."""
+    row = _make_batch_row("meanrev.rsi2.intraday.spy.v1")
+    batch = _make_batch_result((row,))
+    json_path = tmp_path / "screen.json"
+    _write_screen_json(json_path, batch)
+
+    # Dates match: JSON has 2024-01-01 – 2024-06-30; args supply the same.
+    result = _batch_result_from_screen_json(json_path)
+    assert result.start_date.isoformat() == "2024-01-01"
+    assert result.end_date.isoformat() == "2024-06-30"
+    assert result.rows[0].run_id is not None  # provenance intact

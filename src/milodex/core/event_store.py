@@ -551,6 +551,11 @@ class EventStore:
             self._explanation_buffer = None
             self._batch_depth -= 1
             if buffered:
+                # Buffered no-action rows get higher ids than trade explanations committed
+                # mid-run. Id order is NOT chronological for buffered explanations.
+                # Any reader that needs temporal order must ORDER BY (created_at, id),
+                # not by id alone. Live/report readers already filter backtest_run_id IS NULL
+                # so they are unaffected. Backtest-scoped audit readers must use timestamp order.
                 with self._connect() as connection:
                     for event in buffered:
                         self._insert_explanation(connection, event)

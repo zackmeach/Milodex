@@ -205,6 +205,17 @@ def _batch_result_from_screen_json(path: Path) -> BatchResult:
         raw_curve = r.get("oos_equity_curve", _BATCH_ROW_DEFAULTS["oos_equity_curve"])
         # Curve entries are {"date": "YYYY-MM-DD", "equity": float}
         curve = tuple((date.fromisoformat(pt["date"]), float(pt["equity"])) for pt in raw_curve)
+        run_id = r.get("run_id")
+        # ponytail: validates provenance consistency — a missing run_id means the
+        # row was never durably committed to the backtest store; trust would be misplaced.
+        # Deeper run_id-existence check (verify against backtest_runs store) is deferred.
+        if run_id is None:
+            sid = r.get("strategy_id", "<unknown>")
+            msg = (
+                f"screen JSON row for strategy '{sid}' has no run_id — "
+                "the row was not durably committed and cannot be trusted as evidence"
+            )
+            raise ValueError(msg)
         rows.append(
             BatchRow(
                 strategy_id=r["strategy_id"],
@@ -217,7 +228,7 @@ def _batch_result_from_screen_json(path: Path) -> BatchResult:
                 gate_allowed=r.get("gate_allowed", False),
                 gate_promotion_type=r.get("gate_promotion_type", ""),
                 gate_failures=tuple(r.get("gate_failures", [])),
-                run_id=r.get("run_id"),
+                run_id=run_id,
                 oos_equity_curve=curve,
                 error=r.get("error", _BATCH_ROW_DEFAULTS["error"]),
                 survivorship_corrected=r.get(
@@ -244,6 +255,14 @@ def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     batch_result: BatchResult | None = None
     if args.screen_json is not None:
         batch_result = _batch_result_from_screen_json(Path(args.screen_json))
+        # ponytail: validates provenance consistency — the JSON must describe the
+        # same screened window as the CLI args; a mismatch means the wrong JSON was supplied.
+        if batch_result.start_date != start or batch_result.end_date != end:
+            msg = (
+                f"screen JSON window ({batch_result.start_date} – {batch_result.end_date}) "
+                f"does not match CLI args ({start} – {end}); wrong JSON supplied"
+            )
+            raise ValueError(msg)
 
     report, row_id = assemble_intraday_evidence(
         candidate_family=args.candidate_family,
