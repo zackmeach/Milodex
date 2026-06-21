@@ -195,34 +195,32 @@ class TestRiskStripWiring:
 
 
 class TestDrawerWiring:
-    """RiskOfficeDrawer must declare killSwitchResetRequested and have a KILL SWITCH section."""
+    """RiskOfficeDrawer KILL SWITCH section wiring.
 
-    def test_signal_declared(self) -> None:
-        src = _DRAWER_QML.read_text(encoding="utf-8")
-        assert "signal killSwitchResetRequested()" in src, (
-            "RiskOfficeDrawer.qml must declare `signal killSwitchResetRequested()`"
-        )
+    The signal-declared, section-exists, and section-gated-on-active source
+    pins were converted to behavioral trigger-and-observe tests (burn backlog
+    C2 batch 1) and deleted from here:
+      * test_drawer_kill_switch_reset_opens_modal       (signal -> modal opens)
+      * test_drawer_kill_switch_section_renders_when_active
+      * test_drawer_kill_switch_section_hidden_when_inactive
 
-    def test_kill_switch_section_exists(self) -> None:
-        """KILL SWITCH section heading must appear in the drawer."""
-        src = _DRAWER_QML.read_text(encoding="utf-8")
-        assert '"KILL SWITCH"' in src, (
-            'RiskOfficeDrawer.qml must contain a "KILL SWITCH" section label'
-        )
+    Only the onClicked -> signal link below stays a source pin: the offscreen
+    harness cannot synthesize the mouse click that fires the RESET KILL SWITCH
+    button's MouseArea, so there is no honest behavioral observation for it.
+    """
 
     def test_signal_emitted_from_section(self) -> None:
-        """The section button must emit killSwitchResetRequested."""
+        """The section button must emit killSwitchResetRequested.
+
+        Source-only by necessity: this guards the
+        ``onClicked: root.killSwitchResetRequested()`` one-liner in the RESET
+        KILL SWITCH button's MouseArea, which the offscreen QQuickView harness
+        cannot drive without synthetic mouse events.
+        """
         src = _DRAWER_QML.read_text(encoding="utf-8")
         assert "root.killSwitchResetRequested()" in src, (
             "RiskOfficeDrawer.qml must emit root.killSwitchResetRequested() from the "
             "KILL SWITCH section button"
-        )
-
-    def test_section_gated_on_active(self) -> None:
-        """KILL SWITCH section must only show when kill switch is active."""
-        src = _DRAWER_QML.read_text(encoding="utf-8")
-        assert "killSwitchActive" in src, (
-            "RiskOfficeDrawer.qml KILL SWITCH section must gate visibility on killSwitchActive"
         )
 
 
@@ -659,3 +657,280 @@ def test_risk_strip_kill_switch_reset_opens_modal() -> None:
         f"stderr:\n{result.stderr}"
     )
     assert "REACHABILITY_OK" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Behavioral reachability + section gating — RiskOfficeDrawer (burn backlog C2,
+# batch 1)
+#
+# RiskOfficeDrawer is the SECOND always-reachable entry to the kill-switch
+# reset flow (the KILL SWITCH section button). The TestDrawerWiring source pins
+# grepped RiskOfficeDrawer.qml for the signal declaration, the section eyebrow,
+# and the killSwitchActive gate. These tests replace them by instantiating the
+# real drawer (+ modal wired as Main.qml wires them) and driving / observing
+# the live tree:
+#   * the drawer's killSwitchResetRequested signal actually OPENS the modal;
+#   * the KILL SWITCH section RENDERS when the kill switch is active;
+#   * the section is GONE when the kill switch is inactive.
+#
+# The onClicked -> root.killSwitchResetRequested() link in the RESET KILL
+# SWITCH button's MouseArea stays a source pin (TestDrawerWiring.
+# test_signal_emitted_from_section): the offscreen harness cannot synthesize
+# the mouse click that fires it, so there is no honest behavioral observation
+# for that one line.
+# ---------------------------------------------------------------------------
+
+
+def _build_drawer_probe_script(*, active: bool, assertions: str) -> str:
+    """Subprocess script: instantiate RiskOfficeDrawer wired to
+    KillSwitchResetModal exactly as Main.qml wires them, with a real
+    OperationalState whose kill switch is ``active``. The ``assertions`` body
+    reads the live ``drawer`` / ``modal`` / ``root`` tree and exits non-zero
+    on failure.
+    """
+    import_root = str(_QML_IMPORT_ROOT)
+    active_literal = "True" if active else "False"
+    return f"""\
+import os, sys, tempfile, pathlib
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer, QMetaObject
+from PySide6.QtCore import QObject as _QObjectBase
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui import qml_setup
+from milodex.gui.operational_state import OperationalState
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+
+tm = ThemeManager()
+
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(
+    active={active_literal}, reason="test-trip", last_triggered_at=None
+)
+
+def _failing_broker():
+    raise RuntimeError("probe: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker,
+    kill_switch_store=ks_store,
+    trading_mode="paper",
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+# Load the kill-switch state synchronously (no worker threads) so the drawer's
+# OperationalState.killSwitchActive binding reads the right value at QML load.
+op._poll_kill_switch()
+
+qml_setup.register_qml_types(theme_manager=tm, operational_state=op)
+
+# Probe wiring mirrors Main.qml's drawer entry path:
+#   RiskOfficeDrawer {{ onKillSwitchResetRequested: ksModal.open = true }}
+#   KillSwitchResetModal {{ id: ksModal; onCloseRequested: open = false }}
+probe = b\"\"\"
+import QtQuick
+import Milodex 1.0
+
+Item {{
+    id: probeRoot
+    width: 1200
+    height: 800
+
+    RiskOfficeDrawer {{
+        id: drawer
+        objectName: "riskOfficeDrawerProbe"
+        open: true
+        onKillSwitchResetRequested: ksModal.open = true
+    }}
+
+    KillSwitchResetModal {{
+        id: ksModal
+        objectName: "killSwitchResetModalProbe"
+        anchors.fill: parent
+        onCloseRequested: ksModal.open = false
+    }}
+}}
+\"\"\"
+
+_qml_file = pathlib.Path(tempfile.mktemp(suffix=".qml"))
+_qml_file.write_bytes(probe)
+
+view = QQuickView()
+view.engine().addImportPath({import_root!r})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1200, 800)
+view.setSource(QUrl.fromLocalFile(str(_qml_file)))
+
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+
+view.show()
+QTimer.singleShot(400, app.quit)
+app.exec()
+
+drawer = root.findChild(_QObjectBase, "riskOfficeDrawerProbe")
+modal = root.findChild(_QObjectBase, "killSwitchResetModalProbe")
+if drawer is None or modal is None:
+    print("probe items not found", file=sys.stderr)
+    sys.exit(4)
+
+def _walk(item):
+    yield item
+    for c in item.childItems():
+        yield from _walk(c)
+
+def _texts(rootitem):
+    out = []
+    for it in _walk(rootitem):
+        try:
+            if not it.isVisible():
+                continue
+        except Exception:
+            pass
+        t = it.property("text")
+        if t:
+            out.append(str(t))
+    return out
+
+{assertions}
+"""
+
+
+def _run_drawer_probe(*, active: bool, assertions: str, label: str, ok_token: str) -> None:
+    script = _build_drawer_probe_script(active=active, assertions=assertions)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"{label} FAILED\n"
+        f"returncode: {result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert ok_token in result.stdout
+
+
+@_skip_no_qt
+def test_drawer_kill_switch_reset_opens_modal() -> None:
+    """Driving RiskOfficeDrawer's entry affordance opens the KillSwitchResetModal.
+
+    Trigger: emit ``killSwitchResetRequested()`` on a RiskOfficeDrawer wired
+    exactly as Main.qml wires it (``onKillSwitchResetRequested: ksModal.open =
+    true``) with the kill switch active.
+    Observe: the modal flips from closed+invisible to ``open == true`` and
+    effectively visible -- the drawer entry path genuinely REACHES the reset
+    flow.
+
+    Behavioral counterpart to TestDrawerWiring.test_signal_declared
+    (``signal killSwitchResetRequested()``) and TestMainQmlWiring
+    (``killSwitchResetModal.open = true``). NON-VACUOUS: the probe asserts the
+    modal is closed+invisible BEFORE the trigger, so a vacuous always-open
+    modal fails the precondition; rewiring onKillSwitchResetRequested to a
+    no-op leaves the modal closed and fails the observation (exit 8).
+    """
+    assertions = (
+        'if bool(modal.property("open")):\n'
+        '    print("PRECONDITION: modal already open before trigger", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        "if modal.isVisible():\n"
+        '    print("PRECONDITION: modal already visible before trigger", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'if not QMetaObject.invokeMethod(drawer, "killSwitchResetRequested"):\n'
+        '    print("could not invoke killSwitchResetRequested signal", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        "QTimer.singleShot(200, app.quit)\n"
+        "app.exec()\n"
+        'if not bool(modal.property("open")):\n'
+        '    print("modal did not open after killSwitchResetRequested", file=sys.stderr)\n'
+        "    sys.exit(8)\n"
+        "if not modal.isVisible():\n"
+        '    print("modal open but not effectively visible", file=sys.stderr)\n'
+        "    sys.exit(9)\n"
+        'print("DRAWER_REACHABILITY_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_drawer_probe(
+        active=True,
+        assertions=assertions,
+        label="drawer kill-switch reset reachability",
+        ok_token="DRAWER_REACHABILITY_OK",
+    )
+
+
+@_skip_no_qt
+def test_drawer_kill_switch_section_renders_when_active() -> None:
+    """The KILL SWITCH section renders (eyebrow + reset button) when the kill
+    switch is active.
+
+    Behavioral counterpart to TestDrawerWiring.test_kill_switch_section_exists.
+    NON-VACUOUS: deleting the KILL SWITCH eyebrow Text (or breaking its label
+    binding so it resolves empty) drops "KILL SWITCH" from the rendered tree.
+    """
+    assertions = (
+        "texts = _texts(drawer)\n"
+        'if "KILL SWITCH" not in texts:\n'
+        '    print("KILL SWITCH eyebrow missing rendered=" + repr(texts), file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'if "RESET KILL SWITCH" not in texts:\n'
+        '    print("RESET KILL SWITCH button missing rendered=" + repr(texts), file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'print("DRAWER_SECTION_VISIBLE_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_drawer_probe(
+        active=True,
+        assertions=assertions,
+        label="drawer kill-switch section renders when active",
+        ok_token="DRAWER_SECTION_VISIBLE_OK",
+    )
+
+
+@_skip_no_qt
+def test_drawer_kill_switch_section_hidden_when_inactive() -> None:
+    """The KILL SWITCH section is absent from the rendered tree when the kill
+    switch is inactive (the section is visibility-gated on killSwitchActive).
+
+    Behavioral counterpart to TestDrawerWiring.test_section_gated_on_active.
+    NON-VACUOUS: the sanity check asserts the always-visible FLEET
+    RECONCILIATION eyebrow IS rendered, so the absence of "KILL SWITCH" is a
+    real gating result, not a dead walk; dropping the ``visible:`` gate makes
+    the eyebrow appear and the test fails (exit 6).
+    """
+    assertions = (
+        "texts = _texts(drawer)\n"
+        'if "FLEET RECONCILIATION" not in texts:\n'
+        '    print("sanity: walk found no rendered drawer text rendered=" + repr(texts), '
+        "file=sys.stderr)\n"
+        "    sys.exit(5)\n"
+        'if "KILL SWITCH" in texts:\n'
+        '    print("KILL SWITCH eyebrow shown while inactive", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'if "RESET KILL SWITCH" in texts:\n'
+        '    print("RESET KILL SWITCH button shown while inactive", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        'print("DRAWER_SECTION_HIDDEN_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_drawer_probe(
+        active=False,
+        assertions=assertions,
+        label="drawer kill-switch section hidden when inactive",
+        ok_token="DRAWER_SECTION_HIDDEN_OK",
+    )
