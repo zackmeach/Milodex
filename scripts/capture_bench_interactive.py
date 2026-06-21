@@ -32,7 +32,6 @@ from milodex.gui.fonts import load_fonts
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.read_models import BenchState, FrontPageState, LedgerState
-from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
 
@@ -68,7 +67,6 @@ def _make_states():
     )
     return (
         operational_state,
-        StrategyBankState(db_path=db_path),
         FrontPageState(db_path=db_path, configs_dir=configs_dir),
         BenchState(db_path=db_path, configs_dir=configs_dir),
         LedgerState(db_path=db_path),
@@ -116,7 +114,6 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     states = _make_states()
     (
         operational_state,
-        strategy_bank_state,
         front_page_state,
         bench_state,
         ledger_state,
@@ -125,7 +122,6 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     register_qml_types(
         theme_manager=theme_manager,
         operational_state=operational_state,
-        strategy_bank_state=strategy_bank_state,
         front_page_state=front_page_state,
         bench_state=bench_state,
         ledger_state=ledger_state,
