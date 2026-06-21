@@ -43,17 +43,45 @@ conftest application singleton does not propagate into subprocesses, so that tes
 
 ---
 
-## Quarantined: Qt/QML subprocess pollution (2026-05-17)
+## RESOLVED 2026-06-21: showcase subprocess test un-quarantined
 
-### Affected test IDs
+`tests/milodex/gui/test_app.py::test_design_system_showcase_loads_without_errors_via_subprocess`
+is **no longer skipped.** Its `@pytest.mark.skip` + `@pytest.mark.flaky_qt_pollution` markers were
+removed, and the now-unused `flaky_qt_pollution` marker was dropped from `pyproject.toml`.
+
+**Why it's safe now:** the showcase flake shared its root cause with its sibling
+`test_main_qml_loads_without_errors_via_subprocess` — the `QFontDatabase: Cannot find font directory`
+symptom, fixed once fonts were bundled under `src/milodex/gui/assets/fonts/` (loaded by
+`gui/fonts.py:load_fonts`). The sibling was un-quarantined earlier for that reason; the showcase
+lagged only because nobody re-verified it.
+
+**Evidence (2026-06-21):** un-skipped and run **10 times** in full-suite context
+(`pytest tests/milodex/gui` under the default xdist `-n auto`, 9 runs + 1 `--runxfail` pass) — green
+every run (`847 passed`). If it ever shows a lone failure in a full-suite run, re-run it by node ID in
+isolation to confirm before calling it a regression.
+
+> **The inline-instantiation xfails are a DIFFERENT, still-open residual — do NOT remove them.** Four
+> tests in `test_qml_components.py` (`test_button_danger_instantiates_with_correct_variant`,
+> `test_status_pill_paper_instantiates`, `test_status_pill_killed_instantiates`,
+> `test_strategy_row_instantiates_and_exposes_properties`) stay `@pytest.mark.xfail(strict=False)`.
+> Verified 2026-06-21 under `--runxfail`: they still genuinely FAIL in full-suite xdist
+> (`QQmlComponent.Error` — the process-global QML *type-cache* compiles the Milodex module before
+> QtQuick.Layouts resolves). They pass in isolation (the occasional xpass). That type-cache root cause
+> is NOT fixed, so these correctly remain xfail.
+
+---
+
+## Historical: Qt/QML subprocess pollution quarantine (2026-05-17 → resolved 2026-06-21 above)
+
+### Affected test IDs (now un-quarantined — see Resolved section above)
 
 ```
 tests/milodex/gui/test_app.py::test_design_system_showcase_loads_without_errors_via_subprocess
 ```
 
 (Originally two tests were quarantined here. `test_anchor_surface_loads_without_errors_via_subprocess`
-was removed when HR-4 (#220) deleted `AnchorSurface.qml`, so only the showcase load-smoke test remains
-quarantined.)
+was removed when HR-4 (#220) deleted `AnchorSurface.qml`, so only the showcase load-smoke test remained
+quarantined — and it is now resolved.)
 
 ### Same class, deliberately NOT quarantined
 
