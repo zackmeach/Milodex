@@ -9,6 +9,9 @@ raises immediately on all other errors.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypeVar
+
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
@@ -41,6 +44,8 @@ from milodex.broker.models import (
 )
 from milodex.config import get_alpaca_credentials, get_trading_mode
 from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
+
+_T = TypeVar("_T")
 
 # Map our enums to Alpaca's
 _SIDE_MAP = {
@@ -211,6 +216,38 @@ class AlpacaBrokerClient(BrokerClient):
                 raise BrokerConnectionError(str(e)) from e
             raise
 
+    def _read_call(self, op: str, call: Callable[[], _T]) -> _T:
+        """Run an idempotent read-path broker call, translating vendor exceptions
+        into the broker-agnostic hierarchy so callers never see a raw ``APIError``
+        (the broker-boundary contract, mirroring :meth:`submit_order`).
+
+        Pure, MINIMAL exception translation — it does NOT alter order/position/
+        account data flow or any money path; on success it returns the call's
+        result unchanged. Scope is deliberately narrow to keep the blast radius
+        small: a 401 / forbidden / auth ``APIError`` becomes an actionable
+        :class:`BrokerAuthError`, and a connect/timeout failure becomes a
+        :class:`BrokerConnectionError`. EVERY OTHER exception — including a
+        non-auth ``APIError`` such as a 429 that exhausted its retries — is
+        re-raised UNCHANGED, preserving the existing read-path contract (and
+        never swallowing a real bug).
+        """
+        try:
+            return call()
+        except APIError as exc:
+            text = str(exc).lower()
+            if "unauthorized" in text or "forbidden" in text or "auth" in text:
+                raise BrokerAuthError(
+                    f"Broker authentication failed during {op}: check "
+                    "ALPACA_API_KEY / ALPACA_SECRET_KEY in .env "
+                    "(and that TRADING_MODE matches the key type)."
+                ) from exc
+            raise
+        except Exception as exc:
+            text = str(exc).lower()
+            if "connect" in text or "timeout" in text:
+                raise BrokerConnectionError(f"{op} could not reach the broker: {exc}") from exc
+            raise
+
     def get_order(self, order_id: str) -> Order:
         """Get order status from Alpaca.
 
@@ -250,12 +287,18 @@ class AlpacaBrokerClient(BrokerClient):
             status=status_map.get(status, QueryOrderStatus.ALL),
             limit=limit,
         )
-        alpaca_orders = call_with_retry_on_transient(lambda: self._client.get_orders(request))
+        alpaca_orders = self._read_call(
+            "get_orders",
+            lambda: call_with_retry_on_transient(lambda: self._client.get_orders(request)),
+        )
         return [self._translate_order(o) for o in alpaca_orders]
 
     def get_positions(self) -> list[Position]:
         """Get all open positions from Alpaca."""
-        alpaca_positions = call_with_retry_on_transient(lambda: self._client.get_all_positions())
+        alpaca_positions = self._read_call(
+            "get_positions",
+            lambda: call_with_retry_on_transient(lambda: self._client.get_all_positions()),
+        )
         return [self._translate_position(p) for p in alpaca_positions]
 
     def get_position(self, symbol: str) -> Position | None:
@@ -270,7 +313,10 @@ class AlpacaBrokerClient(BrokerClient):
 
     def get_account(self) -> AccountInfo:
         """Get account summary from Alpaca."""
-        acct = call_with_retry_on_transient(lambda: self._client.get_account())
+        acct = self._read_call(
+            "get_account",
+            lambda: call_with_retry_on_transient(lambda: self._client.get_account()),
+        )
         equity = float(acct.equity)
         prev_close_raw = getattr(acct, "equity_previous_close", None)
         if prev_close_raw is None:
@@ -286,5 +332,8 @@ class AlpacaBrokerClient(BrokerClient):
 
     def is_market_open(self) -> bool:
         """Check if the market is currently open."""
-        clock = call_with_retry_on_transient(lambda: self._client.get_clock())
+        clock = self._read_call(
+            "is_market_open",
+            lambda: call_with_retry_on_transient(lambda: self._client.get_clock()),
+        )
         return clock.is_open
