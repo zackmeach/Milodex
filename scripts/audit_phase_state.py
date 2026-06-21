@@ -102,6 +102,11 @@ _ALLOWLISTED_DOCS = frozenset(
         # "Phase 1 is market-only"), not claims that Phase 1 is the current phase.
         "docs/architecture/roadmaps/2026-06-10-hardening-roadmap.md",
         "docs/architecture/2026-06-13-cross-process-submit-serialization-design.md",
+        # Phase-1 mentions here are scope qualifiers: a SIP/Massive data path
+        # "deferred to Phase 1.2+" and a citation to the phase-1 instrument
+        # whitelist ADR — not claims that Phase 1 is the current phase.
+        "docs/INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md",
+        "docs/INTRADAY_ETF_EVIDENCE_PHASE2_ORCHESTRATION_BRIEF.md",
     }
 )
 
