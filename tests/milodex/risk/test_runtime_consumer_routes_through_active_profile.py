@@ -140,7 +140,7 @@ def _setup_configs(tmp_path: Path, profile: str) -> None:
 
 
 def test_execution_service_uses_active_profile_conservative(tmp_path, monkeypatch):
-    """ADR 0054 Task 28: conservative profile flows into EvaluationContext.risk_defaults."""
+    """R-EXE-008 / ADR 0054: conservative profile flows into EvaluationContext.risk_defaults."""
     monkeypatch.chdir(tmp_path)
     _setup_configs(tmp_path, "conservative")
 

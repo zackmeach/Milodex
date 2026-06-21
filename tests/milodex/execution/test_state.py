@@ -92,3 +92,23 @@ def test_activate_writes_event_type_literal_activated(tmp_path):
     assert len(events) == 1
     assert events[0].event_type == "activated"
     assert events[0].reason == "daily loss threshold"
+
+
+def test_kill_switch_stays_active_without_explicit_reset(tmp_path):
+    """R-EXE-006: kill-switch reset requires an explicit operator action; no auto-resume.
+
+    Once activated, repeated get_state() reads (simulating time passing, re-evaluation,
+    or restarts) keep returning active=True until an explicit reset() clears it.
+    """
+    event_store = EventStore(tmp_path / "milodex.db")
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+
+    store.activate("daily loss threshold breached")
+    for _ in range(5):
+        assert store.get_state().active is True
+
+    store.reset()
+    assert store.get_state().active is False

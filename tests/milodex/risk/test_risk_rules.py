@@ -341,6 +341,7 @@ def test_order_value_oversized_sell_beyond_held_is_still_capped():
 
 
 def test_kill_switch_blocks_reducing_sell():
+    """R-EXE-016: an active kill switch blocks even an exposure-reducing sell."""
     # DC-1 (2026-06-10): the kill switch is an ABSOLUTE halt. The reducing-order
     # permissiveness applies to the order-value cap and the reconciliation gate,
     # NOT the kill switch — an active switch blocks even a covered reducing sell.
@@ -2337,7 +2338,7 @@ def test_remaining_notional_overfill_clamps_to_zero():
 
 
 def test_checks_registry_is_account_complete():
-    """Guard against doc/code drift: the enforced-check registry stays at 17
+    """R-EXE-004. Guard against doc/code drift: the enforced-check registry stays at 17
     (HR-7 added _check_max_trades_per_day; P2-07 added
     _check_disable_conditions per R-STR-014; concurrent-intraday PR2 added
     _check_opposite_side_order) and never silently lists a sector/correlation
@@ -2788,7 +2789,7 @@ def test_duplicate_order_not_blocked_across_strategies(tmp_path):
 
 
 def test_duplicate_order_blocked_for_same_strategy(tmp_path):
-    """A strategy's own recent same-side order on the symbol still vetoes a
+    """R-EXE-009. A strategy's own recent same-side order on the symbol still vetoes a
     duplicate — the protective intent is preserved, just scoped per-strategy."""
     store = _store_with_recent_submit(tmp_path, strategy_name="alpha")
     decision = RiskEvaluator().evaluate(

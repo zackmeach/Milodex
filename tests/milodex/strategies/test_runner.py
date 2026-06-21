@@ -1254,7 +1254,7 @@ def test_runner_sigint_controlled_path_finishes_current_eval_cleanly(
     risk_defaults_file: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
-    """First Ctrl-C + operator picks 'c' => clean exit, no order cancel."""
+    """R-EXE-011: first Ctrl-C + operator picks 'c' => clean exit, no order cancel."""
     runner, broker, event_store, kill_switch_store = _build_sigint_runner(
         tmp_path=tmp_path,
         strategy_config_dir=strategy_config_dir,

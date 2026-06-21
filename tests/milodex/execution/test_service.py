@@ -290,6 +290,7 @@ def test_preview_does_not_submit(
     sample_account,
     submitted_order,
 ):
+    """R-EXE-003: preview() runs evaluation and never reaches the broker."""
     service, broker = build_service(
         tmp_path,
         risk_defaults_file,
@@ -684,6 +685,7 @@ def test_paper_submit_requires_paper_mode(
 def test_kill_switch_status_and_activation(
     tmp_path, risk_defaults_file, latest_bar, submitted_order
 ):
+    """R-EXE-005 / R-EXE-010: daily-loss breach halts submission and cancels open orders."""
     account = AccountInfo(
         equity=10_000.0,
         cash=8_000.0,
@@ -1215,7 +1217,7 @@ def test_any_block_reason_never_submits(
     monkeypatch,
     scenario,
 ):
-    """Chokepoint invariant: for EVERY block reason, the broker receives zero
+    """R-EXE-002. Chokepoint invariant: for EVERY block reason, the broker receives zero
     submit calls.
 
     Meaningfulness verified: temporarily mutating the chokepoint in service.py
@@ -2024,3 +2026,127 @@ def test_submit_paper_defaults_time_in_force_to_day(
     assert result.status == ExecutionStatus.SUBMITTED
     assert broker.submit_calls, "broker.submit_order was never called"
     assert broker.submit_calls[0]["time_in_force"] == TimeInForce.DAY
+
+
+def test_kill_switch_state_identical_for_rule_and_operator_paths(
+    tmp_path, risk_defaults_file, latest_bar, submitted_order
+):
+    """R-EXE-012: rule-triggered and operator-invoked kill switches reach identical state.
+
+    Both persist an "activated" event (active=True) that survives a fresh store read
+    (manual reset required on next startup). The rule-triggered path also cancels open
+    orders at the broker.
+    """
+    loss_account = AccountInfo(
+        equity=10_000.0,
+        cash=8_000.0,
+        buying_power=8_000.0,
+        portfolio_value=10_000.0,
+        daily_pnl=-1_500.0,
+    )
+    provider = StubProvider(latest_bar)
+
+    # Path A: rule-triggered (daily-loss breach via submit_paper).
+    broker_a = StubBroker(account=loss_account, submit_order=submitted_order)
+    event_store_a = EventStore(tmp_path / "a" / "milodex.db")
+    _append_clean_reconciliation_run(event_store_a)
+    store_a = KillSwitchStateStore(event_store=event_store_a, legacy_path=tmp_path / "a.json")
+    service_a = ExecutionService(
+        broker_client=broker_a,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store_a,
+        event_store=event_store_a,
+    )
+    service_a.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+    assert service_a.get_kill_switch_state().active is True
+    assert broker_a.cancel_all_calls == 1
+
+    # Path B: operator-invoked (StrategyRunner -> service.trigger_kill_switch).
+    broker_b = StubBroker(account=loss_account, submit_order=submitted_order)
+    event_store_b = EventStore(tmp_path / "b" / "milodex.db")
+    _append_clean_reconciliation_run(event_store_b)
+    store_b = KillSwitchStateStore(event_store=event_store_b, legacy_path=tmp_path / "b.json")
+    service_b = ExecutionService(
+        broker_client=broker_b,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store_b,
+        event_store=event_store_b,
+    )
+    service_b.trigger_kill_switch("operator requested kill switch")
+    assert service_b.get_kill_switch_state().active is True
+
+    # Identical persisted state: each path wrote exactly one "activated" event ...
+    assert [e.event_type for e in event_store_a.list_kill_switch_events()] == ["activated"]
+    assert [e.event_type for e in event_store_b.list_kill_switch_events()] == ["activated"]
+
+    # ... that survives a fresh store reading the same durable log (manual reset required).
+    fresh_a = KillSwitchStateStore(
+        event_store=EventStore(tmp_path / "a" / "milodex.db"), legacy_path=tmp_path / "a.json"
+    )
+    fresh_b = KillSwitchStateStore(
+        event_store=EventStore(tmp_path / "b" / "milodex.db"), legacy_path=tmp_path / "b.json"
+    )
+    assert fresh_a.get_state().active is True
+    assert fresh_b.get_state().active is True
+
+
+def test_kill_switch_trip_writes_reviewable_incident_record(
+    tmp_path, risk_defaults_file, latest_bar, submitted_order
+):
+    """R-EXE-015: a kill-switch trip writes a reviewable incident record.
+
+    Covers (a) the triggering condition captured in the durable event reason,
+    (c) the durable activation mark, (d)+(f) read-only state inspection during the halt,
+    and (e) an explicit reset writing a linked follow-on "reset" event with the activation
+    record preserved. Full local/broker state snapshot (sub-field b) is not yet in the
+    kill_switch_events schema (deferred).
+    """
+    loss_account = AccountInfo(
+        equity=10_000.0,
+        cash=8_000.0,
+        buying_power=8_000.0,
+        portfolio_value=10_000.0,
+        daily_pnl=-1_500.0,
+    )
+    broker = StubBroker(account=loss_account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(event_store=event_store, legacy_path=tmp_path / "kill_switch.json")
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+    assert "kill_switch_threshold_breached" in result.risk_decision.reason_codes
+
+    # (a) + (c): a durable "activated" event capturing a non-empty triggering condition.
+    events = event_store.list_kill_switch_events()
+    assert len(events) == 1
+    activation = events[0]
+    assert activation.event_type == "activated"
+    assert activation.reason
+
+    # (d) + (f): read-only state inspection works during the halt; no order was submitted.
+    during_halt = service.get_kill_switch_state()
+    assert during_halt.active is True
+    assert during_halt.reason
+    assert during_halt.last_triggered_at is not None
+    assert broker.submit_calls == []
+
+    # (e): an explicit reset writes a linked follow-on "reset" event; activation preserved.
+    service.reset_kill_switch()
+    events_after = event_store.list_kill_switch_events()
+    assert [e.event_type for e in events_after] == ["activated", "reset"]
+    assert events_after[0].id == activation.id
+    assert service.get_kill_switch_state().active is False
