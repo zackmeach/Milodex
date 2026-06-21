@@ -141,7 +141,7 @@ strategy:
     config.path = config_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
-    config.tempo = {"bar_size": "5Min"}
+    config.tempo = {"bar_size": "5Min", "position_lifecycle": "same_session"}
     config.universe = universe
     config.risk = {"max_position_pct": 0.50, "max_positions": 1}
 

@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 
 _VALID_STAGES = {"idle", "backtest", "paper", "micro_live", "live"}
 _VALID_BAR_SIZES = {"1D", "1H", "30Min", "15Min", "5Min", "1Min"}
+_VALID_POSITION_LIFECYCLES = {"same_session", "multi_session"}
 
 
 @dataclass(frozen=True)
@@ -300,6 +301,20 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     if tempo["bar_size"] not in _VALID_BAR_SIZES:
         msg = (
             f"{path}: strategy.tempo.bar_size must be one of {', '.join(sorted(_VALID_BAR_SIZES))}"
+        )
+        raise ValueError(msg)
+    position_lifecycle = tempo.get("position_lifecycle")
+    if tempo["bar_size"] != "1D" and position_lifecycle is None:
+        raise ValueError(
+            f"{path}: strategy.tempo.position_lifecycle is required for non-daily strategies"
+        )
+    if (
+        position_lifecycle is not None
+        and position_lifecycle not in _VALID_POSITION_LIFECYCLES
+    ):
+        msg = (
+            f"{path}: strategy.tempo.position_lifecycle must be one of "
+            f"{', '.join(sorted(_VALID_POSITION_LIFECYCLES))}"
         )
         raise ValueError(msg)
 

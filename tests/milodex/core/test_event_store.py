@@ -970,6 +970,35 @@ def test_append_explanation_allows_operator_without_ancestor(tmp_path):
     assert all(r.session_id is None and r.backtest_run_id is None for r in rows)
 
 
+def test_list_explanations_orders_by_recorded_at_then_id(tmp_path):
+    """Readers receive chronological order even when insertion IDs are backdated."""
+    store = EventStore(tmp_path / "milodex.db")
+    newer = datetime(2026, 5, 7, 15, 0, tzinfo=UTC)
+    older = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="operator",
+                recorded_at=newer,
+                latest_bar_timestamp=newer,
+                symbol="NEWER",
+            )
+        )
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="operator",
+                recorded_at=older,
+                latest_bar_timestamp=older,
+                symbol="OLDER",
+            )
+        )
+    )
+
+    assert [row.symbol for row in store.list_explanations()] == ["OLDER", "NEWER"]
+
+
 # ---------------------------------------------------------------------------
 # EventStore.batched() — backtest-scoped explanation buffer (perf Fix A)
 # ---------------------------------------------------------------------------

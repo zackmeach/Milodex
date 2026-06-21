@@ -68,6 +68,7 @@ strategy:
     market_regime_ma_length: 200
   tempo:
     bar_size: "{bar_size}"
+    position_lifecycle: "same_session"
     min_hold_days: 1
     max_hold_days: 5
   risk:

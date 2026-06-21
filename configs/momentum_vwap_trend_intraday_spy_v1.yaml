@@ -56,6 +56,7 @@ strategy:
 
   tempo:
     bar_size: "5Min"
+    position_lifecycle: "same_session"
     min_hold_days: 0
     max_hold_days: 1
 

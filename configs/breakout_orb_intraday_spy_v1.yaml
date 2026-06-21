@@ -53,6 +53,7 @@ strategy:
 
   tempo:
     bar_size: "5Min"
+    position_lifecycle: "same_session"
     # min/max_hold_days fields are part of the schema but semantically
     # less meaningful for intraday round-trip — the time-stop bar is the
     # primary holding-period control.

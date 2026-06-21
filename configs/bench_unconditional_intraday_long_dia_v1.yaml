@@ -17,6 +17,7 @@ strategy:
     per_position_notional_pct: 0.1
   tempo:
     bar_size: 5Min
+    position_lifecycle: "same_session"
     min_hold_days: 0
     max_hold_days: 1
   risk:

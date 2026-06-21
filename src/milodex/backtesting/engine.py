@@ -49,6 +49,7 @@ from milodex.backtesting.intraday_simulation import (
     _latest_close_at_ts,
     _mark_to_market_at_day_end,
     _opens_at_timestamp,
+    _regular_session_mask,
 )
 from milodex.backtesting.run_manifest import (
     BacktestRunManifestInput,
@@ -1162,11 +1163,12 @@ class BacktestEngine:
         """Intraday simulation path (Phase E).
 
         Decision/fill model: a strategy decision made at bar T's close is
-        queued as a pending order and fills at bar T+1's open.  Within a day
+        queued as a pending order and fills at bar T+1's open. Within a day
         the event timeline merges fill events (bar starts) and decision events
-        (bar completions) in strict chronological order.  Across days, a SELL
-        queued at the final bar of day N fills at day N+1's first fill event
-        (the opening bar of day N+1).
+        (bar completions) in strict chronological order. Strategies declaring
+        ``tempo.position_lifecycle: same_session`` use only US-equity RTH bars
+        and realize remaining positions at that session's RTH close. Other
+        intraday strategies may carry positions and pending exits across days.
 
         See docs/superpowers/specs/2026-05-20-intraday-backtest-engine-design.md.
         """
@@ -1186,11 +1188,10 @@ class BacktestEngine:
             )
 
         bar_size_minutes = bar_size_minutes_from_timeframe(timeframe)
-
-        kernel = self._new_simulation_kernel(
-            all_bars=all_bars,
-            initial_equity=initial_equity,
+        position_lifecycle = str(
+            self._loaded.config.tempo.get("position_lifecycle", "multi_session")
         )
+        same_session = position_lifecycle == "same_session"
 
         # ------------------------------------------------------------------
         # Correction 6: precompute per-symbol lookup maps once.
@@ -1202,13 +1203,27 @@ class BacktestEngine:
 
         for symbol, barset in all_bars.items():
             df = barset.to_dataframe()
-            per_symbol_df[symbol] = df
             ts_utc = pd.to_datetime(df["timestamp"], utc=True)
             dti = pd.DatetimeIndex(ts_utc)
+            if same_session:
+                rth_mask = _regular_session_mask(dti)
+                df = df.loc[rth_mask].reset_index(drop=True)
+                dti = dti[rth_mask]
+            per_symbol_df[symbol] = df
             per_symbol_ts_utc[symbol] = dti
             per_symbol_open_by_ts[symbol] = dict(
                 zip(dti, df["open"].astype(float).values, strict=True)
             )
+
+        simulation_bars = (
+            {symbol: BarSet(df) for symbol, df in per_symbol_df.items()}
+            if same_session
+            else all_bars
+        )
+        kernel = self._new_simulation_kernel(
+            all_bars=simulation_bars,
+            initial_equity=initial_equity,
+        )
 
         # Initialise cursors: exclusive-end index into each symbol's bar array.
         # cursor[sym] == 0 → no bars visible yet (iloc[:0] is empty).
@@ -1234,6 +1249,7 @@ class BacktestEngine:
                 per_symbol_ts_utc=per_symbol_ts_utc,
                 day=day,
                 bar_size_minutes=bar_size_minutes,
+                regular_session_only=same_session,
             )
 
             # ------------------------------------------------------------------
@@ -1322,10 +1338,11 @@ class BacktestEngine:
                     pending = drain.remaining
 
             # ------------------------------------------------------------------
-            # 4. Session-end force-flatten — realize ALL open intraday positions
-            #    at the day's close (overnight-null fix).
+            # 4. Session-end force-flatten — for strategies that explicitly
+            #    declare tempo.position_lifecycle: same_session, realize all
+            #    remaining positions at the RTH close.
             #
-            # A max_hold_days:1 intraday position must be FLAT by session close.
+            # A same-session position must be FLAT by session close.
             # Two ways a position is still open here:
             #   (a) the strategy never emitted an exit — e.g. a missing time-stop
             #       bar (strategies/_session_intraday.is_time_stop_bar is exact
@@ -1362,26 +1379,35 @@ class BacktestEngine:
             #   (c) pending BUYs at the boundary are LEFT to the existing
             #       next-open path — a final-bar ENTRY is a separate, rarer
             #       concern, explicitly out of scope here.
-            flatten_closes = _last_closes_on_day(
-                symbols=list(kernel.positions.keys()),
-                per_symbol_df=per_symbol_df,
-                per_symbol_ts_utc=per_symbol_ts_utc,
-                day=day,
-            )
-            flattened_symbols = kernel.liquidate_open_positions(
-                closes=flatten_closes,
-                day=day,
-                session_id=session_id,
-                db_run_id=db_run_id,
-                reason=DecisionReasoning(
-                    rule="backtest.intraday_session_end_flatten",
-                    narrative=(
-                        "Engine force-flattened an open intraday position at "
-                        "session close (realizing any final-bar / un-exited "
-                        "position so it is flat by close, not carried overnight)."
+            flattened_symbols: set[str] = set()
+            if same_session:
+                pending_exit_reason_by_symbol = {
+                    order.intent.normalized_symbol(): order.reasoning
+                    for order in pending
+                    if order.intent.side is OrderSide.SELL
+                }
+                flatten_closes = _last_closes_on_day(
+                    symbols=list(kernel.positions.keys()),
+                    per_symbol_df=per_symbol_df,
+                    per_symbol_ts_utc=per_symbol_ts_utc,
+                    day=day,
+                    regular_session_only=True,
+                    allow_prior=False,
+                )
+                flattened_symbols = kernel.liquidate_open_positions(
+                    closes=flatten_closes,
+                    day=day,
+                    session_id=session_id,
+                    db_run_id=db_run_id,
+                    reason=DecisionReasoning(
+                        rule="backtest.intraday_session_end_flatten",
+                        narrative=(
+                            "Engine force-flattened an open same-session position at "
+                            "the regular-session close."
+                        ),
                     ),
-                ),
-            )
+                    reasons_by_symbol=pending_exit_reason_by_symbol,
+                )
             # Drop the now-redundant pending SELL for every symbol the flatten
             # actually closed, so it does NOT also fill at the next session's
             # open (double-sell / negative position). A symbol the flatten could
@@ -1413,6 +1439,7 @@ class BacktestEngine:
                 per_symbol_ts_utc=per_symbol_ts_utc,
                 day=day,
                 cash=kernel.cash,
+                regular_session_only=same_session,
             )
             equity_curve.append((day, eod_equity))
 

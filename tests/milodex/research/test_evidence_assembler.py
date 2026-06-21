@@ -587,6 +587,17 @@ def test_single_registry_append(tmp_path):
     json.dumps(ev.evidence_json)  # serializable
 
 
+def test_registry_run_ids_preserve_candidate_and_baseline_provenance(tmp_path):
+    batch = _make_batch_result()
+    report, _row_id, store = _assemble(tmp_path, batch)
+    expected = {row.strategy_id: row.run_id for row in batch.rows}
+
+    assert report.run_ids == expected
+    event = store.get_experiment("intraday-etf-meanrev-2026-06")
+    assert event is not None
+    assert event.evidence_json["run_ids"] == expected
+
+
 def _decisive_loss_overrides():
     """Candidate ≥2.0 below ALL three nulls on every symbol (17/17 ≥ 14)."""
     overrides = {sym: {"oos_sharpe": -3.0} for sym in _UNIVERSE}

@@ -40,6 +40,7 @@ from milodex.strategies._session_intraday import (
     is_time_stop_bar,
     opening_range_bars,
     session_date_et,
+    to_eastern,
 )
 from milodex.strategies.base import (
     DecisionReasoning,
@@ -127,11 +128,17 @@ class BreakoutOpeningRangeRetestIntradayStrategy(Strategy):
         # and manufactures false breakouts on data gaps.
         # ponytail: bar size is 5Min for all intraday ETF strategies in this family.
         bar_minutes = 5
-        expected_range_bars = opening_range_minutes // bar_minutes
-        if len(range_bars) < expected_range_bars:
+        expected_offsets = set(range(0, opening_range_minutes, bar_minutes))
+        actual_offsets = {
+            (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
+            for eastern in (to_eastern(ts) for ts in range_bars["timestamp"])
+        }
+        if actual_offsets != expected_offsets:
+            missing_offsets = sorted(expected_offsets - actual_offsets)
+            unexpected_offsets = sorted(actual_offsets - expected_offsets)
             return _no_signal(
-                f"incomplete opening range: {len(range_bars)}/{expected_range_bars} bars "
-                f"present (data gap?)"
+                "incomplete opening range: exact 5-minute grid mismatch "
+                f"(missing offsets={missing_offsets}, unexpected offsets={unexpected_offsets})"
             )
         range_high = float(range_bars["high"].max())
         range_low = float(range_bars["low"].min())

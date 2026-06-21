@@ -1,14 +1,36 @@
 # Intraday ETF Evidence — Phase 2 Complete (Tiers 0–4)
 
 **Branch:** `intraday-etf-evidence-phase2` — **NOT merged. Operator reviews and merges.**
-Off master `b5962e0`. Suite **3190 passed, 1 skipped, 4 xfailed**. Master untouched. **Post-review corrections (2026-06-20) below** — an outside review caught a BLOCKER + 4 MAJOR this gate's thermonuclear missed.
+Off master `b5962e0`. Master untouched. The historical suite result was **3190 passed, 1 skipped, 4 xfailed**; it predates the second-pass remediation below and is not a current verification claim.
 
 ---
 
-## Post-review corrections (2026-06-20) — an outside review found a BLOCKER the gate missed
+## Second-pass remediation (2026-06-20) — current status
+
+A second adversarial pass found the first correction incomplete: after-hours bars could still fill
+a 15:55 ET exit at 16:05, every non-daily strategy was force-flattened regardless of lifecycle,
+screen JSON provenance remained forgeable, baseline run IDs were omitted from registry evidence,
+ORB completeness still used a count rather than the exact timestamp grid, and explanation readers
+still received ID order.
+
+The branch now uses an explicit `tempo.position_lifecycle` policy. US-equity intraday configs are
+`same_session` and use RTH-only timelines/close prices; 24/7 crypto configs are `multi_session` and
+may carry positions across outer days. Screen evidence validates the durable run, completed status,
+strategy/window/config-hash consistency, persisted metrics, exact roster, and duplicates while
+accepting the exact legitimate error-row shape. Registry evidence keeps candidate and baseline run
+IDs, ORB requires the exact `{0,5,10,15,20,25}` opening offsets, and explanation reads order by
+`(recorded_at, id)`.
+
+**Evidence status:** experiment-registry row 2 and its 2.47 margin are superseded. No numerical
+verdict or margin is current until the 68-cell screen is rerun with the new config hashes and the
+result is reassembled into a new append-only registry row.
+
+---
+
+## Historical first-pass corrections (2026-06-20) — superseded
 
 An external adversarial review (Codex) found **1 BLOCKER + 4 MAJOR + 2 MINOR** that the thermonuclear
-gate (which had called this "merge-ready, zero BLOCKER/MAJOR") missed. All seven were independently
+gate's original merge verdict missed. All seven were independently
 re-derived against the code and **confirmed real**, then fixed on this branch.
 
 | Finding | Sev | Fix |
@@ -28,22 +50,24 @@ held — risk/promotion/broker/kill-switch untouched) and weak on *statistical/m
 
 **Corrected evidence (held-to-close engine + fixed predicate).** The 68-cell screen was re-run on the
 corrected engine and re-assembled (experiment registry **row 2**, append-only — row 1 preserved).
-Verdict still **`rejected`** (rsi2 below all three nulls on **17/17** symbols), but the decisiveness
-was overstated: tightest margin **4.90 → 2.47 Sharpe** (still ≥ 2.0; the nulls dropped once their
-overnight-drift return was removed — e.g. random-matched TLT −3.37 → −5.16). The no-edge conclusion
-holds; its apparent margin was nearly 2× inflated. Evidence: `docs/reviews/working_lane_evidence_phase2.md`.
+That historical verdict remained **`rejected`** (rsi2 below all three nulls on **17/17** symbols),
+but the then-reported margin was materially reduced once the nulls' overnight-drift return was
+removed (e.g. random-matched TLT −3.37 → −5.16). This result is now itself superseded by the
+second-pass remediation above and is not current evidence. The prior report remains at
+`docs/reviews/working_lane_evidence_phase2.md` for audit history.
 
-**Verification after fixes:** suite **3190 passed, 1 skipped, 4 xfailed**; ruff clean; engine fix
+**Historical verification after those fixes:** suite **3190 passed, 1 skipped, 4 xfailed**; ruff clean; engine fix
 risk-invariant SAFE (attack log). The "merge-ready" verdict below is **superseded** by this section —
 merge-readiness now rests on these fixes + the corrected rerun, not the original thermonuclear pass.
 
 ---
 
-## What the lane can now do (definition of done — met)
+## Intended lane outcome (fresh evidence rerun pending)
 
 Freeze the 17-ETF universe (`universe.liquid_etf_core.v1`) → warm its 5Min cache → produce a readiness report across all 17 → run a price-action candidate + the required baselines **per-symbol across all 17** (real fan-out, not `sorted(universe)[0]`) → compose an evidence report + an experiment-registry entry, every verdict explicitly labeled **IEX-exploratory / non-durable** (ADR 0017).
 
-Proven end-to-end: the rsi2 intraday candidate was run, assembled, adjudicated, and registered (below).
+The historical rsi2 run proved the orchestration path, but its verdict is superseded. A fresh run is
+required to prove the current RTH/lifecycle semantics end-to-end.
 
 ## Phase map
 
@@ -59,9 +83,11 @@ Proven end-to-end: the rsi2 intraday candidate was run, assembled, adjudicated, 
 
 **Perf:** Fix A (explanation batching) + Fix B (date idiom) landed. **Fix C was confirmed a no-op** (measured: snapshots are once-per-sweep; cProfile shows zero per-bar fsync — the remainder is CPU-bound pandas tz-conversion, not batchable).
 
-## First real evidence (governance proof)
+## Historical evidence (superseded governance proof)
 
-`research evidence` over the 68-cell screen → verdict **`candidate_underperforms`**, terminal_status **`rejected`** (decisive-loss predicate fired: **17/17 symbols below all three nulls, tightest margin 4.90 Sharpe** vs the ≥2.0 threshold; median ΔSharpe −6.25 vs unconditional). Registered as `intraday-rsi2-etf-evidence-2026q2` with `durable=false`, `iex_exploratory=true`, `revisitable=true`. **The candidate is decisively worse than random on every symbol — a clean no-edge detection** (expected for a known-losing canary), labeled non-durable on IEX.
+The original 68-cell screen and its later 2.47 correction are retained only as append-only historical
+audit evidence. Both were computed before the current RTH/session-lifecycle semantics and must not
+be cited as the current candidate verdict. See “Second-pass remediation” above.
 
 ## Verdict policy (operator-decided, second-opinion-adjudicated)
 
@@ -69,7 +95,9 @@ Proven end-to-end: the rsi2 intraday candidate was run, assembled, adjudicated, 
 
 ## Thermonuclear final gate
 
-**Merge-ready, zero BLOCKER/MAJOR.** 7 finders → 10 findings → 8 verified (all MINOR/NIT), 2 overstated→NIT, 0 dismissed. Risk layer, promotion gates, kill switch, broker path: **untouched**. Migration 015 strictly additive (`MIN_COMPATIBLE` unchanged at 12). Folded-in fixes are in `0e0e623`.
+**Historical verdict, superseded.** The thermonuclear pass reported “merge-ready, zero
+BLOCKER/MAJOR,” but two later adversarial passes disproved that assessment. Merge readiness now
+requires a current clean verification run and a fresh 68-cell evidence rerun.
 
 ### Deferred follow-ups (safe, post-merge — not blocking)
 
@@ -79,7 +107,7 @@ Proven end-to-end: the rsi2 intraday candidate was run, assembled, adjudicated, 
 
 ## Standing caveat
 
-Every verdict on this surface is **IEX-exploratory / non-durable** until a SIP/consolidated provider exists (ADR 0017, deferred). The lane is *functional and governed*; its verdicts are *exploratory*. The 3 new H strategies are research candidates at `stage: backtest` — built and ready for evaluation, not promoted.
+Every verdict on this surface is **IEX-exploratory / non-durable** until a SIP/consolidated provider exists (ADR 0017, deferred). The current implementation still requires clean-suite verification and a fresh evidence run. The 3 new H strategies remain research candidates at `stage: backtest`, not promoted.
 
 ## How to review
 

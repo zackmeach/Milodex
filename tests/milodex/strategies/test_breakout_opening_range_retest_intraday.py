@@ -149,6 +149,32 @@ def test_entry_buys_on_breakout_retest_reclaim() -> None:
     assert triggers["range_high"] == _RANGE_HIGH
 
 
+def test_opening_range_requires_exact_five_minute_timestamp_grid() -> None:
+    """Replacing the required 09:55 bar with an off-grid 09:56 bar blocks entry."""
+    bars = _orb_session(
+        extra=[
+            ("10:00", 505.5, 507.0, 505.0, 506.0),
+            ("10:05", 505.8, 506.0, 504.5, 505.0),
+            ("10:10", 505.2, 507.0, 504.9, 506.5),
+        ],
+    )
+    df = bars.to_dataframe()
+    missing = pd.Timestamp("2024-01-15 09:55:00").tz_localize("America/New_York")
+    replacement = pd.Timestamp("2024-01-15 09:56:00").tz_localize("America/New_York")
+    df.loc[df["timestamp"] == missing.tz_convert("UTC"), "timestamp"] = replacement.tz_convert(
+        "UTC"
+    )
+    off_grid_bars = BarSet(df)
+
+    decision = BreakoutOpeningRangeRetestIntradayStrategy().evaluate(
+        off_grid_bars,
+        _context(positions={}, equity=100_000.0, bars=off_grid_bars),
+    )
+
+    assert decision.intents == []
+    assert "incomplete opening range" in decision.reasoning.narrative
+
+
 def test_no_entry_without_initial_breakout() -> None:
     """If no prior bar broke above range_high, phase (a) fails → no entry."""
     strategy = BreakoutOpeningRangeRetestIntradayStrategy()

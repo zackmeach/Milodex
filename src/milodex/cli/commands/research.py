@@ -20,7 +20,7 @@ import json
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from milodex.backtesting.walk_forward_batch import BatchResult, BatchRow, run_batch
 from milodex.cli._shared import (
@@ -35,6 +35,9 @@ from milodex.strategies.loader import (
     load_strategy_config,
     resolve_config_path,
 )
+
+if TYPE_CHECKING:
+    from milodex.core.event_store import EventStore
 
 # ponytail: only truly optional BatchRow keys (those with dataclass defaults)
 _BATCH_ROW_DEFAULTS: dict = {
@@ -189,33 +192,57 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     raise ValueError(msg)
 
 
-def _batch_result_from_screen_json(path: Path) -> BatchResult:
+def _batch_result_from_screen_json(path: Path, *, event_store: EventStore) -> BatchResult:
     """Rehydrate a BatchResult from a 'research screen --report-out' JSON sibling.
 
-    Inverse of _write_report's JSON serialisation. Local to this module — the
-    BatchResult dataclass intentionally has no from_dict classmethod (ponytail).
-    Tolerates missing optional keys by falling back to _BATCH_ROW_DEFAULTS.
+    Inverse of _write_report's JSON serialisation. Successful rows are accepted
+    only when they match the durable research-screen run; correctly shaped
+    screen error rows are the sole run-id-free exception.
     """
     data = json.loads(path.read_text(encoding="utf-8"))
     start_date = date.fromisoformat(data["start_date"])
     end_date = date.fromisoformat(data["end_date"])
 
+    raw_rows = data.get("rows", [])
+    selected_strategy_ids = data.get("selected_strategy_ids")
+    if not isinstance(selected_strategy_ids, list) or not all(
+        isinstance(strategy_id, str) for strategy_id in selected_strategy_ids
+    ):
+        raise ValueError("screen JSON is missing its selected_strategy_ids roster")
+    if len(selected_strategy_ids) != len(set(selected_strategy_ids)):
+        raise ValueError("screen JSON selected_strategy_ids roster contains duplicate entries")
+    row_strategy_ids = [row.get("strategy_id") for row in raw_rows]
+    if len(row_strategy_ids) != len(set(row_strategy_ids)):
+        raise ValueError("screen JSON rows contain duplicate strategy_id entries")
+    if set(row_strategy_ids) != set(selected_strategy_ids):
+        raise ValueError("screen JSON rows do not exactly match selected_strategy_ids roster")
+    successful_run_ids = [
+        row.get("run_id") for row in raw_rows if row.get("run_id") is not None
+    ]
+    if len(successful_run_ids) != len(set(successful_run_ids)):
+        raise ValueError("screen JSON rows contain duplicate run_id entries")
+
     rows: list[BatchRow] = []
-    for r in data.get("rows", []):
+    for r in raw_rows:
         raw_curve = r.get("oos_equity_curve", _BATCH_ROW_DEFAULTS["oos_equity_curve"])
         # Curve entries are {"date": "YYYY-MM-DD", "equity": float}
         curve = tuple((date.fromisoformat(pt["date"]), float(pt["equity"])) for pt in raw_curve)
         run_id = r.get("run_id")
-        # ponytail: validates provenance consistency — a missing run_id means the
-        # row was never durably committed to the backtest store; trust would be misplaced.
-        # Deeper run_id-existence check (verify against backtest_runs store) is deferred.
-        if run_id is None:
+        # A missing run_id is valid only for the exact shape emitted by _error_row.
+        if run_id is None and not _is_valid_screen_error_payload(r, curve):
             sid = r.get("strategy_id", "<unknown>")
             msg = (
                 f"screen JSON row for strategy '{sid}' has no run_id — "
                 "the row was not durably committed and cannot be trusted as evidence"
             )
             raise ValueError(msg)
+        _validate_screen_payload_row(
+            r,
+            curve=curve,
+            event_store=event_store,
+            start_date=start_date,
+            end_date=end_date,
+        )
         rows.append(
             BatchRow(
                 strategy_id=r["strategy_id"],
@@ -245,6 +272,85 @@ def _batch_result_from_screen_json(path: Path) -> BatchResult:
     )
 
 
+def _is_valid_screen_error_payload(r: dict[str, Any], curve: tuple) -> bool:
+    error = r.get("error")
+    return (
+        isinstance(error, str)
+        and bool(error)
+        and r.get("family", "") == ""
+        and r.get("trade_count", 0) == 0
+        and r.get("oos_sharpe") is None
+        and r.get("oos_max_drawdown_pct", 0.0) == 0.0
+        and r.get("oos_total_return_pct", 0.0) == 0.0
+        and r.get("single_window_dependency", False) is False
+        and r.get("gate_allowed", False) is False
+        and r.get("gate_promotion_type", "") == "error"
+        and tuple(r.get("gate_failures", [])) == (error,)
+        and curve == ()
+    )
+
+
+def _validate_screen_payload_row(
+    r: dict[str, Any],
+    *,
+    curve: tuple[tuple[date, float], ...],
+    event_store: EventStore,
+    start_date: date,
+    end_date: date,
+) -> None:
+    run_id = r.get("run_id")
+    if run_id is None:
+        return
+
+    persisted = event_store.get_backtest_run(run_id)
+    if persisted is None:
+        raise ValueError(f"screen JSON run_id '{run_id}' does not exist")
+    if persisted.status != "completed":
+        raise ValueError(f"screen JSON run_id '{run_id}' is not completed")
+    if persisted.metadata.get("source") != "research_screen":
+        raise ValueError(f"screen JSON run_id '{run_id}' is not a research-screen run")
+    if persisted.strategy_id != r["strategy_id"]:
+        raise ValueError(f"screen JSON strategy_id does not match run_id '{run_id}'")
+    if persisted.start_date.date() != start_date or persisted.end_date.date() != end_date:
+        raise ValueError(f"screen JSON window does not match run_id '{run_id}'")
+
+    manifest_strategy = persisted.metadata.get("run_manifest", {}).get("strategy", {})
+    if not persisted.config_hash or manifest_strategy.get("config_hash") != persisted.config_hash:
+        raise ValueError(f"screen JSON run_id '{run_id}' has inconsistent config hash")
+    manifest_family = manifest_strategy.get("family")
+    if manifest_family is not None and manifest_family != r.get("family", ""):
+        raise ValueError(f"screen JSON family does not match run_id '{run_id}'")
+
+    aggregate = persisted.metadata.get("oos_aggregate")
+    stability = persisted.metadata.get("stability")
+    if not isinstance(aggregate, dict) or not isinstance(stability, dict):
+        raise ValueError(f"screen JSON run_id '{run_id}' lacks persisted OOS metrics")
+    expected_values = {
+        "trade_count": aggregate.get("trade_count"),
+        "oos_sharpe": aggregate.get("sharpe"),
+        "oos_max_drawdown_pct": aggregate.get("max_drawdown_pct"),
+        "oos_total_return_pct": aggregate.get("total_return_pct"),
+        "single_window_dependency": stability.get("single_window_dependency"),
+        "oos_equity_curve": tuple(
+            (date.fromisoformat(point[0]), float(point[1]))
+            for point in aggregate.get("equity_curve", [])
+        ),
+    }
+    actual_values = {
+        "trade_count": r.get("trade_count", 0),
+        "oos_sharpe": r.get("oos_sharpe"),
+        "oos_max_drawdown_pct": r.get("oos_max_drawdown_pct", 0.0),
+        "oos_total_return_pct": r.get("oos_total_return_pct", 0.0),
+        "single_window_dependency": r.get("single_window_dependency", False),
+        "oos_equity_curve": curve,
+    }
+    for field_name, persisted_value in expected_values.items():
+        if actual_values[field_name] != persisted_value:
+            raise ValueError(
+                f"screen JSON {field_name} does not match persisted run_id '{run_id}'"
+            )
+
+
 def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     """Handle ``research evidence``: thin facade over assemble_intraday_evidence."""
     from milodex.research.evidence_assembler import assemble_intraday_evidence
@@ -254,7 +360,9 @@ def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     batch_result: BatchResult | None = None
     if args.screen_json is not None:
-        batch_result = _batch_result_from_screen_json(Path(args.screen_json))
+        batch_result = _batch_result_from_screen_json(
+            Path(args.screen_json), event_store=ctx.get_event_store()
+        )
         # ponytail: validates provenance consistency — the JSON must describe the
         # same screened window as the CLI args; a mismatch means the wrong JSON was supplied.
         if batch_result.start_date != start or batch_result.end_date != end:

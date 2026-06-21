@@ -27,7 +27,7 @@ Spec reference: ``docs/superpowers/specs/2026-05-20-intraday-backtest-engine-des
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, time
 from typing import Any
 
 import numpy as np
@@ -35,11 +35,30 @@ import pandas as pd
 
 from milodex.data.models import BarSet
 
+_EASTERN_TZ = "America/New_York"
+_RTH_OPEN = time(9, 30)
+_RTH_CLOSE = time(16, 0)
+
+
+def _is_rth_bar(bar_ts: pd.Timestamp, day: date) -> bool:
+    """Return whether ``bar_ts`` starts inside ``day``'s US-equity cash session."""
+    eastern = bar_ts.tz_convert(_EASTERN_TZ)
+    return eastern.date() == day and _RTH_OPEN <= eastern.time() < _RTH_CLOSE
+
+
+def _regular_session_mask(ts_index: pd.DatetimeIndex) -> np.ndarray:
+    """Return a vectorized mask for US-equity regular-session bar starts."""
+    eastern = ts_index.tz_convert(_EASTERN_TZ)
+    minute_of_day = eastern.hour * 60 + eastern.minute
+    return np.asarray((minute_of_day >= 9 * 60 + 30) & (minute_of_day < 16 * 60))
+
 
 def _build_intraday_event_timeline(
     per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
     day: date,
     bar_size_minutes: int,
+    *,
+    regular_session_only: bool = False,
 ) -> list[tuple[pd.Timestamp, dict[str, Any]]]:
     """Return the chronological event timeline for one trading day.
 
@@ -68,7 +87,10 @@ def _build_intraday_event_timeline(
 
     for symbol, ts_index in per_symbol_ts_utc.items():
         for bar_ts in ts_index:
-            if bar_ts.date() != day:
+            if regular_session_only:
+                if not _is_rth_bar(bar_ts, day):
+                    continue
+            elif bar_ts.date() != day:
                 continue
             fill_map.setdefault(bar_ts, []).append(symbol)
             decision_ts = bar_ts + bar_size
@@ -116,6 +138,9 @@ def _latest_close_on_day_for_symbol(
     per_symbol_df: dict[str, pd.DataFrame],
     per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
     day: date,
+    *,
+    regular_session_only: bool = False,
+    allow_prior: bool = True,
 ) -> float | None:
     """Return ``symbol``'s latest close at or before ``day``, or ``None``.
 
@@ -133,11 +158,28 @@ def _latest_close_on_day_for_symbol(
         return None
     df = per_symbol_df[symbol]
     ts_utc = per_symbol_ts_utc[symbol]
-    date_array = ts_utc.date  # numpy array of date objects
-    day_indices = np.flatnonzero(date_array == day)
+    if regular_session_only:
+        day_indices = np.array(
+            [i for i, bar_ts in enumerate(ts_utc) if _is_rth_bar(bar_ts, day)],
+            dtype=int,
+        )
+        prior_indices = np.array(
+            [
+                i
+                for i, bar_ts in enumerate(ts_utc)
+                if bar_ts.tz_convert(_EASTERN_TZ).date() < day
+                and _RTH_OPEN <= bar_ts.tz_convert(_EASTERN_TZ).time() < _RTH_CLOSE
+            ],
+            dtype=int,
+        )
+    else:
+        date_array = ts_utc.date  # numpy array of date objects
+        day_indices = np.flatnonzero(date_array == day)
+        prior_indices = np.flatnonzero(date_array < day)
     if len(day_indices) > 0:
         return float(df["close"].iloc[day_indices[-1]])
-    prior_indices = np.flatnonzero(date_array < day)
+    if not allow_prior:
+        return None
     if len(prior_indices) == 0:
         return None
     return float(df["close"].iloc[prior_indices[-1]])
@@ -148,6 +190,9 @@ def _last_closes_on_day(
     per_symbol_df: dict[str, pd.DataFrame],
     per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
     day: date,
+    *,
+    regular_session_only: bool = False,
+    allow_prior: bool = True,
 ) -> dict[str, float]:
     """Return ``{symbol: latest_close_on_day}`` for the given symbols.
 
@@ -158,7 +203,14 @@ def _last_closes_on_day(
     """
     closes: dict[str, float] = {}
     for symbol in symbols:
-        price = _latest_close_on_day_for_symbol(symbol, per_symbol_df, per_symbol_ts_utc, day)
+        price = _latest_close_on_day_for_symbol(
+            symbol,
+            per_symbol_df,
+            per_symbol_ts_utc,
+            day,
+            regular_session_only=regular_session_only,
+            allow_prior=allow_prior,
+        )
         if price is not None:
             closes[symbol] = price
     return closes
@@ -170,6 +222,8 @@ def _mark_to_market_at_day_end(
     per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
     day: date,
     cash: float,
+    *,
+    regular_session_only: bool = False,
 ) -> float:
     """Return end-of-day equity = cash + sum(qty * latest_close_for_symbol_on_day).
 
@@ -194,7 +248,11 @@ def _mark_to_market_at_day_end(
     equity = cash
     for symbol, (qty, _avg_cost) in positions.items():
         latest_close = _latest_close_on_day_for_symbol(
-            symbol, per_symbol_df, per_symbol_ts_utc, day
+            symbol,
+            per_symbol_df,
+            per_symbol_ts_utc,
+            day,
+            regular_session_only=regular_session_only,
         )
         if latest_close is None:
             continue
