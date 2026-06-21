@@ -111,6 +111,59 @@ def _opens_at_timestamp(
     return opens
 
 
+def _latest_close_on_day_for_symbol(
+    symbol: str,
+    per_symbol_df: dict[str, pd.DataFrame],
+    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
+    day: date,
+) -> float | None:
+    """Return ``symbol``'s latest close at or before ``day``, or ``None``.
+
+    Selection: the symbol's last close whose bar falls on ``day``; if the
+    symbol has no bars on ``day``, fall back to its last close strictly
+    before ``day``. ``None`` when the symbol is unknown or has no bar on or
+    before ``day``.
+
+    This is the single source of the day-end valuation price for a symbol.
+    Both :func:`_mark_to_market_at_day_end` and the engine's session-end
+    force-flatten read from here so the liquidation fill price is byte-equal
+    to the mark-to-market price (equity is continuous across the flatten).
+    """
+    if symbol not in per_symbol_df:
+        return None
+    df = per_symbol_df[symbol]
+    ts_utc = per_symbol_ts_utc[symbol]
+    date_array = ts_utc.date  # numpy array of date objects
+    day_indices = np.flatnonzero(date_array == day)
+    if len(day_indices) > 0:
+        return float(df["close"].iloc[day_indices[-1]])
+    prior_indices = np.flatnonzero(date_array < day)
+    if len(prior_indices) == 0:
+        return None
+    return float(df["close"].iloc[prior_indices[-1]])
+
+
+def _last_closes_on_day(
+    symbols: list[str],
+    per_symbol_df: dict[str, pd.DataFrame],
+    per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
+    day: date,
+) -> dict[str, float]:
+    """Return ``{symbol: latest_close_on_day}`` for the given symbols.
+
+    Symbols with no resolvable close on or before ``day`` are omitted (same
+    rule :func:`_mark_to_market_at_day_end` uses to skip a position from the
+    equity sum). Used by the engine's session-end force-flatten to value the
+    liquidation at the same price the day-end mark-to-market uses.
+    """
+    closes: dict[str, float] = {}
+    for symbol in symbols:
+        price = _latest_close_on_day_for_symbol(symbol, per_symbol_df, per_symbol_ts_utc, day)
+        if price is not None:
+            closes[symbol] = price
+    return closes
+
+
 def _mark_to_market_at_day_end(
     positions: dict[str, tuple[float, float]],
     per_symbol_df: dict[str, pd.DataFrame],
@@ -140,19 +193,11 @@ def _mark_to_market_at_day_end(
     """
     equity = cash
     for symbol, (qty, _avg_cost) in positions.items():
-        if symbol not in per_symbol_df:
+        latest_close = _latest_close_on_day_for_symbol(
+            symbol, per_symbol_df, per_symbol_ts_utc, day
+        )
+        if latest_close is None:
             continue
-        df = per_symbol_df[symbol]
-        ts_utc = per_symbol_ts_utc[symbol]
-        date_array = ts_utc.date  # numpy array of date objects
-        day_indices = np.flatnonzero(date_array == day)
-        if len(day_indices) > 0:
-            latest_close = float(df["close"].iloc[day_indices[-1]])
-        else:
-            prior_indices = np.flatnonzero(date_array < day)
-            if len(prior_indices) == 0:
-                continue
-            latest_close = float(df["close"].iloc[prior_indices[-1]])
         equity += qty * latest_close
     return equity
 

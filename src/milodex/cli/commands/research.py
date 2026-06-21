@@ -29,7 +29,19 @@ from milodex.cli._shared import (
     parse_iso_date,
 )
 from milodex.cli.formatter import CommandResult
-from milodex.strategies.loader import build_default_registry, load_strategy_config
+from milodex.research.fanout import generate_per_symbol_configs
+from milodex.strategies.loader import (
+    build_default_registry,
+    load_strategy_config,
+    resolve_config_path,
+)
+
+# ponytail: only truly optional BatchRow keys (those with dataclass defaults)
+_BATCH_ROW_DEFAULTS: dict = {
+    "oos_equity_curve": [],
+    "error": None,
+    "survivorship_corrected": False,
+}
 
 
 @dataclass(frozen=True)
@@ -114,12 +126,205 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         ),
     )
 
+    evidence = research_sub.add_parser(
+        "evidence",
+        help="Assemble an intraday evidence report and write one experiment-registry row.",
+    )
+    add_global_flags(evidence)
+    evidence.add_argument("--candidate-family", required=True, dest="candidate_family")
+    evidence.add_argument("--candidate-template", required=True, dest="candidate_template")
+    evidence.add_argument("--universe-ref", required=True, dest="universe_ref")
+    evidence.add_argument("--start", required=True, help="Start date YYYY-MM-DD.")
+    evidence.add_argument("--end", required=True, help="End date YYYY-MM-DD.")
+    evidence.add_argument("--experiment-id", required=True, dest="experiment_id")
+    evidence.add_argument("--hypothesis", required=True)
+    evidence.add_argument(
+        "--screen-json",
+        default=None,
+        dest="screen_json",
+        help="Path to a prior 'research screen --report-out' JSON sibling.",
+    )
+    # ponytail: lane is permanently IEX — feed label is fixed, not a CLI arg.
+
+    fanout = research_sub.add_parser(
+        "fan-out",
+        help="Generate one per-symbol config from a base strategy config + universe_ref.",
+    )
+    add_global_flags(fanout)
+    _fanout_id_group = fanout.add_mutually_exclusive_group(required=True)
+    _fanout_id_group.add_argument(
+        "--strategy-id",
+        dest="fanout_strategy_id",
+        default=None,
+        help="Base strategy id (resolved via configs dir).",
+    )
+    _fanout_id_group.add_argument(
+        "--config",
+        dest="fanout_config",
+        default=None,
+        help="Explicit path to the base strategy config YAML.",
+    )
+    fanout.add_argument(
+        "--universe-ref",
+        required=True,
+        dest="fanout_universe_ref",
+        help="Universe ref string, e.g. 'universe.liquid_etf_core.v1'.",
+    )
+    fanout.add_argument(
+        "--out",
+        dest="fanout_out",
+        default="configs",
+        help="Output directory for generated configs (default: configs).",
+    )
+
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if args.research_command == "screen":
         return _screen(args, ctx)
+    if args.research_command == "fan-out":
+        return _fanout(args, ctx)
+    if args.research_command == "evidence":
+        return _evidence(args, ctx)
     msg = f"Unsupported research command: {args.research_command}"
     raise ValueError(msg)
+
+
+def _batch_result_from_screen_json(path: Path) -> BatchResult:
+    """Rehydrate a BatchResult from a 'research screen --report-out' JSON sibling.
+
+    Inverse of _write_report's JSON serialisation. Local to this module — the
+    BatchResult dataclass intentionally has no from_dict classmethod (ponytail).
+    Tolerates missing optional keys by falling back to _BATCH_ROW_DEFAULTS.
+    """
+    data = json.loads(path.read_text(encoding="utf-8"))
+    start_date = date.fromisoformat(data["start_date"])
+    end_date = date.fromisoformat(data["end_date"])
+
+    rows: list[BatchRow] = []
+    for r in data.get("rows", []):
+        raw_curve = r.get("oos_equity_curve", _BATCH_ROW_DEFAULTS["oos_equity_curve"])
+        # Curve entries are {"date": "YYYY-MM-DD", "equity": float}
+        curve = tuple((date.fromisoformat(pt["date"]), float(pt["equity"])) for pt in raw_curve)
+        run_id = r.get("run_id")
+        # ponytail: validates provenance consistency — a missing run_id means the
+        # row was never durably committed to the backtest store; trust would be misplaced.
+        # Deeper run_id-existence check (verify against backtest_runs store) is deferred.
+        if run_id is None:
+            sid = r.get("strategy_id", "<unknown>")
+            msg = (
+                f"screen JSON row for strategy '{sid}' has no run_id — "
+                "the row was not durably committed and cannot be trusted as evidence"
+            )
+            raise ValueError(msg)
+        rows.append(
+            BatchRow(
+                strategy_id=r["strategy_id"],
+                family=r.get("family", ""),
+                trade_count=r.get("trade_count", 0),
+                oos_sharpe=r.get("oos_sharpe"),
+                oos_max_drawdown_pct=r.get("oos_max_drawdown_pct", 0.0),
+                oos_total_return_pct=r.get("oos_total_return_pct", 0.0),
+                single_window_dependency=r.get("single_window_dependency", False),
+                gate_allowed=r.get("gate_allowed", False),
+                gate_promotion_type=r.get("gate_promotion_type", ""),
+                gate_failures=tuple(r.get("gate_failures", [])),
+                run_id=run_id,
+                oos_equity_curve=curve,
+                error=r.get("error", _BATCH_ROW_DEFAULTS["error"]),
+                survivorship_corrected=r.get(
+                    "survivorship_corrected", _BATCH_ROW_DEFAULTS["survivorship_corrected"]
+                ),
+            )
+        )
+
+    return BatchResult(
+        start_date=start_date,
+        end_date=end_date,
+        rows=tuple(rows),
+        correlation_matrix=data.get("correlation_matrix", {}),
+    )
+
+
+def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    """Handle ``research evidence``: thin facade over assemble_intraday_evidence."""
+    from milodex.research.evidence_assembler import assemble_intraday_evidence
+
+    start = parse_iso_date(args.start)
+    end = parse_iso_date(args.end)
+
+    batch_result: BatchResult | None = None
+    if args.screen_json is not None:
+        batch_result = _batch_result_from_screen_json(Path(args.screen_json))
+        # ponytail: validates provenance consistency — the JSON must describe the
+        # same screened window as the CLI args; a mismatch means the wrong JSON was supplied.
+        if batch_result.start_date != start or batch_result.end_date != end:
+            msg = (
+                f"screen JSON window ({batch_result.start_date} – {batch_result.end_date}) "
+                f"does not match CLI args ({start} – {end}); wrong JSON supplied"
+            )
+            raise ValueError(msg)
+
+    report, row_id = assemble_intraday_evidence(
+        candidate_family=args.candidate_family,
+        candidate_template=args.candidate_template,
+        universe_ref=args.universe_ref,
+        start_date=start,
+        end_date=end,
+        experiment_id=args.experiment_id,
+        hypothesis=args.hypothesis,
+        ctx=ctx,
+        batch_result=batch_result,
+        feed_label="iex",  # ponytail: lane is IEX-only — label is fixed.
+    )
+
+    agg = report.aggregate
+    verdict = agg.get("verdict", "n/a")
+    terminal_status = ctx.get_event_store().get_experiment(args.experiment_id).terminal_status
+    n_symbols = len(report.symbols)
+
+    data = report.as_dict()
+    data["experiment_registry_row_id"] = row_id
+
+    human_lines = [
+        f"Verdict:         {verdict}",
+        f"Terminal status: {terminal_status}",
+        f"Symbols:         {n_symbols}",
+        f"Registry row id: {row_id}",
+        "Note: IEX is a single-venue, non-consolidated feed — results are"
+        " non-durable (ADR 0017). A decisive win is inconclusive here.",
+    ]
+    return CommandResult(command="research.evidence", data=data, human_lines=human_lines)
+
+
+def _fanout(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    """Handle ``research fan-out``: generate per-symbol configs from a base."""
+    if args.fanout_config:
+        base_path = Path(args.fanout_config)
+    else:
+        base_path = resolve_config_path(args.fanout_strategy_id, ctx.config_dir)
+
+    out_dir = Path(args.fanout_out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    written = generate_per_symbol_configs(
+        base_config_path=base_path,
+        universe_ref=args.fanout_universe_ref,
+        out_dir=out_dir,
+    )
+
+    data: dict[str, Any] = {
+        "base_config": str(base_path),
+        "universe_ref": args.fanout_universe_ref,
+        "out_dir": str(out_dir),
+        "generated_count": len(written),
+        "generated_paths": [str(p) for p in written],
+    }
+    lines = [
+        f"Fan-out: {base_path.name} × {args.fanout_universe_ref}",
+        f"Generated {len(written)} config(s) → {out_dir}",
+        *[f"  {p.name}" for p in written],
+    ]
+    return CommandResult(command="research.fan-out", data=data, human_lines=lines)
 
 
 def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:

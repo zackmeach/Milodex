@@ -787,3 +787,74 @@ def test_resolver_wrappers_delegate_to_canonical():
     canonical = resolve_config_path(sid, _CONFIGS_DIR)
     assert resolve_strategy_config_path(sid, _CONFIGS_DIR) == canonical
     assert resolve_strategy_config(sid, _CONFIGS_DIR) == canonical
+
+
+# ---------------------------------------------------------------------------
+# E-PR3: optional baseline_ref config field
+# ---------------------------------------------------------------------------
+
+
+def test_baseline_ref_absent_loads_as_none(valid_strategy_config: Path, registry: StrategyRegistry):
+    """A config without baseline_ref loads with baseline_ref == None."""
+    config = load_strategy_config(valid_strategy_config)
+    assert config.baseline_ref is None
+
+
+def test_baseline_ref_present_loads_correctly(
+    valid_strategy_config: Path, registry: StrategyRegistry
+):
+    """A config with strategy.baseline_ref loads that string into StrategyConfig.baseline_ref."""
+    ref_line = '  baseline_ref: "meanrev.rsi2.intraday.spy.v1"\n'
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  description: "Dummy strategy for tests."\n',
+        ref_line + '  description: "Dummy strategy for tests."\n',
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    config = load_strategy_config(valid_strategy_config)
+    assert config.baseline_ref == "meanrev.rsi2.intraday.spy.v1"
+
+
+def test_baseline_ref_empty_string_raises(valid_strategy_config: Path):
+    """An empty string for baseline_ref is rejected at load time."""
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  description: "Dummy strategy for tests."\n',
+        '  baseline_ref: ""\n  description: "Dummy strategy for tests."\n',
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="strategy.baseline_ref must be a non-empty string"):
+        load_strategy_config(valid_strategy_config)
+
+
+def test_baseline_ref_does_not_change_config_hash(valid_strategy_config: Path):
+    """baseline_ref is non-behavioral metadata — it must be hash-exempt like display_name.
+
+    Two configs identical except one sets strategy.baseline_ref and the other omits it
+    must hash identically.  Re-pointing baseline_ref (value A → value B) must also
+    produce the same hash.
+    """
+    baseline_hash = compute_config_hash(valid_strategy_config)
+
+    # Add baseline_ref — should not shift the hash.
+    contents_with_ref_a = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  description: "Dummy strategy for tests."\n',
+        '  baseline_ref: "meanrev.rsi2.intraday.spy.v1"\n'
+        '  description: "Dummy strategy for tests."\n',
+    )
+    valid_strategy_config.write_text(contents_with_ref_a, encoding="utf-8")
+    hash_with_ref_a = compute_config_hash(valid_strategy_config)
+    assert hash_with_ref_a == baseline_hash, (
+        "Adding baseline_ref shifted config_hash — it must be hash-exempt"
+    )
+
+    # Re-point to a different value — hash must stay the same.
+    contents_with_ref_b = contents_with_ref_a.replace(
+        '  baseline_ref: "meanrev.rsi2.intraday.spy.v1"\n',
+        '  baseline_ref: "momentum.vwap_trend.intraday.spy.v1"\n',
+    )
+    valid_strategy_config.write_text(contents_with_ref_b, encoding="utf-8")
+    hash_with_ref_b = compute_config_hash(valid_strategy_config)
+    assert hash_with_ref_b == baseline_hash, (
+        "Re-pointing baseline_ref to a different value shifted config_hash — it must be hash-exempt"
+    )

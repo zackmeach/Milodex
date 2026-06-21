@@ -45,6 +45,7 @@ from milodex.backtesting.intraday_simulation import (
     _advance_cursors,
     _build_intraday_event_timeline,
     _build_visible_bars,
+    _last_closes_on_day,
     _latest_close_at_ts,
     _mark_to_market_at_day_end,
     _opens_at_timestamp,
@@ -65,6 +66,7 @@ from milodex.backtesting.simulation_kernel import (
 from milodex.backtesting.simulation_kernel import (
     day_to_dt as _day_to_dt,
 )
+from milodex.broker.models import OrderSide
 from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.bar_quality import DataQualityError, scan_backtest_bars
 from milodex.data.models import BarSet, Timeframe
@@ -78,7 +80,7 @@ from milodex.risk import (
     RiskPolicy,
     load_backtesting_defaults,
 )
-from milodex.strategies.base import StrategyDecision
+from milodex.strategies.base import DecisionReasoning, StrategyDecision
 from milodex.strategies.loader import LoadedStrategy
 
 if TYPE_CHECKING:
@@ -781,14 +783,18 @@ class BacktestEngine:
         """
         equity = initial_equity if initial_equity is not None else self._initial_equity
         _timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
-        return self._simulate(
-            all_bars=all_bars,
-            trading_days=trading_days,
-            db_run_id=db_run_id,
-            session_id=session_id,
-            initial_equity=equity,
-            timeframe=_timeframe,
-        )
+        # Buffer per-bar no-action explanations in memory and flush once at the
+        # end of this window (perf: ~one fsync per window, not per bar). Backtest
+        # only — the live runner never calls simulate_window.
+        with self._event_store.batched():
+            return self._simulate(
+                all_bars=all_bars,
+                trading_days=trading_days,
+                db_run_id=db_run_id,
+                session_id=session_id,
+                initial_equity=equity,
+                timeframe=_timeframe,
+            )
 
     def _execute(
         self,
@@ -833,14 +839,20 @@ class BacktestEngine:
                 run_manifest=run_manifest,
             )
 
-        output = self._simulate(
-            all_bars=all_bars,
-            trading_days=trading_days,
-            db_run_id=db_run_id,
-            session_id=run_id,
-            initial_equity=self._initial_equity,
-            timeframe=_timeframe,
-        )
+        # Buffer per-bar no-action explanations in memory and flush once at the
+        # end of the sim (perf: ~one fsync per backtest, not per bar). Backtest
+        # only — the live runner never calls _execute. The BacktestResult reads
+        # (list_trades / list_explanations) all happen after this CM exits, so
+        # the flushed rows are visible to them.
+        with self._event_store.batched():
+            output = self._simulate(
+                all_bars=all_bars,
+                trading_days=trading_days,
+                db_run_id=db_run_id,
+                session_id=run_id,
+                initial_equity=self._initial_equity,
+                timeframe=_timeframe,
+            )
         total_return = (output.final_equity - self._initial_equity) / self._initial_equity
         return BacktestResult(
             run_id=run_id,
@@ -1310,7 +1322,90 @@ class BacktestEngine:
                     pending = drain.remaining
 
             # ------------------------------------------------------------------
-            # 4. Day-end: mark-to-market (equity_curve records EOD value).
+            # 4. Session-end force-flatten — realize ALL open intraday positions
+            #    at the day's close (overnight-null fix).
+            #
+            # A max_hold_days:1 intraday position must be FLAT by session close.
+            # Two ways a position is still open here:
+            #   (a) the strategy never emitted an exit — e.g. a missing time-stop
+            #       bar (strategies/_session_intraday.is_time_stop_bar is exact
+            #       ET-time equality), the N2 strand; OR
+            #   (b) the strategy DID emit its exit on the session's LAST bar (a
+            #       time-stop fires on the final RTH bar, e.g. 15:55 for 5Min with
+            #       exit_minutes_before_close=5), so the SELL has no same-session
+            #       T+1 bar and its `pending` entry would otherwise fill at the
+            #       NEXT session's 9:30 open — i.e. carry the position overnight.
+            # Both are closed HERE, at the day's last close, so neither carries
+            # overnight. (Carrying (b) overnight was an asymmetric-exposure
+            # confound for the held-to-close intraday null.)
+            #
+            # At the day boundary `pending` only holds orders with no
+            # same-session future bar: step 3c drains every order that HAS a
+            # same-session T+1 inside the per-ts loop. So an ordinary mid-session
+            # SELL has already filled and is not in `pending` — this block does
+            # NOT touch mid-session fill semantics; it only sweeps boundary
+            # orders that would otherwise leak into the next session.
+            #
+            # ponytail: fill at the day's last available close — the SAME price
+            # _mark_to_market_at_day_end values the position at — so MTM equity
+            # is continuous across the flatten up to its own slippage/commission
+            # (no synthetic 15:55 bar; a forced exit costs the same as any real
+            # exit).
+            # ponytail (accepted ceilings):
+            #   (a) full-position exit only — intraday benchmarks/candidates exit
+            #       the whole lot. A partial-exit intraday strategy would need qty
+            #       reconciliation against the queued SELL.
+            #   (b) a PRICE-conditional exit (stop-loss) that happens to land on
+            #       the final bar fills at that bar's close — a one-bar
+            #       approximation. A pure time-stop is TIME-conditional, so
+            #       realizing it at the close is not look-ahead.
+            #   (c) pending BUYs at the boundary are LEFT to the existing
+            #       next-open path — a final-bar ENTRY is a separate, rarer
+            #       concern, explicitly out of scope here.
+            flatten_closes = _last_closes_on_day(
+                symbols=list(kernel.positions.keys()),
+                per_symbol_df=per_symbol_df,
+                per_symbol_ts_utc=per_symbol_ts_utc,
+                day=day,
+            )
+            flattened_symbols = kernel.liquidate_open_positions(
+                closes=flatten_closes,
+                day=day,
+                session_id=session_id,
+                db_run_id=db_run_id,
+                reason=DecisionReasoning(
+                    rule="backtest.intraday_session_end_flatten",
+                    narrative=(
+                        "Engine force-flattened an open intraday position at "
+                        "session close (realizing any final-bar / un-exited "
+                        "position so it is flat by close, not carried overnight)."
+                    ),
+                ),
+            )
+            # Drop the now-redundant pending SELL for every symbol the flatten
+            # actually closed, so it does NOT also fill at the next session's
+            # open (double-sell / negative position). A symbol the flatten could
+            # NOT close (no day-end close) keeps its pending SELL as the
+            # next-open fallback. Only SELLs are dropped — a pending BUY at the
+            # boundary is left to the next-open path (ponytail (c) above).
+            if flattened_symbols:
+                pending = [
+                    order
+                    for order in pending
+                    if not (
+                        order.intent.side is OrderSide.SELL
+                        and order.intent.normalized_symbol() in flattened_symbols
+                    )
+                ]
+            flattened = len(flattened_symbols)
+            sell_count += flattened
+            trade_count += flattened
+
+            # ------------------------------------------------------------------
+            # 5. Day-end: mark-to-market (equity_curve records EOD value).
+            # After the force-flatten the position set is normally empty, so
+            # EOD equity == cash; any position the flatten could not price
+            # (no day-end close) is still marked at the prior close here.
             # ------------------------------------------------------------------
             eod_equity = _mark_to_market_at_day_end(
                 positions=kernel.positions,
@@ -1434,7 +1529,10 @@ class BacktestEngine:
             and float(v) == int(v)
         ]
         largest = max(numeric_params, default=30)
-        return max(365, largest * 3)
+        # ponytail: cap at 10 years — no real strategy needs more lookback, and an
+        # un-capped heuristic lets a large non-lookback param (e.g. a seed) explode
+        # `start - timedelta(days=...)` into an OverflowError.
+        return min(3650, max(365, largest * 3))
 
 
 # ---------------------------------------------------------------------------

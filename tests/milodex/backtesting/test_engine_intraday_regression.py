@@ -201,17 +201,18 @@ def _make_intraday_engine(
 #
 # Strategy logic: on the first ``evaluate`` call within each session, emit a
 # BUY 5-share intent; on the last evaluate of each session (the ~15:55 ET
-# bar), emit a SELL.  Per the existing intraday engine semantics:
+# bar), emit a SELL.  Per the intraday engine semantics (overnight-null fix):
 #   - BUY at bar T fills at bar T+1's open
-#   - SELL at the final bar of a session fills at the next session's 9:30 open
-#   - SELL at the final bar of the FINAL session has no next session → stranded
+#   - SELL on the final bar of a session has no same-session T+1 bar → it is
+#     realized at that session's CLOSE by the session-end flatten (NOT deferred
+#     to the next session's 9:30 open; NOT stranded at run end).
 #
 # Universe: SPY only. 2 sessions (Mon 2024-01-08, Tue 2024-01-09).
 # ---------------------------------------------------------------------------
 
 
 def test_intraday_regression_cross_day_round_trip() -> None:
-    """One round trip per session over 2 sessions; final SELL is stranded.
+    """One round trip per session over 2 sessions; each closes at its own close.
 
     Pinned counts AND equity_curve shape are baselined from the current
     kernel — any drift surfaces here before it lands in production audit data.
@@ -286,23 +287,23 @@ def test_intraday_regression_cross_day_round_trip() -> None:
     engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
     result = engine.run(start_date, end_date)
 
-    # --- Encoded from baseline run (intraday kernel as of 2026-05-24) ---
+    # --- Encoded from baseline run (intraday kernel, overnight-null fix) ---
     # Each session emits 1 BUY + 1 SELL.
     # Day 1 BUY: fills at next-bar open (9:35 ET on Day 1).
-    # Day 1 SELL: fills at next session's 9:30 open (Day 2).
+    # Day 1 SELL (15:55 final bar): realized at Day 1's CLOSE by the flatten.
     # Day 2 BUY: fills at next-bar open (9:35 ET on Day 2).
-    # Day 2 SELL: NO next session → stranded → skipped_count = 1.
-    # Net: 2 BUY fills, 1 SELL fill, 1 stranded SELL.
+    # Day 2 SELL (15:55 final bar): realized at Day 2's CLOSE by the flatten.
+    # Net: 2 BUY fills, 2 SELL fills, nothing stranded.
     assert result.buy_count == 2, f"expected 2 BUY fills, got {result.buy_count}"
-    assert result.sell_count == 1, f"expected 1 SELL fill, got {result.sell_count}"
-    assert result.trade_count == 3, f"expected 3 total fills, got {result.trade_count}"
-    assert result.skipped_count == 1, (
-        f"expected 1 stranded SELL (last session's SELL has no next bar), "
-        f"got {result.skipped_count}"
+    assert result.sell_count == 2, f"expected 2 SELL fills, got {result.sell_count}"
+    assert result.trade_count == 4, f"expected 4 total fills, got {result.trade_count}"
+    assert result.skipped_count == 0, (
+        f"expected 0 stranded SELLs (each final-bar SELL realized at its own "
+        f"close), got {result.skipped_count}"
     )
-    assert result.round_trip_count == 1, (
-        f"expected 1 round trip (Day 1 BUY closed by Day 2 SELL fill); "
-        f"Day 2 BUY never closes; got {result.round_trip_count}"
+    assert result.round_trip_count == 2, (
+        f"expected 2 round trips (each session's BUY closed by its own "
+        f"session-close SELL); got {result.round_trip_count}"
     )
 
     # Equity-curve shape: one point per outer trading day (sync_broker_state
@@ -316,11 +317,11 @@ def test_intraday_regression_cross_day_round_trip() -> None:
     assert result.equity_curve[0][0] == start_date
     assert result.equity_curve[1][0] == end_date
 
-    # Final equity: 1 closed round trip (5 shares × ~$0.39 spread between
-    # entry fill at Day 1 9:35 open and exit fill at Day 2 9:30 open) +
-    # 1 open position marked to last seen close.  Loose bound: P&L is
-    # bounded in [-10, +10] dollars over $100,000.  Any value outside that
-    # range indicates a serious arithmetic drift.
+    # Final equity: 2 closed round trips (each session's BUY at its ~9:35 entry
+    # open closed by a SELL realized at that session's last close, 5 shares).
+    # Position is flat at run end (no open lot). Loose bound: P&L is bounded in
+    # [-10, +10] dollars over $100,000 on these cent-scale deterministic bars.
+    # Any value outside that range indicates a serious arithmetic drift.
     pnl = result.final_equity - 100_000.0
     assert -10.0 < pnl < 10.0, (
         f"intraday round trip P&L should be in [-10, +10] over deterministic "
@@ -340,20 +341,29 @@ def test_intraday_regression_cross_day_round_trip() -> None:
 #
 # Pins the documented contract that ``tick_held_days()`` ticks ONCE per outer
 # trading day (not per intraday evaluate).  A future refactor that ticks per
-# evaluate would cause max_hold_days exits to fire mid-session instead of at
-# the next session's first bar.
+# evaluate would inflate held_days within a single session.
 #
-# Strategy: BUY on Day 1 first bar.  max_hold_days=1.  Expected: SELL fires
-# on Day 2's first evaluate (held_days flipped to 1 at Day 2 start).
+# N2 note: the original form of this test relied on a single never-selling
+# position being carried across THREE sessions to observe held_days flip
+# 0→1→2.  That overnight carry is exactly the N2 strand — a max_hold_days:1
+# intraday position lingering past session close because the strategy never
+# emitted an exit.  The engine now force-flattens any un-exited position at
+# session end, so a BUY-only stub cannot persist overnight.  The surviving,
+# still-meaningful invariant this test pins is: within the entry session,
+# held_days does NOT increment per intraday bar (it stays 0 across the day's
+# many evaluates), and the position is flat at session close (N2).  The
+# per-outer-day increment of tick_held_days itself is independently unit-tested
+# in test_simulation_kernel.test_tick_held_days_bumps_all_open_positions.
 # ---------------------------------------------------------------------------
 
 
-def test_intraday_regression_held_days_ticks_per_outer_day() -> None:
-    """held_days increments per outer trading day, not per intraday tick.
+def test_intraday_regression_held_days_no_intraday_tick_then_flat_at_close() -> None:
+    """held_days does not tick per intraday bar; un-exited position flat at close.
 
-    Pinned by checking that a max_hold_days=1 strategy entering on Day 1
-    sees ``held_days >= 1`` only on Day 2's first evaluate — not after
-    several intraday bars on Day 1.
+    A max_hold_days:1 stub that BUYs once and never sells must see held_days
+    stay 0 across every intraday evaluate of the entry session (no per-bar
+    tick), and its position must be force-flattened by session close (N2) —
+    not carried overnight.
     """
     session_dates = ["2024-01-08", "2024-01-09", "2024-01-10"]
     start_date = date(2024, 1, 8)
@@ -391,31 +401,34 @@ def test_intraday_regression_held_days_ticks_per_outer_day() -> None:
     loaded.strategy.evaluate.side_effect = fake_evaluate
 
     engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
-    engine.run(start_date, end_date)
+    result = engine.run(start_date, end_date)
 
-    # Day 1: held_days observations should ALL be 0 (we hadn't entered yet on
-    # the first evaluate, then entered; tick_held_days runs at start of NEXT
-    # outer day).
+    # Day 1 (entry session): held_days stays 0 across EVERY intraday evaluate —
+    # tick_held_days runs once at the next outer-day boundary, never per bar.
     day_1 = date(2024, 1, 8)
-    assert all(h == 0 for h in observed_held_per_day.get(day_1, [])), (
-        f"held_days must remain 0 throughout the entry day; "
-        f"observed {observed_held_per_day.get(day_1, [])}"
+    day_1_observations = observed_held_per_day.get(day_1, [])
+    assert day_1_observations, "expected evaluations on Day 1"
+    assert all(h == 0 for h in day_1_observations), (
+        f"held_days must remain 0 throughout the entry day (NOT incrementing "
+        f"per intraday tick); observed {day_1_observations}"
     )
 
-    # Day 2: held_days observations should ALL be 1 (tick_held_days ran once
-    # at start of Day 2; no further ticks during Day 2's many intraday bars).
-    day_2 = date(2024, 1, 9)
-    day_2_observations = observed_held_per_day.get(day_2, [])
-    assert day_2_observations, "expected evaluations on Day 2"
-    assert all(h == 1 for h in day_2_observations), (
-        f"held_days must be 1 throughout Day 2 (NOT incrementing per intraday "
-        f"tick); observed {day_2_observations}"
-    )
-
-    # Day 3: held_days observations should ALL be 2.
-    day_3 = date(2024, 1, 10)
-    day_3_observations = observed_held_per_day.get(day_3, [])
-    if day_3_observations:  # Day 3 may not be reached if a stop closed earlier
-        assert all(h == 2 for h in day_3_observations), (
-            f"held_days must be 2 throughout Day 3; observed {day_3_observations}"
+    # N2: the un-exited position is force-flattened at session close, so it is
+    # NOT carried overnight. On every subsequent session the stub re-observes
+    # held_days == 0 (no open position survives), and the engine recorded the
+    # session-end liquidation as a real SELL (round-trip closed).
+    for later_day in (date(2024, 1, 9), date(2024, 1, 10)):
+        later_observations = observed_held_per_day.get(later_day, [])
+        assert all(h == 0 for h in later_observations), (
+            f"held_days must be 0 on {later_day}: the entry-day position was "
+            f"force-flattened at session close, not carried overnight; "
+            f"observed {later_observations}"
         )
+    assert result.sell_count == 1, (
+        f"the un-exited position must be force-flattened once at session close "
+        f"(one SELL), got sell_count={result.sell_count}"
+    )
+    assert result.round_trip_count == 1, (
+        f"the session-end flatten closes the round trip, got "
+        f"round_trip_count={result.round_trip_count}"
+    )

@@ -181,15 +181,42 @@ def scan_intraday_readiness(
             expected = -(-close_off // timeframe_minutes)
             last_grid_offset = (expected - 1) * timeframe_minutes
             session = regular_session_bars(df, day)
-            observed = len(session)
+            # Derive raw_offsets list once; reuse for on-grid count, gap scan, and
+            # dup/off-grid tally. ponytail: distinct-on-grid-offset count, not a
+            # min(100, …) cap — a cap silently re-opens the evidence blind spot.
+            raw_offsets = (
+                [_offset_min(t) for t in pd.to_datetime(session["timestamp"], utc=True)]
+                if len(session)
+                else []
+            )
+            # offsets set (all unique observed offsets) — used by gap scan and open/close checks.
+            offsets = set(raw_offsets)
+            # on_grid: distinct on-grid offsets within [0, last_grid_offset]; dups collapse,
+            # off-grid bars excluded — so observed <= expected by construction.
+            on_grid = {
+                off
+                for off in offsets
+                if off % timeframe_minutes == 0 and 0 <= off <= last_grid_offset
+            }
+            observed = len(on_grid)
             total_expected += expected
             total_observed += observed
-
-            offsets = (
-                {_offset_min(t) for t in pd.to_datetime(session["timestamp"], utc=True)}
-                if observed
-                else set()
-            )
+            # Surface off-grid and duplicate bars rather than silently dropping them.
+            n_offgrid = sum(1 for off in raw_offsets if off % timeframe_minutes != 0)
+            n_duplicate = len(raw_offsets) - len(offsets)
+            if n_offgrid or n_duplicate:
+                issues.append(
+                    _warn(
+                        symbol,
+                        "intraday_offgrid_or_duplicate_bars",
+                        f"{symbol} {day}: {n_offgrid} off-grid, {n_duplicate} duplicate bar(s).",
+                        {
+                            "session": day.isoformat(),
+                            "off_grid": n_offgrid,
+                            "duplicate": n_duplicate,
+                        },
+                    )
+                )
             if 0 not in offsets:
                 issues.append(
                     _warn(
@@ -217,7 +244,7 @@ def scan_intraday_readiness(
                         {"session": day.isoformat(), "observed": observed, "expected": expected},
                     )
                 )
-            max_gap = _max_intra_session_gap(offsets, timeframe_minutes)
+            max_gap = _max_intra_session_gap(on_grid, timeframe_minutes)
             if max_gap > 1:
                 issues.append(
                     _warn(

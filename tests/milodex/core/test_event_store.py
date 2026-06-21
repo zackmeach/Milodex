@@ -53,7 +53,7 @@ def test_event_store_applies_initial_schema(tmp_path):
     store = EventStore(db_path)
 
     assert db_path.exists()
-    assert store.schema_version == 14
+    assert store.schema_version == 15
     assert {
         "_schema_version",
         "explanations",
@@ -80,7 +80,7 @@ def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
     db_path = tmp_path / "milodex.db"
     store = EventStore(db_path)
 
-    assert store.schema_version == 14
+    assert store.schema_version == 15
     with sqlite3.connect(db_path) as con:
         batch_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_batches)")}
         job_columns = {row[1] for row in con.execute("PRAGMA table_info(orchestration_jobs)")}
@@ -970,6 +970,208 @@ def test_append_explanation_allows_operator_without_ancestor(tmp_path):
     assert all(r.session_id is None and r.backtest_run_id is None for r in rows)
 
 
+# ---------------------------------------------------------------------------
+# EventStore.batched() — backtest-scoped explanation buffer (perf Fix A)
+# ---------------------------------------------------------------------------
+
+
+def _seed_backtest_explanation(store, db_run_id, *, symbol="SPY", bufferable=True):
+    """Append one backtest-engine no-action-shaped explanation.
+
+    ``bufferable=True`` mirrors the real per-bar no-action write
+    (``ExecutionService.record_no_action``), which is the only caller that
+    opts into the ``batched()`` buffer.
+    """
+    return store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="backtest_engine",
+                backtest_run_id=db_run_id,
+                symbol=symbol,
+                decision_type="no_trade",
+                status="no_signal",
+                side="hold",
+                quantity=0.0,
+                order_type="none",
+            )
+        ),
+        bufferable=bufferable,
+    )
+
+
+def _broker_snapshot(session_id, *, equity):
+    return PortfolioSnapshotEvent(
+        recorded_at=datetime(2026, 4, 27, 21, 0, tzinfo=UTC),
+        session_id=session_id,
+        strategy_id="test.strategy.v1",
+        equity=equity,
+        cash=equity / 2.0,
+        portfolio_value=equity,
+        daily_pnl=0.0,
+        positions=[],
+    )
+
+
+def test_batched_no_lock_contention_with_interleaved_immediate_write(tmp_path):
+    """REGRESSION (the prior held-connection design deadlocked here).
+
+    Inside ``batched()`` we interleave buffered explanation appends with an
+    IMMEDIATE write that opens its OWN connection and commits (a portfolio
+    snapshot — the real backtest does this for equity snapshots/trades during
+    the sim). The held-connection design raised ``database is locked``; the
+    buffer design holds no lock during the context, so the immediate write
+    proceeds. After exit, BOTH the buffered explanations AND the immediate row
+    are present.
+    """
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-batch",
+        strategy_id="test.strategy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+
+    with store.batched():
+        _seed_backtest_explanation(store, db_run_id, symbol="SPY")
+        # Immediate, separate-connection write in the MIDDLE of the batch.
+        # This is the line that raised "database is locked" before.
+        store.append_portfolio_snapshot(_broker_snapshot("snap-1", equity=100_000.0))
+        _seed_backtest_explanation(store, db_run_id, symbol="QQQ")
+
+    explanations = store.list_explanations()
+    assert len(explanations) == 2
+    assert {e.symbol for e in explanations} == {"SPY", "QQQ"}
+
+    snapshots = store.list_portfolio_snapshots_for_strategy("test.strategy.v1")
+    assert len(snapshots) == 1
+    assert snapshots[0].equity == 100_000.0
+
+
+def test_batched_defers_then_flushes(tmp_path):
+    """Buffered rows are invisible to a 2nd connection mid-context, present after exit."""
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-defer",
+        strategy_id="test.strategy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+    observer = EventStore(db_path)
+
+    with store.batched():
+        _seed_backtest_explanation(store, db_run_id, symbol="SPY")
+        _seed_backtest_explanation(store, db_run_id, symbol="QQQ")
+        _seed_backtest_explanation(store, db_run_id, symbol="IWM")
+        # Mid-context: a fresh connection sees ZERO buffered rows (deferred).
+        assert observer.list_explanations() == []
+
+    # After exit: all three flushed and visible to the independent observer.
+    rows = observer.list_explanations()
+    assert len(rows) == 3
+    assert [r.symbol for r in rows] == ["SPY", "QQQ", "IWM"]
+
+
+def test_batched_flushes_partial_on_exception_and_reraises(tmp_path):
+    """A mid-sim exception flushes what was buffered so far, then re-raises."""
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-exc",
+        strategy_id="test.strategy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+
+    with pytest.raises(RuntimeError, match="boom mid-sim"):
+        with store.batched():
+            _seed_backtest_explanation(store, db_run_id, symbol="SPY")
+            _seed_backtest_explanation(store, db_run_id, symbol="QQQ")
+            raise RuntimeError("boom mid-sim")
+
+    rows = store.list_explanations()
+    assert len(rows) == 2
+    assert {r.symbol for r in rows} == {"SPY", "QQQ"}
+
+
+def test_outside_batched_unchanged(tmp_path):
+    """Outside batched(), append_explanation commits immediately (live path)."""
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-imm",
+        strategy_id="test.strategy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+    observer = EventStore(db_path)
+
+    explanation_id = _seed_backtest_explanation(store, db_run_id, symbol="SPY")
+
+    # Immediately visible to an independent connection, with a real id.
+    assert explanation_id > 0
+    assert len(observer.list_explanations()) == 1
+
+
+def test_nested_batched_noop_inner(tmp_path):
+    """Nested batched(): inner exit does NOT flush/commit; outer exit flushes all."""
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-nest",
+        strategy_id="test.strategy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+    observer = EventStore(db_path)
+
+    with store.batched():
+        _seed_backtest_explanation(store, db_run_id, symbol="SPY")
+        with store.batched():
+            _seed_backtest_explanation(store, db_run_id, symbol="QQQ")
+            # Inner exit must NOT flush — still buffered after the inner block.
+        assert observer.list_explanations() == []
+
+    rows = observer.list_explanations()
+    assert len(rows) == 2
+    assert {r.symbol for r in rows} == {"SPY", "QQQ"}
+
+
+def test_batched_non_bufferable_call_commits_immediately_with_real_id(tmp_path):
+    """Inside batched(), a non-bufferable append still commits now with a real id.
+
+    This is the skip-audit invariant: the kernel links a trade to the
+    explanation's returned id, so that explanation MUST commit immediately
+    (real id, visible to the trade's FK) even though a batched() context is
+    active for the per-bar no-action writes.
+    """
+    db_path = tmp_path / "milodex.db"
+    store = EventStore(db_path)
+    db_run_id = _seed_running_backtest_run(
+        store,
+        run_id="run-mixed",
+        strategy_id="test.strategy.v1",
+        started_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
+    )
+    observer = EventStore(db_path)
+
+    with store.batched():
+        # Buffered (no-action) — deferred.
+        _seed_backtest_explanation(store, db_run_id, symbol="SPY", bufferable=True)
+        # Non-bufferable (skip-audit shaped) — must commit NOW with a real id.
+        real_id = _seed_backtest_explanation(store, db_run_id, symbol="QQQ", bufferable=False)
+        assert real_id > 0
+        # The real-id row is already visible to an independent connection;
+        # the buffered one is not yet.
+        observed = observer.list_explanations()
+        assert [r.symbol for r in observed] == ["QQQ"]
+
+    # After exit: both present.
+    rows = observer.list_explanations()
+    assert {r.symbol for r in rows} == {"SPY", "QQQ"}
+
+
 def test_latest_reconcile_incident_hash_returns_none_when_empty(tmp_path):
     """No reconcile_incident rows -> None (startup idempotency check)."""
     store = EventStore(tmp_path / "milodex.db")
@@ -1115,7 +1317,7 @@ def test_migration_008_backfills_walk_forward_explanations(tmp_path):
 
     # Open with the live EventStore — this triggers migrations 008-012.
     store = EventStore(db_path)
-    assert store.schema_version == 14
+    assert store.schema_version == 15
 
     rows = sorted(store.list_explanations(), key=lambda r: r.recorded_at)
     assert len(rows) == 4
@@ -1232,7 +1434,7 @@ def test_migration_008_is_idempotent(tmp_path):
     rows = store2.list_explanations()
     assert len(rows) == 1
     assert rows[0].backtest_run_id == db_run_id
-    assert store2.schema_version == 14
+    assert store2.schema_version == 15
 
 
 # ─── BacktestEquitySnapshotEvent CRUD (ADR 0053, migration 010) ──────────────

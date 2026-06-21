@@ -512,6 +512,11 @@ class ExecutionService:
         context: dict[str, object | None] = {"message": message}
         if reasoning is not None:
             context["reasoning"] = reasoning.asdict()
+        # ``bufferable=True``: the returned id is discarded here (this method
+        # returns None), so a backtest ``batched()`` context may defer this
+        # per-bar write to a single end-of-run flush (perf Fix A). Outside a
+        # batched context — the live/paper runner path — it commits immediately,
+        # unchanged.
         self._event_store.append_explanation(
             ExplanationEvent(
                 recorded_at=datetime.now(tz=UTC),
@@ -541,7 +546,8 @@ class ExecutionService:
                 context=context,
                 session_id=session_id,
                 backtest_run_id=backtest_run_id,
-            )
+            ),
+            bufferable=True,
         )
 
     def _evaluate(

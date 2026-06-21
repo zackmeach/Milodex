@@ -1,0 +1,40 @@
+strategy:
+  id: benchmark.random_matched_exposure.intraday.spy.v1
+  family: benchmark
+  template: random_matched_exposure.intraday
+  variant: spy
+  version: 1
+  description: 'Random matched-exposure intraday long baseline on SPY, 5-minute bars.
+    Long-only: a deterministic per-(symbol, session-date, seed) RNG decides whether
+    to enter (gated by the candidate''s measured session_entry_rate) and at a random
+    in-window minute, then holds to the time-stop before the close. No stop, no signal
+    exit. Half-day sessions skipped. The random null that any real intraday SPY edge
+    must beat after realistic slippage.
+
+    '
+  enabled: true
+  baseline_ref: meanrev.rsi2.intraday.spy.v1
+  universe_ref: universe.spy_only.v1
+  parameters:
+    opening_range_minutes: 30
+    entry_window_minutes: 300
+    exit_minutes_before_close: 5
+    per_position_notional_pct: 0.1
+    session_entry_rate: 0.9710982658959537
+    seed: 20260619
+  tempo:
+    bar_size: 5Min
+    min_hold_days: 0
+    max_hold_days: 1
+  risk:
+    max_position_pct: 0.1
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+  stage: backtest
+  backtest:
+    commission_per_trade: 0.0
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+  disable_conditions_additional: []

@@ -6,6 +6,7 @@ import json
 import sqlite3
 import time
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -162,6 +163,41 @@ class PromotionEvent:
     manifest_id: int | None = None
     reverses_event_id: int | None = None
     evidence_json: dict[str, Any] | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class ExperimentEvent:
+    """Append-only experiment-registry record (R-PRM-011).
+
+    One row captures the terminal state of a strategy *idea* (keyed by the
+    stable ``experiment_id``), per PROMOTION_GOVERNANCE.md "Experiment
+    Registry": the hypothesis under test, the stage it reached, why it ended
+    there, the supporting evidence, and whether it is worth revisiting.
+
+    Like :class:`PromotionEvent`, the table is append-only — a row is never
+    updated or deleted in place. :meth:`EventStore.update_experiment` records a
+    change by appending a *new* row that carries the prior fields forward, so
+    the version history of an ``experiment_id`` is its row sequence and
+    ``get_experiment`` returns the newest.
+
+    ``terminal_status`` is one of ``'promoted'``, ``'rejected'``, ``'failed'``,
+    ``'inconclusive'``, ``'abandoned'``, or ``'active'``. ``stage_reached`` is a
+    promotion stage (``'backtest'`` … ``'live'``). ``strategy_id`` and
+    ``config_hash`` are null until a concrete instance is frozen.
+    """
+
+    experiment_id: str
+    hypothesis: str
+    stage_reached: str
+    terminal_status: str
+    rationale: str
+    recorded_at: datetime
+    strategy_id: str | None = None
+    config_hash: str | None = None
+    evidence_json: dict[str, Any] | None = None
+    lessons: str | None = None
+    revisitable: bool = False
     id: int | None = None
 
 
@@ -339,6 +375,18 @@ have no run ancestry by design and pass through unchecked.
 """
 
 
+_BUFFERED_EXPLANATION_ID = -1
+"""Sentinel returned by ``append_explanation`` while inside ``EventStore.batched()``.
+
+In buffer mode the real autoincrement id is not known until the single flush at
+context exit, so a placeholder is returned. This is only sound because the
+buffered (backtest no-action) path discards the id —
+``ExecutionService.record_no_action`` returns ``None`` and the simulation kernel
+calls it as a bare statement. No code path that consumes the returned id may
+enter ``batched()``.
+"""
+
+
 STALE_PENDING_ATTEMPT_MINUTES = 15
 """Age threshold (minutes) past which a 'pending' execution attempt is stale.
 
@@ -378,6 +426,13 @@ class EventStore:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
+        # Backtest-scoped explanation buffer (see ``batched``). ``None`` outside
+        # a ``batched()`` context — every ``append_explanation`` then commits
+        # immediately (the live/paper path). A list while batching — buffered
+        # rows are held in memory and flushed once at context exit. ``_batch_depth``
+        # tracks nesting so only the outermost ``batched()`` owns the flush.
+        self._explanation_buffer: list[ExplanationEvent] | None = None
+        self._batch_depth: int = 0
         self._apply_migrations()
         sv = self.schema_version
         if sv < MIN_COMPATIBLE_SCHEMA_VERSION:
@@ -405,7 +460,7 @@ class EventStore:
             ).fetchall()
         return [str(row["name"]) for row in rows]
 
-    def append_explanation(self, event: ExplanationEvent) -> int:
+    def append_explanation(self, event: ExplanationEvent, *, bufferable: bool = False) -> int:
         """Insert an explanation row and return its autoincrement id.
 
         Enforces the dual-ancestor rule (migration 008) for explanations
@@ -421,12 +476,90 @@ class EventStore:
         gap surfaced by the 2026-05-07 EOD audit — see migration 008's
         header for the full rationale, including why we do not use a SQLite
         CHECK constraint here.
+
+        ``bufferable`` (default ``False``): when ``True`` AND a ``batched()``
+        context is active, the INSERT is deferred to the single flush at
+        context exit and a SENTINEL id is returned (the real id is unknown
+        until flush). A caller may set this ONLY if it discards the returned
+        id — the backtest per-bar no-action path
+        (``ExecutionService.record_no_action``) is the sole such caller. Every
+        other caller (e.g. the skip-audit path that links a trade to the
+        returned explanation id) leaves it ``False`` and commits immediately
+        even inside ``batched()``, so its id is real and its trade FK holds.
         """
         self._require_explanation_ancestor(event)
+        if bufferable and self._explanation_buffer is not None:
+            # Buffer mode (inside ``batched()``, backtest no-action only): defer
+            # the INSERT to the single flush at context exit. NO connection is
+            # opened or held here, so concurrent same-process writes that use
+            # their own connection (equity snapshots, skip-audit trades) never
+            # contend with a held batch transaction. The returned id is a
+            # sentinel — sound only because this caller discards it.
+            self._explanation_buffer.append(event)
+            return _BUFFERED_EXPLANATION_ID
         with self._connect() as connection:
             explanation_id = self._insert_explanation(connection, event)
             connection.commit()
             return explanation_id
+
+    @contextmanager
+    def batched(self) -> Iterator[None]:
+        """Buffer ``append_explanation`` writes in memory, flush once at exit.
+
+        OPT-IN and BACKTEST-SCOPED. While this context is active,
+        :meth:`append_explanation` validates the dual-ancestor rule (unchanged)
+        then appends the event to an in-memory buffer and returns a sentinel id
+        WITHOUT opening or holding any connection. At context exit a single
+        connection is opened, every buffered event is inserted in order, one
+        ``commit()`` is issued, and the connection closes.
+
+        Why buffer-and-flush rather than hold one open connection: SQLite is a
+        single writer. The backtest sim also writes equity snapshots and trades
+        on their own connections mid-loop; holding an uncommitted batch
+        transaction across the whole sim would collide with those
+        (``database is locked``). Buffering in memory holds NO lock during the
+        sim, so those immediate writes proceed with zero contention.
+
+        Durability: the commit lives in ``finally``, so a mid-sim exception
+        still flushes everything buffered so far, then the exception re-raises.
+        This matches today's per-bar-commit behaviour (rows up to a failure
+        already persist). The buffered rows order by insertion, identical to the
+        per-bar commit order.
+
+        Re-entrancy: nested ``batched()`` is a no-op inner — the outermost
+        context owns the buffer and the single flush.
+
+        The LIVE/paper runner must NEVER enter this context: it relies on
+        per-decision durability and (unlike the no-action path) may consume the
+        returned explanation id via :meth:`append_explanation_and_trade`, which
+        is deliberately NOT routed through the buffer.
+        """
+        self._batch_depth += 1
+        if self._batch_depth > 1:
+            # Inner no-op: the outermost context owns the buffer and the flush.
+            try:
+                yield
+            finally:
+                self._batch_depth -= 1
+            return
+
+        self._explanation_buffer = []
+        try:
+            yield
+        finally:
+            buffered = self._explanation_buffer
+            self._explanation_buffer = None
+            self._batch_depth -= 1
+            if buffered:
+                # Buffered no-action rows get higher ids than trade explanations committed
+                # mid-run. Id order is NOT chronological for buffered explanations.
+                # Any reader that needs temporal order must ORDER BY (created_at, id),
+                # not by id alone. Live/report readers already filter backtest_run_id IS NULL
+                # so they are unaffected. Backtest-scoped audit readers must use timestamp order.
+                with self._connect() as connection:
+                    for event in buffered:
+                        self._insert_explanation(connection, event)
+                    connection.commit()
 
     @staticmethod
     def _require_explanation_ancestor(event: ExplanationEvent) -> None:
@@ -1821,6 +1954,124 @@ class EventStore:
             ).fetchone()
         return None if row is None else _promotion_from_row(row)
 
+    def append_experiment(self, event: ExperimentEvent) -> int:
+        """Insert an experiment-registry record and return its autoincrement id.
+
+        Append-only: callers never update or delete; a change is a new row via
+        :meth:`update_experiment`.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO experiment_registry (
+                    recorded_at,
+                    experiment_id,
+                    strategy_id,
+                    config_hash,
+                    hypothesis,
+                    stage_reached,
+                    terminal_status,
+                    rationale,
+                    evidence_json,
+                    lessons,
+                    revisitable
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dt(event.recorded_at),
+                    event.experiment_id,
+                    event.strategy_id,
+                    event.config_hash,
+                    event.hypothesis,
+                    event.stage_reached,
+                    event.terminal_status,
+                    event.rationale,
+                    None if event.evidence_json is None else _dump_json(event.evidence_json),
+                    event.lessons,
+                    1 if event.revisitable else 0,
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def get_experiment(self, experiment_id: str) -> ExperimentEvent | None:
+        """Return the latest registry row for ``experiment_id``, or ``None``.
+
+        "Latest" is the highest-id row — the append-only sequence's newest
+        version (see :meth:`update_experiment`).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM experiment_registry WHERE experiment_id = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (experiment_id,),
+            ).fetchone()
+        return None if row is None else _experiment_from_row(row)
+
+    def list_experiments(self, *, terminal_status: str | None = None) -> list[ExperimentEvent]:
+        """Return the latest row per ``experiment_id``, newest experiment first.
+
+        De-duplicates the append-only sequence to one row per ``experiment_id``
+        (the highest id) so each experiment appears once at its current state.
+        When ``terminal_status`` is given, filters to experiments whose *latest*
+        row has that status. Ordering is deterministic (latest row id DESC).
+        """
+        query = """
+            SELECT er.* FROM experiment_registry AS er
+            JOIN (
+                SELECT experiment_id, MAX(id) AS max_id
+                FROM experiment_registry
+                GROUP BY experiment_id
+            ) AS latest
+            ON er.id = latest.max_id
+        """
+        params: tuple[Any, ...] = ()
+        if terminal_status is not None:
+            query += " WHERE er.terminal_status = ?"
+            params = (terminal_status,)
+        query += " ORDER BY er.id DESC"
+        with self._connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [_experiment_from_row(row) for row in rows]
+
+    def update_experiment(self, experiment_id: str, **changes: Any) -> int:
+        """Record a change to ``experiment_id`` by appending a NEW row.
+
+        Append-only (R-PRM-011): the latest row for ``experiment_id`` is read,
+        its fields are carried forward with ``changes`` applied, a fresh
+        ``recorded_at`` is stamped, and the result is INSERTed as a new row. The
+        prior row is left untouched — there is no in-place UPDATE or DELETE; the
+        row sequence is the version history. Returns the new row's id.
+
+        Raises ``KeyError`` if no row exists for ``experiment_id``, or
+        ``TypeError`` if ``changes`` names a field that is not a mutable
+        ``ExperimentEvent`` column.
+        """
+        current = self.get_experiment(experiment_id)
+        if current is None:
+            raise KeyError(f"no experiment registered for experiment_id={experiment_id!r}")
+
+        mutable = {
+            "experiment_id",
+            "strategy_id",
+            "config_hash",
+            "hypothesis",
+            "stage_reached",
+            "terminal_status",
+            "rationale",
+            "evidence_json",
+            "lessons",
+            "revisitable",
+        }
+        unknown = set(changes) - mutable
+        if unknown:
+            raise TypeError(f"unknown experiment field(s): {sorted(unknown)}")
+
+        carried = {field: getattr(current, field) for field in mutable}
+        carried.update(changes)
+        return self.append_experiment(ExperimentEvent(recorded_at=datetime.now(tz=UTC), **carried))
+
     def get_backtest_run(self, run_id: str) -> BacktestRunEvent | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2365,6 +2616,23 @@ def _promotion_from_row(row: sqlite3.Row) -> PromotionEvent:
             None if row["reverses_event_id"] is None else int(row["reverses_event_id"])
         ),
         evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
+    )
+
+
+def _experiment_from_row(row: sqlite3.Row) -> ExperimentEvent:
+    return ExperimentEvent(
+        id=int(row["id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        experiment_id=str(row["experiment_id"]),
+        strategy_id=row["strategy_id"],
+        config_hash=row["config_hash"],
+        hypothesis=str(row["hypothesis"]),
+        stage_reached=str(row["stage_reached"]),
+        terminal_status=str(row["terminal_status"]),
+        rationale=str(row["rationale"]),
+        evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
+        lessons=row["lessons"],
+        revisitable=bool(row["revisitable"]),
     )
 
 

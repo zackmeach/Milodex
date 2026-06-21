@@ -589,17 +589,19 @@ def test_intraday_smoke_benchmark_exact_counts() -> None:
     """4-day benchmark backtest: BUY at post-OR bar (~10:00 ET), SELL at time-stop (~15:55 ET).
 
     Expected-counts contract (DO NOT delete):
-        buy_count == 4, sell_count == 3, trade_count == 7,
-        round_trip_count == 3, skipped_count == 1
+        buy_count == 4, sell_count == 4, trade_count == 8,
+        round_trip_count == 4, skipped_count == 0
 
-    Expected-counts rationale:
+    Expected-counts rationale (overnight-null fix):
       - 4 sessions → 4 BUY signals (one per session at the 10:00 ET bar)
       - BUY at bar T fills at bar T+1's open → 4 fills = buy_count == 4
-      - 4 SELL signals (one per session at the 15:55 ET bar)
-      - First 3 SELLs fill at the next session's 9:30 open → sell_count == 3
-      - Last SELL on session 4 has no next bar → stranded → skipped_count == 1
-      - trade_count == buy_count + sell_count == 4 + 3 == 7
-      - round_trip_count == min(buy_count, sell_count) per symbol == 3
+      - 4 SELL signals (one per session at the 15:55 ET bar). 15:55 IS the
+        session's last bar, so the SELL has no same-session T+1 → it is realized
+        at that session's CLOSE by the session-end flatten (NOT deferred to the
+        next session's 9:30 open). Every session self-flattens → sell_count == 4.
+      - No SELL is left to strand at run end → skipped_count == 0.
+      - trade_count == buy_count + sell_count == 4 + 4 == 8
+      - round_trip_count == min(buy_count, sell_count) per symbol == 4
     """
     from milodex.strategies.bench_unconditional_intraday_long import (
         BenchUnconditionalIntradayLongStrategy,
@@ -644,12 +646,12 @@ def test_intraday_smoke_benchmark_exact_counts() -> None:
     result = engine.run(start_date, end_date)
 
     assert result.buy_count == 4, f"Expected buy_count=4, got {result.buy_count}"
-    assert result.sell_count == 3, f"Expected sell_count=3, got {result.sell_count}"
-    assert result.trade_count == 7, f"Expected trade_count=7, got {result.trade_count}"
-    assert result.round_trip_count == 3, (
-        f"Expected round_trip_count=3, got {result.round_trip_count}"
+    assert result.sell_count == 4, f"Expected sell_count=4, got {result.sell_count}"
+    assert result.trade_count == 8, f"Expected trade_count=8, got {result.trade_count}"
+    assert result.round_trip_count == 4, (
+        f"Expected round_trip_count=4, got {result.round_trip_count}"
     )
-    assert result.skipped_count == 1, f"Expected skipped_count=1, got {result.skipped_count}"
+    assert result.skipped_count == 0, f"Expected skipped_count=0, got {result.skipped_count}"
 
 
 def test_intraday_no_same_bar_fill() -> None:
@@ -1107,17 +1109,15 @@ def test_independent_cursor_advancement() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_session_boundary_pending_sell_fills_at_next_session_open() -> None:
-    """Test 8: SELL queued at last decision event of session 1 fills at
-    session 2's 9:30 open with slippage applied.
+def test_session_boundary_final_bar_sell_realizes_at_session_close() -> None:
+    """Test 8 (overnight-null fix): a SELL on session 1's FINAL bar (the 15:55
+    time-stop) is realized at session 1's CLOSE, NOT deferred to session 2's
+    9:30 open. The benchmark is flat by close every session — no overnight carry.
 
     Uses the full _simulate_intraday path via engine.run() with a 2-session
-    synthetic dataset. The stub strategy:
-      - At session 1's 15:55 bar (last decision event): emit BUY (sets up position).
-      Actually — we need a position to SELL. Simpler: emit BUY at session 1's
-      first bar, then SELL at session 1's last bar. The BUY fills at the
-      second bar's open of session 1; the SELL fills at session 2's first
-      bar's open (9:30).
+    synthetic dataset. The benchmark BUYs at 10:00 (post-OR) and SELLs at the
+    15:55 time-stop bar (which IS the session's last bar). Each session's exit
+    therefore self-flattens at that session's close.
     """
     from milodex.strategies.bench_unconditional_intraday_long import (
         BenchUnconditionalIntradayLongStrategy,
@@ -1132,8 +1132,8 @@ def test_session_boundary_pending_sell_fills_at_next_session_open() -> None:
 
     # Use the benchmark strategy: BUY at 10:00 (post-OR), SELL at 15:55 (time-stop).
     # For a 2-session run the pattern is:
-    #   Session 1: BUY→fills at 10:05 open; SELL→fills at session 2's 9:30 open
-    #   Session 2: BUY→fills at 10:05 open; SELL→STRANDED (no session 3)
+    #   Session 1: BUY→fills at 10:05 open; SELL→realized at session 1's close.
+    #   Session 2: BUY→fills at 10:05 open; SELL→realized at session 2's close.
     parameters = {
         "opening_range_minutes": 30,
         "exit_minutes_before_close": 5,
@@ -1161,27 +1161,31 @@ def test_session_boundary_pending_sell_fills_at_next_session_open() -> None:
     engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
     result = engine.run(start_date, end_date)
 
-    # 2-session benchmark: buy_count=2, sell_count=1 (last SELL stranded), skipped=1
+    # 2-session benchmark: each session's final-bar SELL realizes at its own
+    # close → buy_count=2, sell_count=2, nothing stranded.
     assert result.buy_count == 2, f"Expected buy_count=2, got {result.buy_count}"
-    assert result.sell_count == 1, f"Expected sell_count=1, got {result.sell_count}"
-    assert result.skipped_count == 1, (
-        f"Expected skipped_count=1 (stranded SELL), got {result.skipped_count}"
+    assert result.sell_count == 2, f"Expected sell_count=2, got {result.sell_count}"
+    assert result.skipped_count == 0, (
+        f"Expected skipped_count=0 (no overnight carry / no stranded SELL), got "
+        f"{result.skipped_count}"
     )
 
-    # The session-boundary SELL (SELL queued at session 1's 15:55 bar) filled at
-    # session 2's 9:30 open. Verify via the trade ledger.
+    # The session-1 SELL (on session 1's 15:55 bar) is realized at session 1's
+    # LAST bar close, NOT session 2's 9:30 open. Verify via the trade ledger.
     trades = engine._event_store.list_trades_for_backtest_run(result.db_id)  # noqa: SLF001
     sell_trades = [t for t in trades if t.side == "sell" and t.status == "submitted"]
-    assert len(sell_trades) == 1, f"Expected exactly 1 SELL trade, got {len(sell_trades)}"
+    assert len(sell_trades) == 2, f"Expected exactly 2 SELL trades, got {len(sell_trades)}"
 
-    # The fill should be at session 2's 9:30 open.
-    # session 2 = 2024-01-09; 9:30 ET = 14:30 UTC
-    # bar_idx=0 of session 2 (sess_idx=1): open = 500 + 1*0.10 + 0*0.01 = 500.10
-    expected_fill = 500.10  # slippage=0 so fill == open exactly
-    fill_price = sell_trades[0].estimated_unit_price
-    assert abs(fill_price - expected_fill) < 1e-6, (
-        f"Session-boundary SELL fill price {fill_price!r} != session2 9:30 open "
-        f"{expected_fill} — cross-session fill bug?"
+    sell_prices = sorted(t.estimated_unit_price for t in sell_trades)
+    # session 1 (sess_idx=0) last bar = bar_idx 77: close = 500 + 77*0.01 + 0.02 = 500.79
+    # session 2's 9:30 open (the OLD buggy fill) = 500 + 1*0.10 = 500.10 — must NOT appear.
+    assert any(abs(p - 500.79) < 1e-6 for p in sell_prices), (
+        f"Session-1 final-bar SELL must realize at session-1 last close 500.79 "
+        f"(not session-2 9:30 open 500.10); got {sell_prices}"
+    )
+    assert not any(abs(p - 500.10) < 1e-6 for p in sell_prices), (
+        f"A SELL filled at session-2's 9:30 open 500.10 — overnight carry bug; "
+        f"got {sell_prices}"
     )
 
 
@@ -1525,4 +1529,284 @@ def test_simulate_intraday_empty_all_bars_returns_initial_equity() -> None:
     assert output.skipped_count == 0
     assert abs(output.final_equity - 100_000.0) < 1e-6, (
         f"Empty all_bars should return initial_equity=100000, got {output.final_equity}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# N2 — session-end force-flatten of a stranded (un-exited) intraday position.
+#
+# The intraday time-stop (strategies/_session_intraday.is_time_stop_bar) is
+# exact ET-time equality. On a thin symbol whose time-stop bar is MISSING from
+# the feed, the strategy is never evaluated on that bar and never emits its
+# exit, so the position would carry overnight — spurious exposure for a
+# max_hold_days:1 strategy. The engine now force-flattens any open position at
+# session close, so the round-trip is guaranteed closed even when the
+# strategy's own exit bar is absent.
+# ---------------------------------------------------------------------------
+
+
+def _build_5min_barset_drop_timestamps(
+    date_strs: list[str],
+    drop_utc: set[pd.Timestamp],
+    symbol: str = "SPY",
+) -> BarSet:
+    """Full-session 5min BarSet (as _build_synthetic_5min_barset) minus dropped bars."""
+    full = _build_synthetic_5min_barset(date_strs, symbol=symbol)
+    df = full.to_dataframe()
+    ts_utc = pd.to_datetime(df["timestamp"], utc=True)
+    keep = ~ts_utc.isin(drop_utc)
+    return BarSet(df[keep.to_numpy()].reset_index(drop=True))
+
+
+def test_intraday_strand_force_flattened_at_session_end() -> None:
+    """A position whose time-stop bar is missing is force-flattened at session close.
+
+    Single session. The benchmark BUYs at the 10:00 ET post-opening-range bar
+    (fills at 10:05) and would SELL at the 15:55 ET time-stop bar. That bar is
+    DROPPED from the feed, so the strategy never emits its exit. With no next
+    session to drain into, the position would strand overnight — the engine's
+    session-end force-flatten must close it: position flat, a SELL recorded,
+    the round-trip counted, and EOD equity == cash (no residual position).
+    """
+    from milodex.strategies.bench_unconditional_intraday_long import (
+        BenchUnconditionalIntradayLongStrategy,
+    )
+
+    session_dates = ["2024-01-08"]
+    start_date = date(2024, 1, 8)
+    end_date = date(2024, 1, 8)
+
+    # 15:55 ET on 2024-01-08 (EST, UTC-5) = 20:55 UTC — the time-stop bar.
+    time_stop_ts = pd.Timestamp("2024-01-08 20:55:00+00:00")
+    spy_bars = _build_5min_barset_drop_timestamps(
+        session_dates, drop_utc={time_stop_ts}, symbol="SPY"
+    )
+    # Sanity: the time-stop bar really is absent from the fixture.
+    fixture_ts = pd.to_datetime(spy_bars.to_dataframe()["timestamp"], utc=True)
+    assert time_stop_ts not in set(fixture_ts), "fixture must omit the 15:55 time-stop bar"
+
+    parameters = {
+        "opening_range_minutes": 30,
+        "exit_minutes_before_close": 5,
+        "per_position_notional_pct": 0.95,
+    }
+    real_strategy = BenchUnconditionalIntradayLongStrategy()
+    loaded = _make_intraday_loaded_strategy("stub.strand_flatten.v1", ("SPY",))
+    loaded.strategy = real_strategy
+    loaded.context = StrategyContext(
+        strategy_id="stub.strand_flatten.v1",
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="strand_flatten_test",
+        version=1,
+        config_hash="strand_flatten_hash",
+        parameters=parameters,
+        universe=("SPY",),
+        universe_ref=None,
+        disable_conditions=(),
+        config_path=str(loaded.config.path),
+        manifest={},
+    )
+
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    result = engine.run(start_date, end_date)
+
+    # The BUY filled (10:05 open); the missing time-stop means the strategy
+    # never emitted a SELL — the engine force-flattened at session close.
+    assert result.buy_count == 1, f"Expected buy_count=1, got {result.buy_count}"
+    assert result.sell_count == 1, (
+        f"Expected the session-end force-flatten to record a SELL, got "
+        f"sell_count={result.sell_count}"
+    )
+    assert result.round_trip_count == 1, (
+        f"Force-flatten must close the round trip, got round_trip_count={result.round_trip_count}"
+    )
+    # No stranded-order skip: the position was flattened, not abandoned.
+    assert result.skipped_count == 0, (
+        f"No stranded order expected (position was flattened), got "
+        f"skipped_count={result.skipped_count}"
+    )
+
+    # EOD equity == cash: the position is flat, so no residual position value.
+    # With one open position flattened at the day's last close, the final
+    # equity_curve point must equal the kernel's cash (mark-to-market of an
+    # empty position set is just cash).
+    last_day, last_equity = result.equity_curve[-1]
+    assert last_day == date(2024, 1, 8)
+    assert abs(result.final_equity - last_equity) < 1e-9
+
+    # The recorded SELL is the engine-level flatten (its reason rule), not a
+    # strategy intent — confirm a submitted SELL exists in the ledger.
+    trades = engine._event_store.list_trades_for_backtest_run(result.db_id)  # noqa: SLF001
+    sell_trades = [t for t in trades if t.side == "sell" and t.status == "submitted"]
+    assert len(sell_trades) == 1, f"Expected exactly 1 submitted SELL, got {len(sell_trades)}"
+
+
+def test_intraday_self_exit_final_bar_realized_at_close() -> None:
+    """A strategy that self-exits on the session's FINAL bar is flat by close.
+
+    Same 4-session benchmark as test_intraday_smoke_benchmark_exact_counts, with
+    the time-stop bar PRESENT every session. The benchmark's 15:55 time-stop IS
+    the session's last bar, so its SELL has no same-session T+1 and is realized
+    at that session's CLOSE by the session-end flatten (overnight-null fix) —
+    NOT deferred to the next session's 9:30 open. Every session round-trips
+    within itself: buy=4, sell=4, no strand.
+    """
+    from milodex.strategies.bench_unconditional_intraday_long import (
+        BenchUnconditionalIntradayLongStrategy,
+    )
+
+    session_dates = ["2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11"]
+    start_date = date(2024, 1, 8)
+    end_date = date(2024, 1, 11)
+
+    spy_bars = _build_synthetic_5min_barset(session_dates, symbol="SPY")
+    parameters = {
+        "opening_range_minutes": 30,
+        "exit_minutes_before_close": 5,
+        "per_position_notional_pct": 0.95,
+    }
+    real_strategy = BenchUnconditionalIntradayLongStrategy()
+    loaded = _make_intraday_loaded_strategy("stub.self_exit_unaffected.v1", ("SPY",))
+    loaded.strategy = real_strategy
+    loaded.context = StrategyContext(
+        strategy_id="stub.self_exit_unaffected.v1",
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="self_exit_unaffected_test",
+        version=1,
+        config_hash="self_exit_unaffected_hash",
+        parameters=parameters,
+        universe=("SPY",),
+        universe_ref=None,
+        disable_conditions=(),
+        config_path=str(loaded.config.path),
+        manifest={},
+    )
+
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    result = engine.run(start_date, end_date)
+
+    # Identical to test_intraday_smoke_benchmark_exact_counts — the session-end
+    # flatten realizes each final-bar exit at its own close, so every session
+    # round-trips within itself and nothing strands.
+    assert result.buy_count == 4, f"Expected buy_count=4, got {result.buy_count}"
+    assert result.sell_count == 4, (
+        f"Expected sell_count=4 (final-bar exits realized at close), got {result.sell_count}"
+    )
+    assert result.trade_count == 8, f"Expected trade_count=8, got {result.trade_count}"
+    assert result.round_trip_count == 4, (
+        f"Expected round_trip_count=4, got {result.round_trip_count}"
+    )
+    assert result.skipped_count == 0, (
+        f"Expected skipped_count=0 (no overnight carry / no stranded SELL), got "
+        f"{result.skipped_count}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Overnight-null BLOCKER — a final-bar (time-stop) SELL must REALIZE at the
+# session's close, NOT defer to the next session's 9:30 open.
+#
+# A max_hold_days:1 intraday position whose ONLY exit is the session-final
+# time-stop bar (15:55 for 5Min, exit_minutes_before_close=5) emits a SELL with
+# no same-session T+1 bar. Under the old engine that SELL was left in `pending`
+# and filled at the next session's open — overnight carry. The corrected engine
+# force-flattens it at the day's last close so the position is flat by close.
+# ---------------------------------------------------------------------------
+
+
+def test_intraday_final_bar_exit_realizes_at_session_close_not_next_open() -> None:
+    """A final-bar time-stop SELL fills at the session's last close, not next-open.
+
+    Benchmark over 2 sessions: BUY at 10:00 (fills 10:05 open), SELL at the
+    15:55 time-stop bar — which IS the session's last bar, so its fill has no
+    same-session T+1. Assert:
+      - Session 1's exit is realized at session 1 (flat by close), so BOTH
+        sessions' SELLs fill → sell_count == 2 (was 1 under overnight carry).
+      - No order is stranded → skipped_count == 0 (was 1).
+      - The session-1 SELL's fill price == session 1's LAST bar close
+        (500.79), NOT session 2's 9:30 open (500.10).
+      - EOD equity after session 1 reflects the close-fill: it equals cash
+        (position flat), not cash + a carried lot.
+    """
+    from milodex.strategies.bench_unconditional_intraday_long import (
+        BenchUnconditionalIntradayLongStrategy,
+    )
+
+    session_dates = ["2024-01-08", "2024-01-09"]
+    start_date = date(2024, 1, 8)
+    end_date = date(2024, 1, 9)
+
+    spy_bars = _build_synthetic_5min_barset(session_dates, symbol="SPY")
+
+    parameters = {
+        "opening_range_minutes": 30,
+        "exit_minutes_before_close": 5,
+        "per_position_notional_pct": 0.95,
+    }
+    real_strategy = BenchUnconditionalIntradayLongStrategy()
+    loaded = _make_intraday_loaded_strategy("stub.final_bar_close_fill.v1", ("SPY",))
+    loaded.strategy = real_strategy
+    loaded.context = StrategyContext(
+        strategy_id="stub.final_bar_close_fill.v1",
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="final_bar_close_fill_test",
+        version=1,
+        config_hash="final_bar_close_fill_hash",
+        parameters=parameters,
+        universe=("SPY",),
+        universe_ref=None,
+        disable_conditions=(),
+        config_path=str(loaded.config.path),
+        manifest={},
+    )
+
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    result = engine.run(start_date, end_date)
+
+    # Both sessions' final-bar SELLs realize at their own close → 2 SELL fills,
+    # nothing stranded. (Old buggy semantics: sell_count=1, skipped_count=1.)
+    assert result.buy_count == 2, f"Expected buy_count=2, got {result.buy_count}"
+    assert result.sell_count == 2, (
+        f"Expected sell_count=2 (each final-bar exit realized at its own close), "
+        f"got {result.sell_count}"
+    )
+    assert result.skipped_count == 0, (
+        f"Expected skipped_count=0 (no overnight carry / no stranded SELL), got "
+        f"{result.skipped_count}"
+    )
+
+    # The session-1 exit fills at session 1's LAST bar close, not session 2's open.
+    # session 1 (sess_idx=0) last bar = bar_idx 77: base = 500 + 77*0.01 = 500.77,
+    #   close = base + 0.02 = 500.79  ← the realizing fill price (slippage=0).
+    # session 2's 9:30 open (the OLD buggy fill) = 500 + 1*0.10 = 500.10 — must NOT appear.
+    trades = engine._event_store.list_trades_for_backtest_run(result.db_id)  # noqa: SLF001
+    sell_trades = [t for t in trades if t.side == "sell" and t.status == "submitted"]
+    assert len(sell_trades) == 2, f"Expected exactly 2 submitted SELLs, got {len(sell_trades)}"
+    sell_prices = sorted(t.estimated_unit_price for t in sell_trades)
+    # session 1 close-fill (500.79) and session 2 close-fill (500.0+0.10+77*0.01+0.02=500.89).
+    assert any(abs(p - 500.79) < 1e-6 for p in sell_prices), (
+        f"Session-1 final-bar SELL must fill at session-1 last close 500.79 "
+        f"(not session-2 open 500.10); got sell fill prices {sell_prices}"
+    )
+    assert not any(abs(p - 500.10) < 1e-6 for p in sell_prices), (
+        f"A SELL filled at session-2's 9:30 open 500.10 — overnight carry bug; "
+        f"got {sell_prices}"
+    )
+
+    # EOD equity after session 1 reflects the close-fill: the position is FLAT,
+    # so session-1 EOD equity is just cash (initial equity + the session-1
+    # round-trip P&L), NOT cash + a marked-open lot. A carried ~190-share lot
+    # (0.95*100k/~500) marked at the session-1 close would put EOD equity within
+    # ~one round-trip-P&L of $100k INCLUDING the lot's notional — i.e. tens of
+    # thousands away; a flat close sits within a few hundred dollars of $100k.
+    assert len(result.equity_curve) == 2
+    sess1_day, sess1_equity = result.equity_curve[0]
+    assert sess1_day == start_date
+    assert abs(sess1_equity - 100_000.0) < 1_000.0, (
+        f"Session-1 EOD equity ({sess1_equity:.2f}) is far from a flat-close "
+        f"$100k baseline — a carried overnight position would shift it by the "
+        f"full lot notional (~$95k); overnight carry bug"
     )

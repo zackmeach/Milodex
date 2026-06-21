@@ -81,6 +81,32 @@ def relation_at_least(left: str, right: str) -> StrategyParameterRelation:
     return StrategyParameterRelation(name=f"{left} >= {right}", check=check)
 
 
+def single_symbol(universe: Sequence[str]) -> str | None:
+    """The sole symbol of a single-symbol strategy's universe.
+
+    Returns ``None`` for an empty universe (caller emits a graceful no-signal).
+    Raises ``ValueError`` when the universe has more than one distinct symbol: a
+    single-symbol strategy must never silently trade ``sorted(universe)[0]`` and
+    discard the rest. The cross-ETF evidence lane fans out one symbol per config
+    (PR-0A), so a >1 universe here means a mis-wired fan-out, not a trade signal.
+
+    ponytail: cardinality guard, not session logic — lives in base.py, not
+    _session_intraday.py, so a 24/7 strategy could reuse it without importing
+    US-equity session code.
+    """
+    symbols = sorted({s.upper() for s in universe})
+    if not symbols:
+        return None
+    if len(symbols) > 1:
+        msg = (
+            f"single-symbol strategy received a {len(symbols)}-symbol universe "
+            f"{symbols}; the evidence lane fans out one symbol per config "
+            f"(universe must resolve to exactly one symbol)"
+        )
+        raise ValueError(msg)
+    return symbols[0]
+
+
 @dataclass(frozen=True)
 class StrategyContext:
     """Immutable runtime context passed into strategy evaluation.

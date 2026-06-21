@@ -60,7 +60,7 @@ from pathlib import Path
 import pandas as pd
 
 from milodex.analytics.snapshots import record_backtest_equity_snapshot
-from milodex.broker.models import AccountInfo, OrderSide, Position
+from milodex.broker.models import AccountInfo, OrderSide, OrderType, Position
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.data.models import BarSet
@@ -474,6 +474,91 @@ class BacktestSimulationKernel:
             skipped_count=skipped_count,
             remaining=remaining,
         )
+
+    def liquidate_open_positions(
+        self,
+        *,
+        closes: dict[str, float],
+        day: date,
+        session_id: str,
+        db_run_id: int,
+        reason: DecisionReasoning,
+    ) -> set[str]:
+        """Force-flatten open positions at ``closes``; return the symbols closed.
+
+        Engine-level liquidation (NOT a strategy intent). Used by the intraday
+        path to guarantee an intraday position is flat at session end. This is
+        the close-out for ANY position still open at session end: a position
+        whose strategy never emitted an exit (e.g. a missing time-stop bar — the
+        N2 strand) AND a position with a queued exit (SELL) whose T+1 fill would
+        otherwise land in the NEXT session (a final-bar time-stop has no
+        same-session future bar). Both are realized HERE, at the day's close, so
+        a max_hold_days:1 intraday position is flat by close rather than carried
+        overnight.
+
+        Each open position is sold in full at its entry in ``closes`` via the
+        SAME execution + cash/position/ledger accounting that
+        :meth:`drain_pending_orders` uses for a normal SELL fill — submit through
+        ``submit_backtest``, then ``cash += fill_price*qty - commission``, clear
+        the position and its entry_state, and bump ``sym_fills[...]["sells"]`` so
+        the liquidation counts as a real trade / round-trip in the metrics.
+
+        ``closes`` must be the day's last available close per symbol (the same
+        price :func:`_mark_to_market_at_day_end` values the position at), so the
+        equity curve is continuous across the flatten up to the liquidation's own
+        slippage/commission (a forced exit costs the same as any real exit;
+        exactly continuous only at zero cost). A position whose symbol is absent
+        from ``closes`` (no resolvable, finite, positive close) is left untouched
+        — it is NOT reported flattened and is marked-to-market at the prior close
+        exactly as before. The caller keeps that symbol's pending SELL (if any)
+        as the next-open fallback.
+
+        The returned set is exactly the symbols this call closed; the caller uses
+        it to drop those symbols' now-redundant pending SELLs so they do not also
+        fill at the next session's open (double-sell / negative position).
+
+        Does NOT touch the pending/drain queue itself: this is a separate EOD
+        action and the T+1 fill model for ordinary mid-session strategy-intent
+        trades is unaffected.
+        """
+        if not self.positions:
+            return set()
+        # Snapshot symbols first: the loop mutates self.positions.
+        symbols = list(self.positions.keys())
+        equity_pre = compute_equity(self.cash, self.positions, closes)
+        self.sync_broker_state(day=day, closes=closes, equity=equity_pre)
+
+        flattened: set[str] = set()
+        for sym in symbols:
+            latest_close = closes.get(sym)
+            if latest_close is None or not math.isfinite(latest_close) or latest_close <= 0:
+                # No honest day-end price to fill at → leave the position open;
+                # it is marked-to-market at the prior close as before.
+                continue
+            qty, _ = self.positions[sym]
+            intent = TradeIntent(
+                symbol=sym,
+                side=OrderSide.SELL,
+                quantity=qty,
+                order_type=OrderType.MARKET,
+            )
+            decorated = self._decorate_intent(intent, quantity_override=qty)
+            result = self.execution_service.submit_backtest(
+                decorated,
+                session_id=session_id,
+                backtest_run_id=db_run_id,
+                reasoning=reason,
+            )
+            if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
+                continue
+            fill_price = float(result.order.filled_avg_price or 0.0)
+            proceeds = fill_price * qty - self.commission_per_trade
+            self.cash += proceeds
+            del self.positions[sym]
+            self.entry_state.pop(sym, None)
+            flattened.add(sym)
+            self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
+        return flattened
 
     def record_stranded_orders(
         self,

@@ -85,3 +85,10 @@ artifacts/
 # Local scratch — ad-hoc diagnostic scripts, captures, and tool-generated reports
 tmp/
 reports/
+
+# Research scratch / run logs (never commit)
+/full_suite_*.txt
+/smoke_screen.txt
+/working_lane_run.txt
+/prof_*.txt
+docs/reviews/working_lane_*.json

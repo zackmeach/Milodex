@@ -1,0 +1,60 @@
+# Late-Session Momentum Intraday SPY — v1  (BACKTEST-ONLY CANDIDATE)
+#
+# Overnight intraday-expansion candidate. Long-only, single-name SPY,
+# 5-minute bars, intraday round-trip. Enters in the final hour when price
+# is exhibiting positive momentum vs. N bars ago. Rides to the time-stop.
+# Pure price momentum — no VWAP, no volume gate.
+#
+# Rules in code: src/milodex/strategies/momentum_late_session_intraday.py
+# Session helpers: src/milodex/strategies/_session_intraday.py
+
+strategy:
+  id: "momentum.late_session.intraday.spy.v1"
+  family: "momentum"
+  template: "late_session.intraday"
+  variant: "spy"
+  version: 1
+  description: >
+    Late-session momentum on SPY, 5-minute bars. Long-only intraday round-trip:
+    buy when the close is above the close momentum_lookback_bars bars ago within
+    the late entry window [14:30, 15:30) ET; ride to the time-stop before the
+    close. Stop on stop_loss_pct from entry. One entry per session.
+    Half-day sessions skipped. No VWAP or volume gate.
+  enabled: true
+
+  universe_ref: "universe.spy_only.v1"
+
+  parameters:
+    # opening_range_minutes=300 → entry window starts at 14:30 ET.
+    opening_range_minutes: 300
+    # Entry window = [300, 360) min after 9:30 ET → [14:30, 15:30) ET.
+    entry_window_minutes: 60
+    # Momentum: close must exceed the close 6 bars (30 min) ago.
+    momentum_lookback_bars: 6
+    # Cut the loser at 1% below the fill price.
+    stop_loss_pct: 0.01
+    # Forced exit 5 min before the close.
+    exit_minutes_before_close: 5
+    # 10% of equity into the single position.
+    per_position_notional_pct: 0.10
+
+  tempo:
+    bar_size: "5Min"
+    min_hold_days: 0
+    max_hold_days: 1
+
+  risk:
+    max_position_pct: 0.10
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+
+  stage: "backtest"
+
+  backtest:
+    commission_per_trade: 0.00
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+
+  disable_conditions_additional: []

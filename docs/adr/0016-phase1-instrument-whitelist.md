@@ -73,6 +73,11 @@ and the CLI handlers, which catch the subclass explicitly to emit a distinct
 error. No shipped manifest or strategy config contains a denylisted ticker
 (verified 2026-06-19), so the guard is a no-op on current configs.
 
+A bare `load_strategy_config` validates an inline `universe` but does not resolve
+a `universe_ref` (it returns the ref unresolved per `loader.py:519`); the
+eligibility guard for a `universe_ref` fires only when the ref is resolved via
+`resolve_universe_ref` (e.g. `StrategyLoader.load`, `data fetch-universe`).
+
 ## Links
 
 - Supersedes: none

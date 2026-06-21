@@ -197,6 +197,35 @@ def test_session_bars_et_filters_to_one_day() -> None:
     )
 
 
+def test_session_bars_et_matches_date_accessor_across_dst_boundary() -> None:
+    """The int-array day comparison is bit-identical to the pandas ``.date`` accessor.
+
+    Spans the 2024 spring-forward (2024-03-10 02:00 ET): RTH bars on 2024-03-08
+    (EST, UTC-5) and 2024-03-11 (EDT, UTC-4). For each session date, the rows
+    selected by ``session_bars_et`` must equal the rows the legacy ``.date ==``
+    mask would select — proving the vectorized swap changes nothing.
+    """
+    df = _build_intraday_df(
+        [
+            # Friday 2024-03-08, EST (UTC-5): 09:30 / 09:35 / 15:55 ET
+            ("2024-03-08 14:30:00+00:00", 500.0),
+            ("2024-03-08 14:35:00+00:00", 500.5),
+            ("2024-03-08 20:55:00+00:00", 501.0),
+            # Monday 2024-03-11, EDT (UTC-4): 09:30 / 09:35 / 15:55 ET
+            ("2024-03-11 13:30:00+00:00", 502.0),
+            ("2024-03-11 13:35:00+00:00", 502.5),
+            ("2024-03-11 19:55:00+00:00", 503.0),
+        ]
+    )
+    et_dates = pd.DatetimeIndex(df["timestamp"]).tz_convert("America/New_York").date
+    for session_date in (date(2024, 3, 8), date(2024, 3, 11)):
+        legacy_mask = pd.Series(et_dates == session_date, index=df.index)
+        legacy_rows = df.loc[legacy_mask].sort_values("timestamp").reset_index(drop=True)
+        out = session_bars_et(df, session_date)
+        assert len(out) == 3
+        pd.testing.assert_frame_equal(out, legacy_rows)
+
+
 def test_opening_range_bars_returns_first_six_5min_bars() -> None:
     """With a 30-min opening range and 5min bars: returns exactly 6 rows."""
     rows = []

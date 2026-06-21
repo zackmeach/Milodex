@@ -36,7 +36,7 @@ MARKET_CLOSE_ET_FULL = time(16, 0)
 #: Half-day session close in Eastern Time (early close at 1pm).
 MARKET_CLOSE_ET_HALF = time(13, 0)
 
-#: US equities early-close (13:00 ET) days for the 2022-2025 backtest window.
+#: US equities early-close (13:00 ET) days for the 2022-2026 backtest window.
 #: Sourced from NYSE's published holiday calendar. Half-days are: day after
 #: Thanksgiving, day before July 4 when 7/4 is Wed/Thu/Fri, Christmas Eve when
 #: it falls on a weekday.
@@ -51,6 +51,8 @@ US_MARKET_HALF_DAYS: frozenset[date] = frozenset(
         date(2025, 7, 3),  # Day before July 4
         date(2025, 11, 28),  # Day after Thanksgiving
         date(2025, 12, 24),  # Christmas Eve (Wed)
+        date(2026, 11, 27),  # Day after Thanksgiving
+        date(2026, 12, 24),  # Christmas Eve (Thu)
     }
 )
 
@@ -153,7 +155,17 @@ def session_bars_et(df: pd.DataFrame, session_date: date) -> pd.DataFrame:
     if df.empty:
         return df.iloc[:0]
     et = pd.DatetimeIndex(df["timestamp"]).tz_convert(ET_TZ)
-    mask = pd.Series(et.date == session_date, index=df.index)
+    # Compare ET year/month/day as int arrays instead of the pandas ``.date``
+    # accessor, which materializes a Python ``date`` per element (a hot-path
+    # cost: this runs 3x/bar over the visible window in the intraday backtest).
+    # RTH 9:30-16:00 ET never crosses midnight, so the component comparison is
+    # bit-identical to ``et.date == session_date``.
+    day_match = (
+        (et.year == session_date.year)
+        & (et.month == session_date.month)
+        & (et.day == session_date.day)
+    )
+    mask = pd.Series(day_match, index=df.index)
     return df.loc[mask].sort_values("timestamp").reset_index(drop=True)
 
 

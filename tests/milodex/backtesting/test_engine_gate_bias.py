@@ -848,6 +848,63 @@ def test_merge_missing_column_does_not_silently_corrupt(tmp_path):
     )
 
 
+# ===========================================================================
+# Bug 4 — WARMUP HEURISTIC OVERFLOW (large non-lookback param)
+#
+# _warmup_calendar_days() step 2 scans all numeric whole-number config params
+# and uses the largest as a proxy for lookback period (multiplied by 3).  A
+# config with a large non-lookback integer — e.g. a seed value like 20260619
+# — produces a warmup of ~60M days, which overflows `start - timedelta(days=N)`
+# with an OverflowError.
+#
+# Fix: cap the heuristic at 3650 (10 years).  No real strategy needs more
+# warmup, and the cap closes the OverflowError class for any config containing
+# a large non-lookback int param.
+# ===========================================================================
+
+
+def test_warmup_heuristic_capped_at_3650_with_large_seed_param(tmp_path):
+    """A config whose largest int param is a seed (e.g. 20260619) must not
+    overflow ``start - timedelta(days=warmup)`` — the heuristic cap applies.
+
+    Concretely: warmup must be <= 3650 and ``date(2024, 1, 1) - timedelta(days=warmup)``
+    must not raise OverflowError.
+    """
+    # Params matching the random-matched null: seed is the largest int by far.
+    params = {
+        "opening_range_minutes": 30,
+        "entry_window_minutes": 300,
+        "exit_minutes_before_close": 5,
+        "per_position_notional_pct": 0.10,
+        "session_entry_rate": 0.5,
+        "seed": 20260619,
+    }
+    loaded = _make_loaded(
+        strategy_id="test.large_seed.v1",
+        universe=("SPY",),
+        parameters=params,
+        tmp_dir=tmp_path,
+    )
+    # max_lookback_periods() returns 0 on the mock, so step 2 heuristic runs.
+    loaded.strategy.max_lookback_periods.return_value = 0
+
+    store = _make_event_store()
+    engine = BacktestEngine(
+        loaded=loaded,
+        data_provider=MagicMock(),
+        event_store=store,
+        slippage_pct=0.0,
+        commission_per_trade=0.0,
+    )
+
+    warmup = engine._warmup_calendar_days()  # noqa: SLF001
+    assert warmup <= 3650, f"warmup={warmup} exceeds 3650-day cap"
+    # Must not raise OverflowError.
+    anchor = date(2024, 1, 1)
+    result_date = anchor - timedelta(days=warmup)
+    assert result_date < anchor  # sanity
+
+
 def test_merge_matching_schema_unchanged(tmp_path):
     """Normal-path: a new_data frame whose schema exactly matches existing
     must merge correctly, unchanged (no data loss, no dtype change).

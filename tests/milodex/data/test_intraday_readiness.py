@@ -241,3 +241,131 @@ def test_reference_cross_check_folds_inward_bias():
     # min_sessions defaults to 5, so a single session does NOT flag — proves the
     # advisory gate is inert on short windows (documented behaviour).
     assert "iex_inward_price_bias" not in report.to_dict()["issue_codes"]
+
+
+# ---------------------------------------------------------------------------
+# B1: distinct on-grid coverage + dup/off-grid warning
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_bar_does_not_inflate_coverage_above_100():
+    # Full clean session (78 bars) + one duplicate of bar index 0 (9:30 ET).
+    # Without the fix: observed == 79 -> coverage 101.28% -> no warnings (passes silently).
+    # With the fix: observed == 78 (duplicate collapses in the on-grid set) -> 100%.
+    rows = _session_5min("2025-06-17")
+    duplicate = dict(rows[0])  # copy bar index 0 (the 9:30 bar)
+    rows_with_dup = rows + [duplicate]
+    report = _scan(
+        {"SPY": rows_with_dup},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.coverage_pct <= 100.0
+    assert any(w.code == "intraday_offgrid_or_duplicate_bars" for w in report.issues)
+
+
+def test_offgrid_bar_excluded_from_coverage_and_warned():
+    # Drop 8 on-grid bars (indices 0..7) so coverage is 70/78 = 89.7% < 90% floor,
+    # then add one off-grid bar (9:32 ET = offset 2, not divisible by 5).
+    # Without the fix: the off-grid bar increments observed back toward 71/78 = 91.0%,
+    # masking the real coverage hole and suppressing the coverage warning.
+    # With the fix: off-grid bar is excluded from on_grid set -> observed stays 70.
+    base_rows = _session_5min("2025-06-17", open_offset_skip=8)  # 70 bars (indices 8..77)
+    start = pd.Timestamp("2025-06-17 09:30", tz="America/New_York")
+    offgrid_bar = {
+        "timestamp": (start + pd.Timedelta(minutes=2)).tz_convert("UTC"),  # 9:32 ET, offset=2
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 500.0,
+        "vwap": 100.2,
+    }
+    report = _scan(
+        {"SPY": base_rows + [offgrid_bar]},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.coverage_pct < 100.0
+    codes = report.to_dict()["issue_codes"]
+    assert "intraday_session_coverage_below_threshold" in codes
+    assert "intraday_offgrid_or_duplicate_bars" in codes
+
+
+def test_clean_full_session_still_exactly_100_after_fix():
+    # Regression: the on-grid-distinct fix must not disturb a clean 78/78 session.
+    report = _scan(
+        {"SPY": _session_5min("2025-06-17")},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    sr = report.per_symbol[0]
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"
+    assert not any(w.code == "intraday_offgrid_or_duplicate_bars" for w in report.issues)
+
+
+# ---------------------------------------------------------------------------
+# B2: 2026 half-days in calendar
+# ---------------------------------------------------------------------------
+
+
+def test_2026_half_day_nov27_expected_count_is_42():
+    # 2026-11-27 is Day after Thanksgiving — should be a half-day (210min / 5 = 42 bars).
+    # Without B2: scored as a 390-min full session (expected=78 vs observed=42 -> 53.8%
+    # coverage -> intraday_session_coverage_below_threshold fires, status pass_with_warnings).
+    report = _scan(
+        {"SPY": _session_5min("2026-11-27", n_bars=42)},
+        start=date(2026, 11, 27),
+        end=date(2026, 11, 27),
+    )
+    sr = report.per_symbol[0]
+    assert sr.expected_bars == 42
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"
+
+
+def test_offgrid_bar_does_not_produce_spurious_gap_warning() -> None:
+    """N4: an off-grid bar in an otherwise gap-free session must NOT trigger
+    intraday_intra_session_gap.  Before the fix, _max_intra_session_gap received
+    the raw ``offsets`` set (which could include an off-grid value like offset=2),
+    causing range(min=2, max=...) to walk a non-grid start and report a spurious gap.
+    """
+    # Full clean 5-min session (78 bars) plus one off-grid bar at 9:32 ET (offset=2).
+    start = pd.Timestamp("2025-06-17 09:30", tz="America/New_York")
+    offgrid_bar = {
+        "timestamp": (start + pd.Timedelta(minutes=2)).tz_convert("UTC"),  # offset=2
+        "open": 100.0,
+        "high": 101.0,
+        "low": 99.0,
+        "close": 100.5,
+        "volume": 500.0,
+        "vwap": 100.2,
+    }
+    rows = _session_5min("2025-06-17") + [offgrid_bar]
+    report = _scan(
+        {"SPY": rows},
+        start=date(2025, 6, 17),
+        end=date(2025, 6, 17),
+    )
+    codes = report.to_dict()["issue_codes"]
+    # The off-grid bar is warned about — but must NOT produce a gap warning.
+    assert "intraday_offgrid_or_duplicate_bars" in codes
+    assert "intraday_intra_session_gap" not in codes, (
+        "off-grid bar produced a spurious gap warning — gap scan received raw offsets"
+    )
+
+
+def test_2026_half_day_dec24_expected_count_is_42():
+    # 2026-12-24 is Christmas Eve (Thursday) — should be a half-day.
+    report = _scan(
+        {"SPY": _session_5min("2026-12-24", n_bars=42)},
+        start=date(2026, 12, 24),
+        end=date(2026, 12, 24),
+    )
+    sr = report.per_symbol[0]
+    assert sr.expected_bars == 42
+    assert sr.coverage_pct == 100.0
+    assert report.status == "pass"

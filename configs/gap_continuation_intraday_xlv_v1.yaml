@@ -1,0 +1,38 @@
+strategy:
+  id: gap.gap_continuation.intraday.xlv.v1
+  family: gap
+  template: gap_continuation.intraday
+  variant: xlv
+  version: 1
+  description: 'Gap-continuation on XLV, 5-minute bars. Long-only intraday round-trip:
+    buy when an overnight gap-up (>= min_gap_pct) is holding/extending (close > today_open)
+    within the early entry window; exit on stop_loss_pct from entry, gap-fill invalidation,
+    or the time-stop before the close. One entry per session. Half-day sessions skipped.
+
+    '
+  enabled: true
+  parameters:
+    opening_range_minutes: 15
+    entry_window_minutes: 60
+    min_gap_pct: 0.003
+    stop_loss_pct: 0.01
+    exit_minutes_before_close: 5
+    per_position_notional_pct: 0.1
+  tempo:
+    bar_size: 5Min
+    min_hold_days: 0
+    max_hold_days: 1
+  risk:
+    max_position_pct: 0.1
+    max_positions: 1
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.01
+  stage: backtest
+  backtest:
+    commission_per_trade: 0.0
+    slippage_pct: 0.0005
+    min_trades_required: 30
+    walk_forward_windows: 4
+  disable_conditions_additional: []
+  universe:
+  - XLV
