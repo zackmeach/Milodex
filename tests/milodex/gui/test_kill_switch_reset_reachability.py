@@ -54,103 +54,24 @@ _MAIN_QML = _MILODEX_QML_DIR / "Main.qml"
 
 
 class TestModalStructure:
-    """KillSwitchResetModal.qml must wire the unchanged token contract."""
+    """KillSwitchResetModal.qml file-existence + qmldir registration.
+
+    The token contract, type-to-confirm gate, open property, close-requested
+    emission, reset return-value branch, inline error property/Text, and
+    input/error clear-on-reopen pins were converted to behavioral
+    trigger-and-observe tests (burn backlog C2 batch 2) and deleted from here:
+      * test_modal_reset_button_enabled_only_on_token_match
+      * test_modal_reset_success_calls_store_and_closes
+      * test_modal_reset_failure_keeps_open_and_surfaces_error
+      * test_modal_clears_input_and_error_on_reopen
+      * test_modal_cancel_emits_close_requested
+
+    Only file-existence and qmldir registration stay as source pins — neither
+    is observable through the offscreen render.
+    """
 
     def test_modal_file_exists(self) -> None:
         assert _MODAL_QML.exists(), f"KillSwitchResetModal.qml missing: {_MODAL_QML}"
-
-    def test_modal_token_contract_unchanged(self) -> None:
-        """Token contract: resetKillSwitchToken → reset_kill_switch unchanged from AnchorSurface."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert "OperationalState.resetKillSwitchToken" in src, (
-            "KillSwitchResetModal.qml must read OperationalState.resetKillSwitchToken"
-        )
-        assert "OperationalState.reset_kill_switch(" in src, (
-            "KillSwitchResetModal.qml must call OperationalState.reset_kill_switch"
-        )
-
-    def test_modal_type_to_confirm_gate(self) -> None:
-        """Type-to-confirm gate: the reset button must only fire when typed token matches."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert "confirmInput.text === OperationalState.resetKillSwitchToken" in src, (
-            "KillSwitchResetModal.qml must gate the reset button on the typed token matching "
-            "OperationalState.resetKillSwitchToken"
-        )
-
-    def test_modal_declares_open_property(self) -> None:
-        """open property controls visibility — Main.qml sets it to show/hide the modal."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert "property bool open:" in src, (
-            "KillSwitchResetModal.qml must declare `property bool open`"
-        )
-
-    def test_modal_emits_close_requested(self) -> None:
-        """Modal emits closeRequested on cancel and after a successful reset."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert "signal closeRequested()" in src, (
-            "KillSwitchResetModal.qml must declare `signal closeRequested()`"
-        )
-        assert src.count("root.closeRequested()") >= 2, (
-            "KillSwitchResetModal.qml must emit closeRequested() from at least 2 places "
-            "(Cancel button and after reset_kill_switch call)"
-        )
-
-    def test_modal_passes_token_to_slot(self) -> None:
-        """The reset slot must be called with the token value, not a bare string."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        # The call may span lines (e.g. wrapped in a var ok = ... assignment).
-        assert "OperationalState.reset_kill_switch(" in src, (
-            "KillSwitchResetModal.qml must call OperationalState.reset_kill_switch"
-        )
-        assert "OperationalState.resetKillSwitchToken" in src, (
-            "KillSwitchResetModal.qml must pass OperationalState.resetKillSwitchToken "
-            "as the argument to reset_kill_switch"
-        )
-
-    def test_modal_clears_input_on_close(self) -> None:
-        """Input must clear each time the modal closes (prevents lingering text on re-open)."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert "confirmInput.text" in src and "onOpenChanged" in src, (
-            "KillSwitchResetModal.qml must clear confirmInput.text in an onOpenChanged handler"
-        )
-
-    def test_modal_reset_checks_return_value(self) -> None:
-        """Reset button must branch on the slot's return value, not close unconditionally."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        # The slot is @Slot(str, result=bool); QML must capture the bool and branch.
-        assert "var ok = OperationalState.reset_kill_switch(" in src, (
-            "KillSwitchResetModal.qml reset button onClicked must capture the bool return "
-            "value of reset_kill_switch into a local variable"
-        )
-        assert "if (ok)" in src, (
-            "KillSwitchResetModal.qml reset button onClicked must branch on the return value"
-        )
-
-    def test_modal_keeps_open_on_failure(self) -> None:
-        """On reset failure the modal must NOT emit closeRequested (error path omits it)."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        # The 'if (ok)' branch holds the only closeRequested() call in the reset handler;
-        # the else branch must set the error property rather than closing.
-        assert "_resetError" in src, (
-            "KillSwitchResetModal.qml must declare a _resetError property to surface "
-            "the failure message inline"
-        )
-
-    def test_modal_has_error_text_element(self) -> None:
-        """An inline error Text element must exist and be bound to _resetError."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert "root._resetError" in src, (
-            "KillSwitchResetModal.qml must bind an inline Text element to root._resetError "
-            "to display reset-failure feedback"
-        )
-
-    def test_modal_clears_error_on_reopen(self) -> None:
-        """Error state must clear in onOpenChanged so a re-open starts clean."""
-        src = _MODAL_QML.read_text(encoding="utf-8")
-        assert '_resetError = ""' in src, (
-            "KillSwitchResetModal.qml onOpenChanged must clear _resetError alongside the "
-            "input text so a re-opened modal starts with no stale error"
-        )
 
     def test_modal_registered_in_qmldir(self) -> None:
         """KillSwitchResetModal must be registered in qmldir so QML imports resolve."""
@@ -933,4 +854,384 @@ def test_drawer_kill_switch_section_hidden_when_inactive() -> None:
         assertions=assertions,
         label="drawer kill-switch section hidden when inactive",
         ok_token="DRAWER_SECTION_HIDDEN_OK",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral reset mechanics — KillSwitchResetModal (burn backlog C2, batch 2)
+#
+# TestModalStructure grepped KillSwitchResetModal.qml for the token contract,
+# the type-to-confirm gate, the reset return-value branch, the inline error
+# property/Text, and the input/error clear-on-reopen. These tests replace the
+# convertible pins by INSTANTIATING the real modal over a real OperationalState
+# (with a controllable kill-switch store) and driving the reset flow:
+#   * the "Yes, reset" button is enabled ONLY when the typed token matches;
+#   * a successful reset calls the store and closes the modal;
+#   * a failed reset keeps the modal open and surfaces the inline error;
+#   * closing+reopening clears the typed token and the error.
+#
+# qmldir registration (test_modal_registered_in_qmldir) and the file-exists
+# pin stay source pins.
+# ---------------------------------------------------------------------------
+
+
+def _build_modal_probe_script(*, reset_raises: bool, assertions: str) -> str:
+    """Subprocess script: instantiate the real KillSwitchResetModal (open) over
+    a real OperationalState whose kill-switch store's ``reset()`` either
+    succeeds or raises (``reset_raises``). The ``assertions`` body drives the
+    live modal (type the token, click reset/cancel) and observes the result.
+    """
+    import_root = str(_QML_IMPORT_ROOT)
+    raises_literal = "True" if reset_raises else "False"
+    return f"""\
+import os, sys, tempfile, pathlib
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer, QMetaObject, QCoreApplication
+from PySide6.QtCore import QObject as _QObjectBase
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui import qml_setup
+from milodex.gui.operational_state import OperationalState
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+
+tm = ThemeManager()
+
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(
+    active=True, reason="test-trip", last_triggered_at=None
+)
+if {raises_literal}:
+    ks_store.reset.side_effect = RuntimeError("probe: store.reset() failed")
+
+def _failing_broker():
+    raise RuntimeError("probe: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker,
+    kill_switch_store=ks_store,
+    trading_mode="paper",
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+op._poll_kill_switch()
+
+qml_setup.register_qml_types(theme_manager=tm, operational_state=op)
+
+# Modal wired as Main.qml wires it: open, closeRequested -> open = false.
+probe = b\"\"\"
+import QtQuick
+import Milodex 1.0
+
+Item {{
+    id: probeRoot
+    width: 1200
+    height: 800
+
+    KillSwitchResetModal {{
+        id: ksModal
+        objectName: "killSwitchResetModalProbe"
+        anchors.fill: parent
+        open: true
+        onCloseRequested: ksModal.open = false
+    }}
+}}
+\"\"\"
+
+_qml_file = pathlib.Path(tempfile.mktemp(suffix=".qml"))
+_qml_file.write_bytes(probe)
+
+view = QQuickView()
+view.engine().addImportPath({import_root!r})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1200, 800)
+view.setSource(QUrl.fromLocalFile(str(_qml_file)))
+
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+
+view.show()
+QTimer.singleShot(400, app.quit)
+app.exec()
+
+modal = root.findChild(_QObjectBase, "killSwitchResetModalProbe")
+if modal is None:
+    print("modal not found by objectName", file=sys.stderr)
+    sys.exit(4)
+
+def _walk(item):
+    yield item
+    for c in item.childItems():
+        yield from _walk(c)
+
+def _pump():
+    QCoreApplication.processEvents()
+    QCoreApplication.processEvents()
+
+def _confirm_input():
+    for it in _walk(modal):
+        if it.metaObject().className() == "QQuickTextInput":
+            return it
+    return None
+
+def _button(label):
+    # Button.qml's root carries a `variant` property; its inner Text mirrors
+    # the same `text` but has no `variant`, so filtering on variant lands on
+    # the clickable Button (owner of the clicked() signal and enabled state).
+    for it in _walk(modal):
+        if str(it.property("text") or "") == label and it.property("variant") is not None:
+            return it
+    return None
+
+def _texts():
+    out = []
+    for it in _walk(modal):
+        try:
+            if not it.isVisible():
+                continue
+        except Exception:
+            pass
+        t = it.property("text")
+        if t:
+            out.append(str(t))
+    return out
+
+{assertions}
+"""
+
+
+def _run_modal_probe(*, reset_raises: bool, assertions: str, label: str, ok_token: str) -> None:
+    script = _build_modal_probe_script(reset_raises=reset_raises, assertions=assertions)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        f"{label} FAILED\n"
+        f"returncode: {result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert ok_token in result.stdout
+
+
+@_skip_no_qt
+def test_modal_reset_button_enabled_only_on_token_match() -> None:
+    """The "Yes, reset" button is enabled ONLY when the typed text matches the
+    reset token (type-to-confirm gate).
+
+    Behavioral counterpart to TestModalStructure.test_modal_type_to_confirm_gate.
+    NON-VACUOUS: dropping the ``enabled: confirmInput.text === ...`` gate (e.g.
+    ``enabled: true``) makes the empty-input case enabled and fails (exit 7).
+    """
+    assertions = (
+        "ci = _confirm_input()\n"
+        'btn = _button("Yes, reset")\n'
+        "if ci is None:\n"
+        '    print("confirmInput not found", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        "if btn is None:\n"
+        '    print("reset button not found", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'if bool(btn.property("enabled")):\n'
+        '    print("reset enabled with empty input", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        'ci.setProperty("text", "WRONG")\n'
+        "_pump()\n"
+        'if bool(btn.property("enabled")):\n'
+        '    print("reset enabled with wrong token", file=sys.stderr)\n'
+        "    sys.exit(8)\n"
+        'ci.setProperty("text", "CONFIRM")\n'
+        "_pump()\n"
+        'if not bool(btn.property("enabled")):\n'
+        '    print("reset NOT enabled with correct token", file=sys.stderr)\n'
+        "    sys.exit(9)\n"
+        'print("RESET_GATE_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_modal_probe(
+        reset_raises=False,
+        assertions=assertions,
+        label="reset button type-to-confirm gate",
+        ok_token="RESET_GATE_OK",
+    )
+
+
+@_skip_no_qt
+def test_modal_reset_success_calls_store_and_closes() -> None:
+    """A reset with the correct token calls the kill-switch store's reset() and
+    closes the modal with no inline error.
+
+    Behavioral counterpart to TestModalStructure token-contract / passes-token /
+    emits-close-requested (success) / reset-checks-return-value (ok branch).
+    NON-VACUOUS: short-circuiting the reset call (``var ok = true || ...``)
+    leaves store.reset() uncalled and fails (exit 6).
+    """
+    assertions = (
+        "ci = _confirm_input()\n"
+        'btn = _button("Yes, reset")\n'
+        "if ci is None or btn is None:\n"
+        '    print("probe items missing", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'ci.setProperty("text", "CONFIRM")\n'
+        "_pump()\n"
+        'QMetaObject.invokeMethod(btn, "clicked")\n'
+        "_pump()\n"
+        "if not ks_store.reset.called:\n"
+        '    print("store.reset() not called on successful reset", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'if bool(modal.property("open")):\n'
+        '    print("modal still open after successful reset", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        'if str(modal.property("_resetError") or ""):\n'
+        '    print("unexpected _resetError after success: " + str(modal.property("_resetError")), '
+        "file=sys.stderr)\n"
+        "    sys.exit(8)\n"
+        'print("RESET_SUCCESS_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_modal_probe(
+        reset_raises=False,
+        assertions=assertions,
+        label="reset success calls store and closes",
+        ok_token="RESET_SUCCESS_OK",
+    )
+
+
+@_skip_no_qt
+def test_modal_reset_failure_keeps_open_and_surfaces_error() -> None:
+    """When the store's reset() fails (reset_kill_switch returns False), the
+    modal STAYS open and renders the inline error text.
+
+    Behavioral counterpart to TestModalStructure keeps-open-on-failure /
+    has-error-text-element / reset-checks-return-value (else branch).
+    NON-VACUOUS: blanking the else-branch error string makes _resetError empty
+    and fails (exit 7); closing unconditionally fails the still-open check.
+    """
+    assertions = (
+        "ci = _confirm_input()\n"
+        'btn = _button("Yes, reset")\n'
+        "if ci is None or btn is None:\n"
+        '    print("probe items missing", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'ci.setProperty("text", "CONFIRM")\n'
+        "_pump()\n"
+        'QMetaObject.invokeMethod(btn, "clicked")\n'
+        "_pump()\n"
+        'if not bool(modal.property("open")):\n'
+        '    print("modal closed after FAILED reset (should stay open)", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'err = str(modal.property("_resetError") or "")\n'
+        "if not err:\n"
+        '    print("no _resetError after failed reset", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        "texts = _texts()\n"
+        "if err not in texts:\n"
+        '    print("error text not rendered in live tree rendered=" + repr(texts), '
+        "file=sys.stderr)\n"
+        "    sys.exit(8)\n"
+        'print("RESET_FAILURE_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_modal_probe(
+        reset_raises=True,
+        assertions=assertions,
+        label="reset failure keeps modal open with error",
+        ok_token="RESET_FAILURE_OK",
+    )
+
+
+@_skip_no_qt
+def test_modal_clears_input_and_error_on_reopen() -> None:
+    """Closing then reopening the modal clears both the typed token and any
+    prior inline error (onOpenChanged reset).
+
+    Behavioral counterpart to TestModalStructure clears-input-on-close /
+    clears-error-on-reopen. NON-VACUOUS: dropping the ``root._resetError = ""``
+    line from onOpenChanged leaves the stale error after reopen (exit 9).
+    """
+    assertions = (
+        "ci = _confirm_input()\n"
+        'btn = _button("Yes, reset")\n'
+        "if ci is None or btn is None:\n"
+        '    print("probe items missing", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'ci.setProperty("text", "CONFIRM")\n'
+        "_pump()\n"
+        'QMetaObject.invokeMethod(btn, "clicked")\n'
+        "_pump()\n"
+        'if not str(modal.property("_resetError") or ""):\n'
+        '    print("precondition: expected _resetError after failed reset", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'modal.setProperty("open", False)\n'
+        "_pump()\n"
+        'modal.setProperty("open", True)\n'
+        "_pump()\n"
+        "ci2 = _confirm_input()\n"
+        "if ci2 is None:\n"
+        '    print("confirmInput missing after reopen", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        'if str(ci2.property("text") or ""):\n'
+        '    print("confirmInput not cleared on reopen: " + str(ci2.property("text")), '
+        "file=sys.stderr)\n"
+        "    sys.exit(8)\n"
+        'if str(modal.property("_resetError") or ""):\n'
+        '    print("_resetError not cleared on reopen: " + str(modal.property("_resetError")), '
+        "file=sys.stderr)\n"
+        "    sys.exit(9)\n"
+        'print("CLEAR_ON_REOPEN_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_modal_probe(
+        reset_raises=True,
+        assertions=assertions,
+        label="modal clears input and error on reopen",
+        ok_token="CLEAR_ON_REOPEN_OK",
+    )
+
+
+@_skip_no_qt
+def test_modal_cancel_emits_close_requested() -> None:
+    """The Cancel button closes the modal (emits closeRequested).
+
+    Behavioral counterpart to TestModalStructure.test_modal_emits_close_requested
+    (cancel path). NON-VACUOUS: stubbing Cancel's ``onClicked`` to ``{}`` leaves
+    the modal open and fails (exit 7).
+    """
+    assertions = (
+        'btn = _button("Cancel")\n'
+        "if btn is None:\n"
+        '    print("cancel button not found", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'if not bool(modal.property("open")):\n'
+        '    print("precondition: modal not open before Cancel", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'QMetaObject.invokeMethod(btn, "clicked")\n'
+        "_pump()\n"
+        'if bool(modal.property("open")):\n'
+        '    print("modal still open after Cancel", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        'print("CANCEL_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_modal_probe(
+        reset_raises=False,
+        assertions=assertions,
+        label="modal cancel closes",
+        ok_token="CANCEL_OK",
     )
