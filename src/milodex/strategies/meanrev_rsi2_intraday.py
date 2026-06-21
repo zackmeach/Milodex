@@ -36,6 +36,7 @@ from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
 from milodex.execution.sizing import shares_for_notional_pct
+from milodex.strategies._indicators import wilder_rsi_series as _wilder_rsi_series
 from milodex.strategies._session_intraday import (
     ET_TZ,
     MARKET_OPEN_ET,
@@ -309,43 +310,6 @@ def _entry_price(context: StrategyContext, symbol: str) -> float | None:
     ):
         return float(entry_price)
     return None
-
-
-def _wilder_rsi_series(closes: pd.Series, lookback: int) -> pd.Series:
-    """Return a Wilder-smoothed RSI series aligned to ``closes``.
-
-    Identical recursive smoothing to ``meanrev_rsi2_pullback._wilder_rsi``
-    (seed = simple mean of the first ``lookback`` gains/losses, then Wilder
-    recursion), vectorised into a single O(n) pass so the per-bar guard does
-    not re-run an O(n) computation for every prior bar. Entries before enough
-    history exist are ``NaN``.
-    """
-    n = len(closes)
-    result = pd.Series([float("nan")] * n, index=closes.index, dtype=float)
-    if n <= lookback:
-        return result
-
-    deltas = closes.diff()
-    gains = deltas.clip(lower=0.0).to_numpy()
-    losses = (-deltas).clip(lower=0.0).to_numpy()
-
-    # Seed with the simple average of the first ``lookback`` deltas (indices
-    # 1..lookback; index 0's delta is NaN and excluded).
-    avg_gain = float(gains[1 : lookback + 1].mean())
-    avg_loss = float(losses[1 : lookback + 1].mean())
-    result.iloc[lookback] = _rsi_from(avg_gain, avg_loss)
-    for i in range(lookback + 1, n):
-        avg_gain = (avg_gain * (lookback - 1) + float(gains[i])) / lookback
-        avg_loss = (avg_loss * (lookback - 1) + float(losses[i])) / lookback
-        result.iloc[i] = _rsi_from(avg_gain, avg_loss)
-    return result
-
-
-def _rsi_from(avg_gain: float, avg_loss: float) -> float:
-    if avg_loss == 0.0:
-        return 50.0 if avg_gain == 0.0 else 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
 
 
 def _already_entered_this_session(

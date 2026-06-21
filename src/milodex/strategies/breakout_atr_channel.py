@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
+from milodex.strategies._indicators import atr as _atr_series
+from milodex.strategies._indicators import ema_value as _ema
 from milodex.strategies.base import (
     Strategy,
     StrategyContext,
@@ -150,7 +150,7 @@ def _entry_candidates(
             continue
         close = float(frame["close"].iloc[-1])
         ema = _ema(frame["close"].astype(float), params["ema_length"])
-        atr = _atr(frame, params["atr_lookback"])
+        atr = _atr_series(frame["high"], frame["low"], frame["close"], params["atr_lookback"])
         if atr is None:
             rejected.append({"symbol": normalized, "reason": "ATR indeterminate"})
             continue
@@ -175,7 +175,7 @@ def _exit_intents(
             continue
         close = float(frame["close"].iloc[-1])
         ema = _ema(frame["close"].astype(float), params["ema_length"])
-        atr = _atr(frame, params["atr_lookback"])
+        atr = _atr_series(frame["high"], frame["low"], frame["close"], params["atr_lookback"])
         state = context.entry_state.get(symbol, {}) if context.entry_state else {}
         entry_price = state.get("entry_price")
         held_days = state.get("held_days")
@@ -223,18 +223,3 @@ def _exit_threshold(rule: str, params: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
-def _ema(closes: pd.Series, length: int) -> float:
-    return float(closes.ewm(span=length, adjust=False).mean().iloc[-1])
-
-
-def _atr(frame: Any, lookback: int) -> float | None:
-    if len(frame) <= lookback:
-        return None
-    high = frame["high"].astype(float)
-    low = frame["low"].astype(float)
-    close = frame["close"].astype(float)
-    prev_close = close.shift(1)
-    true_range = pd.concat(
-        [(high - low), (high - prev_close).abs(), (low - prev_close).abs()], axis=1
-    ).max(axis=1)
-    return float(true_range.tail(lookback).mean())
