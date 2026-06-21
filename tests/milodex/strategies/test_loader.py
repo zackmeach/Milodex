@@ -827,6 +827,27 @@ def test_baseline_ref_empty_string_raises(valid_strategy_config: Path):
         load_strategy_config(valid_strategy_config)
 
 
+def test_position_lifecycle_rejects_unknown_value(valid_strategy_config: Path):
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '    bar_size: "1D"\n',
+        '    bar_size: "5Min"\n    position_lifecycle: "sometimes"\n',
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="position_lifecycle"):
+        load_strategy_config(valid_strategy_config)
+
+
+def test_position_lifecycle_is_required_for_non_daily_config(valid_strategy_config: Path):
+    contents = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '    bar_size: "1D"\n', '    bar_size: "5Min"\n'
+    )
+    valid_strategy_config.write_text(contents, encoding="utf-8")
+
+    with pytest.raises(ValueError, match="position_lifecycle is required"):
+        load_strategy_config(valid_strategy_config)
+
+
 def test_baseline_ref_does_not_change_config_hash(valid_strategy_config: Path):
     """baseline_ref is non-behavioral metadata — it must be hash-exempt like display_name.
 

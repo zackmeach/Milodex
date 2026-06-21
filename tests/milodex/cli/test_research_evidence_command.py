@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -27,6 +28,23 @@ from milodex.cli.commands.research import _batch_result_from_screen_json
 
 
 def _make_batch_row(strategy_id: str, oos_sharpe: float | None = 0.3, error: str | None = None):
+    if error is not None:
+        return BatchRow(
+            strategy_id=strategy_id,
+            family="",
+            trade_count=0,
+            oos_sharpe=None,
+            oos_max_drawdown_pct=0.0,
+            oos_total_return_pct=0.0,
+            single_window_dependency=False,
+            gate_allowed=False,
+            gate_promotion_type="error",
+            gate_failures=(error,),
+            run_id=None,
+            oos_equity_curve=(),
+            error=error,
+            survivorship_corrected=False,
+        )
     return BatchRow(
         strategy_id=strategy_id,
         family="meanrev",
@@ -38,7 +56,7 @@ def _make_batch_row(strategy_id: str, oos_sharpe: float | None = 0.3, error: str
         gate_allowed=False,
         gate_promotion_type="statistical",
         gate_failures=(),
-        run_id=f"run-{strategy_id[-3:]}",
+        run_id=f"run-{strategy_id}",
         oos_equity_curve=((date(2024, 1, 2), 100_000.0), (date(2024, 1, 3), 100_800.0)),
         error=error,
         survivorship_corrected=False,
@@ -185,7 +203,9 @@ def test_batch_result_round_trip(tmp_path: Path):
     json_path = tmp_path / "screen.json"
     _write_screen_json(json_path, original)
 
-    recovered = _batch_result_from_screen_json(json_path)
+    recovered = _batch_result_from_screen_json(
+        json_path, event_store=_provenance_store(original)
+    )
 
     assert recovered.start_date == original.start_date
     assert recovered.end_date == original.end_date
@@ -199,7 +219,7 @@ def test_batch_result_round_trip(tmp_path: Path):
     r = by_id["meanrev.rsi2.intraday.spy.v1"]
     assert r.oos_sharpe == pytest.approx(0.45)
     assert r.trade_count == 40
-    assert r.run_id == "run-.v1"
+    assert r.run_id == "run-meanrev.rsi2.intraday.spy.v1"
     assert r.error is None
     assert r.survivorship_corrected is False
 
@@ -218,6 +238,7 @@ def test_batch_result_from_json_tolerates_missing_optional_keys(tmp_path: Path):
     payload = {
         "start_date": "2024-01-01",
         "end_date": "2024-06-30",
+        "selected_strategy_ids": ["meanrev.rsi2.intraday.spy.v1"],
         "rows": [
             {
                 "strategy_id": "meanrev.rsi2.intraday.spy.v1",
@@ -239,7 +260,26 @@ def test_batch_result_from_json_tolerates_missing_optional_keys(tmp_path: Path):
     json_path = tmp_path / "minimal.json"
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
-    result = _batch_result_from_screen_json(json_path)
+    expected = _make_batch_result(
+        (
+            BatchRow(
+                strategy_id="meanrev.rsi2.intraday.spy.v1",
+                family="meanrev",
+                trade_count=10,
+                oos_sharpe=0.2,
+                oos_max_drawdown_pct=3.0,
+                oos_total_return_pct=2.0,
+                single_window_dependency=False,
+                gate_allowed=False,
+                gate_promotion_type="statistical",
+                gate_failures=(),
+                run_id="run-001",
+            ),
+        )
+    )
+    result = _batch_result_from_screen_json(
+        json_path, event_store=_provenance_store(expected)
+    )
     assert len(result.rows) == 1
     row = result.rows[0]
     assert row.oos_equity_curve == ()
@@ -365,6 +405,7 @@ def test_evidence_handler_passes_rehydrated_batch_result(tmp_path: Path, monkeyp
     batch = _make_batch_result((row,))
     json_path = tmp_path / "screen.json"
     _write_screen_json(json_path, batch)
+    store.get_backtest_run.return_value = _persisted_run_for(row, batch)
 
     fake_report = MagicMock()
     fake_report.symbols = ("SPY",)
@@ -425,6 +466,7 @@ def test_screen_json_missing_run_id_raises(tmp_path: Path):
     payload = {
         "start_date": batch.start_date.isoformat(),
         "end_date": batch.end_date.isoformat(),
+        "selected_strategy_ids": ["meanrev.rsi2.intraday.spy.v1"],
         "rows": [
             {
                 "strategy_id": "meanrev.rsi2.intraday.spy.v1",
@@ -446,7 +488,7 @@ def test_screen_json_missing_run_id_raises(tmp_path: Path):
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="run_id"):
-        _batch_result_from_screen_json(json_path)
+        _batch_result_from_screen_json(json_path, event_store=MagicMock())
 
 
 def test_screen_json_missing_run_id_key_raises(tmp_path: Path):
@@ -454,6 +496,7 @@ def test_screen_json_missing_run_id_key_raises(tmp_path: Path):
     payload = {
         "start_date": "2024-01-01",
         "end_date": "2024-06-30",
+        "selected_strategy_ids": ["meanrev.rsi2.intraday.spy.v1"],
         "rows": [
             {
                 "strategy_id": "meanrev.rsi2.intraday.spy.v1",
@@ -475,7 +518,7 @@ def test_screen_json_missing_run_id_key_raises(tmp_path: Path):
     json_path.write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ValueError, match="run_id"):
-        _batch_result_from_screen_json(json_path)
+        _batch_result_from_screen_json(json_path, event_store=MagicMock())
 
 
 def test_screen_json_date_mismatch_raises(tmp_path: Path):
@@ -487,6 +530,7 @@ def test_screen_json_date_mismatch_raises(tmp_path: Path):
     _write_screen_json(json_path, batch)
 
     store = _stub_store()
+    store.get_backtest_run.return_value = _persisted_run_for(row, batch)
     ctx = _stub_ctx(store=store)
     # CLI args with different dates than the JSON
     args = _evidence_args(
@@ -509,7 +553,107 @@ def test_screen_json_consistent_provenance_succeeds(tmp_path: Path):
     _write_screen_json(json_path, batch)
 
     # Dates match: JSON has 2024-01-01 – 2024-06-30; args supply the same.
-    result = _batch_result_from_screen_json(json_path)
+    result = _batch_result_from_screen_json(
+        json_path, event_store=_provenance_store(batch)
+    )
     assert result.start_date.isoformat() == "2024-01-01"
     assert result.end_date.isoformat() == "2024-06-30"
     assert result.rows[0].run_id is not None  # provenance intact
+
+
+def _persisted_run_for(row: BatchRow, batch: BatchResult):
+    aggregate = {
+        "trade_count": row.trade_count,
+        "sharpe": row.oos_sharpe,
+        "max_drawdown_pct": row.oos_max_drawdown_pct,
+        "total_return_pct": row.oos_total_return_pct,
+        "equity_curve": [[d.isoformat(), v] for d, v in row.oos_equity_curve],
+    }
+    return SimpleNamespace(
+        run_id=row.run_id,
+        strategy_id=row.strategy_id,
+        config_hash="config-hash",
+        start_date=datetime.combine(batch.start_date, datetime.min.time(), tzinfo=UTC),
+        end_date=datetime.combine(batch.end_date, datetime.min.time(), tzinfo=UTC),
+        status="completed",
+        metadata={
+            "source": "research_screen",
+            "oos_aggregate": aggregate,
+            "stability": {"single_window_dependency": row.single_window_dependency},
+            "run_manifest": {"strategy": {"config_hash": "config-hash"}},
+        },
+    )
+
+
+def _provenance_store(batch: BatchResult):
+    store = MagicMock()
+    by_run_id = {
+        row.run_id: _persisted_run_for(row, batch)
+        for row in batch.rows
+        if row.run_id is not None
+    }
+    store.get_backtest_run.side_effect = by_run_id.get
+    return store
+
+
+def test_screen_json_rejects_fabricated_run_id(tmp_path: Path):
+    row = _make_batch_row("meanrev.rsi2.intraday.spy.v1")
+    batch = _make_batch_result((row,))
+    path = tmp_path / "forged.json"
+    _write_screen_json(path, batch)
+    store = MagicMock()
+    store.get_backtest_run.return_value = None
+
+    with pytest.raises(ValueError, match="does not exist"):
+        _batch_result_from_screen_json(path, event_store=store)
+
+
+def test_screen_json_rejects_metrics_that_do_not_match_persisted_run(tmp_path: Path):
+    row = _make_batch_row("meanrev.rsi2.intraday.spy.v1", oos_sharpe=99.0)
+    batch = _make_batch_result((row,))
+    path = tmp_path / "forged_metrics.json"
+    _write_screen_json(path, batch)
+    persisted = _persisted_run_for(row, batch)
+    persisted.metadata["oos_aggregate"]["sharpe"] = 0.25
+    store = MagicMock()
+    store.get_backtest_run.return_value = persisted
+
+    with pytest.raises(ValueError, match="oos_sharpe"):
+        _batch_result_from_screen_json(path, event_store=store)
+
+
+def test_screen_json_accepts_correctly_shaped_error_row_without_run_id(tmp_path: Path):
+    error_row = BatchRow(
+        strategy_id="meanrev.rsi2.intraday.spy.v1",
+        family="",
+        trade_count=0,
+        oos_sharpe=None,
+        oos_max_drawdown_pct=0.0,
+        oos_total_return_pct=0.0,
+        single_window_dependency=False,
+        gate_allowed=False,
+        gate_promotion_type="error",
+        gate_failures=("config load failed",),
+        run_id=None,
+        error="config load failed",
+    )
+    batch = _make_batch_result((error_row,))
+    path = tmp_path / "error.json"
+    _write_screen_json(path, batch)
+    store = MagicMock()
+
+    result = _batch_result_from_screen_json(path, event_store=store)
+
+    assert result.rows == (error_row,)
+    store.get_backtest_run.assert_not_called()
+
+
+def test_screen_json_rejects_duplicate_rows_even_when_roster_set_matches(tmp_path: Path):
+    row = _make_batch_row("meanrev.rsi2.intraday.spy.v1")
+    batch = _make_batch_result((row, row))
+    path = tmp_path / "duplicates.json"
+    _write_screen_json(path, batch)
+    store = MagicMock()
+
+    with pytest.raises(ValueError, match="duplicate"):
+        _batch_result_from_screen_json(path, event_store=store)

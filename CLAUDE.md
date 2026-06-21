@@ -43,6 +43,10 @@ src-layout Python package (`src/milodex/`). Thirteen modules:
 
 ## Config Schema
 
+Non-daily strategies must declare `strategy.tempo.position_lifecycle`: `same_session`
+uses US-equity RTH-only replay and close flattening; `multi_session` preserves positions
+across outer days and is required for the 24/7 crypto canaries.
+
 - `configs/sample_strategy.yaml` — Per-strategy config template (parameters, risk limits, promotion stage)
 - `configs/risk_defaults.yaml` — Global risk guardrails (kill switch, fat-finger protection, daily loss caps). Applies above all strategy configs.
 

@@ -246,7 +246,8 @@ def make_regime_config_intraday(config_dir: Path, bar_size: str = "1Min") -> Pat
     config_path = config_dir / "regime_runner.yaml"
     config_path.write_text(
         config_path.read_text(encoding="utf-8").replace(
-            'bar_size: "1D"', f'bar_size: "{bar_size}"'
+            'bar_size: "1D"',
+            f'bar_size: "{bar_size}"\n    position_lifecycle: "multi_session"',
         ),
         encoding="utf-8",
     )
@@ -759,7 +760,10 @@ def test_runner_meanrev_fires_entry_signal_via_bars_by_symbol(
     """MeanRev strategy emits a BUY intent when bars_by_symbol is populated correctly."""
     config_path = meanrev_config_dir / "meanrev_runner.yaml"
     config_path.write_text(
-        config_path.read_text(encoding="utf-8").replace('bar_size: "1D"', 'bar_size: "1Min"'),
+        config_path.read_text(encoding="utf-8").replace(
+            'bar_size: "1D"',
+            'bar_size: "1Min"\n    position_lifecycle: "multi_session"',
+        ),
         encoding="utf-8",
     )
     # AAPL: latest (11.0) > SMA(2) of [9.0, 11.0]=10.0; RSI(2) ≈ 66.7 < 70 → entry

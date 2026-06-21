@@ -489,6 +489,28 @@ def _build_synthetic_5min_barset(date_strs: list[str], symbol: str = "SPY") -> B
     return BarSet(df)
 
 
+def _build_synthetic_30min_barset(date_strs: list[str], symbol: str = "SPY") -> BarSet:
+    """Build 13 regular-session 30Min bars per date for lifecycle tests."""
+    rows: list[dict] = []
+    for session_index, date_str in enumerate(date_strs):
+        open_et = pd.Timestamp(f"{date_str} 09:30:00").tz_localize("America/New_York")
+        for bar_index in range(13):
+            price = 500.0 + session_index + bar_index * 0.1
+            rows.append(
+                {
+                    "timestamp": open_et.tz_convert("UTC")
+                    + pd.Timedelta(minutes=30 * bar_index),
+                    "open": price,
+                    "high": price + 0.1,
+                    "low": price - 0.1,
+                    "close": price + 0.05,
+                    "volume": 100_000,
+                    "vwap": price,
+                }
+            )
+    return BarSet(pd.DataFrame(rows))
+
+
 def _make_intraday_engine(
     loaded: MagicMock,
     bars_by_symbol: dict[str, BarSet],
@@ -552,7 +574,7 @@ strategy:
     config.path = config_path
     config.parameters = {}
     config.backtest = {"slippage_pct": 0.0, "commission_per_trade": 0.0}
-    config.tempo = {"bar_size": "5Min"}
+    config.tempo = {"bar_size": "5Min", "position_lifecycle": "same_session"}
     config.universe = universe
     config.risk = {"max_position_pct": 0.95, "max_positions": 1}
 
@@ -1810,3 +1832,134 @@ def test_intraday_final_bar_exit_realizes_at_session_close_not_next_open() -> No
         f"$100k baseline — a carried overnight position would shift it by the "
         f"full lot notional (~$95k); overnight carry bug"
     )
+
+
+def test_same_session_exit_ignores_after_hours_fill_and_uses_rth_close() -> None:
+    """A 15:55 ET exit must not drain against a 16:05 ET after-hours bar."""
+    from milodex.strategies.bench_unconditional_intraday_long import (
+        BenchUnconditionalIntradayLongStrategy,
+    )
+
+    spy_bars = _build_synthetic_5min_barset(["2024-01-08"], symbol="SPY")
+    df = spy_bars.to_dataframe()
+    after_hours_ts = (
+        pd.Timestamp("2024-01-08 16:05:00")
+        .tz_localize("America/New_York")
+        .tz_convert("UTC")
+    )
+    df = pd.concat(
+        [
+            df,
+            pd.DataFrame(
+                [
+                    {
+                        "timestamp": after_hours_ts,
+                        "open": 999.0,
+                        "high": 999.0,
+                        "low": 999.0,
+                        "close": 999.0,
+                        "volume": 100_000,
+                        "vwap": 999.0,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+
+    loaded = _make_intraday_loaded_strategy("stub.rth_close_only.v1", ("SPY",))
+    loaded.config.tempo = {
+        "bar_size": "5Min",
+        "position_lifecycle": "same_session",
+    }
+    loaded.strategy = BenchUnconditionalIntradayLongStrategy()
+    loaded.context = StrategyContext(
+        strategy_id="stub.rth_close_only.v1",
+        family="benchmark",
+        template="unconditional_intraday_long",
+        variant="rth_close_only_test",
+        version=1,
+        config_hash="rth_close_only_hash",
+        parameters={
+            "opening_range_minutes": 30,
+            "exit_minutes_before_close": 5,
+            "per_position_notional_pct": 0.95,
+        },
+        universe=("SPY",),
+        universe_ref=None,
+        disable_conditions=(),
+        config_path=str(loaded.config.path),
+        manifest={},
+    )
+
+    engine = _make_intraday_engine(loaded, {"SPY": BarSet(df)})
+    result = engine.run(date(2024, 1, 8), date(2024, 1, 8))
+
+    trades = engine._event_store.list_trades_for_backtest_run(result.db_id)  # noqa: SLF001
+    sell_prices = [t.estimated_unit_price for t in trades if t.side == "sell"]
+    assert sell_prices == [500.79]
+    sell_explanations = [
+        event
+        for event in engine._event_store.list_explanations()  # noqa: SLF001
+        if event.side == "sell" and event.status == "submitted"
+    ]
+    assert sell_explanations[0].context["reasoning"]["rule"] == (
+        "benchmark.intraday_long.exit"
+    )
+
+
+def test_multi_session_intraday_position_survives_until_held_days_exit() -> None:
+    """A multi-session 30Min strategy may carry until its day-granular max hold."""
+    session_dates = ["2024-01-08", "2024-01-09", "2024-01-10"]
+    spy_bars = _build_synthetic_30min_barset(session_dates, symbol="SPY")
+    loaded = _make_intraday_loaded_strategy("stub.multi_session.v1", ("SPY",))
+    loaded.config.tempo = {
+        "bar_size": "30Min",
+        "position_lifecycle": "multi_session",
+    }
+
+    held_days_seen: list[int] = []
+
+    def evaluate(bars, context):  # noqa: ANN001
+        latest = pd.Timestamp(bars.to_dataframe()["timestamp"].iloc[-1])
+        position = float(context.positions.get("SPY", 0.0))
+        if position > 0:
+            held_days = int(context.entry_state["SPY"]["held_days"])
+            held_days_seen.append(held_days)
+            if held_days >= 2:
+                return StrategyDecision(
+                    intents=[
+                        TradeIntent(
+                            symbol="SPY",
+                            side=OrderSide.SELL,
+                            quantity=position,
+                            order_type=OrderType.MARKET,
+                        )
+                    ],
+                    reasoning=DecisionReasoning(rule="max_hold", narrative="held for two days"),
+                )
+        elif latest.tz_convert("America/New_York").date() == date(2024, 1, 8):
+            return StrategyDecision(
+                intents=[
+                    TradeIntent(
+                        symbol="SPY",
+                        side=OrderSide.BUY,
+                        quantity=10.0,
+                        order_type=OrderType.MARKET,
+                    )
+                ],
+                reasoning=DecisionReasoning(rule="entry", narrative="enter once"),
+            )
+        return StrategyDecision(
+            intents=[],
+            reasoning=DecisionReasoning(rule="hold", narrative="continue holding"),
+        )
+
+    loaded.strategy.evaluate.side_effect = evaluate
+    engine = _make_intraday_engine(loaded, {"SPY": spy_bars})
+    result = engine.run(date(2024, 1, 8), date(2024, 1, 10))
+
+    assert 1 in held_days_seen
+    assert 2 in held_days_seen
+    assert result.buy_count == 1
+    assert result.sell_count == 1

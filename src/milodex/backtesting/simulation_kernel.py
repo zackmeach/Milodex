@@ -483,18 +483,19 @@ class BacktestSimulationKernel:
         session_id: str,
         db_run_id: int,
         reason: DecisionReasoning,
+        reasons_by_symbol: dict[str, DecisionReasoning] | None = None,
     ) -> set[str]:
         """Force-flatten open positions at ``closes``; return the symbols closed.
 
         Engine-level liquidation (NOT a strategy intent). Used by the intraday
-        path to guarantee an intraday position is flat at session end. This is
+        path for an explicit same-session lifecycle. This is
         the close-out for ANY position still open at session end: a position
         whose strategy never emitted an exit (e.g. a missing time-stop bar — the
         N2 strand) AND a position with a queued exit (SELL) whose T+1 fill would
         otherwise land in the NEXT session (a final-bar time-stop has no
         same-session future bar). Both are realized HERE, at the day's close, so
-        a max_hold_days:1 intraday position is flat by close rather than carried
-        overnight.
+        the declared same-session position is flat by close rather than carried
+        overnight. Multi-session strategies never call this method at the day boundary.
 
         Each open position is sold in full at its entry in ``closes`` via the
         SAME execution + cash/position/ledger accounting that
@@ -547,7 +548,7 @@ class BacktestSimulationKernel:
                 decorated,
                 session_id=session_id,
                 backtest_run_id=db_run_id,
-                reasoning=reason,
+                reasoning=(reasons_by_symbol or {}).get(sym, reason),
             )
             if result.status is not ExecutionStatus.SUBMITTED or result.order is None:
                 continue

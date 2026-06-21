@@ -1,6 +1,11 @@
 # Research Screen — 2024-01-01 → 2026-06-18
 
-> **Corrected-engine evidence (held-to-close).** Supersedes the prior run computed on the
+> **SUPERSEDED — not current evidence.** This run still admitted after-hours bars into the
+> intraday timeline, so some intended RTH-close exits filled after 16:00 ET. It also predates the
+> explicit `tempo.position_lifecycle` config hashes. Retained for append-only audit history only;
+> rerun the 68-cell screen before citing a verdict or margin.
+>
+> **Previously labeled corrected-engine evidence (held-to-close).** Supersedes the prior run computed on the
 > overnight-hold backtest engine (Codex BLOCKER, fixed in `acd96a4`). Candidate
 > `meanrev.rsi2.intraday` is below all three nulls on **17/17** symbols; tightest decisive-loss
 > margin **2.47 Sharpe** (the prior run's 4.90 was overstated by both the overnight-held nulls and a
