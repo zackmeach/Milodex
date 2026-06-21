@@ -1309,8 +1309,11 @@ def test_bench_pr_c2_modal_demote_submit_affordance() -> None:
     # Inert "Not wired in v1" still present — non-demote actions still see it.
     assert "Not wired in v1" in modal_src
 
-    # Submit affordance — demote-only.
-    assert "Confirm demotion" in modal_src
+    # Submit affordance — demote-only. The "Confirm demotion" submit-button
+    # label was CONVERTED to a behavioral check (burn backlog C2 batch 4):
+    # tests/milodex/gui/test_bench_confirmation_modal_behavior.py::
+    # test_submit_capable_family_renders_its_label drives a demote action and
+    # asserts the label renders. The socket-method + capability pins stay here.
     assert "_isSubmitCapable" in modal_src
     assert "BenchCommandBridge.proposeDemote(" in modal_src
     assert "BenchCommandBridge.submitDemote(" in modal_src
@@ -1360,7 +1363,9 @@ def test_bench_pr_d1_modal_freeze_manifest_submit_affordance() -> None:
     )
 
     assert "Not wired in v1" in modal_src
-    assert "Confirm freeze" in modal_src
+    # "Confirm freeze" submit-button label CONVERTED to behavioral (C2 batch 4):
+    # test_bench_confirmation_modal_behavior.py::
+    # test_submit_capable_family_renders_its_label. Socket-method pins stay.
     assert "_isFreezeManifestSubmit" in modal_src
     assert "BenchCommandBridge.proposeFreezeManifest(" in modal_src
     assert "BenchCommandBridge.submitFreezeManifest(" in modal_src
@@ -1404,7 +1409,10 @@ def test_bench_pr13_modal_backtest_submit_affordance() -> None:
         encoding="utf-8"
     )
 
-    assert "Run backtest" in modal_src
+    # "Run backtest" submit-button label is covered behaviorally by
+    # test_bench_confirmation_modal_behavior.py::
+    # test_submit_capable_action_shows_submit_affordance (+ the family-label
+    # parametrization). The socket-method + P2-12 forbid pins stay here.
     assert "_isBacktestSubmit" in modal_src
     assert "BenchCommandBridge.proposeBacktest(" in modal_src
     assert "BenchCommandBridge.submitBacktestAsync(" in modal_src
@@ -1439,7 +1447,9 @@ def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
         encoding="utf-8"
     )
 
-    assert "Confirm promotion" in modal_src
+    # "Confirm promotion" submit-button label CONVERTED to behavioral (C2 batch
+    # 4): test_bench_confirmation_modal_behavior.py::
+    # test_submit_capable_family_renders_its_label. Socket + payload pins stay.
     assert "_isPromoteToPaperSubmit" in modal_src
     assert "BenchCommandBridge.proposePromoteToPaper(" in modal_src
     assert "BenchCommandBridge.submitPromoteToPaper(" in modal_src
@@ -1511,7 +1521,10 @@ def test_bench_modal_return_to_idle_routes_through_demote_submit() -> None:
 
     assert "readonly property bool _isReturnToIdleSubmit" in modal_src
     assert "root._isDemoteSubmit || root._isReturnToIdleSubmit" in modal_src
-    assert 'if (root._isReturnToIdleSubmit) return "Return to idle"' in modal_src
+    # The "Return to idle" submit-button label CONVERTED to behavioral (C2 batch
+    # 4): test_bench_confirmation_modal_behavior.py::
+    # test_submit_capable_family_renders_its_label drives a return-to-idle action
+    # and asserts the label renders. The dispatch-routing pins above stay.
 
 
 def test_bench_pr_c2_surface_listens_for_submitted() -> None:
