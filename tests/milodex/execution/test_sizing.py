@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import pytest
 
-from milodex.execution.sizing import fractional_units_for_notional_pct
+from milodex.execution.sizing import (
+    fractional_units_for_notional_pct,
+    shares_for_notional_pct,
+)
 
 
 def test_returns_fractional_units_below_one() -> None:
@@ -53,3 +56,17 @@ def test_raises_when_notional_exceeds_one() -> None:
 def test_raises_on_non_positive_price() -> None:
     with pytest.raises(ValueError, match="unit_price"):
         fractional_units_for_notional_pct(equity=100_000.0, notional_pct=0.10, unit_price=0.0)
+
+
+def test_r_brk_008_fifty_dollar_notional_on_five_hundred_dollar_stock() -> None:
+    """R-BRK-008: a $50 notional intent on a $500 stock produces a 0.1-share order.
+
+    Sizing is expressed in notional dollars (fractional shares), not share count.
+    The fractional helper must return 0.1; the whole-share helper floors it to 0,
+    proving fractional sizing is required to honor the requirement.
+    """
+    units = fractional_units_for_notional_pct(equity=500.0, notional_pct=0.10, unit_price=500.0)
+    assert units == pytest.approx(0.1)
+
+    whole_shares = shares_for_notional_pct(equity=500.0, notional_pct=0.10, unit_price=500.0)
+    assert whole_shares == 0

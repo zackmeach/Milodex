@@ -458,6 +458,7 @@ def test_submit_paper_rejects_non_market_orders_before_broker_submission(
     limit_price,
     stop_price,
 ):
+    """R-BRK-007: non-market orders raise UnsupportedOrderTypeError before the broker call."""
     service, broker = build_service(
         tmp_path,
         risk_defaults_file,
@@ -1997,3 +1998,29 @@ def test_micro_live_submit_fails_closed_on_lock_filesystem_error(
     assert result.status is ExecutionStatus.BLOCKED
     assert "submit_serialization_unavailable" in result.risk_decision.reason_codes
     assert broker.submit_calls == []
+
+
+def test_submit_paper_defaults_time_in_force_to_day(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """R-BRK-010: order TIF defaults to DAY; an intent omitting it reaches the broker as DAY."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+
+    # Deliberately omit time_in_force to exercise the default.
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert broker.submit_calls, "broker.submit_order was never called"
+    assert broker.submit_calls[0]["time_in_force"] == TimeInForce.DAY

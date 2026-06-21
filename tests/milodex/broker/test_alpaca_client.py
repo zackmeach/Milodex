@@ -64,6 +64,7 @@ def _mock_alpaca_order(**overrides):
 
 class TestSubmitOrder:
     def test_submit_market_order(self, client):
+        """R-BRK-002: AlpacaBrokerClient.submit_order returns a well-typed Order."""
         client._client.submit_order.return_value = _mock_alpaca_order()
         result = client.submit_order("AAPL", OrderSide.BUY, 10.0)
         assert isinstance(result, Order)
@@ -104,6 +105,7 @@ class TestCancelOrder:
 
 class TestCancelAllOrders:
     def test_cancel_all_returns_list(self, client):
+        """R-BRK-004: cancel_all_orders() returns cancelled orders for kill-switch use."""
         client._client.cancel_orders.return_value = [
             _mock_alpaca_order(id="o1", status="pending_cancel"),
             _mock_alpaca_order(id="o2", status="pending_cancel"),
@@ -114,6 +116,7 @@ class TestCancelAllOrders:
 
 class TestGetOrders:
     def test_get_all_orders(self, client):
+        """R-BRK-003: get_orders returns Milodex Order domain types, not raw Alpaca objects."""
         client._client.get_orders.return_value = [
             _mock_alpaca_order(id="o1"),
             _mock_alpaca_order(id="o2"),
@@ -216,6 +219,7 @@ class TestGetAccount:
 
 class TestIsMarketOpen:
     def test_market_open(self, client):
+        """R-BRK-005: AlpacaBrokerClient exposes a market-clock query (is_market_open)."""
         clock = MagicMock()
         clock.is_open = True
         client._client.get_clock.return_value = clock
