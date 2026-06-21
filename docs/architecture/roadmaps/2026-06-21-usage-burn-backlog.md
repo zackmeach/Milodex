@@ -135,7 +135,7 @@ A single PM-orchestrator session worked the whole file: ran the §① verificati
 then executed/dispatched the `now`-tier work as a lineup of focused PRs (one isolated `git worktree`,
 sub-agent per substantive item, gates verified before each commit). Every item's §① gate was run; this
 consolidated table is the authoritative outcome record (it supersedes any per-item §②/③ placeholder
-left un-rewritten below). **9 PRs opened (#275–#282), 4 follow-up chips filed, 0 changes to the
+left un-rewritten below). **8 PRs opened (#275–#282), 4 follow-up chips filed, 0 changes to the
 risk/promotion/broker money paths.**
 
 | Item | Disposition | Evidence / PR |
