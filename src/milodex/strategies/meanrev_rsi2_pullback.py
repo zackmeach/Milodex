@@ -20,11 +20,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
+from milodex.strategies._indicators import wilder_rsi as _wilder_rsi
 from milodex.strategies.base import (
     Strategy,
     StrategyContext,
@@ -354,31 +353,3 @@ def _exit_threshold(rule: str, parameters: dict[str, Any]) -> dict[str, float | 
     return {}
 
 
-def _wilder_rsi(closes: pd.Series, lookback: int) -> float | None:
-    """Return Wilder-smoothed RSI on ``closes`` with period ``lookback``.
-
-    Returns ``None`` when there is insufficient history to compute the
-    indicator.
-    """
-    if len(closes) <= lookback:
-        return None
-
-    deltas = closes.diff().dropna()
-    if len(deltas) < lookback:
-        return None
-
-    gains = deltas.clip(lower=0.0)
-    losses = (-deltas).clip(lower=0.0)
-
-    avg_gain = float(gains.iloc[:lookback].mean())
-    avg_loss = float(losses.iloc[:lookback].mean())
-    for gain, loss in zip(gains.iloc[lookback:], losses.iloc[lookback:], strict=False):
-        avg_gain = (avg_gain * (lookback - 1) + float(gain)) / lookback
-        avg_loss = (avg_loss * (lookback - 1) + float(loss)) / lookback
-
-    if avg_loss == 0.0:
-        if avg_gain == 0.0:
-            return 50.0
-        return 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
