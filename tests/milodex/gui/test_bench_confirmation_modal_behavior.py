@@ -301,6 +301,26 @@ _ROW_BACKTEST_STAGE = (
     '{ "strategyId": "regime.daily.x.spy.v1", "name": "Regime", "stage": "backtest", '
     '"evidenceRunId": "run-1" }'
 )
+# Submit-capable freeze_manifest / return-to-idle actions (the remaining
+# submit-button label families). executable=true so the submit affordance (not
+# the inert placeholder) renders; actionKind drives the modal's per-family
+# _isXxxSubmit predicate that selects the submit-button label.
+_ACTION_FREEZE = (
+    '{ "label": "Freeze manifest", "verbClass": "invocation", '
+    '"actionIntentPreview": { '
+    '"actionKind": "freeze_manifest", "executable": true, "wired": true, '
+    '"capitalBearing": false, "futureRecord": "manifest_freeze" } }'
+)
+# NB: the display label must differ from the "Return to idle" submit-button
+# label so the assertion observes the SUBMIT button, not the action label echoed
+# elsewhere in the tree (the submit-label collision that made this case vacuous).
+_ACTION_RETURN_IDLE = (
+    '{ "label": "Walk strategy back to idle", "verbClass": "directional", '
+    '"targetStage": "idle", '
+    '"actionIntentPreview": { '
+    '"actionKind": "return", "executable": true, "wired": true, '
+    '"capitalBearing": false, "futureRecord": "demotion_event" } }'
+)
 
 
 # ===========================================================================
@@ -486,6 +506,52 @@ def test_non_submit_capable_action_shows_inert_placeholder(tmp_path) -> None:
     )
     out = _run(_build(row, action, assertions, records), "inert placeholder")
     assert "INERT_OK" in out
+
+
+# ===========================================================================
+# Per-family submit-button label -- was: grep test_qml_load_smoke for the
+# verbatim label strings ("Confirm demotion" / "Confirm freeze" / "Confirm
+# promotion" / "Return to idle"). Now: each submit-capable family renders ITS
+# label in the live tree, proving the per-family _isXxxSubmit predicate routes
+# the label binding (a source pin proves the string exists, not that the family
+# predicate selects it). "Run backtest" is already covered by
+# test_submit_capable_action_shows_submit_affordance.
+# ===========================================================================
+
+
+@_skip_no_qt
+@pytest.mark.parametrize(
+    ("action", "label"),
+    [
+        (_ACTION_DEMOTE, "Confirm demotion"),
+        (_ACTION_FREEZE, "Confirm freeze"),
+        (_ACTION_PROMOTE_PAPER, "Confirm promotion"),
+        (_ACTION_RETURN_IDLE, "Return to idle"),
+    ],
+)
+def test_submit_capable_family_renders_its_label(tmp_path, action, label) -> None:
+    """A submit-capable action of each family renders its family-specific
+    submit-button label in the live tree.
+
+    NON-VACUOUS: breaking a family predicate (e.g. _isFreezeManifestSubmit)
+    makes the label fall through the if-chain to the default "Confirm demotion"
+    branch, so the expected family label disappears from the rendered tree.
+    The demote case guards the default branch itself (rewriting the default
+    string drops it).
+    """
+    records = tmp_path / "records.json"
+    assertions = (
+        "if modal.property('_isSubmitCapable') is not True:\n"
+        "    print('expected _isSubmitCapable True', file=sys.stderr); sys.exit(5)\n"
+        "texts = _texts()\n"
+        f"if {label!r} not in texts:\n"
+        "    print('family label missing rendered=' + json.dumps(texts), "
+        "file=sys.stderr); sys.exit(6)\n"
+        "print('FAMILY_LABEL_OK')\n"
+        "sys.exit(0)\n"
+    )
+    out = _run(_build(_ROW_PAPER, action, assertions, records), f"family label {label}")
+    assert "FAMILY_LABEL_OK" in out
 
 
 # ===========================================================================
