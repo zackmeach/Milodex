@@ -97,3 +97,36 @@ def test_get_tradeable_assets_returns_known_symbols():
         }
     )
     assert set(provider.get_tradeable_assets()) == {"SPY", "SHY"}
+
+
+def test_frozen_snapshot_unaffected_by_later_source_mutation() -> None:
+    """R-DAT-013: a version-frozen snapshot yields identical output after the source mutates.
+
+    A backtest run replays a prefetched snapshot. BarSet copies its input frame on
+    construction, so a later "vendor correction" to the original frame must NOT change
+    replayed output — the frozen run stays reproducible. If BarSet stopped copying,
+    this test fails.
+    """
+    source = pd.DataFrame(
+        {
+            "timestamp": pd.date_range("2024-01-02", periods=3, freq="D", tz=UTC),
+            "open": [100.0, 101.0, 102.0],
+            "high": [100.0, 101.0, 102.0],
+            "low": [100.0, 101.0, 102.0],
+            "close": [100.0, 101.0, 102.0],
+            "volume": [1_000_000] * 3,
+            "vwap": [100.0, 101.0, 102.0],
+        }
+    )
+    provider = SimulatedDataProvider({"SPY": BarSet(source)})
+
+    # Vendor correction: mutate the ORIGINAL frame after the snapshot was taken.
+    source.loc[:, "close"] = [999.0, 999.0, 999.0]
+
+    result = provider.get_bars(
+        symbols=["SPY"],
+        timeframe=Timeframe.DAY_1,
+        start=date(2024, 1, 2),
+        end=date(2024, 1, 4),
+    )
+    assert result["SPY"].to_dataframe()["close"].tolist() == [100.0, 101.0, 102.0]

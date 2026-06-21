@@ -355,6 +355,7 @@ def test_engine_fails_loudly_when_strategy_emits_non_market_order():
 
 
 def test_engine_data_quality_blocker_fails_before_simulated_mutation():
+    """R-DAT-012: a data-quality blocker (impossible OHLC) halts the run before any mutation."""
     start = date(2024, 1, 2)
     end = date(2024, 1, 3)
     loaded = _make_loaded_strategy("test.strat.v1", ("SPY",))

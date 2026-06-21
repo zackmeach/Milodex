@@ -1483,6 +1483,8 @@ def test_data_staleness_fails_just_over_max_age(monkeypatch):
     and mutated comparison — but combined with the equality-passes
     test above, the pair pins the strict-``>`` semantic against the
     ``>=`` mutation.
+
+    R-DAT-006: cache freshness is detectable; the bar timestamp is compared against now().
     """
     from milodex.risk import evaluator as evaluator_module
 

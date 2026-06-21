@@ -183,6 +183,38 @@ def test_loader_rejects_missing_required_params(
         loader.load(valid_strategy_config)
 
 
+def test_inline_universe_records_universe_ref_none(valid_strategy_config: Path) -> None:
+    """R-DAT-016: an inline-universe config parses with universe_ref None.
+
+    A run on such a config records a universe manifest_path/hash of None.
+    """
+    config = load_strategy_config(valid_strategy_config)
+    assert config.universe == ("SPY",)
+    assert config.universe_ref is None
+
+
+def test_universe_and_universe_ref_both_present_fails_load(valid_strategy_config: Path) -> None:
+    """R-DAT-016: declaring both inline universe and universe_ref fails load."""
+    text = valid_strategy_config.read_text(encoding="utf-8").replace(
+        "  enabled: true\n",
+        '  enabled: true\n  universe_ref: "universe_phase1_v1"\n',
+    )
+    valid_strategy_config.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="cannot define both"):
+        load_strategy_config(valid_strategy_config)
+
+
+def test_universe_neither_present_fails_load(valid_strategy_config: Path) -> None:
+    """R-DAT-016: declaring neither universe nor universe_ref fails load."""
+    text = valid_strategy_config.read_text(encoding="utf-8").replace(
+        '  universe:\n    - "SPY"\n',
+        "",
+    )
+    valid_strategy_config.write_text(text, encoding="utf-8")
+    with pytest.raises(ValueError, match="must define either"):
+        load_strategy_config(valid_strategy_config)
+
+
 def test_identical_configs_hash_identically(tmp_path: Path):
     first = tmp_path / "first.yaml"
     second = tmp_path / "second.yaml"
