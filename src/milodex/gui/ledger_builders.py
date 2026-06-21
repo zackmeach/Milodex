@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from milodex.gui import _event_queries
+from milodex.gui._db_logging import log_db_read_error
 from milodex.gui.row_formatters import (
     _compact_timestamp,
     _short_strategy_name,
@@ -28,7 +29,8 @@ def _promotion_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     entries: list[dict[str, Any]] = []
     try:
         rows = conn.execute("SELECT * FROM promotions ORDER BY id DESC LIMIT 200").fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("ledger_builders._promotion_entries", exc)
         return []
     for row in rows:
         promotion_type = str(row["promotion_type"])
@@ -62,7 +64,8 @@ def _kill_switch_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
         rows = conn.execute(
             "SELECT * FROM kill_switch_events ORDER BY id DESC LIMIT 100"
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("ledger_builders._kill_switch_entries", exc)
         return []
     for row in rows:
         entries.append(
@@ -94,7 +97,8 @@ def _session_start_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             ORDER BY started_at DESC LIMIT 200
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("ledger_builders._session_start_entries", exc)
         return []
     for row in rows:
         entries.append(
@@ -132,7 +136,8 @@ def _session_stop_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
             ORDER BY ended_at DESC LIMIT 200
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("ledger_builders._session_stop_entries", exc)
         return []
     for row in rows:
         entries.append(
@@ -174,7 +179,8 @@ def _backtest_complete_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]
             ORDER BY ended_at DESC LIMIT 200
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("ledger_builders._backtest_complete_entries", exc)
         return []
     for row in rows:
         metrics = _event_queries.oos_aggregate_metrics(row["metadata_json"])
@@ -232,7 +238,8 @@ def _new_strategy_entries(conn: sqlite3.Connection, configs_dir: Path) -> list[d
             SELECT strategy_id, MIN(first_at) AS first_at FROM first_seen GROUP BY strategy_id
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("ledger_builders._new_strategy_entries", exc)
         rows = []
 
     seen_with_history: dict[str, str] = {row["strategy_id"]: row["first_at"] for row in rows}
