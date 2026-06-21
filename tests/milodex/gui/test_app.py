@@ -363,11 +363,6 @@ sys.exit(0)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.flaky_qt_pollution
-@pytest.mark.skip(
-    reason="Flaky in full-suite: Qt/QML process-global pollution (pre-existing). "
-    "See docs/KNOWN_FLAKY_TESTS.md."
-)
 def test_design_system_showcase_loads_without_errors_via_subprocess():
     """DesignSystemShowcase.qml loads successfully in a fresh process.
 
