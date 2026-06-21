@@ -20,30 +20,34 @@ Six statistically- or lifecycle-justified strategies are at paper stage and are 
 >
 > These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. All are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours, and concurrent-fleet behavior), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
 
-### ⚠️ Concurrency limit — at most 3 of these run at once
+### Concurrency — same-symbol co-run is now ALLOWED (the 3-runner limit was removed)
 
-The launch-time same-symbol guard (ADR 0055; `cli/commands/strategy.py` →
-`evaluation_symbol_for_config`) refuses to start two runners whose **evaluation
-symbol** — the *sorted* `universe[0]` — collides, because same-account
-same-symbol runners corrupt each other's position view and trip wash-trade
-rejection. Across the 11 paper strategies the eval symbols collapse to **three
-groups**, so **at most three runners can be live concurrently — one per group**:
+> **Updated 2026-06-21.** The earlier "at most three runners at once" limit no longer
+> applies. The launch-time same-evaluation-symbol guard was **removed 2026-06-15**
+> (commit `211d983`, ADR-0026 addendum) — `cli/commands/strategy.py` now carries only a
+> comment recording the removal, not the refusal. All 11 paper strategies can run
+> concurrently regardless of overlapping `universe[0]`.
 
-| eval symbol | strategies sharing it (one runs at a time) |
-|---|---|
-| **SPY** | `regime.daily.sma200_rotation` **+ all 5 intraday canaries** (inline `[SPY, SHY]` and `universe.spy_only.v1` both resolve `universe[0]=SPY`) |
-| **XLB** | `breakout.daily.atr_channel`, `breakout.daily.donchian_20_10` (`universe.sector_etfs_spdr.v1`, sorted-first = XLB) |
-| **AAPL** | `meanrev.daily.bbands_lowerband`, `meanrev.daily.pullback_rsi2`, `momentum.daily.tsmom` (`universe.curated_largecap.v2`, sorted-first = AAPL) |
+The guard previously refused to start two runners whose sorted `universe[0]` collided,
+as a coarse proxy for three invariants. Those invariants are now closed directly in the
+risk/execution layers, so the launch-time refusal is no longer needed:
 
-Pick **one strategy per group**; the guard refuses the rest with a clear
-`Refusing to start … evaluation symbol 'X' is already in use` `ValueError`
-(GUI: a pre-spawn Bench blocker). Note the regime daily strategy holds the SPY
-slot, so **launching it blocks every intraday SPY canary** (and vice-versa). To
-validate all six daily "deserving" strategies, rotate them across sessions, or
-accept three-at-a-time. Pre-check a batch with
-`fleet.py deploy <ids> --dry-run` (fleet-ops skill). This is the conservative
-ADR-0055 guard working as designed pending per-symbol locks (ADR 0026
-addendum) — not a defect, and it never silently corrupts: it refuses cleanly.
+- **Cross-process submit serialization** — per-account advisory lock for all non-backtest
+  submits (`paper`/`micro_live`/`live`), ADR-0056 amended.
+- **Opposite-side resting-order veto** — `_check_opposite_side_order` (risk layer).
+- **Per-strategy position caps** — read from the strategy-scoped event-store ledger
+  (`strategy_positions`/`strategy_open_lots`, `risk/attribution.py`), so a sibling's
+  fills on the same account+symbol don't corrupt this strategy's cap (ADR-0055 amended).
+- **Per-strategy duplicate-order veto** — `_check_duplicate_order` scopes the recent-order
+  count to the proposing strategy via the durable event-store path.
+
+One fail-safe residual remains (not unsafe): partial-fill ledger reconciliation fails
+closed for the cap and is nil in the paper regime. Per-symbol advisory locks remain
+deferred. To deploy a batch, use the fleet-ops skill (`fleet.py deploy <ids> --dry-run`
+to pre-check). Runner positions are derived from the **strategy-scoped** ledger during
+concurrent same-symbol operation (NOT Alpaca net) by design; account-level risk caps
+still use live broker positions. See the CLAUDE.md ADR-0055/0056 gotcha and ADR-0026
+addendum (2026-06-15).
 
 Three strategies are at the **idle** stage (demoted out of active rotation 2026-05-19). Three remain genuinely at **backtest** stage (never promoted) and are blocked — see the blocked table and the new Idle section below.
 
