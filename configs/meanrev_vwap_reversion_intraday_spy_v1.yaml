@@ -1,4 +1,4 @@
-# VWAP Mean-Reversion Intraday SPY — v1  (BACKTEST-ONLY CANDIDATE)
+# VWAP Mean-Reversion Intraday SPY — v1  (PAPER-STAGE HARNESS CANARY, lifecycle_exempt)
 #
 # Overnight intraday-expansion candidate (2026-05-28). Long-only, single-name
 # SPY, 5-minute bars, intraday round-trip. Buys when price stretches a
@@ -11,8 +11,14 @@
 # identical universe + friction (5 bps). See docs/STRATEGY_BANK.md for the
 # intraday promotion rubric.
 #
-# STAGE = backtest. NOT a paper candidate. Promotion is a manual operator
-# decision after reviewing the AAR (docs/overnight/INTRADAY_STRATEGY_EXPANSION_AAR.md).
+# STAGE = paper. Promoted 2026-05-29 via lifecycle_exempt (operator override,
+# approved_by=operator-zack) as a deliberate intraday harness-validation canary —
+# placed at paper to exercise the intraday paper runner, NOT on statistical merit.
+# WF OOS Sharpe was -1.89 (knowingly-losing); the point is mechanics (cadence,
+# fills, in-session evaluation, concurrent-fleet behavior), not return. IEX
+# data-fidelity is a hard gate before any intraday strategy exits paper; eventual
+# demotion to backtest is a future operator call. See docs/STRATEGY_BANK.md
+# "Intraday harness-validation canaries" (and INTRADAY_STRATEGY_EXPANSION_AAR.md).
 #
 # Rules in code: src/milodex/strategies/meanrev_vwap_reversion_intraday.py
 # Session/VWAP helpers: src/milodex/strategies/_session_intraday.py
