@@ -7,24 +7,27 @@ from two always-reachable surfaces:
   1. RiskStrip — posture text click (signal: killSwitchResetClicked)
   2. RiskOfficeDrawer — KILL SWITCH section button (signal: killSwitchResetRequested)
 
-These tests assert the load-bearing structural properties that guarantee the
-flow is reachable, without simulating mouse events (the subprocess harness
-used here does not support synthetic events; that is deferred to manual
-operator verification per the standing test-infrastructure note in
-test_risk_office_drawer.py).
+Most of the original source-substring pins have been converted to behavioral
+trigger-and-observe tests (burn backlog C1/C2): they instantiate the real
+component in an offscreen QQuickView, drive it (emit the entry signal, type the
+token, click reset/cancel), and observe the live QQuickItem tree / properties.
+The remaining source pins in the Test* classes below are the inherently
+source-only residue — onClicked -> signal links (no synthetic mouse events),
+qmldir registration, file existence, Main.qml wiring, and the anchor-surface
+deletion guards.
 
-Test classes:
-  TestModalStructure     — KillSwitchResetModal QML source has the correct
-                           token-contract wiring and close/reset mechanics.
-  TestRiskStripWiring    — RiskStrip declares killSwitchResetClicked and its
-                           posture area wires it.
-  TestDrawerWiring       — RiskOfficeDrawer declares killSwitchResetRequested
-                           and the KILL SWITCH section exists.
-  TestMainQmlWiring      — Main.qml instantiates KillSwitchResetModal and
-                           routes both entry signals to it.
-  TestQmlLoadClean       — KillSwitchResetModal.qml compiles cleanly in a
-                           subprocess (zero engine warnings; non-empty root
-                           objects).
+Source-pin classes (residue only):
+  TestModalStructure     — KillSwitchResetModal file-existence + qmldir.
+  TestRiskStripWiring    — RiskStrip onClicked->signal + click-active gate.
+  TestDrawerWiring       — RiskOfficeDrawer onClicked->signal.
+  TestMainQmlWiring      — Main.qml instantiation/routing + anchor deletion.
+  TestQmlLoadClean       — KillSwitchResetModal.qml compiles cleanly.
+
+Behavioral sections (trigger-and-observe), below the source-pin classes:
+  RiskStrip / RiskOfficeDrawer reachability — the entry signal opens the modal.
+  RiskOfficeDrawer section gating          — KILL SWITCH section visibility.
+  KillSwitchResetModal reset mechanics     — token gate, success/failure,
+                                             clear-on-reopen, cancel.
 """
 
 from __future__ import annotations
@@ -87,13 +90,15 @@ class TestModalStructure:
 
 
 class TestRiskStripWiring:
-    """RiskStrip must declare and emit killSwitchResetClicked when active."""
+    """RiskStrip kill-switch reset entry wiring.
 
-    def test_signal_declared(self) -> None:
-        src = _RISK_STRIP_QML.read_text(encoding="utf-8")
-        assert "signal killSwitchResetClicked()" in src, (
-            "RiskStrip.qml must declare `signal killSwitchResetClicked()`"
-        )
+    test_signal_declared (``signal killSwitchResetClicked()``) was converted to
+    the behavioral pilot test_risk_strip_kill_switch_reset_opens_modal (it
+    invokes that exact signal and observes the modal open) and deleted from
+    here. The onClicked -> signal emission and the killSwitchActive click-gate
+    below stay source pins: the offscreen harness cannot synthesize the posture
+    MouseArea click that fires them.
+    """
 
     def test_signal_emitted_from_posture_area(self) -> None:
         """killSwitchResetClicked must be emitted from a MouseArea on the posture text."""
