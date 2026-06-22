@@ -135,7 +135,7 @@ class TestNoLiveModeDrift:
         )
 
     def test_check_trading_mode_rejects_live_mode(self):
-        """``_check_trading_mode`` must reject ``trading_mode='live'``.
+        """R-EXE-007: ``_check_trading_mode`` must reject ``trading_mode='live'``.
 
         Reason code must remain ``paper_mode_required`` — the
         explanation event store and the trust dashboard both key off
@@ -240,7 +240,7 @@ class TestNoLiveModeDrift:
     # ------------------------------------------------------------------
 
     def test_submit_order_only_called_from_chokepoint_files(self):
-        """``.submit_order(`` calls must only appear in allowed files.
+        """R-EXE-001: ``.submit_order(`` calls must only appear in allowed files.
 
         Per [CLAUDE.md](CLAUDE.md) "execution/" is the "single
         chokepoint from intent → trade: invokes the risk layer, records

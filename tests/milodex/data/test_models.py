@@ -56,3 +56,29 @@ class TestBarSet:
         sample_df["vwap"] = [None, None, None]
         barset = BarSet(sample_df)
         assert len(barset) == 3
+
+    def test_to_dataframe_exposes_seven_canonical_columns(self):
+        """BarSet.to_dataframe() exposes all seven canonical columns.
+
+        Columns: timestamp, open, high, low, close, volume, vwap (vwap auto-injected
+        when omitted). The sidecar-metadata half (split state, dividends, delisted
+        status, exchange/asset-type, calendar alignment) has no data model yet; out of
+        scope here.
+        """
+        canonical = {"timestamp", "open", "high", "low", "close", "volume", "vwap"}
+        df = pd.DataFrame(
+            {
+                "timestamp": pd.to_datetime(["2025-01-13"], utc=True),
+                "open": [148.0],
+                "high": [149.0],
+                "low": [147.0],
+                "close": [148.5],
+                "volume": [900000],
+                "vwap": [148.3],
+            }
+        )
+        assert canonical <= set(BarSet(df).to_dataframe().columns)
+
+        # vwap omitted -> BarSet auto-injects it as a nullable column.
+        no_vwap = df.drop(columns=["vwap"])
+        assert canonical <= set(BarSet(no_vwap).to_dataframe().columns)

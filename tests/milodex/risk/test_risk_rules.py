@@ -341,6 +341,7 @@ def test_order_value_oversized_sell_beyond_held_is_still_capped():
 
 
 def test_kill_switch_blocks_reducing_sell():
+    """R-EXE-016: an active kill switch blocks even an exposure-reducing sell."""
     # DC-1 (2026-06-10): the kill switch is an ABSOLUTE halt. The reducing-order
     # permissiveness applies to the order-value cap and the reconciliation gate,
     # NOT the kill switch — an active switch blocks even a covered reducing sell.
@@ -1483,6 +1484,8 @@ def test_data_staleness_fails_just_over_max_age(monkeypatch):
     and mutated comparison — but combined with the equality-passes
     test above, the pair pins the strict-``>`` semantic against the
     ``>=`` mutation.
+
+    R-DAT-006: cache freshness is detectable; the bar timestamp is compared against now().
     """
     from milodex.risk import evaluator as evaluator_module
 
@@ -2335,14 +2338,34 @@ def test_remaining_notional_overfill_clamps_to_zero():
 
 
 def test_checks_registry_is_account_complete():
-    """Guard against doc/code drift: the enforced-check registry stays at 17
+    """R-EXE-004. Guard against doc/code drift: the enforced-check registry stays at 17
     (HR-7 added _check_max_trades_per_day; P2-07 added
     _check_disable_conditions per R-STR-014; concurrent-intraday PR2 added
     _check_opposite_side_order) and never silently lists a sector/correlation
     cap that the code does not implement (RISK_POLICY.md / SRS.md advertise
     those as planned only)."""
-    assert len(RiskEvaluator._CHECKS) == 17
-    assert "_check_opposite_side_order" in RiskEvaluator._CHECKS
+    # Pin the exact enforced set (member-for-member), not just its cardinality —
+    # a length-only assert passes when a check is swapped out for another.
+    assert RiskEvaluator._CHECKS == (
+        "_check_kill_switch",
+        "_check_trading_mode",
+        "_check_reconciliation_readiness",
+        "_check_strategy_stage",
+        "_check_manifest_drift",
+        "_check_disable_conditions",
+        "_check_market_open",
+        "_check_data_staleness",
+        "_check_daily_loss",
+        "_check_max_trades_per_day",
+        "_check_order_value",
+        "_check_single_position_limit",
+        "_check_total_exposure",
+        "_check_concurrent_positions",
+        "_check_strategy_concurrent_positions",
+        "_check_duplicate_order",
+        "_check_opposite_side_order",
+    )
+    # Planned-only caps must never appear in the enforced set (SRS R-EXE-004).
     assert not any("sector" in name or "correlat" in name for name in RiskEvaluator._CHECKS)
 
 

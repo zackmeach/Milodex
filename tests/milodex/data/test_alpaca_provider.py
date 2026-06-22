@@ -72,6 +72,7 @@ def provider(tmp_path):
 
 class TestGetBars:
     def test_returns_dict_of_barsets(self, provider, mock_alpaca_bar):
+        """R-DAT-002: AlpacaDataProvider.get_bars returns a non-empty BarSet per symbol."""
         provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
         result = provider.get_bars(
             symbols=["AAPL"],
@@ -374,7 +375,10 @@ class TestGetLatestBar:
 
 class TestGetBarsCaching:
     def test_cache_hit_avoids_api_call(self, provider, mock_alpaca_bar):
-        """When cache fully covers the request and end < today, no API call."""
+        """When cache fully covers the request and end < today, no API call.
+
+        R-DAT-003: a second identical fetch is served from the Parquet cache.
+        """
         provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
         provider.get_bars(
             symbols=["AAPL"],
@@ -645,6 +649,8 @@ def test_timeframe_map_covers_every_timeframe_member() -> None:
 
     A partial map is a latent KeyError: adding a Timeframe member without a
     mapping entry breaks any get_bars call for that timeframe.
+
+    R-DAT-005: covers MINUTE_1, MINUTE_5, MINUTE_15, HOUR_1, DAY_1 mapping to Alpaca.
     """
     from milodex.data.alpaca_provider import _TIMEFRAME_MAP
 

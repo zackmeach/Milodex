@@ -776,7 +776,7 @@ def test_strategy_run_dispatches_runner(monkeypatch):
 
 
 def test_strategy_run_refuses_second_invocation_of_same_strategy(monkeypatch, tmp_path):
-    """Per ADR 0026, the runner lock is scoped per-strategy_id. Starting the
+    """R-EXE-013 / ADR 0026: the runner lock is scoped per-strategy_id. Starting the
     same strategy twice must still refuse — preventing accidental double-starts
     of one strategy in two terminals — even though *different* strategies are
     now allowed to run concurrently.
