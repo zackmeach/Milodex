@@ -58,7 +58,7 @@ class TestBarSet:
         assert len(barset) == 3
 
     def test_to_dataframe_exposes_seven_canonical_columns(self):
-        """R-DAT-004: BarSet.to_dataframe() exposes all seven canonical columns.
+        """BarSet.to_dataframe() exposes all seven canonical columns.
 
         Columns: timestamp, open, high, low, close, volume, vwap (vwap auto-injected
         when omitted). The sidecar-metadata half (split state, dividends, delisted

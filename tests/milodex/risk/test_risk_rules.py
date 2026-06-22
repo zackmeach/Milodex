@@ -2344,8 +2344,28 @@ def test_checks_registry_is_account_complete():
     _check_opposite_side_order) and never silently lists a sector/correlation
     cap that the code does not implement (RISK_POLICY.md / SRS.md advertise
     those as planned only)."""
-    assert len(RiskEvaluator._CHECKS) == 17
-    assert "_check_opposite_side_order" in RiskEvaluator._CHECKS
+    # Pin the exact enforced set (member-for-member), not just its cardinality —
+    # a length-only assert passes when a check is swapped out for another.
+    assert RiskEvaluator._CHECKS == (
+        "_check_kill_switch",
+        "_check_trading_mode",
+        "_check_reconciliation_readiness",
+        "_check_strategy_stage",
+        "_check_manifest_drift",
+        "_check_disable_conditions",
+        "_check_market_open",
+        "_check_data_staleness",
+        "_check_daily_loss",
+        "_check_max_trades_per_day",
+        "_check_order_value",
+        "_check_single_position_limit",
+        "_check_total_exposure",
+        "_check_concurrent_positions",
+        "_check_strategy_concurrent_positions",
+        "_check_duplicate_order",
+        "_check_opposite_side_order",
+    )
+    # Planned-only caps must never appear in the enforced set (SRS R-EXE-004).
     assert not any("sector" in name or "correlat" in name for name in RiskEvaluator._CHECKS)
 
 
@@ -2789,7 +2809,7 @@ def test_duplicate_order_not_blocked_across_strategies(tmp_path):
 
 
 def test_duplicate_order_blocked_for_same_strategy(tmp_path):
-    """R-EXE-009. A strategy's own recent same-side order on the symbol still vetoes a
+    """A strategy's own recent same-side order on the symbol still vetoes a
     duplicate — the protective intent is preserved, just scoped per-strategy."""
     store = _store_with_recent_submit(tmp_path, strategy_name="alpha")
     decision = RiskEvaluator().evaluate(

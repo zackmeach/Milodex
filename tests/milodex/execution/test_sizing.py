@@ -58,12 +58,12 @@ def test_raises_on_non_positive_price() -> None:
         fractional_units_for_notional_pct(equity=100_000.0, notional_pct=0.10, unit_price=0.0)
 
 
-def test_r_brk_008_fifty_dollar_notional_on_five_hundred_dollar_stock() -> None:
-    """R-BRK-008: a $50 notional intent on a $500 stock produces a 0.1-share order.
+def test_fifty_dollar_notional_on_five_hundred_dollar_stock() -> None:
+    """A $50 notional intent on a $500 stock produces a 0.1-share order.
 
     Sizing is expressed in notional dollars (fractional shares), not share count.
     The fractional helper must return 0.1; the whole-share helper floors it to 0,
-    proving fractional sizing is required to honor the requirement.
+    proving fractional sizing is required to honor notional sizing.
     """
     units = fractional_units_for_notional_pct(equity=500.0, notional_pct=0.10, unit_price=500.0)
     assert units == pytest.approx(0.1)

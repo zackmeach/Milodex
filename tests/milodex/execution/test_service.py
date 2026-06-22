@@ -685,7 +685,7 @@ def test_paper_submit_requires_paper_mode(
 def test_kill_switch_status_and_activation(
     tmp_path, risk_defaults_file, latest_bar, submitted_order
 ):
-    """R-EXE-005 / R-EXE-010: daily-loss breach halts submission and cancels open orders."""
+    """R-EXE-005: daily-loss breach halts submission and cancels open orders."""
     account = AccountInfo(
         equity=10_000.0,
         cash=8_000.0,
@@ -2031,11 +2031,13 @@ def test_submit_paper_defaults_time_in_force_to_day(
 def test_kill_switch_state_identical_for_rule_and_operator_paths(
     tmp_path, risk_defaults_file, latest_bar, submitted_order
 ):
-    """R-EXE-012: rule-triggered and operator-invoked kill switches reach identical state.
+    """Rule-triggered and operator-invoked kill switches reach identical persisted state.
 
     Both persist an "activated" event (active=True) that survives a fresh store read
-    (manual reset required on next startup). The rule-triggered path also cancels open
-    orders at the broker.
+    (manual reset required on next startup). NOTE: this proves state-identity only — it
+    does NOT prove the operator path cancels open orders at the broker (trigger_kill_switch
+    only activates; broker cancellation on the operator path is the runner's job and is not
+    exercised here), so it does not close the kill-switch path-equivalence requirement.
     """
     loss_account = AccountInfo(
         equity=10_000.0,
@@ -2097,13 +2099,14 @@ def test_kill_switch_state_identical_for_rule_and_operator_paths(
 def test_kill_switch_trip_writes_reviewable_incident_record(
     tmp_path, risk_defaults_file, latest_bar, submitted_order
 ):
-    """R-EXE-015: a kill-switch trip writes a reviewable incident record.
+    """A kill-switch trip writes a durable, inspectable activation + reset record.
 
-    Covers (a) the triggering condition captured in the durable event reason,
-    (c) the durable activation mark, (d)+(f) read-only state inspection during the halt,
-    and (e) an explicit reset writing a linked follow-on "reset" event with the activation
-    record preserved. Full local/broker state snapshot (sub-field b) is not yet in the
-    kill_switch_events schema (deferred).
+    Covers the triggering condition captured in the durable event reason, the durable
+    activation mark, read-only state inspection during the halt, and an explicit reset
+    writing a linked follow-on "reset" event with the activation record preserved.
+    This is NOT the full reviewable-incident-record requirement: the local/broker/strategy
+    state snapshot, scope mark, operator-facing summary, and re-enable governance linkage
+    are not yet in the kill_switch_events schema (deferred).
     """
     loss_account = AccountInfo(
         equity=10_000.0,

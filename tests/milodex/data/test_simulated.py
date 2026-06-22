@@ -100,12 +100,13 @@ def test_get_tradeable_assets_returns_known_symbols():
 
 
 def test_frozen_snapshot_unaffected_by_later_source_mutation() -> None:
-    """R-DAT-013: a version-frozen snapshot yields identical output after the source mutates.
+    """BarSet defensively copies its source frame, so later source mutation can't alter output.
 
     A backtest run replays a prefetched snapshot. BarSet copies its input frame on
     construction, so a later "vendor correction" to the original frame must NOT change
-    replayed output — the frozen run stays reproducible. If BarSet stopped copying,
-    this test fails.
+    replayed output. This guards the in-memory copy only — it is NOT the run-manifest
+    snapshot-versioning the staleness-policy requirement asks for. If BarSet stopped
+    copying, this test fails.
     """
     source = pd.DataFrame(
         {

@@ -118,7 +118,7 @@ def test_negative_or_non_finite_volume_is_blocker():
 
 
 def test_low_requested_window_coverage_is_warning():
-    """R-DAT-011: a symbol below 98% requested-window coverage is flagged ineligible."""
+    """A symbol below 98% requested-window coverage produces a warning (not exclusion)."""
     report = _report_for(
         {
             "SPY": [

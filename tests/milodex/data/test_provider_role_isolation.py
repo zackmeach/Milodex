@@ -1,10 +1,10 @@
-"""Provider role-interface isolation for data consumers.
+"""Provider role-interface isolation for data consumers (ADR 0017).
 
-R-DAT-007: strategies/, execution/, backtesting/, and analytics/ reference only
-the DataProvider ABC, never a concrete vendor provider (AlpacaDataProvider,
-YahooProvider, etc.). The three-named-roles config is deferred (ADR 0017); this
-test pins the testable half of the acceptance criteria: no concrete-provider
-import in the consuming packages.
+strategies/, execution/, backtesting/, and analytics/ reference only the
+DataProvider ABC, never a concrete vendor provider (AlpacaDataProvider,
+YahooProvider, etc.). This guards the import-discipline half only; the
+three-named-roles surface itself is deferred (ADR 0017), so this test does
+NOT close the data-provider-roles requirement.
 
 backtesting/walk_forward_batch.py is the one allowlisted exception — its
 multiprocessing workers re-import AlpacaDataProvider because a provider cannot be
@@ -47,7 +47,7 @@ def _consumer_files() -> list[Path]:
     ids=lambda p: p.relative_to(_SRC_ROOT).as_posix(),
 )
 def test_consumer_imports_only_provider_role_interface(src_file: Path) -> None:
-    """R-DAT-007: a data consumer must not import a concrete provider (allowlist aside)."""
+    """A data consumer must not import a concrete provider (allowlist aside)."""
     rel = src_file.relative_to(_SRC_ROOT).as_posix()
     offending = [
         line.strip()
@@ -57,6 +57,6 @@ def test_consumer_imports_only_provider_role_interface(src_file: Path) -> None:
     ]
     if offending:
         assert rel in _ALLOWLIST, (
-            f"R-DAT-007: {rel} imports a concrete data provider ({offending!r}); "
+            f"{rel} imports a concrete data provider ({offending!r}); "
             "consumers must depend on the DataProvider ABC only."
         )
