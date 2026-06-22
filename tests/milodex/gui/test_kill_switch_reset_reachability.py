@@ -10,16 +10,16 @@ from two always-reachable surfaces:
 Most of the original source-substring pins have been converted to behavioral
 trigger-and-observe tests (burn backlog C1/C2): they instantiate the real
 component in an offscreen QQuickView, drive it (emit the entry signal, type the
-token, click reset/cancel), and observe the live QQuickItem tree / properties.
-The remaining source pins in the Test* classes below are the inherently
-source-only residue — onClicked -> signal links (no synthetic mouse events),
-qmldir registration, file existence, Main.qml wiring, and the anchor-surface
-deletion guards.
+token, click reset/cancel, or synthesize a real MouseArea click via
+QTest.mouseClick), and observe the live QQuickItem tree / properties. The
+RiskStrip/Drawer onClicked->signal links and the RiskStrip active-only click
+gate — once kept as source pins on the mistaken belief that the offscreen
+harness couldn't synthesize clicks — are now real-click behavioral tests too
+(batch 6). The remaining source pins are the genuinely source-only residue:
+qmldir registration, file existence, Main.qml wiring, anchor-surface deletion.
 
 Source-pin classes (residue only):
   TestModalStructure     — KillSwitchResetModal file-existence + qmldir.
-  TestRiskStripWiring    — RiskStrip onClicked->signal + click-active gate.
-  TestDrawerWiring       — RiskOfficeDrawer onClicked->signal.
   TestMainQmlWiring      — Main.qml instantiation/routing + anchor deletion.
   TestQmlLoadClean       — KillSwitchResetModal.qml compiles cleanly.
 
@@ -28,6 +28,9 @@ Behavioral sections (trigger-and-observe), below the source-pin classes:
   RiskOfficeDrawer section gating          — KILL SWITCH section visibility.
   KillSwitchResetModal reset mechanics     — token gate, success/failure,
                                              clear-on-reopen, cancel.
+  Real-click behavioral tests (batch 6)    — RESET KILL SWITCH / posture
+                                             clicks drive the actual MouseAreas
+                                             (incl. the inactive no-op gate).
 """
 
 from __future__ import annotations
@@ -85,69 +88,17 @@ class TestModalStructure:
 
 
 # ---------------------------------------------------------------------------
-# Structural: RiskStrip wiring
+# RiskStrip / RiskOfficeDrawer onClicked -> signal links + the RiskStrip
+# active-only click gate were originally retained as source-substring pins
+# (TestRiskStripWiring.{test_signal_emitted_from_posture_area,
+# test_click_only_fires_when_active}, TestDrawerWiring.test_signal_emitted_from_
+# section). Outside review of #286 proved the offscreen harness CAN synthesize
+# the clicks (QTest.mouseClick) and that those pins let mutants survive, so they
+# were converted to real-click behavioral tests (batch 6, below) and deleted:
+#   * test_drawer_reset_button_click_opens_modal
+#   * test_risk_strip_posture_click_opens_modal_when_active
+#   * test_risk_strip_posture_click_does_nothing_when_inactive
 # ---------------------------------------------------------------------------
-
-
-class TestRiskStripWiring:
-    """RiskStrip kill-switch reset entry wiring.
-
-    test_signal_declared (``signal killSwitchResetClicked()``) was converted to
-    the behavioral pilot test_risk_strip_kill_switch_reset_opens_modal (it
-    invokes that exact signal and observes the modal open) and deleted from
-    here. The onClicked -> signal emission and the killSwitchActive click-gate
-    below stay source pins: the offscreen harness cannot synthesize the posture
-    MouseArea click that fires them.
-    """
-
-    def test_signal_emitted_from_posture_area(self) -> None:
-        """killSwitchResetClicked must be emitted from a MouseArea on the posture text."""
-        src = _RISK_STRIP_QML.read_text(encoding="utf-8")
-        assert "root.killSwitchResetClicked()" in src, (
-            "RiskStrip.qml must emit root.killSwitchResetClicked() from the posture MouseArea"
-        )
-
-    def test_click_only_fires_when_active(self) -> None:
-        """The MouseArea must gate on killSwitchActive to prevent spurious opens."""
-        src = _RISK_STRIP_QML.read_text(encoding="utf-8")
-        assert "root.killSwitchActive" in src, (
-            "RiskStrip.qml posture MouseArea must gate on root.killSwitchActive"
-        )
-
-
-# ---------------------------------------------------------------------------
-# Structural: RiskOfficeDrawer wiring
-# ---------------------------------------------------------------------------
-
-
-class TestDrawerWiring:
-    """RiskOfficeDrawer KILL SWITCH section wiring.
-
-    The signal-declared, section-exists, and section-gated-on-active source
-    pins were converted to behavioral trigger-and-observe tests (burn backlog
-    C2 batch 1) and deleted from here:
-      * test_drawer_kill_switch_reset_opens_modal       (signal -> modal opens)
-      * test_drawer_kill_switch_section_renders_when_active
-      * test_drawer_kill_switch_section_hidden_when_inactive
-
-    Only the onClicked -> signal link below stays a source pin: the offscreen
-    harness cannot synthesize the mouse click that fires the RESET KILL SWITCH
-    button's MouseArea, so there is no honest behavioral observation for it.
-    """
-
-    def test_signal_emitted_from_section(self) -> None:
-        """The section button must emit killSwitchResetRequested.
-
-        Source-only by necessity: this guards the
-        ``onClicked: root.killSwitchResetRequested()`` one-liner in the RESET
-        KILL SWITCH button's MouseArea, which the offscreen QQuickView harness
-        cannot drive without synthetic mouse events.
-        """
-        src = _DRAWER_QML.read_text(encoding="utf-8")
-        assert "root.killSwitchResetRequested()" in src, (
-            "RiskOfficeDrawer.qml must emit root.killSwitchResetRequested() from the "
-            "KILL SWITCH section button"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -1239,4 +1190,401 @@ def test_modal_cancel_emits_close_requested() -> None:
         assertions=assertions,
         label="modal cancel closes",
         ok_token="CANCEL_OK",
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Real-click behavioral tests (burn backlog C2, batch 6 — review follow-up).
+#
+# Outside review of #286 proved the offscreen harness CAN synthesize MouseArea
+# clicks via QTest.mouseClick, so the onClicked->signal links and the
+# click-active gate are NOT inherently source-only. These tests drive the real
+# MouseAreas with synthetic clicks and observe behavior, replacing the retained
+# substring pins (which let mutants survive: disabling the RiskStrip
+# active-gate, reordering the reconcile busy flag, plus the result-clear and
+# re-entrancy gaps an adversarial audit later surfaced).
+#
+# Click mechanics: find the visible label Text, map its centre to window/scene
+# coords (the QQuickView root fills the window), and QTest.mouseClick the view
+# there. The label's MouseArea sibling (declared last -> on top, anchors.fill
+# the same rect) receives the click; Text items have no input handling.
+# ---------------------------------------------------------------------------
+
+
+def _build_drawer_click_probe_script(*, assertions: str) -> str:
+    """Subprocess script: RiskOfficeDrawer (kill switch ACTIVE) wired to
+    KillSwitchResetModal as Main.qml wires it, with a synthetic-click helper.
+    The ``assertions`` body clicks the real RESET KILL SWITCH MouseArea and
+    observes the modal.
+    """
+    import_root = str(_QML_IMPORT_ROOT)
+    return f"""\
+import os, sys, tempfile, pathlib
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer, QCoreApplication, QPointF, Qt
+from PySide6.QtCore import QObject as _QObjectBase
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+from PySide6.QtTest import QTest
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui import qml_setup
+from milodex.gui.operational_state import OperationalState
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+tm = ThemeManager()
+
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(active=True, reason="t", last_triggered_at=None)
+
+def _failing_broker():
+    raise RuntimeError("probe: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker, kill_switch_store=ks_store,
+    trading_mode="paper", kill_switch_poll_seconds=9999.0, broker_poll_seconds=9999.0,
+)
+op._poll_kill_switch()
+qml_setup.register_qml_types(theme_manager=tm, operational_state=op)
+
+probe = b\"\"\"
+import QtQuick
+import Milodex 1.0
+Item {{
+    id: probeRoot
+    width: 1200
+    height: 800
+    RiskOfficeDrawer {{
+        id: drawer
+        objectName: "riskOfficeDrawerProbe"
+        open: true
+        onKillSwitchResetRequested: ksModal.open = true
+    }}
+    KillSwitchResetModal {{
+        id: ksModal
+        objectName: "killSwitchResetModalProbe"
+        anchors.fill: parent
+        onCloseRequested: ksModal.open = false
+    }}
+}}
+\"\"\"
+_qml_file = pathlib.Path(tempfile.mktemp(suffix=".qml"))
+_qml_file.write_bytes(probe)
+
+view = QQuickView()
+view.engine().addImportPath({import_root!r})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1200, 800)
+view.setSource(QUrl.fromLocalFile(str(_qml_file)))
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+view.show()
+QTimer.singleShot(400, app.quit)
+app.exec()
+
+drawer = root.findChild(_QObjectBase, "riskOfficeDrawerProbe")
+modal = root.findChild(_QObjectBase, "killSwitchResetModalProbe")
+if drawer is None or modal is None:
+    print("probe items not found", file=sys.stderr)
+    sys.exit(4)
+
+def _walk(item):
+    yield item
+    for c in item.childItems():
+        yield from _walk(c)
+
+def _click_text(marker):
+    for it in _walk(root):
+        try:
+            if not it.isVisible():
+                continue
+        except Exception:
+            pass
+        t = it.property("text")
+        if t and marker in str(t):
+            c = it.mapToScene(QPointF(it.width() / 2.0, it.height() / 2.0)).toPoint()
+            QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, c)
+            QCoreApplication.processEvents()
+            QCoreApplication.processEvents()
+            return True
+    return False
+
+{assertions}
+"""
+
+
+@_skip_no_qt
+def test_drawer_reset_button_click_opens_modal() -> None:
+    """A real synthetic click on the RESET KILL SWITCH button opens the modal,
+    end-to-end through the MouseArea onClicked -> killSwitchResetRequested ->
+    Main.qml-style wiring -> modal.open.
+
+    Replaces the substring pin TestDrawerWiring.test_signal_emitted_from_section.
+    NON-VACUOUS: stubbing the button MouseArea onClicked to a no-op leaves the
+    modal closed -> fails (exit 7); the precondition asserts the modal is closed
+    before the click so an always-open modal fails too.
+    """
+    assertions = (
+        'if bool(modal.property("open")):\n'
+        '    print("PRECONDITION: modal already open", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'if not _click_text("RESET KILL SWITCH"):\n'
+        '    print("RESET KILL SWITCH button not found/clickable", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        "QTimer.singleShot(150, app.quit)\n"
+        "app.exec()\n"
+        'if not bool(modal.property("open")):\n'
+        '    print("modal did not open after clicking RESET KILL SWITCH", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        'print("DRAWER_CLICK_OPENS_OK")\n'
+        "sys.exit(0)\n"
+    )
+    script = _build_drawer_click_probe_script(assertions=assertions)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, (
+        "drawer reset-button click FAILED\n"
+        f"returncode: {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "DRAWER_CLICK_OPENS_OK" in result.stdout
+
+
+def _build_risk_strip_click_probe_script(*, active: bool, assertions: str) -> str:
+    """Subprocess script: RiskStrip (killSwitchActive=active) wired to
+    KillSwitchResetModal as Main.qml wires it, with synthetic-click + posture-
+    MouseArea lookup helpers. The ``assertions`` body clicks the real posture
+    MouseArea and inspects its resolved enabled state + the modal.
+    """
+    import_root = str(_QML_IMPORT_ROOT)
+    active_literal = "true" if active else "false"
+    return f"""\
+import os, sys, tempfile, pathlib
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer, QCoreApplication, QPointF, Qt
+from PySide6.QtCore import QObject as _QObjectBase
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+from PySide6.QtTest import QTest
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui import qml_setup
+from milodex.gui.operational_state import OperationalState
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+tm = ThemeManager()
+
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(active=False, reason=None, last_triggered_at=None)
+
+def _failing_broker():
+    raise RuntimeError("probe: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker, kill_switch_store=ks_store,
+    trading_mode="paper", kill_switch_poll_seconds=9999.0, broker_poll_seconds=9999.0,
+)
+op._poll_kill_switch()
+qml_setup.register_qml_types(theme_manager=tm, operational_state=op)
+
+# RiskStrip.killSwitchActive is set directly (Main.qml binds it to
+# OperationalState.killSwitchActive; the posture MouseArea gates on it).
+probe = b\"\"\"
+import QtQuick
+import Milodex 1.0
+Item {{
+    id: probeRoot
+    width: 1200
+    height: 400
+    RiskStrip {{
+        id: strip
+        objectName: "riskStripProbe"
+        killSwitchActive: {active_literal}
+        onKillSwitchResetClicked: ksModal.open = true
+    }}
+    KillSwitchResetModal {{
+        id: ksModal
+        objectName: "killSwitchResetModalProbe"
+        anchors.fill: parent
+        onCloseRequested: ksModal.open = false
+    }}
+}}
+\"\"\"
+_qml_file = pathlib.Path(tempfile.mktemp(suffix=".qml"))
+_qml_file.write_bytes(probe)
+
+view = QQuickView()
+view.engine().addImportPath({import_root!r})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1200, 400)
+view.setSource(QUrl.fromLocalFile(str(_qml_file)))
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+view.show()
+QTimer.singleShot(400, app.quit)
+app.exec()
+
+strip = root.findChild(_QObjectBase, "riskStripProbe")
+modal = root.findChild(_QObjectBase, "killSwitchResetModalProbe")
+if strip is None or modal is None:
+    print("probe items not found", file=sys.stderr)
+    sys.exit(4)
+
+def _walk(item):
+    yield item
+    for c in item.childItems():
+        yield from _walk(c)
+
+def _posture_text():
+    # The posture copy is the only RiskStrip text containing " | ".
+    for it in _walk(strip):
+        t = it.property("text")
+        if t and " | " in str(t):
+            return it
+    return None
+
+def _posture_mouse():
+    # postureMouse is the MouseArea sibling of the posture Text (same parent
+    # Item), distinct from the badge's MouseArea. Reading its RESOLVED enabled
+    # state catches a removed/broken `enabled: root.killSwitchActive` binding.
+    txt = _posture_text()
+    if txt is None:
+        return None
+    parent = txt.parentItem()
+    if parent is None:
+        return None
+    for sib in parent.childItems():
+        if sib.metaObject().className() == "QQuickMouseArea":
+            return sib
+    return None
+
+def _click_text(marker):
+    for it in _walk(strip):
+        try:
+            if not it.isVisible():
+                continue
+        except Exception:
+            pass
+        t = it.property("text")
+        if t and marker in str(t):
+            c = it.mapToScene(QPointF(it.width() / 2.0, it.height() / 2.0)).toPoint()
+            QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, c)
+            QCoreApplication.processEvents()
+            QCoreApplication.processEvents()
+            return True
+    return False
+
+{assertions}
+"""
+
+
+def _run_risk_strip_click(*, active: bool, assertions: str, label: str, ok_token: str) -> None:
+    script = _build_risk_strip_click_probe_script(active=active, assertions=assertions)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, (
+        f"{label} FAILED\n"
+        f"returncode: {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert ok_token in result.stdout
+
+
+@_skip_no_qt
+def test_risk_strip_posture_click_opens_modal_when_active() -> None:
+    """With the kill switch active, the posture MouseArea is enabled and a real
+    click on it opens the reset modal (onClicked -> killSwitchResetClicked ->
+    modal.open).
+
+    Replaces TestRiskStripWiring.test_signal_emitted_from_posture_area.
+    NON-VACUOUS: a no-op onClicked leaves the modal closed -> fails (exit 8);
+    the enabled==active assertion catches a removed `enabled` gate.
+    """
+    assertions = (
+        "pm = _posture_mouse()\n"
+        "if pm is None:\n"
+        '    print("posture MouseArea not found", file=sys.stderr)\n'
+        "    sys.exit(4)\n"
+        'if not bool(pm.property("enabled")):\n'
+        '    print("posture MouseArea not enabled when active", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'if bool(modal.property("open")):\n'
+        '    print("PRECONDITION: modal already open", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'if not _click_text(" | "):\n'
+        '    print("posture text not found/clickable", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        "QTimer.singleShot(150, app.quit)\n"
+        "app.exec()\n"
+        'if not bool(modal.property("open")):\n'
+        '    print("modal did not open after posture click (active)", file=sys.stderr)\n'
+        "    sys.exit(8)\n"
+        'print("POSTURE_CLICK_ACTIVE_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_risk_strip_click(
+        active=True, assertions=assertions,
+        label="posture click opens modal when active", ok_token="POSTURE_CLICK_ACTIVE_OK",
+    )
+
+
+@_skip_no_qt
+def test_risk_strip_posture_click_does_nothing_when_inactive() -> None:
+    """With the kill switch INACTIVE, the posture MouseArea is disabled and a
+    real click on it does NOT open the modal — the active-only gate makes the
+    affordance inert.
+
+    Replaces TestRiskStripWiring.test_click_only_fires_when_active. NON-VACUOUS:
+    asserting the posture MouseArea is DISABLED (enabled==False) catches a
+    removed `enabled: root.killSwitchActive` gate that the end-state-only check
+    misses; removing the effective gate so the inactive click opens the modal
+    fails the open check (exit 8). Paired with the active test (same click
+    coords, opposite outcome) this is a real gate exercise, not a vacuous pass.
+    """
+    assertions = (
+        "pm = _posture_mouse()\n"
+        "if pm is None:\n"
+        '    print("posture MouseArea not found", file=sys.stderr)\n'
+        "    sys.exit(4)\n"
+        'if bool(pm.property("enabled")):\n'
+        '    print("posture MouseArea ENABLED while inactive (gate broken)", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        'if bool(modal.property("open")):\n'
+        '    print("PRECONDITION: modal already open", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        'if not _click_text(" | "):\n'
+        '    print("posture text not found/clickable", file=sys.stderr)\n'
+        "    sys.exit(7)\n"
+        "QTimer.singleShot(150, app.quit)\n"
+        "app.exec()\n"
+        'if bool(modal.property("open")):\n'
+        '    print("modal OPENED on posture click while inactive (gate broken)", file=sys.stderr)\n'
+        "    sys.exit(8)\n"
+        'print("POSTURE_CLICK_INACTIVE_OK")\n'
+        "sys.exit(0)\n"
+    )
+    _run_risk_strip_click(
+        active=False, assertions=assertions,
+        label="posture click no-op when inactive", ok_token="POSTURE_CLICK_INACTIVE_OK",
     )
