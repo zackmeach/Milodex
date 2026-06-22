@@ -16,6 +16,7 @@ which are **closed history kept for the record**.
 | [VISION.md](VISION.md) | *What* to build and *in what order*; phase model and the Autonomy Boundary. |
 | [PRODUCT.md](PRODUCT.md) | Short operational compass derived from FOUNDER_INTENT — product identity at a glance. |
 | [SRS.md](SRS.md) | Normative requirements spec (living). The subsystem docs below are companions to its domains. |
+| [CURRENT_ROADMAP.md](CURRENT_ROADMAP.md) | The canonical control-tower roadmap: current state → trust closure. One active milestone, observable gates, gate-only updates. Planning prose (authority rank 4) — it adjudicates and links sources; it does **not** override FOUNDER_INTENT, VISION, SRS, or any ADR. |
 
 ## Living subsystem specs
 
