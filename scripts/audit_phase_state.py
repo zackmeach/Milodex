@@ -107,6 +107,14 @@ _ALLOWLISTED_DOCS = frozenset(
         # whitelist ADR — not claims that Phase 1 is the current phase.
         "docs/INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md",
         "docs/INTRADAY_ETF_EVIDENCE_PHASE2_ORCHESTRATION_BRIEF.md",
+        # Phase-1 mentions here are scope/historical qualifiers: the control-tower
+        # roadmap cites the ADR 0012 no-daemon-in-Phase-1 constraint, the ADR 0016
+        # phase-1 instrument whitelist, and the closed ROADMAP_PHASE1.md — none
+        # claim Phase 1 is the current phase (it uses M0/M1 labels; Phases 1-5 closed).
+        "docs/CURRENT_ROADMAP.md",
+        # Phase-1 mentions are scope qualifiers ("not needed in Phase 1",
+        # "intended Phase-1 behavior"), not currency claims.
+        "docs/REQUIREMENTS_OPEN_QUESTIONS.md",
     }
 )
 
