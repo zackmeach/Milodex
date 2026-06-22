@@ -43,49 +43,16 @@ _skip_no_qt = pytest.mark.skipif(
 
 
 # ---------------------------------------------------------------------------
-# Structural: RiskOfficeDrawer QML
+# The RUN RECONCILIATION onClicked -> bridge call and the busy-set-before-call
+# ordering were originally retained as source-substring pins
+# (TestDrawerReconcileWiring.{test_button_calls_run_reconciliation_async,
+# test_busy_flag_set_before_async_call}). Outside review of #286 proved the
+# offscreen harness CAN synthesize the click (QTest.mouseClick) and that the
+# busy-set pin let a reordering mutant survive, so they were converted to a
+# real-click behavioral test (batch 6, below) that observes the busy flag AT
+# CALL TIME, and deleted:
+#   * test_reconcile_button_click_calls_bridge_with_busy_set_first
 # ---------------------------------------------------------------------------
-
-
-class TestDrawerReconcileWiring:
-    """RiskOfficeDrawer FLEET RECONCILIATION wiring.
-
-    The section-always-visible, _reconcile* property-declaration, and
-    completion-handler pins were converted to behavioral trigger-and-observe
-    tests (burn backlog C2 batch 3) and deleted from here:
-      * test_reconcile_section_renders_independent_of_kill_switch
-      * test_reconcile_clean_completion_updates_result
-      * test_reconcile_dirty_completion_updates_result
-
-    Only the button onClicked -> bridge call and the busy-set-before-call stay
-    source pins: the offscreen harness cannot synthesize the mouse click that
-    fires the RUN RECONCILIATION button's MouseArea.
-    """
-
-    def test_button_calls_run_reconciliation_async(self) -> None:
-        """Button onClicked must call BenchCommandBridge.runReconciliationAsync().
-
-        Source-only by necessity: guards the MouseArea ``onClicked`` body, which
-        the offscreen QQuickView harness cannot drive without synthetic events.
-        """
-        src = _DRAWER_QML.read_text(encoding="utf-8")
-        assert "BenchCommandBridge.runReconciliationAsync()" in src, (
-            "RiskOfficeDrawer.qml must call BenchCommandBridge.runReconciliationAsync() "
-            "from the reconciliation button's onClicked handler"
-        )
-
-    def test_busy_flag_set_before_async_call(self) -> None:
-        """_reconcileBusy must be set to true before the async call fires.
-
-        Source-only by necessity: the busy flag is set inside the MouseArea
-        ``onClicked`` body (the click path), which the offscreen harness cannot
-        synthesize. The completion handler's busy-clear is covered behaviorally
-        by test_reconcile_clean_completion_updates_result.
-        """
-        src = _DRAWER_QML.read_text(encoding="utf-8")
-        assert "root._reconcileBusy = true" in src, (
-            "RiskOfficeDrawer.qml must set root._reconcileBusy = true in the button handler"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -415,3 +382,196 @@ def test_reconcile_dirty_completion_updates_result() -> None:
         label="reconcile dirty completion updates result",
         ok_token="RECONCILE_DIRTY_OK",
     )
+
+
+
+# ---------------------------------------------------------------------------
+# Real-click behavioral test (burn backlog C2, batch 6 — review follow-up).
+#
+# Outside review of #286 proved the offscreen harness CAN synthesize MouseArea
+# clicks via QTest.mouseClick, and that the retained substring pins let a mutant
+# survive (moving `_reconcileBusy = true` AFTER the async call). A later
+# adversarial audit also found the busy-set click path never observed the
+# stale-result clear or the busy re-entrancy guard. This test clicks the real
+# RUN RECONCILIATION MouseArea and observes: the bridge call, the busy flag AT
+# CALL TIME (busy-before-async), the stale-result clear, and that a second
+# click while busy does NOT re-fire the bridge.
+# ---------------------------------------------------------------------------
+
+
+def _build_reconcile_click_probe_script(*, assertions: str) -> str:
+    """Subprocess script: RiskOfficeDrawer + a fake BenchCommandBridge whose
+    runReconciliationAsync records the call count and the drawer's _reconcileBusy
+    AT CALL TIME. The ``assertions`` body clicks the real RUN RECONCILIATION
+    MouseArea and inspects the recording.
+    """
+    import_root = str(_QML_IMPORT_ROOT)
+    return f"""\
+import os, sys, tempfile, pathlib
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer, QCoreApplication, QObject, Signal, Slot, QPointF, Qt
+from PySide6.QtCore import QObject as _QObjectBase
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+from PySide6.QtQml import qmlRegisterSingletonInstance
+from PySide6.QtTest import QTest
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui import qml_setup
+from milodex.gui.operational_state import OperationalState
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+tm = ThemeManager()
+
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(active=False, reason=None, last_triggered_at=None)
+
+def _failing_broker():
+    raise RuntimeError("probe: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker, kill_switch_store=ks_store,
+    trading_mode="paper", kill_switch_poll_seconds=9999.0, broker_poll_seconds=9999.0,
+)
+op._poll_kill_switch()
+qml_setup.register_qml_types(theme_manager=tm, operational_state=op)
+
+class FakeBenchCommandBridge(QObject):
+    reconciliationCompleted = Signal("QVariantMap")
+
+    def __init__(self):
+        super().__init__()
+        self.called = False
+        self.call_count = 0
+        self.busy_at_call = None
+        self.drawer = None
+
+    @Slot()
+    def runReconciliationAsync(self):
+        self.called = True
+        self.call_count += 1
+        if self.drawer is not None:
+            self.busy_at_call = bool(self.drawer.property("_reconcileBusy"))
+
+_fake_bridge = FakeBenchCommandBridge()
+qmlRegisterSingletonInstance(QObject, "Milodex", 1, 0, "BenchCommandBridge", _fake_bridge)
+
+probe = b\"\"\"
+import QtQuick
+import Milodex 1.0
+Item {{
+    id: probeRoot
+    width: 1200
+    height: 800
+    RiskOfficeDrawer {{ id: drawer; objectName: "riskOfficeDrawerProbe"; open: true }}
+}}
+\"\"\"
+_qml_file = pathlib.Path(tempfile.mktemp(suffix=".qml"))
+_qml_file.write_bytes(probe)
+
+view = QQuickView()
+view.engine().addImportPath({import_root!r})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1200, 800)
+view.setSource(QUrl.fromLocalFile(str(_qml_file)))
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+view.show()
+QTimer.singleShot(400, app.quit)
+app.exec()
+
+drawer = root.findChild(_QObjectBase, "riskOfficeDrawerProbe")
+if drawer is None:
+    print("drawer not found", file=sys.stderr)
+    sys.exit(4)
+
+def _walk(item):
+    yield item
+    for c in item.childItems():
+        yield from _walk(c)
+
+def _click_text(marker):
+    for it in _walk(drawer):
+        try:
+            if not it.isVisible():
+                continue
+        except Exception:
+            pass
+        t = it.property("text")
+        if t and marker in str(t):
+            c = it.mapToScene(QPointF(it.width() / 2.0, it.height() / 2.0)).toPoint()
+            QTest.mouseClick(view, Qt.LeftButton, Qt.NoModifier, c)
+            QCoreApplication.processEvents()
+            QCoreApplication.processEvents()
+            return True
+    return False
+
+{assertions}
+"""
+
+
+@_skip_no_qt
+def test_reconcile_button_click_calls_bridge_with_busy_set_first() -> None:
+    """A real click on RUN RECONCILIATION (a) calls runReconciliationAsync,
+    (b) has already set _reconcileBusy=true at the moment of the call, (c) clears
+    any stale result line, and (d) is re-entrancy-safe: a second click while
+    busy does NOT re-fire the bridge.
+
+    Replaces TestDrawerReconcileWiring.test_button_calls_run_reconciliation_async
+    and test_busy_flag_set_before_async_call, and closes the audit-found
+    result-clear and re-entrancy gaps. NON-VACUOUS:
+      * reordering busy after the async call -> busy_at_call False -> exit 7;
+      * dropping the bridge call -> not called -> exit 6;
+      * dropping `_reconcileResult = ""` -> stale line persists -> exit 9;
+      * dropping `enabled: !_reconcileBusy` -> second click re-fires -> exit 10.
+    """
+    assertions = (
+        "_fake_bridge.drawer = drawer\n"
+        "# Pre-seed a stale result line; a correct onClicked clears it on a new run.\n"
+        'drawer.setProperty("_reconcileResult", "Dirty - 9 mismatch(es)  stale UTC")\n'
+        'if not _click_text("RUN RECONCILIATION"):\n'
+        '    print("RUN RECONCILIATION button not found/clickable", file=sys.stderr)\n'
+        "    sys.exit(5)\n"
+        "if not _fake_bridge.called:\n"
+        '    print("runReconciliationAsync not called on click", file=sys.stderr)\n'
+        "    sys.exit(6)\n"
+        "if _fake_bridge.busy_at_call is not True:\n"
+        '    print("busy flag NOT set before the async call: " + repr(_fake_bridge.busy_at_call), '
+        "file=sys.stderr)\n"
+        "    sys.exit(7)\n"
+        'if not bool(drawer.property("_reconcileBusy")):\n'
+        '    print("_reconcileBusy not true after click", file=sys.stderr)\n'
+        "    sys.exit(8)\n"
+        'if str(drawer.property("_reconcileResult") or ""):\n'
+        '    print("stale _reconcileResult not cleared on new run: " '
+        '+ repr(drawer.property("_reconcileResult")), file=sys.stderr)\n'
+        "    sys.exit(9)\n"
+        "# Re-entrancy: while busy the button is disabled; its label is now\n"
+        '# "RECONCILING...", so click that (same button rect) -> must NOT re-fire.\n'
+        '_click_text("RECONCILING")\n'
+        "if _fake_bridge.call_count != 1:\n"
+        '    print("re-entrancy: bridge called " + str(_fake_bridge.call_count) '
+        '+ " times (expected 1)", file=sys.stderr)\n'
+        "    sys.exit(10)\n"
+        'print("RECONCILE_CLICK_OK")\n'
+        "sys.exit(0)\n"
+    )
+    script = _build_reconcile_click_probe_script(assertions=assertions)
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+    assert result.returncode == 0, (
+        "reconcile button click FAILED\n"
+        f"returncode: {result.returncode}\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert "RECONCILE_CLICK_OK" in result.stdout
