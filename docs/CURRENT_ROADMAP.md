@@ -64,7 +64,7 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 | **master vs origin** | local `master` `4a6798e` is **6 commits ahead of `origin/master` (`ea12cc1`), unpushed** |
 | **Second worktree** | `C:/Users/zdm80/milodex-reqs-wt` on `reqs-coverage-backfill-batch1` (`a2998c9`, unpushed) |
 | **Last verified gate (this roadmap)** | None — roadmap newly established. Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
-| **Active milestone** | **M0 — Ground-truth & in-flight reconciliation** (the only active critical-path milestone) |
+| **Active milestone** | **M1 — Executable paper-fleet truth** (the keystone milestone). M0 **CLOSED 2026-06-22** — retrospective in §11; the M0 doc PR (`docs/m0-ground-truth`) should merge before M1 execution begins. M3 is parallel-eligible. |
 
 **Current blockers (code-confirmed at HEAD):**
 
@@ -288,7 +288,7 @@ downstream, do not pick it for cheapness.
 
 ---
 
-### M0 — Ground-truth & in-flight reconciliation  · **ACTIVE**
+### M0 — Ground-truth & in-flight reconciliation  · **CLOSED 2026-06-22** (retrospective: §11)
 
 - **Intended outcome.** An honest baseline: every *safety/execution-relevant*
   canonical doc matches HEAD behavior (or is labeled historical); the mid-flight
@@ -361,7 +361,7 @@ downstream, do not pick it for cheapness.
 
 ---
 
-### M1 — Executable paper-fleet truth  *(next; the keystone milestone)*
+### M1 — Executable paper-fleet truth  · **ACTIVE** *(keystone milestone; opened 2026-06-22)*
 
 - **Intended outcome.** A deliberately authorized cohort completes one **clean
   full-session-from-open** run in which an order actually **fills**, and every step
@@ -565,7 +565,83 @@ At each gate completion, append one block. Never edit a prior block.
 - Must any prior gate be invalidated/reopened? (yes/no + why)
 ```
 
-*(No retrospectives yet — M0 is in progress, not closed.)*
+### [M0] — Ground-truth & in-flight reconciliation — RETROSPECTIVE (closed 2026-06-22, branch `docs/m0-ground-truth`, decision-records commit `f53e181`)
+
+- **Planned outcome:** an honest baseline — safety/execution-relevant canonical
+  docs match HEAD; the mid-flight repo triaged; this roadmap canonical + linked;
+  D-1..D-7 framed/decided per the §8 ownership map. No sacred-path code.
+- **What actually shipped:**
+  - **Doc-truth:** corrected the genuine safety/execution drifts —
+    `OPERATIONS.md` `market_closed` holding note; `STRATEGY_BANK.md` stale
+    3-runner guard section (guard removed `211d983`); `ADR 0049` status → amended
+    by `ADR 0051`; `ADR 0055` co-run addendum; `SRS` R-EXE-004 enumeration
+    completeness; `README.md` roadmap registration. Re-grounding found **3 of the
+    handoff's "remaining" items already-correct at HEAD** (`_CHECKS` in SRS +
+    ADR 0008 already point at code; `risk_defaults.yaml` already ADR-0029-binding;
+    `CLAUDE.md` lifecycle-exempt already fixed) — no no-op edits were made.
+  - **CLAUDE.md** launch-manual drift (carried from the prior session) committed.
+  - **Branch/worktree triage record** — all 16 refs + `master` + the second
+    worktree dispositioned; **zero write-offs**.
+  - **D-1 + D-2 briefs** framed, each independently Opus-reviewed (reviewers asked
+    to dissent), and reconciled.
+  - **D-6 decided** by the founder.
+  - **D-7 adjudicated.**
+  - **phase-audit allowlist fix** (`scripts/audit_phase_state.py`).
+- **PRs / commits:** branch `docs/m0-ground-truth` — `7a61ea7` (roadmap +
+  artifacts + README), `0acb218` (CLAUDE.md), `fa1f744` (doc-truth drift),
+  `f53e181` (decision records + audit fix), + this retrospective commit. **Not yet
+  merged to `master`** — lands as the M0 PR.
+- **Verification performed (observed):** `.venv\Scripts\python -m pytest -q` →
+  **3294 passed, 1 skipped, 4 xfailed, 0 failed** (73.67s); the 1 skip = the
+  expected design-system-showcase quarantine. `ruff check src/ tests/ scripts/` →
+  clean **except** 1 pre-existing `I001` in
+  `tests/milodex/strategies/test_gap_continuation_intraday.py:3` (owned by the
+  merge-bound `fix/ruff-i001-gap-continuation` branch; this branch touched **0**
+  src/test files). Targeted re-greps confirmed each corrected doc's cited code line
+  (`evaluator.py:428` `market_closed`; `:321` `no_frozen_manifest`; `211d983` =
+  the guard-removal commit; ADR 0051/0056 exist). Authoritative freeze state
+  queried from `strategy_manifests` (5 intraday SPY + 6 daily frozen).
+- **Live evidence:** none required at M0 (doc/triage milestone; no fills).
+- **Cleanup absorbed (touch-it):** phase-audit allowlist
+  (prerequisite-correctness — the roadmap is an M0 deliverable *and* the fix heals
+  a pre-existing `master` red); SRS R-EXE-004 enumeration completeness
+  (prerequisite-correctness). No area-wide sweeps.
+- **Decisions made:** **D-6** → [`reviews/2026-06-22-D6-closure-coverage-floor-decision.md`](reviews/2026-06-22-D6-closure-coverage-floor-decision.md)
+  (founder chose a **targeted critical-obligation assurance gate** — versioned
+  allowlist of individual reqs, clause decomposition, contract-appropriate
+  independently-reviewed evidence; **code references alone don't satisfy it** —
+  stronger than the primary's recommendation). **D-7** →
+  [`reviews/2026-06-22-m0-branch-worktree-triage.md`](reviews/2026-06-22-m0-branch-worktree-triage.md)
+  (merge-bound; content consumed in M4). **D-1 / D-2** framed + reviewed →
+  [`reviews/2026-06-22-D1-daily-execution-fork-brief.md`](reviews/2026-06-22-D1-daily-execution-fork-brief.md),
+  [`reviews/2026-06-22-D2-intraday-freeze-governance-brief.md`](reviews/2026-06-22-D2-intraday-freeze-governance-brief.md)
+  (decided at M1).
+- **Deviations from the plan:** (1) The handoff's doc-truth "remaining" list was
+  ~half already-done at HEAD; re-grep caught it (no no-op edits). (2) **D-7's
+  "~447 test deletions" framing was stale/unreproducible** — the branch is a clean
+  +134-line single-file additive doc against every current base; adjudication
+  simplified. (3) The M0 reconciliation **surfaced a pre-existing red test**
+  (`test_repo_audits_clean`) caused by merged reqs work (`a2998c9`), not by this
+  session — fixed via the allowlist. (4) The independent reviews materially
+  improved both briefs (D-1 missed Option D / the `preview_only` path; D-2 carried
+  a factual error — the SPY benchmark is a one-shot ~10:00-ET entry, not
+  always-long). (5) D-6 came back **stronger** than recommended.
+- **Newly discovered work (→ milestone):** (a) **Versioned critical-requirement
+  allowlist + clause decomposition + contract-appropriate evidence** — the D-6
+  assurance gate redefines the **parallel verification track's** target (coverage
+  % is now an outcome, not the goal). (b) **D-2 Option E** — make
+  `stage: paper`-without-frozen-manifest a load-time error → **M1**. (c) `master`
+  ahead 6 unpushed + the 1 pre-existing ruff `I001` → **M6** mechanical / owning
+  branch.
+- **May the next gate open?** **Yes — M1 may open**, and **M3** is parallel-eligible
+  (it depends only on M0 + isolated evidence state). All M0 exit criteria are met:
+  every ref dispositioned; genuine drifts corrected + re-grepped clean; roadmap
+  linked from the README; D-1/D-2 reviewed; D-6 decided. **Caveat:** the
+  `docs/m0-ground-truth` PR should merge to `master` before M1 *execution* begins
+  so M1 branches off the corrected docs.
+- **Must any prior gate be invalidated/reopened?** No prior roadmap gate exists
+  (M0 was first). The **D-6 decision strengthens the §12 closure gate** (assurance,
+  not coverage-%) — folded into §12 at this close.
 
 ---
 
@@ -578,6 +654,15 @@ The roadmap is **not** complete until all of the following are true:
 - Every implementation has been reviewed through a PR and merged successfully.
 - Required CI, tests, lint, and live verification pass on final `master` (the lone
   quarantined showcase test is an expected SKIP, not a failure).
+- **The D-6 targeted critical-obligation assurance gate is satisfied** (decided
+  2026-06-22, [`reviews/2026-06-22-D6-closure-coverage-floor-decision.md`](reviews/2026-06-22-D6-closure-coverage-floor-decision.md)):
+  a **versioned allowlist of individual trust-critical SRS requirements** is 100%
+  adjudicated; each is decomposed into testable clauses with **contract-appropriate,
+  independently-reviewed evidence** (positive / refusal / boundary / fail-closed /
+  durable-state integration / operational-drill as applicable — **code references
+  alone do not satisfy it**); **zero unresolved implementation or spec gaps**;
+  final evidence passes on final `master`. Non-critical traceability is valuable
+  but non-blocking.
 - No roadmap PRs, unfinished worktrees, unpushed commits, forgotten stashes,
   temporary artifacts, or orphaned execution plans remain.
 - Git working tree is clean; local `master` and `origin/master` resolve to the same
