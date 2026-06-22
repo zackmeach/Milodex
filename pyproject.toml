@@ -10,6 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
+    # alpaca-py: broker SDK on the LIVE-TRADE path. Deliberately left unbounded —
+    # capping it has trade-correctness implications and is an OPERATOR decision,
+    # not an autonomous dependency bound (flagged for operator review 2026-06-21).
     "alpaca-py>=0.35.0",
     # Core numeric stack — capped at the next (currently unreleased) major. The
     # project is tested on numpy 2.x / pandas 3.x / pyarrow 24.x (the versions a
@@ -22,14 +25,20 @@ dependencies = [
     "pandas>=2.0,<4",
     "pyarrow>=15.0,<25",
     "PySide6>=6.6,<7",
-    "python-dotenv>=1.0",
+    # Next-major caps below allow the versions a fresh install resolves today
+    # (python-dotenv 1.2.2, PyYAML 6.0.3, rich 15.0.0) and block an untested next
+    # major from silently landing on a fresh install / CI. pytz is CalVer, so a
+    # "major" cap is not meaningful — left uncapped by design.
+    "python-dotenv>=1.0,<2",
     "pytz>=2024.1",
-    "PyYAML>=6.0",
-    "rich>=13.7",
+    "PyYAML>=6.0,<7",
+    "rich>=13.7,<16",
     # yfinance: lightweight Yahoo Finance client used exclusively to fetch ^VIX
     # history for the market tape.  Alpaca free tier does not ship VIX (it is a
-    # CBOE index, not an equity), so Yahoo is the only viable free path.
-    "yfinance>=0.2",
+    # CBOE index, not an equity), so Yahoo is the only viable free path.  The
+    # client crossed 0.2 -> 1.x; the VIX path is tested on 1.4.x, so floor at the
+    # tested 1.4 series and cap <2 to block an untested 2.0 on this fragile path.
+    "yfinance>=1.4,<2",
 ]
 
 [project.scripts]
@@ -37,14 +46,19 @@ milodex = "milodex.cli.main:main"
 
 [project.optional-dependencies]
 dev = [
-    "ruff",
-    "pytest",
-    "pytest-cov",
+    # Dev tooling capped at the next major. Caps allow the versions a fresh
+    # install resolves today (ruff 0.15.x, pytest 9.1.x, pytest-cov 7.1.x,
+    # pytest-xdist 3.8.x) and block an untested bump from breaking CI silently.
+    # ruff is pre-1.0 and adds lint rules on MINOR bumps, so it is pinned to the
+    # in-use 0.15 line — a new minor must be adopted deliberately, not auto-pulled.
+    "ruff>=0.15,<0.16",
+    "pytest>=9,<10",
+    "pytest-cov>=7,<8",
     # Parallel test execution. The full suite is ~6min serial, but the cost is
     # spread across a long tail of tests (top 30 are only ~34% of wall-clock),
     # so parallelism — not deleting slow tests — is the speed lever. Worker cap
     # rationale lives in [tool.pytest.ini_options] addopts below.
-    "pytest-xdist",
+    "pytest-xdist>=3,<4",
     # Mutation testing (test-efficacy audit). Pinned to the 2.x line because 3.x
     # refuses to run on native Windows (boxed/mutmut#397) and the operator's
     # primary dev environment is Windows. See docs/TEST_EFFICACY_AUDIT.md.
