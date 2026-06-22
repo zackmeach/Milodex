@@ -134,6 +134,8 @@ R-EXE-013 carries the current testable contract for the per-strategy lock invari
 
 `milodex strategy run` is safe to start at any point in the trading day. On a 1D tempo, the runner does not fetch bars or submit intents while the market is open because the in-progress daily bar shares its timestamp with the post-close finalized bar. After the market closes, the runner waits for the close-lockin stability window to confirm the final OHLCV bar, evaluates that bar once, and then suppresses subsequent polls via the watermark.
 
+> **Daily execution gap — holding note (authoritative resolution tracked as decision D-1 in [`CURRENT_ROADMAP.md`](CURRENT_ROADMAP.md)).** Evaluating the post-close bar produces a *decision*, not necessarily a *trade*. Any resulting order is still subject to the full risk evaluator, and its market-hours check (`_check_market_open`, [`src/milodex/risk/evaluator.py:428`](../src/milodex/risk/evaluator.py)) vetoes **every** submit with reason `market_closed` while the market is closed — which is exactly when a 1D strategy evaluates. So today a daily strategy can **decide post-close but cannot submit or fill**: there is no daily exemption and no decision-only/queue path. This is a structural contradiction, not a per-strategy bug. The fix (queue-at-open vs relaxing `market_hours` for 1D vs reclassifying daily as decision-only) is a sacred-path decision and is **not** an inline patch — see D-1.
+
 Within a session, the runner also suppresses duplicate execution attempts keyed by `(latest_bar_timestamp, symbol, side)`. This prevents a persistent same-bar signal or risk-blocked intent from producing hundreds of duplicate trade/explanation records while preserving a fresh opportunity on the next bar.
 
 ### Process-scoped runtime logs

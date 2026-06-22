@@ -4,6 +4,35 @@
 **Date:** 2026-06-05
 **Related:** [ADR 0010](0010-hybrid-source-of-truth.md) (hybrid source of truth), [ADR 0011](0011-sqlite-event-store.md) (event store), [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) (account-scoped caps), [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md) (per-process concurrency), [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md) (per-strategy attribution at risk), [`src/milodex/risk/attribution.py`](../../src/milodex/risk/attribution.py), [`src/milodex/strategies/runner.py`](../../src/milodex/strategies/runner.py)
 
+## Addendum — 2026-06-22 (same-symbol guardrail lifted)
+
+> The interim guardrail stated throughout the body below ("do **not** co-run
+> multiple strategies on the same symbol and same account," and line-23's claim
+> that launch-time eval-symbol enforcement "is now code-enforced") is
+> **historical**. Status now: **the guardrail is lifted and same-symbol,
+> same-account co-run is allowed.**
+>
+> - The strategy-scoped position ledger this ADR specifies **shipped** and was
+>   soak-verified; the runner now derives `context.positions` from the
+>   per-strategy event-store ledger, so concurrent same-symbol runners no longer
+>   corrupt each other's position view.
+> - The **launch-time same-symbol refusal was removed on 2026-06-15** (`211d983`,
+>   [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md)
+>   2026-06-15 addendum). `evaluation_symbol_for_config` survives only as an
+>   informational reconciliation map (`strategies/paper_runner_control.py` →
+>   `live_runner_eval_symbols`); it no longer raises on collision.
+> - The three invariants the guardrail proxied are enforced elsewhere:
+>   per-account submit serialization
+>   ([ADR 0056](0056-cross-process-submit-serialization-per-account-advisory-lock.md)),
+>   the opposite-side resting-order veto (`_check_opposite_side_order`), and this
+>   ADR's per-strategy ledger position cap.
+> - One fail-safe residual remains (not unsafe): partial-fill ledger
+>   reconciliation fails closed for the per-strategy cap and is nil in the paper
+>   regime. Per-symbol advisory locks remain deferred.
+>
+> Read the guardrail language below as the 2026-06-05 decision record, superseded
+> by this addendum.
+
 ## Context
 
 On 2026-06-03, four SPY `5Min` intraday strategies (`breakout.orb`, `momentum.vwap_trend`, `meanrev.vwap_reversion`, `meanrev.rsi2`) ran concurrently in one Alpaca paper account under [ADR 0026](0026-concurrent-multi-strategy-uses-per-process-supervisor.md)'s per-process supervisor model. They corrupted each other's position view.

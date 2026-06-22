@@ -20,30 +20,40 @@ Six statistically- or lifecycle-justified strategies are at paper stage and are 
 >
 > These were promoted manually (`approved_by=operator-zack`) to exercise the **intraday paper-runner harness** end-to-end — the first intraday strategies to run live on paper. All are knowingly-losing; their job is to validate runner mechanics (cadence, fills, evaluation during market hours, and concurrent-fleet behavior), not to generate return. `lifecycle_exempt` is the operator-override path used here to place them at paper despite a negative gate (CLAUDE.md: the flag bypasses the statistical gate for any promotion). They are **kept at paper intentionally**. The promotion notes record an eventual demotion target of `backtest` once intraday-runner confidence is sufficient — that is a future operator call, not a pending defect. See the **Intraday harness-validation canaries** section below.
 
-### ⚠️ Concurrency limit — at most 3 of these run at once
+### Concurrency — same-symbol co-run is now allowed (launch guard removed 2026-06-15)
 
-The launch-time same-symbol guard (ADR 0055; `cli/commands/strategy.py` →
-`evaluation_symbol_for_config`) refuses to start two runners whose **evaluation
-symbol** — the *sorted* `universe[0]` — collides, because same-account
-same-symbol runners corrupt each other's position view and trip wash-trade
-rejection. Across the 11 paper strategies the eval symbols collapse to **three
-groups**, so **at most three runners can be live concurrently — one per group**:
+> **Corrected 2026-06-22 (M0 doc-truth).** This section previously documented a
+> launch-time "at most 3 runners" cap enforced by a same-symbol refusal. **That
+> guard no longer exists.** The launch-time eval-symbol refusal was **removed on
+> 2026-06-15** (`211d983`,
+> [ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md)
+> 2026-06-15 addendum). Same-symbol, same-account co-run is now **allowed** — the
+> three invariants the guard proxied are closed in the risk/execution layers
+> instead: per-account submit serialization
+> ([ADR 0056](adr/0056-cross-process-submit-serialization-per-account-advisory-lock.md)),
+> the opposite-side resting-order veto (`_check_opposite_side_order`), and the
+> per-strategy ledger position cap
+> ([ADR 0055](adr/0055-event-store-per-strategy-position-ledger.md)). The runner
+> derives `context.positions` from the strategy-scoped event-store ledger, so
+> concurrent same-symbol runners no longer corrupt each other's position view.
 
-| eval symbol | strategies sharing it (one runs at a time) |
+`evaluation_symbol_for_config` survives only as an **informational** map
+(`strategies/paper_runner_control.py` → `live_runner_eval_symbols`) used for
+reconciliation and diagnostics — it does **not** refuse a launch. The grouping
+below is therefore **descriptive context** (which strategies evaluate the same
+`sorted(universe)[0]`), not a concurrency limit:
+
+| eval symbol | strategies sharing it |
 |---|---|
-| **SPY** | `regime.daily.sma200_rotation` **+ all 5 intraday canaries** (inline `[SPY, SHY]` and `universe.spy_only.v1` both resolve `universe[0]=SPY`) |
+| **SPY** | `regime.daily.sma200_rotation` + all 5 intraday canaries (inline `[SPY, SHY]` and `universe.spy_only.v1` both resolve `universe[0]=SPY`) |
 | **XLB** | `breakout.daily.atr_channel`, `breakout.daily.donchian_20_10` (`universe.sector_etfs_spdr.v1`, sorted-first = XLB) |
 | **AAPL** | `meanrev.daily.bbands_lowerband`, `meanrev.daily.pullback_rsi2`, `momentum.daily.tsmom` (`universe.curated_largecap.v2`, sorted-first = AAPL) |
 
-Pick **one strategy per group**; the guard refuses the rest with a clear
-`Refusing to start … evaluation symbol 'X' is already in use` `ValueError`
-(GUI: a pre-spawn Bench blocker). Note the regime daily strategy holds the SPY
-slot, so **launching it blocks every intraday SPY canary** (and vice-versa). To
-validate all six daily "deserving" strategies, rotate them across sessions, or
-accept three-at-a-time. Pre-check a batch with
-`fleet.py deploy <ids> --dry-run` (fleet-ops skill). This is the conservative
-ADR-0055 guard working as designed pending per-symbol locks (ADR 0026
-addendum) — not a defect, and it never silently corrupts: it refuses cleanly.
+One fail-safe same-symbol residual remains (not unsafe): partial-fill ledger
+reconciliation fails closed for the per-strategy cap and is nil in the paper
+regime. Per-symbol advisory locks remain deferred. See the
+[ADR 0026](adr/0026-concurrent-multi-strategy-uses-per-process-supervisor.md)
+2026-06-15 addendum for the full rationale.
 
 Three strategies are at the **idle** stage (demoted out of active rotation 2026-05-19). Three remain genuinely at **backtest** stage (never promoted) and are blocked — see the blocked table and the new Idle section below.
 

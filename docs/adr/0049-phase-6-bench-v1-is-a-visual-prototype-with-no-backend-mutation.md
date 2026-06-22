@@ -1,7 +1,7 @@
 # ADR 0049 — Phase 6 Bench v1 is a visual prototype with no backend mutation
 
-**Status:** Accepted - 2026-05-12
-**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) (Bench visual spec), [ADR 0047](0047-bench-action-availability-is-the-validation-surface.md) (Action menu), [ADR 0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md) (vertical layout), [ADR 0050](0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) (evidence freshness), [ADR 0012](0012-runtime-and-dual-stop.md) (dual-stop semantics), [ADR 0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md) (bulk orchestration), [ADR 0004](0004-paper-only-phase-one.md) (paper-only lock), [ADR 0005](0005-kill-switch-manual-reset.md) (kill switch)
+**Status:** Accepted (2026-05-12) — **amended in part by [ADR 0051](0051-bench-command-infrastructure-v1.md)**. The six Bench command families ADR 0051 opened do mutate backend state; for every path ADR 0051 did **not** open, this ADR's no-backend-mutation perimeter remains binding. Amended, **not** superseded.
+**Related:** [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) (Bench visual spec), [ADR 0047](0047-bench-action-availability-is-the-validation-surface.md) (Action menu), [ADR 0048](0048-bench-uses-vertical-stage-sections-with-natural-scroll.md) (vertical layout), [ADR 0050](0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) (evidence freshness), [ADR 0012](0012-runtime-and-dual-stop.md) (dual-stop semantics), [ADR 0040](0040-bench-bulk-orchestration-uses-a-durable-job-ledger.md) (bulk orchestration), [ADR 0004](0004-paper-only-phase-one.md) (paper-only lock), [ADR 0005](0005-kill-switch-manual-reset.md) (kill switch), [ADR 0051](0051-bench-command-infrastructure-v1.md) (command infrastructure v1 — partial amendment of this ADR)
 
 ## Context
 
