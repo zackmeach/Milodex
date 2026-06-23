@@ -2209,10 +2209,14 @@ class EventStore:
         by literal string equality — NOT ``IS NOT NULL`` — so only a deliberate,
         cooperative stop hands its queued intent to a successor.
 
-        ``now`` and ``expires_at`` must share tz convention (both UTC ISO) so the
-        ``datetime()`` lexical compare is calendar-correct. ``_dt(now)`` raises if a
-        naive/None ``now`` slips in — desirable; the runner always passes an aware
-        UTC ``now``.
+        CALLER CONTRACT: ``now`` MUST be an aware UTC ``datetime`` and
+        ``expires_at`` is persisted as aware UTC ISO — they must share tz
+        convention so the SQL ``datetime(expires_at) > datetime(now)`` compare is
+        calendar-correct. This is NOT enforced here: ``_dt`` is ``.isoformat()``,
+        which serializes a naive ``now`` without raising, and SQLite's
+        ``datetime()`` treats a naive ISO string as already-UTC — so a naive or
+        wrong-tz ``now`` would skew the expiry fence by the local offset SILENTLY.
+        The runner is the guarantor: it always passes an aware UTC ``now``.
         """
         sql = """
             SELECT qi.* FROM queued_intents AS qi
