@@ -369,16 +369,42 @@ class TestLatestCompletedSession:
         client._client.get_calendar.side_effect = RuntimeError("boom")
         assert client.latest_completed_session(now) is None
 
-    def test_skips_ambiguous_rows_with_missing_fields(self, client):
+    def test_any_ambiguous_row_fails_closed_to_none(self, client):
+        """Any malformed row in the window => None (untrustworthy calendar).
+
+        The docstring promises "None on any failure or ambiguity". A
+        skip-and-fall-back returns an OLDER valid session, which then blesses a
+        bar dated to that older session as fresh — a fail-OPEN. Any ambiguous
+        row poisons the whole latest-session determination, so fail closed.
+        """
         from datetime import date
 
         now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
         client._client.get_calendar.return_value = [
             _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0)),
-            _cal(None, datetime(2026, 5, 9, 16, 0)),  # ambiguous: skipped
-            _cal(date(2026, 5, 10), None),  # ambiguous: skipped
+            _cal(None, datetime(2026, 5, 9, 16, 0)),  # ambiguous
+            _cal(date(2026, 5, 10), None),  # ambiguous
         ]
-        assert client.latest_completed_session(now) == date(2026, 5, 8)
+        assert client.latest_completed_session(now) is None
+
+    def test_malformed_latest_row_does_not_fall_back_to_prior_session(self, client):
+        """The dangerous case: the genuinely-latest session's row is malformed.
+
+        Monday after close, but the Monday row is ambiguous. Skip-and-fall-back
+        would return the prior Friday — and a Friday-dated bar would then pass
+        staleness as "fresh" on a Monday. Fail closed (None) instead so the risk
+        layer blocks the 1D submit.
+        """
+        from datetime import date
+
+        # now = Mon 2026-05-11 21:00 UTC == 17:00 ET, after the 16:00 ET close.
+        now = datetime(2026, 5, 11, 21, 0, tzinfo=UTC)
+        client._client.get_calendar.return_value = [
+            _cal(date(2026, 5, 7), datetime(2026, 5, 7, 16, 0)),
+            _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0)),
+            _cal(None, datetime(2026, 5, 11, 16, 0)),  # latest session, malformed
+        ]
+        assert client.latest_completed_session(now) is None
 
     def test_retries_on_429_then_succeeds(self, client):
         from datetime import date

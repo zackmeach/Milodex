@@ -331,8 +331,14 @@ class AlpacaBrokerClient(BrokerClient):
             close = session.close
             session_date = session.date
             if close is None or session_date is None:
-                # Ambiguous row -> skip; never guess a session boundary.
-                continue
+                # ANY malformed row poisons the latest-session determination:
+                # if the genuinely-latest row is the ambiguous one, a
+                # skip-and-fall-back would return an OLDER session and bless a
+                # bar dated to it as fresh (fail-OPEN). The whole calendar
+                # response is untrustworthy -> fail closed (None) so the risk
+                # layer blocks the 1D submit. Alpaca's official calendar is
+                # clean; a malformed row is pathological and blocking is safe.
+                return None
             if close.tzinfo is None:
                 close = close.replace(tzinfo=eastern)
             if close <= now and (latest is None or session_date > latest):
