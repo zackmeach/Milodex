@@ -376,5 +376,48 @@ strategy:
     assert default_conditions_for_family(config.family)
 
 
+def test_loader_reads_bar_size_from_tempo(tmp_path):
+    """Loader surfaces strategy.tempo.bar_size onto the execution config."""
+    path = tmp_path / "daily.yaml"
+    path.write_text(
+        """
+strategy:
+  name: "daily_demo"
+  enabled: true
+  stage: "paper"
+  family: "momentum"
+  tempo:
+    bar_size: "1D"
+  risk:
+    max_position_pct: 0.10
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+""".strip(),
+        encoding="utf-8",
+    )
+    config = load_strategy_execution_config(path)
+    assert config.bar_size == "1D"
+
+
+def test_loader_bar_size_defaults_empty_when_tempo_absent(tmp_path):
+    """Legacy YAML with no tempo block yields bar_size == '' (None-safe)."""
+    path = tmp_path / "legacy.yaml"
+    path.write_text(
+        """
+strategy:
+  name: "legacy"
+  enabled: true
+  stage: "paper"
+  risk:
+    max_position_pct: 0.10
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+""".strip(),
+        encoding="utf-8",
+    )
+    config = load_strategy_execution_config(path)
+    assert config.bar_size == ""
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
