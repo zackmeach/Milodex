@@ -416,7 +416,10 @@ class ExecutionService:
         if idempotency_key is not None:
             consumed = self._event_store.mark_queued_intent_consumed(
                 idempotency_key,
-                consumed_by=session_id or "",
+                # The Phase-6 runner drain always supplies session_id; the
+                # "operator" sentinel only attributes a session-less manual
+                # submit, matching TradeIntent.submitted_by's default.
+                consumed_by=session_id or "operator",
                 consumed_at=datetime.now(tz=UTC),
             )
             if consumed != 1:
