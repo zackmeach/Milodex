@@ -126,7 +126,7 @@ by a durable, expiring intent record.
 | 1 | `queued_intents` table | `core/migrations/016_queued_intents.sql` (016 is next; 015 is highest shipped). Append-only, read by no existing code → `MIN_COMPATIBLE_SCHEMA_VERSION` stays **12** (`event_store.py:401`). Columns: `id` PK; `idempotency_key TEXT NOT NULL UNIQUE`; `strategy_id`; **`strategy_config_path`** (the carry-critical durable field — see I-7); **`config_hash`** (frozen at lock-in; drain refuses on mismatch); `session_id` (the originating session, for the clean-handoff fence I-4); `trading_session`; `locked_in_bar_timestamp`; `symbol`; `side`; `intent_class` (`entry`/`exit`, for audit + the exit-drop alert §5); `notional_pct`; the TOCTOU envelope fields (`expected_stage`, `expected_max_positions`, `expected_max_position_pct`, `expected_daily_loss_cap_pct`); `intent_payload_json`; `reasoning_json`; `created_at`; `expires_at`; `status` (`queued`→`consumed`/`expired`/`obsolete`); `consumed_at`; `consumed_by`. ISO-8601 TEXT timestamps, JSON TEXT payloads. Frozen `QueuedIntentEvent` dataclass + a **single `get_active_queued_intents()` read method** (the sole authority for "drainable"; expiry + clean-handoff predicates baked in) + append/mark-consumed/mark-expired/mark-obsolete methods + `_queued_intent_from_row` helper in `event_store.py`, mirroring the `experiment_registry` quad (`event_store.py:1957`). |
 | 2 | Morning-drain hook | Split `runner.py:272` 🔒; per-strategy runner drains its own rows via `get_active_queued_intents()`. |
 | 3 | **`bar_size` on `StrategyExecutionConfig`** (BLOCKER enabler) | `StrategyExecutionConfig` (`execution/config.py:17-37`) currently has **no `tempo`/`bar_size`** — so the staleness fix (#4) is *infeasible until this is added*. Add a `bar_size: str = ""` field + read `strategy.tempo.bar_size` in `load_strategy_execution_config` (`config.py:53-63`). Additive, defaults leniently (matches the loader's existing permissive contract for legacy/manual paths). This is what makes `context.strategy_config.bar_size` available to the evaluator. |
-| 4 | **Tempo-aware staleness** (BLOCKER) | `_check_data_staleness` (`evaluator.py:440`) currently `now() − bar_ts` vs the global `max_data_staleness_seconds: 300` (`risk_defaults.yaml:63`). At the open a daily strategy's latest 1D bar is the *prior* session's close (≫ 300s old) → every daily resubmit vetoes `stale_market_data`. **Fix (carrier-safe + None-safe):** derive the budget *inside the evaluator* from the **authoritative resolved config** on the context — `bar_size = getattr(context.strategy_config, "bar_size", None)` (`EvaluationContext.strategy_config`, `evaluator.py:51`, populated only the field added in #3): `bar_size == "1D"` → one-session budget; **`None` or anything else → 300s** (operator manual intent / intraday). The selector is a property of the *resolved strategy config*, never a field on the intent — so an intraday intent provably cannot reach the daily budget (I-2). |
+| 4 | **Session-aware staleness** (BLOCKER; shipped — see §12) | `_check_data_staleness` (`evaluator.py:440`) was `now() − bar_ts` vs the global `max_data_staleness_seconds: 300`. At the open a daily strategy's latest 1D bar is the *prior* session's close (≫ 300s) → every daily resubmit vetoed `stale_market_data`. **Implementation found a SECOND gate** that must not diverge: `_evaluate_data_quality` (`disable_conditions.py:137`, the `data_quality_issue` **ALL_FAMILIES** disable-condition) also used the global 300s. **Fix:** both gates delegate to ONE shared `risk/staleness.py` helper keyed on the resolved config's `bar_size`. For `1D`: **session-aware** — fresh iff the bar's session date == the exchange calendar's **latest completed session** AND age ≤ a **7-calendar-day** defense-in-depth ceiling; **fail closed** if the session can't resolve. Resolved via a new broker `latest_completed_session(now) -> date \| None` (Alpaca `get_calendar`, no new dependency) threaded into `EvaluationContext.latest_completed_session` by the service. `None` config / non-`1D` → unchanged **300s**. The selector is the resolved config's `bar_size`, never a field on the intent — an intraday intent provably cannot reach the daily path. |
 | 5 | **Overnight idempotency key** (BLOCKER, capital) | `client_order_id = str(uuid.uuid4())` per attempt (`service.py:336`); the duplicate-order window is 60s (counted `event_store.py:1219`). Neither catches an overnight re-fire. **Fix:** a stable key `(strategy_id, trading_session, side, symbol)`, `UNIQUE` on the table, **threaded into the resubmit path** so `_submit_locked` can run a **row-scoped atomic compare-and-set** — `UPDATE queued_intents SET status='consumed', consumed_at=? WHERE idempotency_key=? AND status='queued'`, proceed **only if `rowcount == 1`**, inside the per-account lock and **before** `_broker.submit_order` (`service.py:357` 🔒). Per-account serialization + row-scoped CAS together close the double-launch/crash-retry race; the lock alone does not (I-5). |
 | 6 | Conservative halt/async-fill handling | §5. |
 | 7 | Expiry (single authority) | Absolute `expires_at` on the row. The **read-filter in `get_active_queued_intents()` is the SOLE authority** (every drain path goes through it; a unit test asserts an expired row is never returned). A terminal-state **sweep is folded into the existing startup/rollover reconcile** (`runner.py:268-269`) — which runs on every manual relaunch, so it is **not** a scheduler/daemon (I-9-safe) — writing `expired` audit rows. Default expiry: **one trading session** for both entries and exits (§6). |
@@ -213,13 +213,14 @@ Daily exits **are** in scope (entry-without-exit is unsafe to run).
   `_evaluate` → full 17-check battery → `_broker.submit_order`. No side channel.
 - **I-2 Fresh context + config-derived staleness, never replay/spoof.** Build a fresh
   `EvaluationContext` at the open; `_check_data_staleness`, `_check_daily_loss`, and the
-  duplicate window are all wall-clock-relative and replay-WRONG. The tempo-aware staleness
-  budget is derived **inside the evaluator from `context.strategy_config.bar_size`** (the
-  field added per §4 #3; the authoritative resolved config, `evaluator.py:51`), never from a
-  field on the intent — so an intraday intent cannot inherit the daily budget. `None` /
-  non-`1D` (operator manual intent, intraday) → 300s, never a crash. Required test: an intent
-  whose resolved config `bar_size ≠ "1D"` (or is None) gets the 300s budget regardless of any
-  other field.
+  duplicate window are all wall-clock-relative and replay-WRONG. The staleness policy (shipped
+  **session-aware** — §12) is derived **inside the evaluator from the resolved config's
+  `bar_size`** and applies to **both** staleness gates via one shared `risk/staleness.py`
+  helper: for `1D`, fresh iff the bar's session date == the broker calendar's latest completed
+  session AND age ≤ a 7-day ceiling, **fail-closed** if the session can't resolve; `None` /
+  non-`1D` → 300s. The selector is the resolved config, never a field on the intent — an
+  intraday intent cannot inherit the daily path. Required test: a non-`1D`/None-config intent
+  gets 300s regardless of any other field.
 - **I-3 Never touch `_last_processed_bar_at` at open. *(proof checked, both reviews.)*** The
   drain insertion point (`runner.py:272` 🔒, before fetch) never reaches
   `_maybe_advance_lockin_watermark` (`runner.py:511`, only on the closed-market post-close
@@ -373,3 +374,19 @@ on divergence, and reliance on the strategy's natural re-emission (§5, §6). Co
 on real seams: `exit_reason` is a durable `strategy_runs` column; SIGKILL leaves
 `exit_reason` NULL (queryable DROP state); `_submit_locked` threading is a clean additive
 kwarg.
+
+**2026-06-23 — Implementation (Phase 2) found a deeper staleness issue; founder re-decided.**
+Two corrections to the staleness design (§4 #4, I-2), both shipped (commits `eecc38e` +
+`cfe19d1`, double-gated): (8) **a SECOND staleness gate** — `_evaluate_data_quality` (the
+`data_quality_issue` ALL_FAMILIES disable-condition, `disable_conditions.py:137`) also used the
+global 300s and is docstring-mandated to never diverge from `_check_data_staleness`; widening
+one alone just relocated the veto. Both now delegate to one shared `risk/staleness.py` helper
+(non-divergence is structural, parity-tested). (9) **the "one-session / 23h budget" was wrong**
+— a Friday-close daily intent drains at Monday's open against a ~65-85h-old bar, so 23h
+silently killed every Monday/post-holiday daily resubmit. Founder re-decided (2026-06-23):
+**session-aware** — bar's session date == the broker calendar's latest completed session
+(Alpaca `get_calendar`, no new dep, threaded via a new `EvaluationContext.latest_completed_session`),
+with a 7-day defense-in-depth ceiling, **fail-closed** if the calendar can't resolve, 300s for
+non-1D/manual. Cross-phase contract for Phase 6: the drain must feed the gate the **locked-in
+session bar**, not the live intraday `get_latest_bar` (today-dated during RTH), or the
+session-identity check fails-closed-stale.
