@@ -116,9 +116,25 @@ class ExecutionService:
         *,
         session_id: str | None = None,
         reasoning: DecisionReasoning | None = None,
+        idempotency_key: str | None = None,
     ) -> ExecutionResult:
-        """Submit a paper trade after passing risk evaluation."""
-        return self._submit(intent, source="paper", session_id=session_id, reasoning=reasoning)
+        """Submit a paper trade after passing risk evaluation.
+
+        ``idempotency_key`` is the queue-at-open drain hook (D-1, ADR 0057). When
+        present, ``_submit_locked`` runs a row-scoped compare-and-set against the
+        durable ``queued_intents`` table — under the per-account submit lock and
+        before the broker call — so an overnight double-launch / crash-retry
+        consumes the row exactly once and any duplicate is suppressed without a
+        second order. When ``None`` (every legacy caller) the CAS is skipped and
+        behavior is byte-for-byte unchanged.
+        """
+        return self._submit(
+            intent,
+            source="paper",
+            session_id=session_id,
+            reasoning=reasoning,
+            idempotency_key=idempotency_key,
+        )
 
     def submit_backtest(
         self,
@@ -153,6 +169,7 @@ class ExecutionService:
         session_id: str | None = None,
         backtest_run_id: int | None = None,
         reasoning: DecisionReasoning | None = None,
+        idempotency_key: str | None = None,
     ) -> ExecutionResult:
         """Serialize the submit critical section per account, then submit.
 
@@ -172,6 +189,7 @@ class ExecutionService:
                 session_id=session_id,
                 backtest_run_id=backtest_run_id,
                 reasoning=reasoning,
+                idempotency_key=idempotency_key,
             )
         lock = self._submit_lock()
         try:
@@ -197,6 +215,7 @@ class ExecutionService:
                 session_id=session_id,
                 backtest_run_id=backtest_run_id,
                 reasoning=reasoning,
+                idempotency_key=idempotency_key,
             )
         finally:
             lock.release()
@@ -301,6 +320,64 @@ class ExecutionService:
         )
         return declined
 
+    def _suppressed_for_idempotency(
+        self,
+        intent: TradeIntent,
+        result: ExecutionResult,
+        *,
+        source: str,
+        session_id: str | None,
+        backtest_run_id: int | None,
+        idempotency_key: str,
+    ) -> ExecutionResult:
+        """No-op result when the idempotency CAS lost the race (rowcount != 1).
+
+        A concurrent / duplicate drain already consumed this queued intent. We do
+        NOT submit and do NOT write an outbox row. The already-computed ``result``
+        (risk already passed) is reused — this is purely a race-loser, not a risk
+        block — so this never re-evaluates and never trips the kill switch.
+        Recorded for audit; the runner treats it like any other non-submitted
+        decision and continues.
+        """
+        _logger.info(
+            "Idempotency CAS suppressed duplicate submit for %s (key=%s); no order sent.",
+            intent.normalized_symbol(),
+            idempotency_key,
+        )
+        decision = RiskDecision(
+            allowed=False,
+            summary=(
+                "Submit suppressed: queued intent already consumed "
+                "(idempotency CAS lost the race). No order was sent."
+            ),
+            checks=[
+                RiskCheckResult(
+                    name="idempotency_cas",
+                    passed=False,
+                    message=f"queued intent {idempotency_key} already consumed",
+                    reason_code="idempotency_suppressed",
+                )
+            ],
+            reason_codes=["idempotency_suppressed"],
+        )
+        suppressed = replace(
+            result,
+            status=ExecutionStatus.BLOCKED,
+            risk_decision=decision,
+            order=None,
+            message="Submit suppressed: idempotency CAS lost the race (no order sent).",
+            recorded_at=datetime.now(tz=UTC),
+        )
+        self._record_execution(
+            intent,
+            suppressed,
+            decision_type="submit",
+            session_id=session_id,
+            source=source,
+            backtest_run_id=backtest_run_id,
+        )
+        return suppressed
+
     def _submit_locked(
         self,
         intent: TradeIntent,
@@ -309,6 +386,7 @@ class ExecutionService:
         session_id: str | None = None,
         backtest_run_id: int | None = None,
         reasoning: DecisionReasoning | None = None,
+        idempotency_key: str | None = None,
     ) -> ExecutionResult:
         result = self._evaluate(intent, preview_only=False, reasoning=reasoning)
         if not result.risk_decision.allowed:
@@ -322,6 +400,34 @@ class ExecutionService:
                 backtest_run_id=backtest_run_id,
             )
             return result
+
+        # Idempotency CAS (queue-at-open drain path — D-1, ADR 0057, I-5). Risk
+        # has ALREADY allowed this intent and we hold the per-account submit
+        # lock. The single-statement CAS in the event store flips the queued row
+        # to 'consumed' iff it is still 'queued'; rowcount == 1 means THIS caller
+        # won the race and may submit. rowcount == 0 means a concurrent /
+        # duplicate drain (overnight double-launch, crash-retry) already consumed
+        # it -> suppress: no broker call, no outbox row, an auditable explanation,
+        # the session continues. This sits strictly AFTER the risk-allow gate and
+        # BEFORE the outbox write + broker call, so a benign race-loss can never
+        # reach _maybe_activate_kill_switch (only genuine risk blocks do, above).
+        # Skipped entirely when no key is supplied (legacy direct callers) — the
+        # None path is byte-for-byte unchanged.
+        if idempotency_key is not None:
+            consumed = self._event_store.mark_queued_intent_consumed(
+                idempotency_key,
+                consumed_by=session_id or "",
+                consumed_at=datetime.now(tz=UTC),
+            )
+            if consumed != 1:
+                return self._suppressed_for_idempotency(
+                    intent,
+                    result,
+                    source=source,
+                    session_id=session_id,
+                    backtest_run_id=backtest_run_id,
+                    idempotency_key=idempotency_key,
+                )
 
         # Durable pre-submit outbox row (P1-02): committed BEFORE the broker
         # call so a crash anywhere past this point leaves evidence that an

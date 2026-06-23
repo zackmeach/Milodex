@@ -32,6 +32,7 @@ from milodex.execution import (
     UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchStateStore
+from tests.milodex.core.conftest import _append_queued_intent
 
 
 class StubBroker:
@@ -2160,3 +2161,195 @@ def test_kill_switch_trip_writes_reviewable_incident_record(
     assert [e.event_type for e in events_after] == ["activated", "reset"]
     assert events_after[0].id == activation.id
     assert service.get_kill_switch_state().active is False
+
+
+def test_idempotency_key_threads_to_submit_locked_without_changing_behavior(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """An explicit idempotency_key threads to _submit_locked and admits the first submit.
+
+    The key is accompanied by a freshly-queued intent row (the real drain
+    contract: the runner persists the row at lock-in, then resubmits with the
+    same key). The CAS consumes that row (rowcount 1) and the submit proceeds —
+    proving the kwarg reaches the chokepoint without otherwise altering a clean
+    first submit.
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    seen: dict[str, object] = {}
+    original = service._submit_locked
+
+    def _spy(intent, **kwargs):
+        seen.update(kwargs)
+        return original(intent, **kwargs)
+
+    service._submit_locked = _spy  # type: ignore[method-assign]
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+        idempotency_key=key,
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert seen["idempotency_key"] == key
+    assert broker.submit_calls
+
+
+def _disable_duplicate_order_window(monkeypatch, service) -> None:
+    """Neutralize the 60s duplicate-order veto so the second submit reaches the CAS.
+
+    In production the two drains are an OVERNIGHT apart, so the 60s duplicate
+    window (``risk_defaults.duplicate_order_window_seconds``) has long expired by
+    the morning re-fire — the row-scoped CAS is the *only* gate that catches the
+    duplicate. These single-process tests fire both ``_submit_locked`` calls
+    within that 60s window, so the durable duplicate-order check would otherwise
+    block the second call BEFORE it reaches the CAS, masking the behavior under
+    test. Patching ``count_recent_submitted_orders`` to 0 reproduces the expired
+    window and isolates the CAS as the gate (exactly-once is still proven by the
+    broker submit count).
+    """
+    monkeypatch.setattr(
+        service._event_store,
+        "count_recent_submitted_orders",
+        lambda **kwargs: 0,
+    )
+
+
+def test_idempotency_cas_admits_exactly_one_broker_submit_for_repeated_key(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Repeated _submit_locked for one idempotency_key -> exactly one broker call."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    # Seed the queued intent the runner would have persisted (Phase-1 shared helper).
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    first = service._submit_locked(intent, source="paper", idempotency_key=key)
+    second = service._submit_locked(intent, source="paper", idempotency_key=key)
+
+    assert first.status == ExecutionStatus.SUBMITTED
+    assert second.status == ExecutionStatus.BLOCKED
+    assert "idempotency_suppressed" in second.risk_decision.reason_codes
+    # The CAS, not the broker, is the gate: exactly one order left the building.
+    assert len(broker.submit_calls) == 1
+    # And the second call wrote a suppressed explanation, not a second outbox attempt.
+    attempts = service._event_store.list_execution_attempts()
+    assert len([a for a in attempts if a.symbol == "SPY"]) == 1
+
+
+def test_idempotency_suppressed_does_not_activate_kill_switch(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A suppressed (rowcount 0) submit is a benign race-loss; the kill switch stays inactive."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    # First call wins the CAS and submits; second loses (rowcount 0) -> suppressed.
+    service._submit_locked(intent, source="paper", idempotency_key=key)
+    suppressed = service._submit_locked(intent, source="paper", idempotency_key=key)
+
+    assert suppressed.status == ExecutionStatus.BLOCKED
+    assert "idempotency_suppressed" in suppressed.risk_decision.reason_codes
+    # The race-loss must NOT trip the kill switch (it never reaches
+    # _maybe_activate_kill_switch — that path is reserved for genuine risk blocks).
+    assert service.get_kill_switch_state().active is False
+    assert broker.cancel_all_calls == 0
+    assert service._event_store.list_kill_switch_events() == []
+
+
+def test_idempotency_suppressed_records_explanation_with_reason_code(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A suppressed submit writes an auditable explanation carrying idempotency_suppressed."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    service._submit_locked(intent, source="paper", idempotency_key=key)
+    service._submit_locked(intent, source="paper", idempotency_key=key)
+
+    explanations = service._event_store.list_explanations()
+    suppressed_rows = [
+        e
+        for e in explanations
+        if e.decision_type == "submit" and "idempotency_suppressed" in e.reason_codes
+    ]
+    assert len(suppressed_rows) == 1
+    assert suppressed_rows[0].status == ExecutionStatus.BLOCKED.value
+
+
+def test_submit_paper_without_idempotency_key_is_unchanged(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Legacy callers (no key) never touch the queued-intents CAS and submit exactly once."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert len(broker.submit_calls) == 1
