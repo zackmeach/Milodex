@@ -2353,3 +2353,304 @@ def test_submit_paper_without_idempotency_key_is_unchanged(
     )
     assert result.status == ExecutionStatus.SUBMITTED
     assert len(broker.submit_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Queue-at-open bar-feeding override (D-1, Option A).
+#
+# A daily (1D) runner locks in on the prior session's close and the drain
+# submits at the NEXT open. During RTH the live ``get_latest_bar`` returns an
+# intraday latest-trade bar stamped *today*; the session-aware 1D staleness gate
+# correctly rejects it (its date is not the latest completed session). The drain
+# instead feeds the locked-in daily SESSION bar via ``latest_bar_override`` so
+# the same gate sees the bar a 1D strategy legitimately prices and trades on.
+#
+# The override changes only WHICH bar the gate evaluates, never WHETHER the gate
+# runs: a wrong/old override bar (session date != latest completed session) is
+# still BLOCKED. ``risk/staleness.py``, ``risk/evaluator.py``, and
+# ``risk/disable_conditions.py`` are untouched by this fix.
+# ---------------------------------------------------------------------------
+
+
+class _PriorSessionBroker(StubBroker):
+    """Broker whose latest completed session is a FIXED prior date (RTH replay).
+
+    Models the queue-at-open drain firing at the next open: the broker's latest
+    completed session is yesterday's, while the live latest-trade bar is dated
+    today. The default ``StubBroker.latest_completed_session`` returns *today*
+    (so the existing fresh-bar fixtures pass the 1D gate); this subclass returns
+    the prior session so the 1D gate's session-date comparison is actually
+    exercised.
+    """
+
+    def __init__(self, *, prior_session: date, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._prior_session = prior_session
+
+    def latest_completed_session(self, now: datetime) -> date:
+        return self._prior_session
+
+
+def _prior_session_dates() -> tuple[date, date]:
+    """Return (prior_session, today) with the prior session one calendar day back.
+
+    Day-of-week does not matter to the gate — it compares the bar's session date
+    against the broker-reported latest completed session, both injected here.
+    """
+    today = datetime.now(tz=UTC).date()
+    return today - timedelta(days=1), today
+
+
+def _session_bar(session: date) -> Bar:
+    """A daily SESSION-stamped bar for ``session`` (Alpaca daily-bar shape).
+
+    Stamped at the session date in UTC so ``bar.timestamp.date() == session``
+    (what the 1D gate compares) and the bar stays well inside the 7-day ceiling.
+    """
+    return Bar(
+        timestamp=datetime(session.year, session.month, session.day, tzinfo=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _today_intraday_bar(today: date) -> Bar:
+    """A live intraday latest-trade bar stamped *today* (what RTH returns).
+
+    Its ``.date()`` is today — NOT the prior completed session — so the
+    session-aware 1D staleness gate fails closed on it. This is the bar the drain
+    must NOT evaluate against; the override exists to replace it.
+    """
+    return Bar(
+        timestamp=datetime.now(tz=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _build_queue_at_open_service(
+    tmp_path: Path,
+    risk_defaults_file: Path,
+    strategy_file: Path,
+    sample_account: AccountInfo,
+    submitted_order: Order,
+    monkeypatch,
+    *,
+    prior_session: date,
+    live_bar: Bar,
+) -> tuple[ExecutionService, _PriorSessionBroker]:
+    """Build a 1D paper service for the queue-at-open scenario.
+
+    Isolates STALENESS as the only variable: the frozen-manifest resolver is
+    patched to return the matching runtime hash (so ``manifest_drift`` passes,
+    exactly as ``test_frozen_manifest_hash_resolved_from_runner_bound_stage``
+    does), the broker reports a prior completed session, and the live provider
+    returns ``live_bar`` (the intraday today-dated bar the gate rejects).
+    """
+    import milodex.promotion.manifest as manifest_module
+    from milodex.strategies.loader import compute_config_hash
+
+    monkeypatch.setattr(
+        manifest_module,
+        "get_active_manifest_hash",
+        lambda strategy_id, stage, event_store: compute_config_hash(strategy_file),
+    )
+
+    broker = _PriorSessionBroker(
+        prior_session=prior_session,
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(live_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+    return service, broker
+
+
+def _queue_at_open_intent(strategy_file: Path) -> TradeIntent:
+    return TradeIntent(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=5,
+        order_type=OrderType.MARKET,
+        strategy_config_path=strategy_file,
+        expected_stage="paper",
+    )
+
+
+def test_queue_at_open_override_passes_session_staleness_both_gates_agree(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """The founder's headline: feeding the locked-in session bar passes the 1D gate.
+
+    Queue-at-open drain at RTH: broker latest completed session is the PRIOR
+    session; the live (un-overridden) bar is dated today and would fail the 1D
+    staleness gate. With ``latest_bar_override`` = the prior-session bar, BOTH
+    freshness gates agree it is fresh — the ``data_staleness`` veto passes and the
+    ``data_quality_issue`` disable condition is inactive — and the submit is
+    allowed.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+    # Seed the queued row the runner persisted, so the idempotency CAS succeeds
+    # and evaluation runs the full risk battery (the drain supplies BOTH the key
+    # and the override — they are orthogonal hooks; without the row the CAS would
+    # suppress and short-circuit before staleness ever runs).
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        idempotency_key=key,
+        latest_bar_override=_session_bar(prior_session),
+    )
+
+    # Gate 1 (the data_staleness veto) passed positively on the override bar.
+    staleness_checks = [c for c in result.risk_decision.checks if c.name == "data_staleness"]
+    assert staleness_checks and staleness_checks[0].passed is True
+    # Gate 2 (the data_quality_issue disable condition) is inactive: a stale bar
+    # would have surfaced disable_condition_active.
+    assert "disable_condition_active" not in result.risk_decision.reason_codes
+    # Neither freshness gate fired.
+    assert "stale_market_data" not in result.risk_decision.reason_codes
+    # The submit is allowed and reached the broker.
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert result.risk_decision.allowed is True
+    assert len(broker.submit_calls) == 1
+
+
+def test_queue_at_open_without_override_is_blocked_stale(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """Necessity / contrast: the SAME scenario without the override is BLOCKED.
+
+    Proves the fix is load-bearing. The live latest-trade bar is dated today
+    while the latest completed session is the prior session, so the 1D gate fails
+    closed and no order reaches the broker.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    result = service.submit_paper(_queue_at_open_intent(strategy_file))
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    # Chokepoint invariant: a blocked submit never reaches the broker.
+    assert broker.submit_calls == []
+
+
+def test_queue_at_open_wrong_date_override_is_still_blocked(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """Gate NOT weakened: an override bar with the WRONG session date is BLOCKED.
+
+    The override changes only WHICH bar the gate sees, never whether the gate
+    runs. A bar dated three sessions back (!= the latest completed session) must
+    still be rejected — the override cannot smuggle a stale bar past the gate.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    # An override bar three sessions old: its session date is not the latest
+    # completed session, so the 1D gate must still block it. No idempotency key:
+    # the block is unmistakably the staleness gate (which runs BEFORE the CAS in
+    # _submit_locked), not CAS suppression.
+    wrong_date = prior_session - timedelta(days=3)
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        latest_bar_override=_session_bar(wrong_date),
+    )
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
+
+
+def test_evaluate_latest_bar_override_none_uses_live_provider(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """No regression: latest_bar_override=None reads the live provider bar.
+
+    The default None path must be byte-for-byte the existing behavior — the
+    returned ExecutionResult carries the provider's live bar, not an override.
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    # The live provider bar (the fixture) was used, not any override.
+    assert result.latest_bar == latest_bar

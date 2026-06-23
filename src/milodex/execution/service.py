@@ -20,7 +20,7 @@ from milodex.core.event_store import (
     ExplanationEvent,
     TradeEvent,
 )
-from milodex.data import DataProvider
+from milodex.data import Bar, DataProvider
 
 if TYPE_CHECKING:
     from milodex.strategies.base import DecisionReasoning
@@ -117,6 +117,7 @@ class ExecutionService:
         session_id: str | None = None,
         reasoning: DecisionReasoning | None = None,
         idempotency_key: str | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
         """Submit a paper trade after passing risk evaluation.
 
@@ -127,6 +128,18 @@ class ExecutionService:
         consumes the row exactly once and any duplicate is suppressed without a
         second order. When ``None`` (every legacy caller) the CAS is skipped and
         behavior is byte-for-byte unchanged.
+
+        ``latest_bar_override`` is the companion queue-at-open drain hook (D-1,
+        Option A). A daily (1D) runner locks in on the prior session's close and
+        the drain submits at the NEXT open: during RTH the live
+        ``get_latest_bar`` returns an intraday latest-trade bar stamped *today*,
+        which the session-aware 1D staleness gate correctly rejects (its date is
+        not the latest completed session). The drain instead feeds the locked-in
+        daily SESSION bar here so the same gate sees the bar a 1D strategy
+        legitimately prices and trades on. The override changes only WHICH bar is
+        evaluated; the staleness gate still runs unchanged and still BLOCKS a bar
+        whose session date is not the latest completed session. ``None`` (every
+        legacy caller) preserves today's behavior byte-for-byte.
         """
         return self._submit(
             intent,
@@ -134,6 +147,7 @@ class ExecutionService:
             session_id=session_id,
             reasoning=reasoning,
             idempotency_key=idempotency_key,
+            latest_bar_override=latest_bar_override,
         )
 
     def submit_backtest(
@@ -170,6 +184,7 @@ class ExecutionService:
         backtest_run_id: int | None = None,
         reasoning: DecisionReasoning | None = None,
         idempotency_key: str | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
         """Serialize the submit critical section per account, then submit.
 
@@ -190,6 +205,7 @@ class ExecutionService:
                 backtest_run_id=backtest_run_id,
                 reasoning=reasoning,
                 idempotency_key=idempotency_key,
+                latest_bar_override=latest_bar_override,
             )
         lock = self._submit_lock()
         try:
@@ -216,6 +232,7 @@ class ExecutionService:
                 backtest_run_id=backtest_run_id,
                 reasoning=reasoning,
                 idempotency_key=idempotency_key,
+                latest_bar_override=latest_bar_override,
             )
         finally:
             lock.release()
@@ -387,8 +404,14 @@ class ExecutionService:
         backtest_run_id: int | None = None,
         reasoning: DecisionReasoning | None = None,
         idempotency_key: str | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
-        result = self._evaluate(intent, preview_only=False, reasoning=reasoning)
+        result = self._evaluate(
+            intent,
+            preview_only=False,
+            reasoning=reasoning,
+            latest_bar_override=latest_bar_override,
+        )
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
             self._record_execution(
@@ -665,6 +688,7 @@ class ExecutionService:
         *,
         preview_only: bool,
         reasoning: DecisionReasoning | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
         # Full short-circuit applies only to the BYPASS backtest policy
@@ -677,7 +701,20 @@ class ExecutionService:
         is_backtest = self._is_backtest or bypass_mode
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
 
-        latest_bar = self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
+        # Queue-at-open drain bar-feeding override (D-1, Option A). When the
+        # caller supplies a bar, evaluate against it instead of the live
+        # latest-trade bar. The whole _evaluate uses this bar — both the
+        # session-aware staleness gate AND the estimated_unit_price risk-cap
+        # pricing below (correct for a 1D strategy, which prices on its daily
+        # session bar). This does NOT weaken the gate: staleness_verdict still
+        # validates the override bar's session date against the latest completed
+        # session and the 7-day ceiling, so a wrong/old override bar is still
+        # BLOCKED. None (every legacy caller) is byte-for-byte unchanged.
+        latest_bar = (
+            latest_bar_override
+            if latest_bar_override is not None
+            else self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
+        )
         account = self._broker.get_account()
         market_open = self._broker.is_market_open()
 
