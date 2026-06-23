@@ -79,6 +79,17 @@ def test_full_concrete_subclass_instantiates() -> None:
     assert isinstance(broker, BrokerClient)
 
 
+def test_default_is_symbol_tradable_returns_none() -> None:
+    """R-BRK-001 (extension): is_symbol_tradable is concrete on the ABC.
+
+    A subclass that implements only the abstract surface (no override) inherits
+    the conservative default: status-unknown -> None. The drain policy treats
+    None as DROP, so the default fails safe.
+    """
+    broker = _FullBroker()
+    assert broker.is_symbol_tradable("AAPL") is None
+
+
 @pytest.mark.parametrize("missing_method", _ABSTRACT_METHODS)
 def test_incomplete_subclass_raises_type_error(missing_method: str) -> None:
     """R-BRK-001 (negative): omitting any single abstract method fails instantiation.
