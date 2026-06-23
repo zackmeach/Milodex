@@ -338,3 +338,17 @@ class AlpacaBrokerClient(BrokerClient):
             if close <= now and (latest is None or session_date > latest):
                 latest = session_date
         return latest
+
+    def is_symbol_tradable(self, symbol: str) -> bool | None:
+        """Read Alpaca's asset status for ``symbol``.
+
+        ``True`` iff Alpaca reports ``asset.tradable`` AND status == "active".
+        ``False`` if the asset exists but is halted/inactive/not tradable.
+        Exceptions (APIError for unknown symbol, transient network) are NOT
+        caught here — the drain-time helper wraps this call and maps any raise
+        to a conservative DROP. Keeping the broker boundary a thin read keeps
+        the catch policy in one place (the drain policy), not duplicated here.
+        """
+        asset = call_with_retry_on_transient(lambda: self._client.get_asset(symbol))
+        status = asset.status.value if hasattr(asset.status, "value") else asset.status
+        return bool(asset.tradable) and str(status) == "active"
