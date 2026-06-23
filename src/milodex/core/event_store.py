@@ -202,6 +202,51 @@ class ExperimentEvent:
 
 
 @dataclass(frozen=True)
+class QueuedIntentEvent:
+    """A daily intent locked in at close, awaiting drain at the next session open.
+
+    queue-at-open durable state. Persisted by the runner at the lock-in-confirmed
+    cycle when the next session's open is still in the future; drained — through
+    the full risk battery — at that open. NOT append-only: a row's ``status``
+    transitions ``queued`` -> ``consumed`` | ``expired`` | ``obsolete`` via the
+    ``mark_*`` store methods.
+
+    ``idempotency_key`` (UNIQUE) = ``f"{strategy_id}|{trading_session}|{side}|{symbol}"``.
+    The ``expected_*`` fields snapshot the governance posture at lock-in time so a
+    drift between persist and drain (stage change, cap edit) is detectable.
+    ``intent_payload_json`` carries the order intent; ``reasoning_json`` the
+    decision reasoning. ``session_id`` is the originating run's session — the
+    clean-handoff fence in :meth:`EventStore.get_active_queued_intents` compares
+    it against the draining run and falls back to the originating run's
+    ``strategy_runs.exit_reason``.
+    """
+
+    idempotency_key: str
+    strategy_id: str | None = None
+    strategy_config_path: str | None = None
+    config_hash: str | None = None
+    session_id: str | None = None
+    trading_session: str | None = None
+    locked_in_bar_timestamp: str | None = None
+    symbol: str | None = None
+    side: str | None = None
+    intent_class: str | None = None
+    notional_pct: float | None = None
+    expected_stage: str | None = None
+    expected_max_positions: int | None = None
+    expected_max_position_pct: float | None = None
+    expected_daily_loss_cap_pct: float | None = None
+    intent_payload_json: dict[str, Any] | None = None
+    reasoning_json: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    status: str = "queued"
+    consumed_at: datetime | None = None
+    consumed_by: str | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True)
 class BacktestRunEvent:
     """Lifecycle record for a backtest engine run.
 
