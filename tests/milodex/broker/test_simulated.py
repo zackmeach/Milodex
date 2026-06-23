@@ -153,6 +153,25 @@ def test_is_market_open_always_true_during_backtest():
     assert broker.is_market_open() is True
 
 
+def test_latest_completed_session_defaults_to_none():
+    """Fail-closed default: with no value set, the 1D staleness gate sees None
+    and blocks."""
+    broker = make_broker()
+    assert broker.latest_completed_session(datetime(2026, 5, 11, tzinfo=UTC)) is None
+
+
+def test_latest_completed_session_returns_set_value():
+    """Deterministic injection for 1D staleness tests."""
+    from datetime import date
+
+    broker = make_broker()
+    broker.set_latest_completed_session(date(2026, 5, 8))
+    assert broker.latest_completed_session(datetime(2026, 5, 11, tzinfo=UTC)) == date(2026, 5, 8)
+    # Resettable back to the fail-closed sentinel.
+    broker.set_latest_completed_session(None)
+    assert broker.latest_completed_session(datetime(2026, 5, 11, tzinfo=UTC)) is None
+
+
 def test_advancing_simulation_day_changes_fill_price():
     broker = make_broker()
     day1_price = broker.fill_price_for("SPY", OrderSide.BUY)

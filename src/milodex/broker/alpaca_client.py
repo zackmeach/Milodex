@@ -9,12 +9,16 @@ raises immediately on all other errors.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.enums import TimeInForce as AlpacaTimeInForce
 from alpaca.trading.requests import (
+    GetCalendarRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
@@ -288,3 +292,49 @@ class AlpacaBrokerClient(BrokerClient):
         """Check if the market is currently open."""
         clock = call_with_retry_on_transient(lambda: self._client.get_clock())
         return clock.is_open
+
+    def latest_completed_session(self, now: datetime) -> date | None:
+        """Latest exchange session whose close is at or before ``now``.
+
+        Queries the Alpaca trading calendar over a short trailing window
+        (``now`` minus 14 calendar days, generous enough to bridge holiday
+        clusters) and returns the date of the most recent session that has
+        already closed. Returns ``None`` on any failure or ambiguity so the
+        risk layer fails closed (treats the bar as stale) rather than trusting
+        an unverifiable wall clock.
+
+        Alpaca's ``Calendar.close`` is a tz-naive datetime in US/Eastern wall
+        time; it is localized to ``America/New_York`` (DST-correct) before the
+        comparison against ``now``. ``Calendar.date`` is the session's calendar
+        date and is what daily bars are stamped with (00:00 ET == 04:00/05:00
+        UTC of that date), so it maps directly onto the bar's session date.
+        """
+        try:
+            request = GetCalendarRequest(
+                start=(now - timedelta(days=14)).date(),
+                end=now.date(),
+            )
+            calendar = call_with_retry_on_transient(
+                lambda: self._client.get_calendar(request)
+            )
+        except Exception:
+            # Any transport/parse failure -> fail closed (None). The risk layer
+            # blocks the 1D submit rather than trusting an unverified session.
+            return None
+
+        if not calendar:
+            return None
+
+        eastern = ZoneInfo("America/New_York")
+        latest: date | None = None
+        for session in calendar:
+            close = session.close
+            session_date = session.date
+            if close is None or session_date is None:
+                # Ambiguous row -> skip; never guess a session boundary.
+                continue
+            if close.tzinfo is None:
+                close = close.replace(tzinfo=eastern)
+            if close <= now and (latest is None or session_date > latest):
+                latest = session_date
+        return latest

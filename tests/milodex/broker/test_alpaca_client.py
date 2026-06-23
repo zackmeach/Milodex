@@ -309,3 +309,107 @@ class TestRetryOn429:
 
         assert len(result) == 1
         assert client._client.get_all_positions.call_count == 2
+
+
+def _cal(session_date, close):
+    """A minimal stand-in for alpaca-py's Calendar (date + tz-naive ET close)."""
+    row = MagicMock()
+    row.date = session_date
+    row.close = close
+    return row
+
+
+class TestLatestCompletedSession:
+    """latest_completed_session maps the Alpaca trading calendar to the date of
+    the most recent session that has already closed; fails closed (None) on any
+    error or ambiguity. Alpaca's Calendar.close is tz-naive US/Eastern wall time.
+    """
+
+    def test_picks_latest_session_already_closed(self, client):
+        from datetime import date
+
+        # now = Mon 2026-05-11 14:00 UTC == 10:00 ET. Fri 05-08 closed at 16:00
+        # ET (20:00 UTC); Mon 05-11 closes at 16:00 ET (still in the future).
+        now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+        client._client.get_calendar.return_value = [
+            _cal(date(2026, 5, 7), datetime(2026, 5, 7, 16, 0)),
+            _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0)),
+            _cal(date(2026, 5, 11), datetime(2026, 5, 11, 16, 0)),  # not yet closed
+        ]
+        assert client.latest_completed_session(now) == date(2026, 5, 8)
+
+    def test_session_closing_exactly_at_now_counts_as_completed(self, client):
+        from datetime import date
+
+        # now == Fri 16:00 ET (20:00 UTC). The Friday close (<= now) counts.
+        now = datetime(2026, 5, 8, 20, 0, tzinfo=UTC)
+        client._client.get_calendar.return_value = [
+            _cal(date(2026, 5, 7), datetime(2026, 5, 7, 16, 0)),
+            _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0)),
+        ]
+        assert client.latest_completed_session(now) == date(2026, 5, 8)
+
+    def test_returns_none_when_no_session_has_closed(self, client):
+        from datetime import date
+
+        # now is before the only session's close.
+        now = datetime(2026, 5, 8, 12, 0, tzinfo=UTC)  # 08:00 ET, pre-close
+        client._client.get_calendar.return_value = [
+            _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0)),
+        ]
+        assert client.latest_completed_session(now) is None
+
+    def test_returns_none_on_empty_calendar(self, client):
+        now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+        client._client.get_calendar.return_value = []
+        assert client.latest_completed_session(now) is None
+
+    def test_returns_none_on_sdk_exception_fail_closed(self, client):
+        now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+        client._client.get_calendar.side_effect = RuntimeError("boom")
+        assert client.latest_completed_session(now) is None
+
+    def test_skips_ambiguous_rows_with_missing_fields(self, client):
+        from datetime import date
+
+        now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+        client._client.get_calendar.return_value = [
+            _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0)),
+            _cal(None, datetime(2026, 5, 9, 16, 0)),  # ambiguous: skipped
+            _cal(date(2026, 5, 10), None),  # ambiguous: skipped
+        ]
+        assert client.latest_completed_session(now) == date(2026, 5, 8)
+
+    def test_retries_on_429_then_succeeds(self, client):
+        from datetime import date
+
+        now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+        err = _make_429_api_error()
+        client._client.get_calendar.side_effect = [
+            err,
+            [_cal(date(2026, 5, 8), datetime(2026, 5, 8, 16, 0))],
+        ]
+        with patch("time.sleep"):
+            assert client.latest_completed_session(now) == date(2026, 5, 8)
+        assert client._client.get_calendar.call_count == 2
+
+    def test_real_calendar_model_et_close_is_dst_correct(self, client):
+        """Pin the SDK mapping against REAL alpaca-py Calendar objects (not
+        MagicMocks): Calendar.close is tz-naive ET wall time, so 16:00 EDT ==
+        20:00 UTC. At 19:59 UTC on Friday the Friday session is NOT yet
+        completed; the mapping must localize to America/New_York to get this
+        right (a naive-UTC comparison would wrongly count it)."""
+        from datetime import date
+
+        from alpaca.trading.models import Calendar
+
+        client._client.get_calendar.return_value = [
+            Calendar(date="2026-05-07", open="09:30", close="16:00"),
+            Calendar(date="2026-05-08", open="09:30", close="16:00"),
+        ]
+        # 19:59 UTC Fri == 15:59 EDT, one minute before the 16:00 ET close.
+        pre_close = datetime(2026, 5, 8, 19, 59, tzinfo=UTC)
+        assert client.latest_completed_session(pre_close) == date(2026, 5, 7)
+        # One minute later (20:01 UTC == 16:01 EDT) the Friday session counts.
+        post_close = datetime(2026, 5, 8, 20, 1, tzinfo=UTC)
+        assert client.latest_completed_session(post_close) == date(2026, 5, 8)

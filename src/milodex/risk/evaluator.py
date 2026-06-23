@@ -14,7 +14,7 @@ backwards compatibility.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 
 from milodex.broker.models import OrderSide
@@ -22,6 +22,7 @@ from milodex.risk.config import RiskDefaults
 from milodex.risk.disable_conditions import effective_disable_conditions
 from milodex.risk.exposure import exposure_increasing_notional, is_exposure_increasing
 from milodex.risk.models import ReconciliationReadiness, RiskCheckResult, RiskDecision
+from milodex.risk.staleness import staleness_verdict
 
 if TYPE_CHECKING:
     from milodex.broker.models import AccountInfo, Order, Position
@@ -49,6 +50,14 @@ class EvaluationContext:
     kill_switch_state: KillSwitchState
     risk_defaults: RiskDefaults
     strategy_config: StrategyExecutionConfig | None = None
+    # Latest completed exchange session (calendar date), resolved from the
+    # broker at context-assembly time. Authoritative for the 1D staleness
+    # gate: a daily bar is fresh iff its session date equals this. None means
+    # the calendar could not be resolved (or the caller did not supply it,
+    # e.g. operator-manual / legacy paths) — the 1D path fails closed on None,
+    # and the non-1D path ignores it (300s wall clock). See
+    # ``milodex.risk.staleness.staleness_verdict``.
+    latest_completed_session: date | None = None
     runtime_config_hash: str | None = None
     frozen_manifest_hash: str | None = None
     # Runner-bound stage, set once at strategy-runner startup and immutable for
@@ -438,6 +447,12 @@ class RiskEvaluator:
         return RiskCheckResult("market_hours", True, "Market is open.")
 
     def _check_data_staleness(self, context: EvaluationContext) -> RiskCheckResult:
+        # The "no latest bar" case keeps its own reason code (``no_latest_bar``)
+        # — distinct from a stale-but-present bar. The shared policy treats both
+        # as stale, so branch on the bar's presence first, then delegate the
+        # fresh-vs-stale decision to the single staleness policy (which both
+        # this veto and the ``data_quality_issue`` disable condition consult,
+        # so the two gates cannot diverge).
         if context.latest_bar is None:
             return RiskCheckResult(
                 name="data_staleness",
@@ -445,21 +460,12 @@ class RiskEvaluator:
                 message="No latest bar available for risk evaluation.",
                 reason_code="no_latest_bar",
             )
-
-        # Normalize to UTC-aware before subtracting: a naive bar timestamp
-        # would raise TypeError against an aware ``now`` (offset-naive vs
-        # offset-aware). A naive timestamp is assumed UTC — the system
-        # stores and compares all market data in UTC.
-        bar_ts = context.latest_bar.timestamp
-        if bar_ts.tzinfo is None:
-            bar_ts = bar_ts.replace(tzinfo=UTC)
-        age = datetime.now(tz=UTC) - bar_ts
-        max_age = timedelta(seconds=context.risk_defaults.max_data_staleness_seconds)
-        if age > max_age:
+        verdict = staleness_verdict(context, datetime.now(tz=UTC))
+        if verdict.is_stale:
             return RiskCheckResult(
                 name="data_staleness",
                 passed=False,
-                message=f"Latest bar is stale by {int(age.total_seconds())} seconds.",
+                message=f"Latest bar rejected: {verdict.detail}.",
                 reason_code="stale_market_data",
             )
         return RiskCheckResult("data_staleness", True, "Latest bar is within staleness limits.")

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -65,6 +65,13 @@ class StubBroker:
 
     def is_market_open(self) -> bool:
         return self.market_open
+
+    def latest_completed_session(self, now: datetime) -> date:
+        # Test double: the latest completed session is "today" so the 1D
+        # staleness gate treats the fresh (today-dated) ``latest_bar`` fixture
+        # as current. Tests exercising staleness BLOCK paths supply their own
+        # bar/now; this default keeps the non-staleness submit tests green.
+        return now.date()
 
     def submit_order(self, **kwargs) -> Order:
         self.submit_calls.append(kwargs)

@@ -11,7 +11,7 @@ spy on the RiskEvaluator.evaluate() call to inspect the risk_defaults passed in.
 from __future__ import annotations
 
 import shutil
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from milodex.broker.models import (
@@ -55,6 +55,11 @@ class _StubBroker:
 
     def is_market_open(self) -> bool:
         return True
+
+    def latest_completed_session(self, now: datetime) -> date:
+        # Test double: latest session is "today" so the 1D staleness gate
+        # treats the fresh (today-dated) bar as current.
+        return now.date()
 
     def submit_order(self, **kwargs) -> Order:
         return self._order

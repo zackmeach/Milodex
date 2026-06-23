@@ -19,7 +19,7 @@ ExecutionService may make during an intent submission.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from milodex.broker.client import BrokerClient
 from milodex.broker.models import (
@@ -53,6 +53,11 @@ class SimulatedBroker(BrokerClient):
 
         self._current_day: datetime | None = None
         self._current_closes: dict[str, float] = {}
+        # Deterministic override for the 1D staleness gate's session identity.
+        # Backtests do not query an exchange calendar; tests set this directly
+        # via ``set_latest_completed_session``. Default None mirrors the
+        # base-class fail-closed contract.
+        self._latest_completed_session: date | None = None
 
         self._account = AccountInfo(
             equity=0.0,
@@ -80,6 +85,14 @@ class SimulatedBroker(BrokerClient):
     def set_positions(self, positions: list[Position]) -> None:
         """Replace the positions list the broker reports."""
         self._positions = list(positions)
+
+    def set_latest_completed_session(self, session: date | None) -> None:
+        """Set the value returned by :meth:`latest_completed_session`.
+
+        Lets deterministic tests exercise the 1D session-identity staleness
+        gate without an exchange calendar.
+        """
+        self._latest_completed_session = session
 
     # ------------------------------------------------------------------
     # Fill price model (engine reconciles cash/position from this)
@@ -189,3 +202,9 @@ class SimulatedBroker(BrokerClient):
         # point of view the market is always open. Risk checks that care
         # about this are bypassed in backtest mode (NullRiskEvaluator).
         return True
+
+    def latest_completed_session(self, now: datetime) -> date | None:  # noqa: ARG002
+        # Returns the test-injected value; backtests run under NullRiskEvaluator
+        # so the staleness gate (and this value) is never consulted on the
+        # real replay path. ``now`` is accepted to satisfy the interface.
+        return self._latest_completed_session

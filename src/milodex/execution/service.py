@@ -640,6 +640,13 @@ class ExecutionService:
                 trading_mode = get_trading_mode()
             positions = self._broker.get_positions()
             reconciliation_readiness = latest_readiness(self._event_store)
+            # Session identity for the 1D staleness gate (D-1 queue-at-open).
+            # One extra broker call per submit; could be cached per-session if
+            # it ever shows up in profiling, but YAGNI for now. None on
+            # resolution failure -> the 1D gate fails closed.
+            latest_completed_session = self._broker.latest_completed_session(
+                datetime.now(tz=UTC)
+            )
             context = EvaluationContext(
                 intent=normalized_intent,
                 request=request,
@@ -649,6 +656,7 @@ class ExecutionService:
                 reconciliation_readiness=reconciliation_readiness,
                 latest_bar=latest_bar,
                 market_open=market_open,
+                latest_completed_session=latest_completed_session,
                 trading_mode=trading_mode,
                 preview_only=preview_only,
                 kill_switch_state=self._kill_switch_store.get_state(),

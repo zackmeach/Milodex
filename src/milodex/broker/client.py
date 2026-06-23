@@ -9,6 +9,7 @@ changing any consuming code.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from datetime import date, datetime
 
 from milodex.broker.models import (
     AccountInfo,
@@ -73,3 +74,20 @@ class BrokerClient(ABC):
     @abstractmethod
     def is_market_open(self) -> bool:
         """Check if the market is currently open for trading."""
+
+    def latest_completed_session(self, now: datetime) -> date | None:
+        """Return the calendar date of the latest exchange session whose close
+        is at or before ``now``, or ``None`` when it cannot be resolved.
+
+        This is the authoritative session identity for the 1D (daily)
+        data-staleness gate (D-1 queue-at-open): a daily bar is fresh iff its
+        session date equals this value. Resolution failure or ambiguity MUST
+        return ``None`` so the risk layer fails closed (treats the bar as
+        stale) rather than trusting an unverifiable wall clock.
+
+        Not abstract: the base returns ``None`` so legacy / non-equity broker
+        implementations that have no calendar default to the safe (fail-closed)
+        behavior without being forced to implement it. Concrete equity brokers
+        override this.
+        """
+        return None

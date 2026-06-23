@@ -62,6 +62,11 @@ class StubBroker:
     def is_market_open(self) -> bool:
         return self._market_open
 
+    def latest_completed_session(self, now: datetime) -> date:
+        # Test double: latest session is "today" so the 1D staleness gate
+        # treats a fresh (today-dated) bar as current.
+        return now.date()
+
     def submit_order(self, **kwargs) -> Order:
         self.submit_calls.append(kwargs)
         return Order(

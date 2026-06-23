@@ -16,7 +16,8 @@ there (activation path) and here (DC-1 absolute-halt semantics).
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -101,6 +102,7 @@ def make_context(
     trading_mode: str = "paper",
     kill_switch_active: bool = False,
     latest_bar: Bar | None = None,
+    latest_completed_session: date | None = None,
     runtime_config_hash: str | None = None,
     frozen_manifest_hash: str | None = None,
     expected_stage: str | None = None,
@@ -174,6 +176,7 @@ def make_context(
         ),
         latest_bar=latest_bar or _fresh_bar(),
         market_open=market_open,
+        latest_completed_session=latest_completed_session,
         trading_mode=trading_mode,
         preview_only=preview_only,
         kill_switch_state=KillSwitchState(active=kill_switch_active),
@@ -1515,6 +1518,209 @@ def test_data_staleness_fails_just_over_max_age(monkeypatch):
     result = check_result(decision, "data_staleness")
     assert result.passed is False
     assert result.reason_code == "stale_market_data"
+
+
+# --- session-aware 1D data-staleness (D-1 queue-at-open) -----------------
+#
+# Policy (founder): for 1D the bar's session date must equal the exchange
+# calendar's latest completed session; the wall clock is only a generous
+# seven-day defense-in-depth ceiling; resolution failure fails closed. The
+# 300s global budget is unchanged for non-1D / operator-manual paths. Both
+# the ``data_staleness`` veto and the ``data_quality_issue`` disable
+# condition are driven by the single ``staleness_verdict`` helper.
+
+
+def _exec_config_1d() -> StrategyExecutionConfig:
+    """A paper-stage execution config tagged 1D (daily tempo)."""
+    return StrategyExecutionConfig(
+        name="daily_demo",
+        enabled=True,
+        stage="paper",
+        max_position_pct=0.20,
+        max_positions=3,
+        daily_loss_cap_pct=0.02,
+        path=Path("daily_demo.yaml"),
+        family="momentum",
+        bar_size="1D",
+    )
+
+
+def _daily_bar(session_date: date, *, now: datetime) -> Bar:
+    """A daily bar stamped at the session date (00:00 UTC of that date),
+    matching how Alpaca daily bars carry their session identity. ``now`` is
+    unused for the timestamp but kept to document the session/now relation at
+    call sites."""
+    return Bar(
+        timestamp=datetime(session_date.year, session_date.month, session_date.day, tzinfo=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+
+
+def _freeze_now(monkeypatch, fixed_now: datetime) -> None:
+    """Freeze ``datetime.now`` in BOTH risk-layer staleness gates so the veto
+    and the disable condition read the same clock."""
+    from milodex.risk import disable_conditions as dc_module
+    from milodex.risk import evaluator as evaluator_module
+
+    class _FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(evaluator_module, "datetime", _FrozenDateTime)
+    monkeypatch.setattr(dc_module, "datetime", _FrozenDateTime)
+
+
+def test_data_staleness_1d_matching_session_fresh_18h_old(monkeypatch):
+    """1D bar whose session date == latest completed session, ~18h old
+    (Mon submit against Fri's close style), must PASS even though 18h is far
+    past the 300s global budget."""
+    fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)  # Mon 10:00 ET-ish
+    _freeze_now(monkeypatch, fixed_now)
+    session = date(2026, 5, 8)  # Friday's session
+    # A date-anchored daily bar carries the Friday session date; ~18h before
+    # ``fixed_now`` it is far past the 300s global budget but identity-fresh.
+    bar = _daily_bar(session, now=fixed_now)
+    assert fixed_now - bar.timestamp > timedelta(hours=18)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            latest_bar=bar,
+            latest_completed_session=session,
+            strategy_config=_exec_config_1d(),
+        )
+    )
+    assert check_result(decision, "data_staleness").passed is True
+
+
+def test_data_staleness_1d_none_session_fails_closed(monkeypatch):
+    """Same fresh 1D bar, but the exchange calendar could not resolve the
+    latest session (None) -> BLOCKED (fail-closed)."""
+    fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+    session = date(2026, 5, 8)
+    bar = _daily_bar(session, now=fixed_now)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            latest_bar=bar,
+            latest_completed_session=None,  # calendar unavailable / ambiguous
+            strategy_config=_exec_config_1d(),
+        )
+    )
+    result = check_result(decision, "data_staleness")
+    assert result.passed is False
+    assert result.reason_code == "stale_market_data"
+
+
+def test_data_staleness_1d_session_mismatch_dead_feed_blocked(monkeypatch):
+    """Dead-feed case: a 3-day-old 1D bar whose session date != the latest
+    completed session is BLOCKED, even though it is well inside the 7-day
+    ceiling. This is the bug the prior attempt missed."""
+    fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+    latest_session = date(2026, 5, 8)  # Friday: the real latest session
+    stale_session = date(2026, 5, 5)  # Monday: a 3-session-old stale feed
+    bar = _daily_bar(stale_session, now=fixed_now)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            latest_bar=bar,
+            latest_completed_session=latest_session,
+            strategy_config=_exec_config_1d(),
+        )
+    )
+    result = check_result(decision, "data_staleness")
+    assert result.passed is False
+    assert result.reason_code == "stale_market_data"
+
+
+def test_data_staleness_1d_beyond_7day_ceiling_blocked(monkeypatch):
+    """Defensive ceiling: a 1D bar whose session date matches the latest
+    completed session but whose age exceeds 7 calendar days is BLOCKED. This
+    can't arise under a correct calendar; it bounds the blast radius if the
+    calendar were wrong and the feed were stale at a matching date."""
+    fixed_now = datetime(2026, 5, 20, 14, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+    session = date(2026, 5, 8)  # bar is 12 days old, > 7-day ceiling
+    bar = _daily_bar(session, now=fixed_now)
+    assert (fixed_now - bar.timestamp) > timedelta(days=7)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            latest_bar=bar,
+            latest_completed_session=session,  # date matches, but age > ceiling
+            strategy_config=_exec_config_1d(),
+        )
+    )
+    result = check_result(decision, "data_staleness")
+    assert result.passed is False
+    assert result.reason_code == "stale_market_data"
+
+
+def test_data_staleness_none_strategy_config_uses_300s_not_crash(monkeypatch):
+    """strategy_config is None (operator manual / legacy) -> 300s wall clock,
+    never the 1D path. A bar just past 300s fails; it does not crash on the
+    missing bar_size / latest_completed_session."""
+    fixed_now = datetime(2026, 5, 6, 18, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+    bar = Bar(
+        timestamp=fixed_now - timedelta(seconds=300) - timedelta(microseconds=1),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+    decision = RiskEvaluator().evaluate(make_context(latest_bar=bar))  # strategy_config=None
+    result = check_result(decision, "data_staleness")
+    assert result.passed is False
+    assert result.reason_code == "stale_market_data"
+
+
+def test_data_staleness_1d_both_gates_agree_fresh(monkeypatch):
+    """Pin the non-divergence invariant the prior attempt broke: a 1D/paper
+    config with a latest-session bar must pass BOTH the ``data_staleness``
+    veto AND keep the ``data_quality_issue`` disable condition inactive, so
+    the overall decision is allowed. (The prior bug widened only the veto, so
+    the disable condition still vetoed via ``disable_conditions``.)"""
+    fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+    session = date(2026, 5, 8)
+    bar = _daily_bar(session, now=fixed_now)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            latest_bar=bar,
+            latest_completed_session=session,
+            strategy_config=_exec_config_1d(),
+        )
+    )
+    assert check_result(decision, "data_staleness").passed is True
+    assert check_result(decision, "disable_conditions").passed is True
+    assert decision.allowed is True
+
+
+def test_data_staleness_1d_both_gates_agree_session_mismatch_blocked(monkeypatch):
+    """Companion to the agree-fresh test on the BLOCK side: a 1D session
+    mismatch must fail the veto AND activate the disable condition, so a
+    widening that touched only one gate cannot pass here."""
+    fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
+    _freeze_now(monkeypatch, fixed_now)
+    bar = _daily_bar(date(2026, 5, 5), now=fixed_now)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            latest_bar=bar,
+            latest_completed_session=date(2026, 5, 8),
+            strategy_config=_exec_config_1d(),
+        )
+    )
+    assert check_result(decision, "data_staleness").passed is False
+    dc = check_result(decision, "disable_conditions")
+    assert dc.passed is False
+    assert "data_quality_issue" in dc.message
+    assert decision.allowed is False
 
 
 # --- _check_strategy_concurrent_positions (ADR 0029) ---------------------
