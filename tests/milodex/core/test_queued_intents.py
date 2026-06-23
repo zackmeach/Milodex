@@ -7,16 +7,40 @@ from datetime import UTC, datetime
 import pytest
 
 from milodex.core.event_store import EventStore, QueuedIntentEvent
+from milodex.strategies.loader import compute_config_hash
 
 _NOW = datetime(2026, 6, 23, 14, 0, tzinfo=UTC)
+
+# Populated per-test by the autouse fixture below so a default-built intent points
+# at a real on-disk config whose stored hash MATCHES — required to survive the I-7
+# config_hash guard in get_active_queued_intents. Drop-branch tests override these.
+_DEFAULT_CFG_PATH = "configs/rsi2.yaml"
+_DEFAULT_CFG_HASH = "c" * 64
+
+
+@pytest.fixture(autouse=True)
+def _seed_default_config(tmp_path):
+    """Write a real default config under tmp_path and expose its (path, hash).
+
+    The drain authority re-verifies a queued intent's config_hash against the
+    on-disk config (I-7); a placeholder hash against a non-existent path would be
+    dropped by the guard. This makes the shared ``_intent()`` default produce a
+    guard-clean row.
+    """
+    global _DEFAULT_CFG_PATH, _DEFAULT_CFG_HASH
+    cfg = tmp_path / "rsi2.yaml"
+    cfg.write_text("strategy:\n  id: rsi2.mr.swing.v1\n", encoding="utf-8")
+    _DEFAULT_CFG_PATH = str(cfg)
+    _DEFAULT_CFG_HASH = compute_config_hash(cfg)
+    yield
 
 
 def _intent(idempotency_key: str = "rsi2.v1|2026-06-23|buy|SPY", **overrides) -> QueuedIntentEvent:
     fields: dict[str, object] = {
         "idempotency_key": idempotency_key,
         "strategy_id": "rsi2.v1",
-        "strategy_config_path": "configs/rsi2.yaml",
-        "config_hash": "c" * 64,
+        "strategy_config_path": _DEFAULT_CFG_PATH,
+        "config_hash": _DEFAULT_CFG_HASH,
         "session_id": "sess-A",
         "trading_session": "2026-06-23",
         "locked_in_bar_timestamp": "2026-06-22T20:00:00+00:00",

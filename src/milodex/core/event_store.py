@@ -2217,6 +2217,21 @@ class EventStore:
         ``datetime()`` treats a naive ISO string as already-UTC — so a naive or
         wrong-tz ``now`` would skew the expiry fence by the local offset SILENTLY.
         The runner is the guarantor: it always passes an aware UTC ``now``.
+
+        CONFIG_HASH GUARD (I-7): after the SQL base filter + clean-exit fence,
+        each surviving row is re-verified against its on-disk config. The stored
+        ``config_hash`` was frozen at lock-in; a row is DROPPED when the stored
+        hash is ``None``, the recompute is ``None`` (path deleted/moved/unreadable
+        — :func:`compute_config_hash_or_none` returns ``None`` instead of raising,
+        so a missing path never crashes the drain), OR the two differ (config
+        edited overnight). A queued intent must replay against the EXACT config it
+        was evaluated under, or not at all — otherwise ``strategy_name`` / stage /
+        ``notional_pct`` could silently drift between persist and drain, or the
+        evaluator's strategy-scoped checks could silently skip. The guard runs on
+        BOTH fence arms (running-session and ``controlled_stop``) because it
+        filters the post-fence result set, not one arm. The hash is over
+        canonicalized YAML structure, so CRLF / format-only churn does not
+        false-drop.
         """
         sql = """
             SELECT qi.* FROM queued_intents AS qi
@@ -2235,7 +2250,40 @@ class EventStore:
         """
         with self._connect() as connection:
             rows = connection.execute(sql, (strategy_id, _dt(now), running_session_id)).fetchall()
-        return [_queued_intent_from_row(row) for row in rows]
+        # Lazy import (not module-level): the strategies package imports
+        # event_store at module load (e.g. strategies/runner.py), so a top-level
+        # `from milodex.strategies...` here would create a core<->strategies
+        # import cycle. Deferring it to call time avoids that; the module is
+        # already loaded by the time any drain runs, so the cost is nil.
+        from milodex.strategies.loader import compute_config_hash_or_none
+
+        active: list[QueuedIntentEvent] = []
+        for row in rows:
+            intent = _queued_intent_from_row(row)
+            # Belt-and-suspenders: the recompute MUST NOT be able to raise out of
+            # this loop. compute_config_hash_or_none already swallows the known
+            # families (missing/unreadable/unparseable/heterogeneous-key), but a
+            # single poison config must never crash the WHOLE drain and silently
+            # suppress every sibling intent. Any unanticipated exception => treat
+            # as un-hashable => drop this one row, keep draining the rest (I-7).
+            try:
+                current_hash = (
+                    compute_config_hash_or_none(Path(intent.strategy_config_path))
+                    if intent.strategy_config_path is not None
+                    else None
+                )
+            except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
+                current_hash = None
+            if (
+                intent.config_hash is None
+                or current_hash is None
+                or current_hash != intent.config_hash
+            ):
+                # Config missing/unreadable, never frozen, or drifted since
+                # lock-in: fail closed and drop (I-7).
+                continue
+            active.append(intent)
+        return active
 
     def mark_queued_intent_consumed(
         self, idempotency_key: str, *, consumed_by: str, consumed_at: datetime
