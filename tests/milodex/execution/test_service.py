@@ -2654,3 +2654,175 @@ def test_evaluate_latest_bar_override_none_uses_live_provider(
     assert result.status == ExecutionStatus.SUBMITTED
     # The live provider bar (the fixture) was used, not any override.
     assert result.latest_bar == latest_bar
+
+
+# ---------------------------------------------------------------------------
+# P1-3: latest_bar_override must NOT bypass non-1D staleness.
+#
+# The override is only legitimate for a 1D queued-intent drain. Two gates close
+# the hole: (a) _submit_locked forwards the override to _evaluate only when a
+# drain is in progress (idempotency_key is not None); (b) _evaluate USES the
+# override only when the resolved strategy config is daily (bar_size == "1D").
+# A non-1D or non-drain caller's override is inert — the live provider bar is
+# used, so a stale provider bar still fails the wall-clock staleness gate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def intraday_strategy_file(tmp_path: Path) -> Path:
+    """A non-1D (5Min) strategy config: the override must be ignored for it."""
+    path = tmp_path / "intraday_strategy.yaml"
+    path.write_text(
+        """
+strategy:
+  name: "paper_intraday"
+  version: 1
+  description: "Test intraday strategy"
+  enabled: true
+  universe: ["SPY"]
+  parameters: {}
+  tempo:
+    bar_size: "5Min"
+    position_lifecycle: "same_session"
+  risk:
+    max_position_pct: 0.10
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+  stage: "paper"
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.0
+    min_trades_required: 30
+""".strip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _hour_stale_bar() -> Bar:
+    """A provider bar one hour old — well past the 300s wall-clock budget."""
+    return Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(hours=1),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _fresh_override_bar() -> Bar:
+    """A 1-second-old override the bug would let bypass the staleness gate."""
+    return Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(seconds=1),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def test_non_1d_override_does_not_bypass_staleness(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    intraday_strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """A non-1D caller's fresh override over a stale provider bar is IGNORED.
+
+    The bug: ``_evaluate`` preferred the override unconditionally, so a 1-second
+    override on a 1-hour-stale provider bar bypassed the 300s wall-clock gate and
+    reached the broker. With the fix the override is inert for a 5Min config: the
+    stale provider bar is used and the submit is BLOCKED ``stale_market_data``,
+    zero broker submits. An idempotency_key is supplied so the override is even
+    forwarded to ``_evaluate`` — proving the gate is the bar_size==1D check, not
+    merely the drain-in-progress check.
+
+    The frozen-manifest resolver is patched to the matching hash (as the 1D
+    queue-at-open fixtures do) so manifest drift is not a confounder and STALENESS
+    is the only variable: pre-fix the override bypassed it (the block came from a
+    different gate), post-fix the stale provider bar blocks here.
+    """
+    import milodex.promotion.manifest as manifest_module
+    from milodex.strategies.loader import compute_config_hash
+
+    monkeypatch.setattr(
+        manifest_module,
+        "get_active_manifest_hash",
+        lambda strategy_id, stage, event_store: compute_config_hash(intraday_strategy_file),
+    )
+
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        _hour_stale_bar(),
+        sample_account,
+        submitted_order,
+    )
+    key = "intraday.2026-06-23.BUY.SPY"
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    result = service.submit_paper(
+        TradeIntent(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            quantity=5,
+            order_type=OrderType.MARKET,
+            strategy_config_path=intraday_strategy_file,
+            expected_stage="paper",
+        ),
+        idempotency_key=key,
+        latest_bar_override=_fresh_override_bar(),
+    )
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
+
+
+def test_1d_override_without_idempotency_key_is_ignored(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """A 1D caller with NO idempotency_key supplying an override -> override ignored.
+
+    The override is only legitimate for a drain (idempotency_key present).
+    ``_submit_locked`` forwards the override to ``_evaluate`` only when a drain is
+    in progress; a non-drain 1D caller's override is dropped before ``_evaluate``,
+    so the live provider bar (here the today-dated intraday bar the 1D gate
+    rejects) is used and the submit is BLOCKED — the override cannot smuggle a
+    prior-session bar past the gate outside a drain.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    # No idempotency_key -> not a drain -> the (otherwise valid prior-session)
+    # override is dropped in _submit_locked; the today-dated live bar is used and
+    # the 1D session-staleness gate blocks it.
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        latest_bar_override=_session_bar(prior_session),
+    )
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []

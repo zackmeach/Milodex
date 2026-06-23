@@ -406,11 +406,17 @@ class ExecutionService:
         idempotency_key: str | None = None,
         latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
+        # P1-3: the bar-feeding override is ONLY legitimate for a 1D queued-intent
+        # drain. Forward it to _evaluate only when a drain is in progress
+        # (idempotency_key is not None); a manual / non-drain caller's override is
+        # dropped here so it can never reach the staleness gate. _evaluate applies
+        # a second gate (bar_size == "1D") so even within a drain the override is
+        # inert for a non-1D config.
         result = self._evaluate(
             intent,
             preview_only=False,
             reasoning=reasoning,
-            latest_bar_override=latest_bar_override,
+            latest_bar_override=(latest_bar_override if idempotency_key is not None else None),
         )
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
@@ -710,9 +716,25 @@ class ExecutionService:
         # validates the override bar's session date against the latest completed
         # session and the 7-day ceiling, so a wrong/old override bar is still
         # BLOCKED. None (every legacy caller) is byte-for-byte unchanged.
+        #
+        # P1-3: the override is ONLY legitimate for a 1D drain. _submit_locked
+        # already drops it for non-drain callers (idempotency_key is None); here
+        # we additionally require the resolved config to be daily, so even a
+        # drain on a non-1D config (or a config-less caller) cannot bypass the
+        # 300s wall-clock staleness gate with a fresh override over a stale
+        # provider bar — for non-1D / no-config we ignore the override and use
+        # the live provider bar.
+        #
+        # Gold-standard hardening (deferred, for the live-capital gate): derive
+        # the locked bar internally from the queued intent rather than accept it
+        # from the caller, closing the trust gap entirely.
+        use_override = (
+            latest_bar_override is not None
+            and getattr(strategy_config, "bar_size", None) == "1D"
+        )
         latest_bar = (
             latest_bar_override
-            if latest_bar_override is not None
+            if use_override
             else self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
         )
         account = self._broker.get_account()
