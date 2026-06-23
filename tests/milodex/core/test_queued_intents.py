@@ -73,6 +73,17 @@ def _seed_run(db_path, session_id: str, exit_reason):
         con.commit()
 
 
+def _status_of(db_path, idempotency_key: str) -> str | None:
+    import sqlite3
+
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT status FROM queued_intents WHERE idempotency_key = ?",
+            (idempotency_key,),
+        ).fetchone()
+    return None if row is None else row[0]
+
+
 # ─── Schema / table presence (Task 1) ───────────────────────────────────────
 
 
@@ -227,7 +238,11 @@ def test_consumed_intent_is_not_active(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent())
     store.mark_queued_intent_consumed(
-        "rsi2.v1|2026-06-23|buy|SPY", consumed_by="sess-A", consumed_at=_NOW
+        "rsi2.v1|2026-06-23|buy|SPY",
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
     )
     assert store.get_active_queued_intents("rsi2.v1", now=_NOW, running_session_id="sess-A") == []
 
@@ -248,10 +263,14 @@ def test_consume_cas_returns_one_then_zero(tmp_path):
     store.append_queued_intent(_intent())
     key = "rsi2.v1|2026-06-23|buy|SPY"
 
-    first = store.mark_queued_intent_consumed(key, consumed_by="sess-A", consumed_at=_NOW)
+    first = store.mark_queued_intent_consumed(
+        key, now=_NOW, running_session_id="sess-A", consumed_by="sess-A", consumed_at=_NOW
+    )
     assert first == 1
     # Second CAS on the same (now non-'queued') row loses: rowcount 0.
-    second = store.mark_queued_intent_consumed(key, consumed_by="sess-B", consumed_at=_NOW)
+    second = store.mark_queued_intent_consumed(
+        key, now=_NOW, running_session_id="sess-A", consumed_by="sess-B", consumed_at=_NOW
+    )
     assert second == 0
 
 
@@ -261,7 +280,11 @@ def test_consume_sets_audit_columns(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent())
     store.mark_queued_intent_consumed(
-        "rsi2.v1|2026-06-23|buy|SPY", consumed_by="sess-A", consumed_at=_NOW
+        "rsi2.v1|2026-06-23|buy|SPY",
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
     )
     with sqlite3.connect(tmp_path / "milodex.db") as con:
         con.row_factory = sqlite3.Row
@@ -273,7 +296,143 @@ def test_consume_sets_audit_columns(tmp_path):
 
 def test_consume_unknown_key_returns_zero(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
-    assert store.mark_queued_intent_consumed("nope", consumed_by="x", consumed_at=_NOW) == 0
+    assert (
+        store.mark_queued_intent_consumed(
+            "nope", now=_NOW, running_session_id="sess-A", consumed_by="x", consumed_at=_NOW
+        )
+        == 0
+    )
+
+
+# ─── consume CAS re-asserts the FULL drain predicates (P1-1) ─────────────────
+#
+# The CAS authorizes the broker submit. Its WHERE must re-assert the SAME fences
+# get_active_queued_intents filters on (expiry + clean-handoff + config_hash) so
+# an expired-but-still-'queued' row (sweep not yet run), an unclean-handoff row,
+# or a config-drifted row cannot be claimed and submitted via a TOCTOU between
+# enumerate and consume, or a direct caller bypassing get_active.
+
+
+def test_consume_drops_expired_but_still_queued_row(tmp_path):
+    """Expired (expires_at <= now) but still status='queued' -> CAS returns 0.
+
+    The expiry sweep may not have run yet; the CAS must not claim a row whose
+    open window has passed.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(_intent(expires_at=datetime(2026, 6, 23, 13, 0, tzinfo=UTC)))
+    assert (
+        store.mark_queued_intent_consumed(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            now=_NOW,  # 14:00 > 13:00 expiry
+            running_session_id="sess-A",
+            consumed_by="sess-A",
+            consumed_at=_NOW,
+        )
+        == 0
+    )
+    # And it remains 'queued' (untouched), not 'consumed'.
+    assert _status_of(tmp_path / "milodex.db", "rsi2.v1|2026-06-23|buy|SPY") == "queued"
+
+
+@pytest.mark.parametrize(
+    "exit_reason", ["interrupted", "crashed", "kill_switch", "orphan_recovered", None]
+)
+def test_consume_drops_unclean_handoff_row(tmp_path, exit_reason):
+    """Cross-session row whose originating run did NOT controlled_stop -> 0.
+
+    Same clean-handoff fence get_active uses: a different running session may
+    only consume a prior session's row if that session exited via
+    controlled_stop. A dirty/no-row exit fails closed.
+    """
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    store.append_queued_intent(_intent(session_id="sess-OLD"))
+    _seed_run(db, "sess-OLD", exit_reason)
+    assert (
+        store.mark_queued_intent_consumed(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            now=_NOW,
+            running_session_id="sess-NEW",
+            consumed_by="sess-NEW",
+            consumed_at=_NOW,
+        )
+        == 0
+    )
+
+
+def test_consume_allows_cross_session_controlled_stop_row(tmp_path):
+    """Clean handoff (originating run controlled_stop) -> CAS succeeds (1)."""
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    store.append_queued_intent(_intent(session_id="sess-OLD"))
+    _seed_run(db, "sess-OLD", "controlled_stop")
+    assert (
+        store.mark_queued_intent_consumed(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            now=_NOW,
+            running_session_id="sess-NEW",
+            consumed_by="sess-NEW",
+            consumed_at=_NOW,
+        )
+        == 1
+    )
+
+
+def test_consume_drops_config_drifted_row(tmp_path):
+    """Stored config_hash != recomputed on-disk hash -> CAS returns 0.
+
+    The config drifted after enumeration (or never matched). The intent must
+    replay against the EXACT config it was evaluated under, or not at all.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    # Stored hash deliberately does NOT match the on-disk config's real hash.
+    store.append_queued_intent(_intent(config_hash="d" * 64))
+    assert (
+        store.mark_queued_intent_consumed(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            now=_NOW,
+            running_session_id="sess-A",
+            consumed_by="sess-A",
+            consumed_at=_NOW,
+        )
+        == 0
+    )
+
+
+def test_consume_drops_when_config_path_unhashable(tmp_path):
+    """Config path missing/unreadable (recompute None) -> CAS returns 0."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(
+        _intent(strategy_config_path=str(tmp_path / "does_not_exist.yaml"))
+    )
+    assert (
+        store.mark_queued_intent_consumed(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            now=_NOW,
+            running_session_id="sess-A",
+            consumed_by="sess-A",
+            consumed_at=_NOW,
+        )
+        == 0
+    )
+
+
+def test_consume_happy_path_active_clean_matching_config(tmp_path):
+    """Active + same-session + matching config -> CAS returns 1, row consumed."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(_intent())
+    assert (
+        store.mark_queued_intent_consumed(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            now=_NOW,
+            running_session_id="sess-A",
+            consumed_by="sess-A",
+            consumed_at=_NOW,
+        )
+        == 1
+    )
+    assert _status_of(tmp_path / "milodex.db", "rsi2.v1|2026-06-23|buy|SPY") == "consumed"
 
 
 def test_mark_expired_and_obsolete(tmp_path):

@@ -445,6 +445,11 @@ class ExecutionService:
         if idempotency_key is not None:
             consumed = self._event_store.mark_queued_intent_consumed(
                 idempotency_key,
+                # The CAS re-asserts the full drain predicates (P1-1): now bounds
+                # the expiry fence; session_id is the running session for the
+                # clean-handoff fence (None for a session-less manual submit).
+                now=datetime.now(tz=UTC),
+                running_session_id=session_id,
                 # The Phase-6 runner drain always supplies session_id; the
                 # "operator" sentinel only attributes a session-less manual
                 # submit, matching TradeIntent.submitted_by's default.

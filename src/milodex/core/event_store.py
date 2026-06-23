@@ -2286,26 +2286,102 @@ class EventStore:
         return active
 
     def mark_queued_intent_consumed(
-        self, idempotency_key: str, *, consumed_by: str, consumed_at: datetime
+        self,
+        idempotency_key: str,
+        *,
+        now: datetime,
+        running_session_id: str | None,
+        consumed_by: str,
+        consumed_at: datetime,
     ) -> int:
         """Atomically claim a queued intent for submit. Returns rows updated (0 or 1).
 
-        THE drain gate. A single-statement compare-and-swap: flip ``status`` to
-        ``'consumed'`` only if it is still ``'queued'``. The caller proceeds to the
-        broker submit ONLY when this returns 1 — a return of 0 means another process
-        already consumed (or expired/obsoleted) the row, so this caller must NOT
-        submit. Because it is one UPDATE guarded by ``status = 'queued'``, two
-        concurrent successor runners cannot both win: SQLite serializes the writes
-        and exactly one sees rowcount 1.
+        THE drain gate — it authorizes the broker submit, so it re-asserts the FULL
+        drain predicates that :meth:`get_active_queued_intents` enumerates on, not
+        merely ``status = 'queued'``. Without this, an expired-but-still-``queued``
+        row (the expiry sweep has not run yet), an unclean-handoff row, or a row
+        whose config drifted *after* enumeration could still be consumed and
+        submitted — a TOCTOU between enumerate and consume, or a direct caller that
+        bypassed ``get_active``. The caller proceeds to the broker submit ONLY when
+        this returns 1; a return of 0 means another process already consumed the row
+        OR it no longer satisfies a drain predicate, so this caller must NOT submit.
+
+        Predicates re-asserted (must stay identical to ``get_active``):
+
+        * ``status = 'queued'`` — the compare-and-swap. Two concurrent successor
+          runners cannot both win: SQLite serializes the writes and exactly one
+          sees rowcount 1.
+        * **Expiry** — ``datetime(expires_at) > datetime(:now)`` (SQL-expressible).
+        * **Clean handoff** — the SAME fence ``get_active`` uses: the originating
+          session is the running session, OR its run exited via
+          ``controlled_stop`` (SQL-expressible).
+        * **config_hash** — not SQL-expressible: before the UPDATE, in the SAME
+          connection, the row's ``strategy_config_path`` + ``config_hash`` are read
+          and the on-disk config is re-hashed via ``compute_config_hash_or_none``
+          (wrapped so a poison config drops, never crashes). A ``None`` recompute
+          or a mismatch returns 0 (drop). This shrinks the config TOCTOU to a
+          microsecond, lock-held window.
         """
+        # Lazy import: same core<->strategies cycle avoidance as
+        # get_active_queued_intents (the strategies package imports event_store
+        # at module load). Deferring to call time breaks the cycle; the module is
+        # already loaded by the time any drain runs.
+        from milodex.strategies.loader import compute_config_hash_or_none
+
         with self._connect() as connection:
+            # config_hash re-verification (same connection, before the UPDATE).
+            # Read the still-'queued' row's stored path + hash; recompute and drop
+            # on None/mismatch. A separate read is acceptable: the UPDATE below is
+            # guarded by status='queued', and the whole call runs under the
+            # caller's per-account submit lock, so the window is microscopic.
+            row = connection.execute(
+                """
+                SELECT strategy_config_path, config_hash
+                FROM queued_intents
+                WHERE idempotency_key = ? AND status = 'queued'
+                """,
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                return 0
+            stored_hash = row["config_hash"]
+            config_path = row["strategy_config_path"]
+            try:
+                current_hash = (
+                    compute_config_hash_or_none(Path(config_path))
+                    if config_path is not None
+                    else None
+                )
+            except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
+                current_hash = None
+            if stored_hash is None or current_hash is None or current_hash != stored_hash:
+                # Config never frozen, unhashable, or drifted since lock-in:
+                # fail closed and drop (no submit).
+                return 0
+
             cursor = connection.execute(
                 """
                 UPDATE queued_intents
                 SET status = 'consumed', consumed_at = ?, consumed_by = ?
-                WHERE idempotency_key = ? AND status = 'queued'
+                WHERE idempotency_key = ?
+                  AND status = 'queued'
+                  AND datetime(expires_at) > datetime(?)
+                  AND (
+                        session_id = ?
+                        OR EXISTS (
+                            SELECT 1 FROM strategy_runs AS sr
+                            WHERE sr.session_id = queued_intents.session_id
+                              AND sr.exit_reason = 'controlled_stop'
+                        )
+                      )
                 """,
-                (_dt(consumed_at), consumed_by, idempotency_key),
+                (
+                    _dt(consumed_at),
+                    consumed_by,
+                    idempotency_key,
+                    _dt(now),
+                    running_session_id,
+                ),
             )
             connection.commit()
             return cursor.rowcount
