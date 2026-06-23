@@ -7,7 +7,7 @@ import signal
 import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -672,7 +672,7 @@ class StrategyRunner:
                 "time_in_force": runner_intent.time_in_force.value,
                 "locked_in_bar": self._serialize_locked_in_bar(latest_bar),
             },
-            reasoning_json=(asdict(reasoning) if reasoning is not None else None),
+            reasoning_json=(reasoning.asdict() if reasoning is not None else None),
             created_at=now,
             # 7-day TTL, NOT 1 day: a +1d window silently kills every Friday->
             # Monday daily intent (the next open is ~65-85h out across a
