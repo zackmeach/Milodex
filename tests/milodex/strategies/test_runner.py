@@ -1750,7 +1750,17 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     fake_now[0] = fake_now[0] + timedelta(seconds=30)
     results_after_lockin = runner.run_cycle()
 
-    assert len(results_after_lockin) >= 1, "Stable post-close bar should evaluate exactly once."
+    # Phase-1 (queue-at-open, ADR 0057): the locked-in daily intent is PERSISTED
+    # to queued_intents, not submitted at close. The cycle returns [] and the
+    # broker is never touched; a sibling at-open drain submits later.
+    assert results_after_lockin == [], "Daily post-close locks in via persist, not submit."
+    assert broker.submit_calls == [], "Daily post-close must not reach the broker."
+    active = event_store.get_active_queued_intents(
+        "regime.daily.sma200_rotation.spy_shy.v1",
+        now=fake_now[0],
+        running_session_id=runner.session_id,
+    )
+    assert len(active) == 1, "Stable post-close bar persists exactly one queued intent."
     assert runner._last_processed_bar_at is not None, (
         "Once the post-close bar passes the stability check, the watermark advances."
     )

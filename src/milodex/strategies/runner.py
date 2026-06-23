@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import logging
 import signal
+import sqlite3
 import time
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -14,7 +15,8 @@ from uuid import uuid4
 
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
-from milodex.core.event_store import EventStore, StrategyRunEvent
+from milodex.broker.models import OrderSide
+from milodex.core.event_store import EventStore, QueuedIntentEvent, StrategyRunEvent
 from milodex.data import DataProvider
 from milodex.data.models import BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
@@ -24,7 +26,7 @@ from milodex.execution.service import ExecutionService
 from milodex.operations.reconciliation import local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
 from milodex.strategies.base import DecisionReasoning
-from milodex.strategies.loader import StrategyLoader
+from milodex.strategies.loader import StrategyLoader, compute_config_hash
 from milodex.strategies.paper_runner_control import consume_controlled_stop_request
 
 logger = logging.getLogger(__name__)
@@ -367,6 +369,23 @@ class StrategyRunner:
             self._processed_intent_keys.clear()
             self._processed_intent_bar_at = latest_bar.timestamp
 
+        if is_daily_bar and not market_open:
+            # Phase-1 (queue-at-open, ADR 0057): a daily strategy must NOT submit
+            # at the post-close lock-in — the market is closed and the order
+            # would be vetoed (market_closed) or queued blind to an unknown
+            # next-open price. Persist the locked-in intent; the next at-open
+            # drain re-evaluates against fresh state and submits through the
+            # chokepoint. The watermark already advanced above (exactly once).
+            for intent in intents:
+                intent_key = self._intent_key(intent, latest_bar.timestamp)
+                if intent_key in self._processed_intent_keys:
+                    continue
+                self._processed_intent_keys.add(intent_key)
+                self._persist_queued_intent(intent, latest_bar, decision.reasoning)
+            if self._on_cycle_result is not None:
+                self._on_cycle_result([])
+            return []
+
         results: list[ExecutionResult] = []
         for intent in intents:
             intent_key = self._intent_key(intent, latest_bar.timestamp)
@@ -576,6 +595,102 @@ class StrategyRunner:
             intent.normalized_symbol(),
             intent.side.value,
         )
+
+    # ------------------------------------------------------------------
+    # queue-at-open (Phase-1 persist, ADR 0057)
+    # ------------------------------------------------------------------
+
+    def _trading_session_label(self, bar_timestamp: datetime) -> str:
+        return bar_timestamp.date().isoformat()
+
+    def _idempotency_key(self, intent: TradeIntent, trading_session: str) -> str:
+        # side.value is lowercase ("buy"/"sell"); symbol is uppercased.
+        return (
+            f"{self._strategy_id}|{trading_session}|"
+            f"{intent.side.value}|{intent.normalized_symbol()}"
+        )
+
+    def _intent_class(self, intent: TradeIntent) -> str:
+        return "entry" if intent.side == OrderSide.BUY else "exit"
+
+    def _intent_notional_pct(self, intent: TradeIntent) -> float | None:
+        return getattr(intent, "notional_pct", None)
+
+    def _risk_config_hash(self) -> str:
+        # Persist the hash over the SAME path the drain re-verifies against
+        # (compute_config_hash_or_none in get_active_queued_intents); a mismatch
+        # would silently drop the intent at the open.
+        return compute_config_hash(self._loaded.config.path)
+
+    def _serialize_locked_in_bar(self, bar) -> dict[str, Any]:
+        return {
+            "timestamp": bar.timestamp.isoformat(),
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "vwap": bar.vwap,
+        }
+
+    def _persist_queued_intent(
+        self, intent: TradeIntent, latest_bar, reasoning: DecisionReasoning | None
+    ) -> None:
+        """Persist a locked-in daily intent for drain at the next session open.
+
+        Phase-1 of queue-at-open (ADR 0057): instead of submitting at the
+        post-close lock-in (the market is closed and the order would be
+        vetoed ``market_closed``), the intent is written to ``queued_intents``
+        as an inert, expiring row. The next at-open drain re-evaluates it
+        against fresh state and submits through the chokepoint.
+        """
+        runner_intent = self._runner_intent(intent)
+        trading_session = self._trading_session_label(latest_bar.timestamp)
+        idempotency_key = self._idempotency_key(runner_intent, trading_session)
+        now = self._now()
+        event = QueuedIntentEvent(
+            idempotency_key=idempotency_key,
+            strategy_id=self._strategy_id,
+            strategy_config_path=str(self._loaded.config.path),
+            config_hash=self._risk_config_hash(),
+            session_id=self._session_id,
+            trading_session=trading_session,
+            locked_in_bar_timestamp=latest_bar.timestamp.isoformat(),
+            symbol=runner_intent.normalized_symbol(),
+            side=runner_intent.side.value,
+            intent_class=self._intent_class(runner_intent),
+            notional_pct=self._intent_notional_pct(runner_intent),
+            expected_stage=runner_intent.expected_stage,
+            expected_max_positions=runner_intent.expected_max_positions,
+            expected_max_position_pct=runner_intent.expected_max_position_pct,
+            expected_daily_loss_cap_pct=runner_intent.expected_daily_loss_cap_pct,
+            intent_payload_json={
+                "symbol": runner_intent.symbol,
+                "side": runner_intent.side.value,
+                "quantity": runner_intent.quantity,
+                "order_type": runner_intent.order_type.value,
+                "time_in_force": runner_intent.time_in_force.value,
+                "locked_in_bar": self._serialize_locked_in_bar(latest_bar),
+            },
+            reasoning_json=(asdict(reasoning) if reasoning is not None else None),
+            created_at=now,
+            # 7-day TTL, NOT 1 day: a +1d window silently kills every Friday->
+            # Monday daily intent (the next open is ~65-85h out across a
+            # weekend/holiday). The session-aware staleness gate is the real
+            # per-open guard, so the TTL only needs to outlast the longest
+            # weekend/holiday gap to the next open.
+            expires_at=now + timedelta(days=7),
+            status="queued",
+        )
+        try:
+            self._event_store.append_queued_intent(event)
+        except sqlite3.IntegrityError:
+            # UNIQUE(idempotency_key) collision = this logical intent is already
+            # queued for this session; persist is idempotent, so swallow.
+            logger.info(
+                "Queued intent already persisted (idempotent): %s",
+                idempotency_key,
+            )
 
     def _resolve_config_path(self) -> Path:
         from milodex.strategies.loader import resolve_config_path
