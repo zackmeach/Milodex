@@ -24,7 +24,7 @@ Risk config used throughout
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -66,6 +66,11 @@ class _StubBroker:
 
     def is_market_open(self) -> bool:
         return True
+
+    def latest_completed_session(self, now: datetime) -> date:
+        # Test double: latest session is "today" so the 1D staleness gate
+        # treats the fresh (today-dated) bar as current.
+        return now.date()
 
     def submit_order(self, **_kwargs) -> Order:
         raise AssertionError("submit_order must not be called from preview()")

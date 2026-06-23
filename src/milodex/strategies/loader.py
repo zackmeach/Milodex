@@ -441,6 +441,33 @@ def compute_config_hash(path: Path) -> str:
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
+def compute_config_hash_or_none(path: Path) -> str | None:
+    """CRLF-insensitive config hash that returns ``None`` instead of raising.
+
+    Drain-time guard helper (I-7): the queue-at-open drain authority
+    (:meth:`milodex.core.event_store.EventStore.get_active_queued_intents`)
+    re-resolves a queued intent's config at the open and DROPS the intent when
+    its config can no longer be hashed (path deleted / moved / unreadable / not
+    parseable) — exactly the cases :func:`compute_config_hash` raises on. The
+    drain loop must drop, never raise, so it calls this non-raising wrapper.
+
+    Hashing is CRLF-insensitive because the underlying YAML load normalizes line
+    endings before canonicalization, so a checkout that flipped LF<->CRLF does
+    not spuriously invalidate an otherwise-identical config.
+
+    Caught exception families: ``ValueError`` (missing path), ``OSError``
+    (unreadable), ``yaml.YAMLError`` (unparseable), and ``TypeError`` — a config
+    whose parsed mapping has heterogeneous keys (e.g. an unquoted numeric or bool
+    key alongside string keys) makes the canonicalizing ``sorted()`` /
+    ``json.dumps(sort_keys=True)`` raise ``'<' not supported`` ``TypeError``;
+    that must drop the intent (fail-closed), never escape into the drain loop.
+    """
+    try:
+        return compute_config_hash(path)
+    except (ValueError, OSError, TypeError, yaml.YAMLError):
+        return None
+
+
 def build_default_registry() -> StrategyRegistry:
     """Return a registry preloaded with all concrete strategy classes.
 

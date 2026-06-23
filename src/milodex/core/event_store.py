@@ -202,6 +202,51 @@ class ExperimentEvent:
 
 
 @dataclass(frozen=True)
+class QueuedIntentEvent:
+    """A daily intent locked in at close, awaiting drain at the next session open.
+
+    queue-at-open durable state. Persisted by the runner at the lock-in-confirmed
+    cycle when the next session's open is still in the future; drained — through
+    the full risk battery — at that open. NOT append-only: a row's ``status``
+    transitions ``queued`` -> ``consumed`` | ``expired`` | ``obsolete`` via the
+    ``mark_*`` store methods.
+
+    ``idempotency_key`` (UNIQUE) = ``f"{strategy_id}|{trading_session}|{side}|{symbol}"``.
+    The ``expected_*`` fields snapshot the governance posture at lock-in time so a
+    drift between persist and drain (stage change, cap edit) is detectable.
+    ``intent_payload_json`` carries the order intent; ``reasoning_json`` the
+    decision reasoning. ``session_id`` is the originating run's session — the
+    clean-handoff fence in :meth:`EventStore.get_active_queued_intents` compares
+    it against the draining run and falls back to the originating run's
+    ``strategy_runs.exit_reason``.
+    """
+
+    idempotency_key: str
+    strategy_id: str | None = None
+    strategy_config_path: str | None = None
+    config_hash: str | None = None
+    session_id: str | None = None
+    trading_session: str | None = None
+    locked_in_bar_timestamp: str | None = None
+    symbol: str | None = None
+    side: str | None = None
+    intent_class: str | None = None
+    notional_pct: float | None = None
+    expected_stage: str | None = None
+    expected_max_positions: int | None = None
+    expected_max_position_pct: float | None = None
+    expected_daily_loss_cap_pct: float | None = None
+    intent_payload_json: dict[str, Any] | None = None
+    reasoning_json: dict[str, Any] | None = None
+    created_at: datetime | None = None
+    expires_at: datetime | None = None
+    status: str = "queued"
+    consumed_at: datetime | None = None
+    consumed_by: str | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True)
 class BacktestRunEvent:
     """Lifecycle record for a backtest engine run.
 
@@ -2072,6 +2117,294 @@ class EventStore:
         carried.update(changes)
         return self.append_experiment(ExperimentEvent(recorded_at=datetime.now(tz=UTC), **carried))
 
+    def append_queued_intent(self, event: QueuedIntentEvent) -> int:
+        """Persist a queued intent and return its autoincrement id.
+
+        queue-at-open: a daily runner that confirms a close-bar lock-in while the
+        next session's open is in the future calls this instead of submitting.
+        The ``idempotency_key`` UNIQUE constraint makes a re-persist of the same
+        logical intent raise ``sqlite3.IntegrityError`` rather than double-queue.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO queued_intents (
+                    idempotency_key, strategy_id, strategy_config_path, config_hash,
+                    session_id, trading_session, locked_in_bar_timestamp, symbol, side,
+                    intent_class, notional_pct, expected_stage, expected_max_positions,
+                    expected_max_position_pct, expected_daily_loss_cap_pct,
+                    intent_payload_json, reasoning_json, created_at, expires_at, status,
+                    consumed_at, consumed_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.idempotency_key,
+                    event.strategy_id,
+                    event.strategy_config_path,
+                    event.config_hash,
+                    event.session_id,
+                    event.trading_session,
+                    event.locked_in_bar_timestamp,
+                    event.symbol,
+                    event.side,
+                    event.intent_class,
+                    event.notional_pct,
+                    event.expected_stage,
+                    event.expected_max_positions,
+                    event.expected_max_position_pct,
+                    event.expected_daily_loss_cap_pct,
+                    (
+                        None
+                        if event.intent_payload_json is None
+                        else _dump_json(event.intent_payload_json)
+                    ),
+                    None if event.reasoning_json is None else _dump_json(event.reasoning_json),
+                    _dt(event.created_at),
+                    _dt(event.expires_at),
+                    event.status,
+                    _dt(event.consumed_at),
+                    event.consumed_by,
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def get_queued_intent(self, intent_id: int) -> QueuedIntentEvent | None:
+        """Return the queued intent with ``id == intent_id``, or ``None``.
+
+        A test/diagnostic single-row read keyed on the autoincrement id — NOT on
+        the drain-authority path. The sole authority for "drainable" is
+        :meth:`get_active_queued_intents`; this bypasses its fences and returns a
+        row regardless of status/expiry, so it must never gate a broker submit.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM queued_intents WHERE id = ? LIMIT 1",
+                (intent_id,),
+            ).fetchone()
+        return None if row is None else _queued_intent_from_row(row)
+
+    def get_active_queued_intents(
+        self,
+        strategy_id: str,
+        *,
+        now: datetime,
+        running_session_id: str,
+    ) -> list[QueuedIntentEvent]:
+        """Return the drainable queued intents for ``strategy_id`` — the SOLE drain
+        authority for queue-at-open.
+
+        A row is drainable iff ALL of:
+          * ``status = 'queued'`` (not already consumed / expired / obsolete),
+          * not expired: ``datetime(expires_at) > datetime(now)``,
+          * clean-handoff holds: the intent was queued by the currently running
+            session (``session_id = running_session_id``) OR its originating run
+            shut down cleanly (``strategy_runs.exit_reason = 'controlled_stop'``).
+
+        The clean-handoff fence (I-4) is enforced HERE, in SQL, so no caller can
+        drain across an unclean process boundary: an ``interrupted`` / ``crashed`` /
+        ``kill_switch`` / ``orphan_recovered`` / NULL exit_reason, or a session with
+        NO ``strategy_runs`` row at all, is dropped. ``controlled_stop`` is matched
+        by literal string equality — NOT ``IS NOT NULL`` — so only a deliberate,
+        cooperative stop hands its queued intent to a successor.
+
+        CALLER CONTRACT: ``now`` MUST be an aware UTC ``datetime`` and
+        ``expires_at`` is persisted as aware UTC ISO — they must share tz
+        convention so the SQL ``datetime(expires_at) > datetime(now)`` compare is
+        calendar-correct. This is NOT enforced here: ``_dt`` is ``.isoformat()``,
+        which serializes a naive ``now`` without raising, and SQLite's
+        ``datetime()`` treats a naive ISO string as already-UTC — so a naive or
+        wrong-tz ``now`` would skew the expiry fence by the local offset SILENTLY.
+        The runner is the guarantor: it always passes an aware UTC ``now``.
+
+        CONFIG_HASH GUARD (I-7): after the SQL base filter + clean-exit fence,
+        each surviving row is re-verified against its on-disk config. The stored
+        ``config_hash`` was frozen at lock-in; a row is DROPPED when the stored
+        hash is ``None``, the recompute is ``None`` (path deleted/moved/unreadable
+        — :func:`compute_config_hash_or_none` returns ``None`` instead of raising,
+        so a missing path never crashes the drain), OR the two differ (config
+        edited overnight). A queued intent must replay against the EXACT config it
+        was evaluated under, or not at all — otherwise ``strategy_name`` / stage /
+        ``notional_pct`` could silently drift between persist and drain, or the
+        evaluator's strategy-scoped checks could silently skip. The guard runs on
+        BOTH fence arms (running-session and ``controlled_stop``) because it
+        filters the post-fence result set, not one arm. The hash is over
+        canonicalized YAML structure, so CRLF / format-only churn does not
+        false-drop.
+        """
+        sql = """
+            SELECT qi.* FROM queued_intents AS qi
+            WHERE qi.strategy_id = ?
+              AND qi.status = 'queued'
+              AND datetime(qi.expires_at) > datetime(?)
+              AND (
+                    qi.session_id = ?
+                    OR EXISTS (
+                        SELECT 1 FROM strategy_runs AS sr
+                        WHERE sr.session_id = qi.session_id
+                          AND sr.exit_reason = 'controlled_stop'
+                    )
+                  )
+            ORDER BY qi.id ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (strategy_id, _dt(now), running_session_id)).fetchall()
+        # Lazy import (not module-level): the strategies package imports
+        # event_store at module load (e.g. strategies/runner.py), so a top-level
+        # `from milodex.strategies...` here would create a core<->strategies
+        # import cycle. Deferring it to call time avoids that; the module is
+        # already loaded by the time any drain runs, so the cost is nil.
+        from milodex.strategies.loader import compute_config_hash_or_none
+
+        active: list[QueuedIntentEvent] = []
+        for row in rows:
+            intent = _queued_intent_from_row(row)
+            # Belt-and-suspenders: the recompute MUST NOT be able to raise out of
+            # this loop. compute_config_hash_or_none already swallows the known
+            # families (missing/unreadable/unparseable/heterogeneous-key), but a
+            # single poison config must never crash the WHOLE drain and silently
+            # suppress every sibling intent. Any unanticipated exception => treat
+            # as un-hashable => drop this one row, keep draining the rest (I-7).
+            try:
+                current_hash = (
+                    compute_config_hash_or_none(Path(intent.strategy_config_path))
+                    if intent.strategy_config_path is not None
+                    else None
+                )
+            except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
+                current_hash = None
+            if (
+                intent.config_hash is None
+                or current_hash is None
+                or current_hash != intent.config_hash
+            ):
+                # Config missing/unreadable, never frozen, or drifted since
+                # lock-in: fail closed and drop (I-7).
+                continue
+            active.append(intent)
+        return active
+
+    def mark_queued_intent_consumed(
+        self,
+        idempotency_key: str,
+        *,
+        now: datetime,
+        running_session_id: str | None,
+        consumed_by: str,
+        consumed_at: datetime,
+    ) -> int:
+        """Atomically claim a queued intent for submit. Returns rows updated (0 or 1).
+
+        THE drain gate — it authorizes the broker submit, so it re-asserts the FULL
+        drain predicates that :meth:`get_active_queued_intents` enumerates on, not
+        merely ``status = 'queued'``. Without this, an expired-but-still-``queued``
+        row (the expiry sweep has not run yet), an unclean-handoff row, or a row
+        whose config drifted *after* enumeration could still be consumed and
+        submitted — a TOCTOU between enumerate and consume, or a direct caller that
+        bypassed ``get_active``. The caller proceeds to the broker submit ONLY when
+        this returns 1; a return of 0 means another process already consumed the row
+        OR it no longer satisfies a drain predicate, so this caller must NOT submit.
+
+        Predicates re-asserted (must stay identical to ``get_active``):
+
+        * ``status = 'queued'`` — the compare-and-swap. Two concurrent successor
+          runners cannot both win: SQLite serializes the writes and exactly one
+          sees rowcount 1.
+        * **Expiry** — ``datetime(expires_at) > datetime(:now)`` (SQL-expressible).
+        * **Clean handoff** — the SAME fence ``get_active`` uses: the originating
+          session is the running session, OR its run exited via
+          ``controlled_stop`` (SQL-expressible).
+        * **config_hash** — not SQL-expressible: before the UPDATE, in the SAME
+          connection, the row's ``strategy_config_path`` + ``config_hash`` are read
+          and the on-disk config is re-hashed via ``compute_config_hash_or_none``
+          (wrapped so a poison config drops, never crashes). A ``None`` recompute
+          or a mismatch returns 0 (drop). This shrinks the config TOCTOU to a
+          microsecond, lock-held window.
+        """
+        # Lazy import: same core<->strategies cycle avoidance as
+        # get_active_queued_intents (the strategies package imports event_store
+        # at module load). Deferring to call time breaks the cycle; the module is
+        # already loaded by the time any drain runs.
+        from milodex.strategies.loader import compute_config_hash_or_none
+
+        with self._connect() as connection:
+            # config_hash re-verification (same connection, before the UPDATE).
+            # Read the still-'queued' row's stored path + hash; recompute and drop
+            # on None/mismatch. A separate read is acceptable: the UPDATE below is
+            # guarded by status='queued', and the whole call runs under the
+            # caller's per-account submit lock, so the window is microscopic.
+            row = connection.execute(
+                """
+                SELECT strategy_config_path, config_hash
+                FROM queued_intents
+                WHERE idempotency_key = ? AND status = 'queued'
+                """,
+                (idempotency_key,),
+            ).fetchone()
+            if row is None:
+                return 0
+            stored_hash = row["config_hash"]
+            config_path = row["strategy_config_path"]
+            try:
+                current_hash = (
+                    compute_config_hash_or_none(Path(config_path))
+                    if config_path is not None
+                    else None
+                )
+            except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
+                current_hash = None
+            if stored_hash is None or current_hash is None or current_hash != stored_hash:
+                # Config never frozen, unhashable, or drifted since lock-in:
+                # fail closed and drop (no submit).
+                return 0
+
+            cursor = connection.execute(
+                """
+                UPDATE queued_intents
+                SET status = 'consumed', consumed_at = ?, consumed_by = ?
+                WHERE idempotency_key = ?
+                  AND status = 'queued'
+                  AND datetime(expires_at) > datetime(?)
+                  AND (
+                        session_id = ?
+                        OR EXISTS (
+                            SELECT 1 FROM strategy_runs AS sr
+                            WHERE sr.session_id = queued_intents.session_id
+                              AND sr.exit_reason = 'controlled_stop'
+                        )
+                      )
+                """,
+                (
+                    _dt(consumed_at),
+                    consumed_by,
+                    idempotency_key,
+                    _dt(now),
+                    running_session_id,
+                ),
+            )
+            connection.commit()
+            return cursor.rowcount
+
+    def mark_queued_intent_expired(self, intent_id: int) -> None:
+        """Mark a queued intent expired (its open window passed undrained)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE queued_intents SET status = 'expired' WHERE id = ?",
+                (intent_id,),
+            )
+            connection.commit()
+
+    def mark_queued_intent_obsolete(self, intent_id: int) -> None:
+        """Mark a queued intent obsolete (superseded before drain — e.g. a newer
+        lock-in for the same strategy/session/side/symbol, or operator override)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE queued_intents SET status = 'obsolete' WHERE id = ?",
+                (intent_id,),
+            )
+            connection.commit()
+
     def get_backtest_run(self, run_id: str) -> BacktestRunEvent | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2633,6 +2966,48 @@ def _experiment_from_row(row: sqlite3.Row) -> ExperimentEvent:
         evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
         lessons=row["lessons"],
         revisitable=bool(row["revisitable"]),
+    )
+
+
+def _queued_intent_from_row(row: sqlite3.Row) -> QueuedIntentEvent:
+    return QueuedIntentEvent(
+        id=int(row["id"]),
+        idempotency_key=str(row["idempotency_key"]),
+        strategy_id=row["strategy_id"],
+        strategy_config_path=row["strategy_config_path"],
+        config_hash=row["config_hash"],
+        session_id=row["session_id"],
+        trading_session=row["trading_session"],
+        locked_in_bar_timestamp=row["locked_in_bar_timestamp"],
+        symbol=row["symbol"],
+        side=row["side"],
+        intent_class=row["intent_class"],
+        notional_pct=(None if row["notional_pct"] is None else float(row["notional_pct"])),
+        expected_stage=row["expected_stage"],
+        expected_max_positions=(
+            None if row["expected_max_positions"] is None else int(row["expected_max_positions"])
+        ),
+        expected_max_position_pct=(
+            None
+            if row["expected_max_position_pct"] is None
+            else float(row["expected_max_position_pct"])
+        ),
+        expected_daily_loss_cap_pct=(
+            None
+            if row["expected_daily_loss_cap_pct"] is None
+            else float(row["expected_daily_loss_cap_pct"])
+        ),
+        intent_payload_json=(
+            None if row["intent_payload_json"] is None else _load_json(row["intent_payload_json"])
+        ),
+        reasoning_json=(
+            None if row["reasoning_json"] is None else _load_json(row["reasoning_json"])
+        ),
+        created_at=_parse_datetime(row["created_at"]),
+        expires_at=_parse_datetime(row["expires_at"]),
+        status=str(row["status"]),
+        consumed_at=_parse_datetime(row["consumed_at"]),
+        consumed_by=row["consumed_by"],
     )
 
 

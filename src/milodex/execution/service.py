@@ -20,7 +20,7 @@ from milodex.core.event_store import (
     ExplanationEvent,
     TradeEvent,
 )
-from milodex.data import DataProvider
+from milodex.data import Bar, DataProvider
 
 if TYPE_CHECKING:
     from milodex.strategies.base import DecisionReasoning
@@ -116,9 +116,39 @@ class ExecutionService:
         *,
         session_id: str | None = None,
         reasoning: DecisionReasoning | None = None,
+        idempotency_key: str | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
-        """Submit a paper trade after passing risk evaluation."""
-        return self._submit(intent, source="paper", session_id=session_id, reasoning=reasoning)
+        """Submit a paper trade after passing risk evaluation.
+
+        ``idempotency_key`` is the queue-at-open drain hook (D-1, ADR 0057). When
+        present, ``_submit_locked`` runs a row-scoped compare-and-set against the
+        durable ``queued_intents`` table — under the per-account submit lock and
+        before the broker call — so an overnight double-launch / crash-retry
+        consumes the row exactly once and any duplicate is suppressed without a
+        second order. When ``None`` (every legacy caller) the CAS is skipped and
+        behavior is byte-for-byte unchanged.
+
+        ``latest_bar_override`` is the companion queue-at-open drain hook (D-1,
+        Option A). A daily (1D) runner locks in on the prior session's close and
+        the drain submits at the NEXT open: during RTH the live
+        ``get_latest_bar`` returns an intraday latest-trade bar stamped *today*,
+        which the session-aware 1D staleness gate correctly rejects (its date is
+        not the latest completed session). The drain instead feeds the locked-in
+        daily SESSION bar here so the same gate sees the bar a 1D strategy
+        legitimately prices and trades on. The override changes only WHICH bar is
+        evaluated; the staleness gate still runs unchanged and still BLOCKS a bar
+        whose session date is not the latest completed session. ``None`` (every
+        legacy caller) preserves today's behavior byte-for-byte.
+        """
+        return self._submit(
+            intent,
+            source="paper",
+            session_id=session_id,
+            reasoning=reasoning,
+            idempotency_key=idempotency_key,
+            latest_bar_override=latest_bar_override,
+        )
 
     def submit_backtest(
         self,
@@ -153,6 +183,8 @@ class ExecutionService:
         session_id: str | None = None,
         backtest_run_id: int | None = None,
         reasoning: DecisionReasoning | None = None,
+        idempotency_key: str | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
         """Serialize the submit critical section per account, then submit.
 
@@ -172,6 +204,8 @@ class ExecutionService:
                 session_id=session_id,
                 backtest_run_id=backtest_run_id,
                 reasoning=reasoning,
+                idempotency_key=idempotency_key,
+                latest_bar_override=latest_bar_override,
             )
         lock = self._submit_lock()
         try:
@@ -197,6 +231,8 @@ class ExecutionService:
                 session_id=session_id,
                 backtest_run_id=backtest_run_id,
                 reasoning=reasoning,
+                idempotency_key=idempotency_key,
+                latest_bar_override=latest_bar_override,
             )
         finally:
             lock.release()
@@ -301,6 +337,64 @@ class ExecutionService:
         )
         return declined
 
+    def _suppressed_for_idempotency(
+        self,
+        intent: TradeIntent,
+        result: ExecutionResult,
+        *,
+        source: str,
+        session_id: str | None,
+        backtest_run_id: int | None,
+        idempotency_key: str,
+    ) -> ExecutionResult:
+        """No-op result when the idempotency CAS lost the race (rowcount != 1).
+
+        A concurrent / duplicate drain already consumed this queued intent. We do
+        NOT submit and do NOT write an outbox row. The already-computed ``result``
+        (risk already passed) is reused — this is purely a race-loser, not a risk
+        block — so this never re-evaluates and never trips the kill switch.
+        Recorded for audit; the runner treats it like any other non-submitted
+        decision and continues.
+        """
+        _logger.info(
+            "Idempotency CAS suppressed duplicate submit for %s (key=%s); no order sent.",
+            intent.normalized_symbol(),
+            idempotency_key,
+        )
+        decision = RiskDecision(
+            allowed=False,
+            summary=(
+                "Submit suppressed: queued intent already consumed "
+                "(idempotency CAS lost the race). No order was sent."
+            ),
+            checks=[
+                RiskCheckResult(
+                    name="idempotency_cas",
+                    passed=False,
+                    message=f"queued intent {idempotency_key} already consumed",
+                    reason_code="idempotency_suppressed",
+                )
+            ],
+            reason_codes=["idempotency_suppressed"],
+        )
+        suppressed = replace(
+            result,
+            status=ExecutionStatus.BLOCKED,
+            risk_decision=decision,
+            order=None,
+            message="Submit suppressed: idempotency CAS lost the race (no order sent).",
+            recorded_at=datetime.now(tz=UTC),
+        )
+        self._record_execution(
+            intent,
+            suppressed,
+            decision_type="submit",
+            session_id=session_id,
+            source=source,
+            backtest_run_id=backtest_run_id,
+        )
+        return suppressed
+
     def _submit_locked(
         self,
         intent: TradeIntent,
@@ -309,8 +403,21 @@ class ExecutionService:
         session_id: str | None = None,
         backtest_run_id: int | None = None,
         reasoning: DecisionReasoning | None = None,
+        idempotency_key: str | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
-        result = self._evaluate(intent, preview_only=False, reasoning=reasoning)
+        # P1-3: the bar-feeding override is ONLY legitimate for a 1D queued-intent
+        # drain. Forward it to _evaluate only when a drain is in progress
+        # (idempotency_key is not None); a manual / non-drain caller's override is
+        # dropped here so it can never reach the staleness gate. _evaluate applies
+        # a second gate (bar_size == "1D") so even within a drain the override is
+        # inert for a non-1D config.
+        result = self._evaluate(
+            intent,
+            preview_only=False,
+            reasoning=reasoning,
+            latest_bar_override=(latest_bar_override if idempotency_key is not None else None),
+        )
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
             self._record_execution(
@@ -322,6 +429,42 @@ class ExecutionService:
                 backtest_run_id=backtest_run_id,
             )
             return result
+
+        # Idempotency CAS (queue-at-open drain path — D-1, ADR 0057, I-5). Risk
+        # has ALREADY allowed this intent and we hold the per-account submit
+        # lock. The single-statement CAS in the event store flips the queued row
+        # to 'consumed' iff it is still 'queued'; rowcount == 1 means THIS caller
+        # won the race and may submit. rowcount == 0 means a concurrent /
+        # duplicate drain (overnight double-launch, crash-retry) already consumed
+        # it -> suppress: no broker call, no outbox row, an auditable explanation,
+        # the session continues. This sits strictly AFTER the risk-allow gate and
+        # BEFORE the outbox write + broker call, so a benign race-loss can never
+        # reach _maybe_activate_kill_switch (only genuine risk blocks do, above).
+        # Skipped entirely when no key is supplied (legacy direct callers) — the
+        # None path is byte-for-byte unchanged.
+        if idempotency_key is not None:
+            consumed = self._event_store.mark_queued_intent_consumed(
+                idempotency_key,
+                # The CAS re-asserts the full drain predicates (P1-1): now bounds
+                # the expiry fence; session_id is the running session for the
+                # clean-handoff fence (None for a session-less manual submit).
+                now=datetime.now(tz=UTC),
+                running_session_id=session_id,
+                # The Phase-6 runner drain always supplies session_id; the
+                # "operator" sentinel only attributes a session-less manual
+                # submit, matching TradeIntent.submitted_by's default.
+                consumed_by=session_id or "operator",
+                consumed_at=datetime.now(tz=UTC),
+            )
+            if consumed != 1:
+                return self._suppressed_for_idempotency(
+                    intent,
+                    result,
+                    source=source,
+                    session_id=session_id,
+                    backtest_run_id=backtest_run_id,
+                    idempotency_key=idempotency_key,
+                )
 
         # Durable pre-submit outbox row (P1-02): committed BEFORE the broker
         # call so a crash anywhere past this point leaves evidence that an
@@ -556,6 +699,7 @@ class ExecutionService:
         *,
         preview_only: bool,
         reasoning: DecisionReasoning | None = None,
+        latest_bar_override: Bar | None = None,
     ) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
         # Full short-circuit applies only to the BYPASS backtest policy
@@ -568,7 +712,36 @@ class ExecutionService:
         is_backtest = self._is_backtest or bypass_mode
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
 
-        latest_bar = self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
+        # Queue-at-open drain bar-feeding override (D-1, Option A). When the
+        # caller supplies a bar, evaluate against it instead of the live
+        # latest-trade bar. The whole _evaluate uses this bar — both the
+        # session-aware staleness gate AND the estimated_unit_price risk-cap
+        # pricing below (correct for a 1D strategy, which prices on its daily
+        # session bar). This does NOT weaken the gate: staleness_verdict still
+        # validates the override bar's session date against the latest completed
+        # session and the 7-day ceiling, so a wrong/old override bar is still
+        # BLOCKED. None (every legacy caller) is byte-for-byte unchanged.
+        #
+        # P1-3: the override is ONLY legitimate for a 1D drain. _submit_locked
+        # already drops it for non-drain callers (idempotency_key is None); here
+        # we additionally require the resolved config to be daily, so even a
+        # drain on a non-1D config (or a config-less caller) cannot bypass the
+        # 300s wall-clock staleness gate with a fresh override over a stale
+        # provider bar — for non-1D / no-config we ignore the override and use
+        # the live provider bar.
+        #
+        # Gold-standard hardening (deferred, for the live-capital gate): derive
+        # the locked bar internally from the queued intent rather than accept it
+        # from the caller, closing the trust gap entirely.
+        use_override = (
+            latest_bar_override is not None
+            and getattr(strategy_config, "bar_size", None) == "1D"
+        )
+        latest_bar = (
+            latest_bar_override
+            if use_override
+            else self._data_provider.get_latest_bar(normalized_intent.normalized_symbol())
+        )
         account = self._broker.get_account()
         market_open = self._broker.is_market_open()
 
@@ -640,6 +813,13 @@ class ExecutionService:
                 trading_mode = get_trading_mode()
             positions = self._broker.get_positions()
             reconciliation_readiness = latest_readiness(self._event_store)
+            # Session identity for the 1D staleness gate (D-1 queue-at-open).
+            # One extra broker call per submit; could be cached per-session if
+            # it ever shows up in profiling, but YAGNI for now. None on
+            # resolution failure -> the 1D gate fails closed.
+            latest_completed_session = self._broker.latest_completed_session(
+                datetime.now(tz=UTC)
+            )
             context = EvaluationContext(
                 intent=normalized_intent,
                 request=request,
@@ -649,6 +829,7 @@ class ExecutionService:
                 reconciliation_readiness=reconciliation_readiness,
                 latest_bar=latest_bar,
                 market_open=market_open,
+                latest_completed_session=latest_completed_session,
                 trading_mode=trading_mode,
                 preview_only=preview_only,
                 kill_switch_state=self._kill_switch_store.get_state(),

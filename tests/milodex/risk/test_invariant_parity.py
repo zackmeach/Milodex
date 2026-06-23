@@ -16,11 +16,12 @@ side. The relation under test is: veto **passed** iff condition **not active**.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from milodex.data.models import Bar
+from milodex.execution.config import StrategyExecutionConfig
 from milodex.risk import RiskEvaluator
 from milodex.risk.disable_conditions import _evaluate_data_quality, _evaluate_drawdown_breach
 
@@ -113,4 +114,86 @@ def test_data_staleness_veto_and_disable_condition_never_diverge(age_factor: flo
     assert veto_passed == (not condition_active), (
         f"staleness divergence at age x{age_factor}: "
         f"veto passed={veto_passed}, disable-condition active={condition_active}"
+    )
+
+
+# --- 1D session-aware staleness parity (D-1 queue-at-open) -----------------
+#
+# The session-identity rule and 7-day ceiling must hold IDENTICALLY on both
+# the veto and the disable-condition side. This sweeps the 1D decision space —
+# {date match, date mismatch} x {None calendar} x {within ceiling, beyond
+# ceiling} — and asserts veto-passed iff condition-not-active. A future edit
+# that widened only one gate would fail here. Both gates read ``datetime.now``
+# from their own module, so the clock is frozen in both.
+
+_LATEST_SESSION = date(2026, 5, 8)
+
+
+def _exec_config_1d() -> StrategyExecutionConfig:
+    from pathlib import Path
+
+    return StrategyExecutionConfig(
+        name="daily_parity",
+        enabled=True,
+        stage="paper",
+        max_position_pct=0.20,
+        max_positions=3,
+        daily_loss_cap_pct=0.02,
+        path=Path("daily_parity.yaml"),
+        family="momentum",
+        bar_size="1D",
+    )
+
+
+def _daily_bar(session_date: date) -> Bar:
+    return Bar(
+        timestamp=datetime(session_date.year, session_date.month, session_date.day, tzinfo=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+
+
+# (bar session date, latest_completed_session, fixed-now): each row drives one
+# 1D verdict; parity is asserted regardless of the expected outcome.
+_1D_CASES = [
+    # fresh: date matches, ~3 days old, calendar resolved
+    (_LATEST_SESSION, _LATEST_SESSION, datetime(2026, 5, 11, 14, 0, tzinfo=UTC)),
+    # dead feed: bar date older than latest session
+    (date(2026, 5, 5), _LATEST_SESSION, datetime(2026, 5, 11, 14, 0, tzinfo=UTC)),
+    # fail-closed: calendar unavailable
+    (_LATEST_SESSION, None, datetime(2026, 5, 11, 14, 0, tzinfo=UTC)),
+    # beyond 7-day ceiling though date matches
+    (_LATEST_SESSION, _LATEST_SESSION, datetime(2026, 5, 20, 14, 0, tzinfo=UTC)),
+]
+
+
+@pytest.mark.parametrize(("bar_session", "latest_session", "fixed_now"), _1D_CASES)
+def test_1d_staleness_veto_and_disable_condition_never_diverge(
+    monkeypatch, bar_session, latest_session, fixed_now
+):
+    from milodex.risk import disable_conditions as dc_module
+    from milodex.risk import evaluator as evaluator_module
+
+    class _FrozenDateTime:
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(evaluator_module, "datetime", _FrozenDateTime)
+    monkeypatch.setattr(dc_module, "datetime", _FrozenDateTime)
+
+    ctx = make_context(
+        strategy_config=_exec_config_1d(),
+        latest_bar=_daily_bar(bar_session),
+        latest_completed_session=latest_session,
+    )
+    veto_passed = _veto_passed(ctx, "data_staleness")
+    condition_active = _evaluate_data_quality(ctx).active
+    assert veto_passed == (not condition_active), (
+        f"1D staleness divergence (bar={bar_session}, latest={latest_session}, "
+        f"now={fixed_now}): veto passed={veto_passed}, condition active={condition_active}"
     )

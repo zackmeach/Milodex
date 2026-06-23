@@ -9,12 +9,16 @@ raises immediately on all other errors.
 
 from __future__ import annotations
 
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
+
 from alpaca.common.exceptions import APIError
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.enums import TimeInForce as AlpacaTimeInForce
 from alpaca.trading.requests import (
+    GetCalendarRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
@@ -288,3 +292,69 @@ class AlpacaBrokerClient(BrokerClient):
         """Check if the market is currently open."""
         clock = call_with_retry_on_transient(lambda: self._client.get_clock())
         return clock.is_open
+
+    def latest_completed_session(self, now: datetime) -> date | None:
+        """Latest exchange session whose close is at or before ``now``.
+
+        Queries the Alpaca trading calendar over a short trailing window
+        (``now`` minus 14 calendar days, generous enough to bridge holiday
+        clusters) and returns the date of the most recent session that has
+        already closed. Returns ``None`` on any failure or ambiguity so the
+        risk layer fails closed (treats the bar as stale) rather than trusting
+        an unverifiable wall clock.
+
+        Alpaca's ``Calendar.close`` is a tz-naive datetime in US/Eastern wall
+        time; it is localized to ``America/New_York`` (DST-correct) before the
+        comparison against ``now``. ``Calendar.date`` is the session's calendar
+        date and is what daily bars are stamped with (00:00 ET == 04:00/05:00
+        UTC of that date), so it maps directly onto the bar's session date.
+        """
+        try:
+            request = GetCalendarRequest(
+                start=(now - timedelta(days=14)).date(),
+                end=now.date(),
+            )
+            calendar = call_with_retry_on_transient(
+                lambda: self._client.get_calendar(request)
+            )
+        except Exception:
+            # Any transport/parse failure -> fail closed (None). The risk layer
+            # blocks the 1D submit rather than trusting an unverified session.
+            return None
+
+        if not calendar:
+            return None
+
+        eastern = ZoneInfo("America/New_York")
+        latest: date | None = None
+        for session in calendar:
+            close = session.close
+            session_date = session.date
+            if close is None or session_date is None:
+                # ANY malformed row poisons the latest-session determination:
+                # if the genuinely-latest row is the ambiguous one, a
+                # skip-and-fall-back would return an OLDER session and bless a
+                # bar dated to it as fresh (fail-OPEN). The whole calendar
+                # response is untrustworthy -> fail closed (None) so the risk
+                # layer blocks the 1D submit. Alpaca's official calendar is
+                # clean; a malformed row is pathological and blocking is safe.
+                return None
+            if close.tzinfo is None:
+                close = close.replace(tzinfo=eastern)
+            if close <= now and (latest is None or session_date > latest):
+                latest = session_date
+        return latest
+
+    def is_symbol_tradable(self, symbol: str) -> bool | None:
+        """Read Alpaca's asset status for ``symbol``.
+
+        ``True`` iff Alpaca reports ``asset.tradable`` AND status == "active".
+        ``False`` if the asset exists but is halted/inactive/not tradable.
+        Exceptions (APIError for unknown symbol, transient network) are NOT
+        caught here — the drain-time helper wraps this call and maps any raise
+        to a conservative DROP. Keeping the broker boundary a thin read keeps
+        the catch policy in one place (the drain policy), not duplicated here.
+        """
+        asset = call_with_retry_on_transient(lambda: self._client.get_asset(symbol))
+        status = asset.status.value if hasattr(asset.status, "value") else asset.status
+        return bool(asset.tradable) and str(status) == "active"

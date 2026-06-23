@@ -77,8 +77,10 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING
+
+from milodex.risk.staleness import staleness_verdict
 
 if TYPE_CHECKING:
     from milodex.risk.evaluator import EvaluationContext
@@ -122,25 +124,15 @@ class DisableCondition:
 def _evaluate_data_quality(context: EvaluationContext) -> ConditionEvaluation:
     """Active when the latest bar is missing or stale.
 
-    Mirrors the thresholds of ``RiskEvaluator._check_data_staleness`` (the
-    same ``risk_defaults.max_data_staleness_seconds`` limit and the same
-    naive-timestamp-is-UTC normalization) so the two verdicts can never
-    diverge.
+    Delegates the fresh-vs-stale decision to the single
+    :func:`milodex.risk.staleness.staleness_verdict` policy that
+    ``RiskEvaluator._check_data_staleness`` also consults, so the veto and
+    this disable condition cannot diverge by construction (the session-aware
+    1D rule and the 300s non-1D budget both live in one place). ``now`` is
+    read from this module's ``datetime`` (kept independently monkeypatchable).
     """
-    bar = context.latest_bar
-    if bar is None:
-        return ConditionEvaluation(active=True, detail="no latest bar available")
-    bar_ts = bar.timestamp
-    if bar_ts.tzinfo is None:
-        bar_ts = bar_ts.replace(tzinfo=UTC)
-    age = datetime.now(tz=UTC) - bar_ts
-    max_age = timedelta(seconds=context.risk_defaults.max_data_staleness_seconds)
-    if age > max_age:
-        return ConditionEvaluation(
-            active=True,
-            detail=f"latest bar is stale by {int(age.total_seconds())} seconds",
-        )
-    return ConditionEvaluation(active=False, detail="latest bar is fresh")
+    verdict = staleness_verdict(context, datetime.now(tz=UTC))
+    return ConditionEvaluation(active=verdict.is_stale, detail=verdict.detail)
 
 
 def _evaluate_drawdown_breach(context: EvaluationContext) -> ConditionEvaluation:

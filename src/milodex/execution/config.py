@@ -35,6 +35,7 @@ class StrategyExecutionConfig:
     path: Path
     family: str = ""
     disable_conditions_additional: tuple[str, ...] = ()
+    bar_size: str = ""
 
 
 def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
@@ -50,6 +51,13 @@ def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
             item.strip() for item in raw_additional if isinstance(item, str) and item.strip()
         )
 
+    # ``tempo`` is optional: legacy fixtures and manual-trade paths may omit it.
+    # Guard with isinstance (never ``_mapping``, which raises on absence);
+    # ``str(... or "")`` collapses both a missing key and an explicit null to "".
+    raw_tempo = strategy.get("tempo")
+    tempo = raw_tempo if isinstance(raw_tempo, dict) else {}
+    bar_size = str(tempo.get("bar_size") or "")
+
     return StrategyExecutionConfig(
         name=str(strategy.get("name") or strategy.get("id")),
         enabled=bool(strategy["enabled"]),
@@ -60,6 +68,7 @@ def load_strategy_execution_config(path: Path) -> StrategyExecutionConfig:
         path=path,
         family=str(strategy.get("family") or ""),
         disable_conditions_additional=additional,
+        bar_size=bar_size,
     )
 
 

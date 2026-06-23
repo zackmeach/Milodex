@@ -19,7 +19,7 @@ ExecutionService may make during an intent submission.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from milodex.broker.client import BrokerClient
 from milodex.broker.models import (
@@ -53,6 +53,11 @@ class SimulatedBroker(BrokerClient):
 
         self._current_day: datetime | None = None
         self._current_closes: dict[str, float] = {}
+        # Deterministic override for the 1D staleness gate's session identity.
+        # Backtests do not query an exchange calendar; tests set this directly
+        # via ``set_latest_completed_session``. Default None mirrors the
+        # base-class fail-closed contract.
+        self._latest_completed_session: date | None = None
 
         self._account = AccountInfo(
             equity=0.0,
@@ -63,6 +68,10 @@ class SimulatedBroker(BrokerClient):
         )
         self._positions: list[Position] = []
         self._orders: list[Order] = []
+        # Test-only override for the tradable/asset-status read. Maps a symbol
+        # to a forced bool, or to a BaseException raised on read (to exercise
+        # the drain helper's fail-closed catch). Default: derive from closes.
+        self._tradable_overrides: dict[str, bool | BaseException] = {}
 
     # ------------------------------------------------------------------
     # Simulation-state injection (called by engine each day)
@@ -80,6 +89,19 @@ class SimulatedBroker(BrokerClient):
     def set_positions(self, positions: list[Position]) -> None:
         """Replace the positions list the broker reports."""
         self._positions = list(positions)
+
+    def set_latest_completed_session(self, session: date | None) -> None:
+        """Set the value returned by :meth:`latest_completed_session`.
+
+        Lets deterministic tests exercise the 1D session-identity staleness
+        gate without an exchange calendar.
+        """
+        self._latest_completed_session = session
+
+    def set_tradable_override(self, symbol: str, value: bool | BaseException) -> None:
+        """Test hook: force is_symbol_tradable for ``symbol`` to a bool, or
+        raise the given exception when read (to exercise the drain catch)."""
+        self._tradable_overrides[symbol.strip().upper()] = value
 
     # ------------------------------------------------------------------
     # Fill price model (engine reconciles cash/position from this)
@@ -189,3 +211,20 @@ class SimulatedBroker(BrokerClient):
         # point of view the market is always open. Risk checks that care
         # about this are bypassed in backtest mode (NullRiskEvaluator).
         return True
+
+    def latest_completed_session(self, now: datetime) -> date | None:  # noqa: ARG002
+        # Returns the test-injected value; backtests run under NullRiskEvaluator
+        # so the staleness gate (and this value) is never consulted on the
+        # real replay path. ``now`` is accepted to satisfy the interface.
+        return self._latest_completed_session
+
+    def is_symbol_tradable(self, symbol: str) -> bool | None:
+        normalized = symbol.strip().upper()
+        if normalized in self._tradable_overrides:
+            forced = self._tradable_overrides[normalized]
+            if isinstance(forced, BaseException):
+                raise forced
+            return forced
+        # No override: tradable iff we have a current-day close for it,
+        # else unknown (None) -> the drain policy treats that as DROP.
+        return True if normalized in self._current_closes else None

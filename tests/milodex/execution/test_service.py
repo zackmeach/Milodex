@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -32,6 +32,7 @@ from milodex.execution import (
     UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchStateStore
+from tests.milodex.core.conftest import _append_queued_intent
 
 
 class StubBroker:
@@ -65,6 +66,13 @@ class StubBroker:
 
     def is_market_open(self) -> bool:
         return self.market_open
+
+    def latest_completed_session(self, now: datetime) -> date:
+        # Test double: the latest completed session is "today" so the 1D
+        # staleness gate treats the fresh (today-dated) ``latest_bar`` fixture
+        # as current. Tests exercising staleness BLOCK paths supply their own
+        # bar/now; this default keeps the non-staleness submit tests green.
+        return now.date()
 
     def submit_order(self, **kwargs) -> Order:
         self.submit_calls.append(kwargs)
@@ -2153,3 +2161,767 @@ def test_kill_switch_trip_writes_reviewable_incident_record(
     assert [e.event_type for e in events_after] == ["activated", "reset"]
     assert events_after[0].id == activation.id
     assert service.get_kill_switch_state().active is False
+
+
+def test_idempotency_key_threads_to_submit_locked_without_changing_behavior(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """An explicit idempotency_key threads to _submit_locked and admits the first submit.
+
+    The key is accompanied by a freshly-queued intent row (the real drain
+    contract: the runner persists the row at lock-in, then resubmits with the
+    same key). The CAS consumes that row (rowcount 1) and the submit proceeds —
+    proving the kwarg reaches the chokepoint without otherwise altering a clean
+    first submit.
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    key = "rsi2.2026-06-22.BUY.SPY"
+    # Future expiry so the CAS expiry fence (P1-1) passes under the real wall
+    # clock (_submit_locked uses datetime.now, not the fixed test _NOW).
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    seen: dict[str, object] = {}
+    original = service._submit_locked
+
+    def _spy(intent, **kwargs):
+        seen.update(kwargs)
+        return original(intent, **kwargs)
+
+    service._submit_locked = _spy  # type: ignore[method-assign]
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+        # session_id matches the seeded row's session so the CAS clean-handoff
+        # fence (P1-1) passes: same running session may drain its own row.
+        session_id="sess-A",
+        idempotency_key=key,
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert seen["idempotency_key"] == key
+    assert broker.submit_calls
+
+
+def _disable_duplicate_order_window(monkeypatch, service) -> None:
+    """Neutralize the 60s duplicate-order veto so the second submit reaches the CAS.
+
+    In production the two drains are an OVERNIGHT apart, so the 60s duplicate
+    window (``risk_defaults.duplicate_order_window_seconds``) has long expired by
+    the morning re-fire — the row-scoped CAS is the *only* gate that catches the
+    duplicate. These single-process tests fire both ``_submit_locked`` calls
+    within that 60s window, so the durable duplicate-order check would otherwise
+    block the second call BEFORE it reaches the CAS, masking the behavior under
+    test. Patching ``count_recent_submitted_orders`` to 0 reproduces the expired
+    window and isolates the CAS as the gate (exactly-once is still proven by the
+    broker submit count).
+    """
+    monkeypatch.setattr(
+        service._event_store,
+        "count_recent_submitted_orders",
+        lambda **kwargs: 0,
+    )
+
+
+def test_idempotency_cas_admits_exactly_one_broker_submit_for_repeated_key(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Repeated _submit_locked for one idempotency_key -> exactly one broker call."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    # Seed the queued intent the runner would have persisted (Phase-1 shared
+    # helper). Future expiry so the CAS expiry fence (P1-1) passes under the real
+    # wall clock.
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    # session_id matches the seeded row so the CAS clean-handoff fence (P1-1)
+    # passes; the second call still loses on status='queued' (already consumed).
+    first = service._submit_locked(intent, source="paper", session_id="sess-A", idempotency_key=key)
+    second = service._submit_locked(
+        intent, source="paper", session_id="sess-A", idempotency_key=key
+    )
+
+    assert first.status == ExecutionStatus.SUBMITTED
+    assert second.status == ExecutionStatus.BLOCKED
+    assert "idempotency_suppressed" in second.risk_decision.reason_codes
+    # The CAS, not the broker, is the gate: exactly one order left the building.
+    assert len(broker.submit_calls) == 1
+    # And the second call wrote a suppressed explanation, not a second outbox attempt.
+    attempts = service._event_store.list_execution_attempts()
+    assert len([a for a in attempts if a.symbol == "SPY"]) == 1
+
+
+def test_idempotency_suppressed_does_not_activate_kill_switch(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A suppressed (rowcount 0) submit is a benign race-loss; the kill switch stays inactive."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    # Future expiry so the CAS expiry fence (P1-1) passes under the real wall clock.
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    # First call wins the CAS and submits; second loses (rowcount 0) -> suppressed.
+    # session_id matches the seeded row so the clean-handoff fence (P1-1) passes.
+    service._submit_locked(intent, source="paper", session_id="sess-A", idempotency_key=key)
+    suppressed = service._submit_locked(
+        intent, source="paper", session_id="sess-A", idempotency_key=key
+    )
+
+    assert suppressed.status == ExecutionStatus.BLOCKED
+    assert "idempotency_suppressed" in suppressed.risk_decision.reason_codes
+    # The race-loss must NOT trip the kill switch (it never reaches
+    # _maybe_activate_kill_switch — that path is reserved for genuine risk blocks).
+    assert service.get_kill_switch_state().active is False
+    assert broker.cancel_all_calls == 0
+    assert service._event_store.list_kill_switch_events() == []
+
+
+def test_idempotency_suppressed_records_explanation_with_reason_code(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A suppressed submit writes an auditable explanation carrying idempotency_suppressed."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    # Future expiry so the CAS expiry fence (P1-1) passes under the real wall clock.
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+
+    # session_id matches the seeded row so the clean-handoff fence (P1-1) passes.
+    service._submit_locked(intent, source="paper", session_id="sess-A", idempotency_key=key)
+    service._submit_locked(intent, source="paper", session_id="sess-A", idempotency_key=key)
+
+    explanations = service._event_store.list_explanations()
+    suppressed_rows = [
+        e
+        for e in explanations
+        if e.decision_type == "submit" and "idempotency_suppressed" in e.reason_codes
+    ]
+    assert len(suppressed_rows) == 1
+    assert suppressed_rows[0].status == ExecutionStatus.BLOCKED.value
+
+
+def test_submit_paper_without_idempotency_key_is_unchanged(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Legacy callers (no key) never touch the queued-intents CAS and submit exactly once."""
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    )
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert len(broker.submit_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Queue-at-open bar-feeding override (D-1, Option A).
+#
+# A daily (1D) runner locks in on the prior session's close and the drain
+# submits at the NEXT open. During RTH the live ``get_latest_bar`` returns an
+# intraday latest-trade bar stamped *today*; the session-aware 1D staleness gate
+# correctly rejects it (its date is not the latest completed session). The drain
+# instead feeds the locked-in daily SESSION bar via ``latest_bar_override`` so
+# the same gate sees the bar a 1D strategy legitimately prices and trades on.
+#
+# The override changes only WHICH bar the gate evaluates, never WHETHER the gate
+# runs: a wrong/old override bar (session date != latest completed session) is
+# still BLOCKED. ``risk/staleness.py``, ``risk/evaluator.py``, and
+# ``risk/disable_conditions.py`` are untouched by this fix.
+# ---------------------------------------------------------------------------
+
+
+class _PriorSessionBroker(StubBroker):
+    """Broker whose latest completed session is a FIXED prior date (RTH replay).
+
+    Models the queue-at-open drain firing at the next open: the broker's latest
+    completed session is yesterday's, while the live latest-trade bar is dated
+    today. The default ``StubBroker.latest_completed_session`` returns *today*
+    (so the existing fresh-bar fixtures pass the 1D gate); this subclass returns
+    the prior session so the 1D gate's session-date comparison is actually
+    exercised.
+    """
+
+    def __init__(self, *, prior_session: date, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._prior_session = prior_session
+
+    def latest_completed_session(self, now: datetime) -> date:
+        return self._prior_session
+
+
+def _prior_session_dates() -> tuple[date, date]:
+    """Return (prior_session, today) with the prior session one calendar day back.
+
+    Day-of-week does not matter to the gate — it compares the bar's session date
+    against the broker-reported latest completed session, both injected here.
+    """
+    today = datetime.now(tz=UTC).date()
+    return today - timedelta(days=1), today
+
+
+def _session_bar(session: date) -> Bar:
+    """A daily SESSION-stamped bar for ``session`` (Alpaca daily-bar shape).
+
+    Stamped at the session date in UTC so ``bar.timestamp.date() == session``
+    (what the 1D gate compares) and the bar stays well inside the 7-day ceiling.
+    """
+    return Bar(
+        timestamp=datetime(session.year, session.month, session.day, tzinfo=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _today_intraday_bar(today: date) -> Bar:
+    """A live intraday latest-trade bar stamped *today* (what RTH returns).
+
+    Its ``.date()`` is today — NOT the prior completed session — so the
+    session-aware 1D staleness gate fails closed on it. This is the bar the drain
+    must NOT evaluate against; the override exists to replace it.
+    """
+    return Bar(
+        timestamp=datetime.now(tz=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _build_queue_at_open_service(
+    tmp_path: Path,
+    risk_defaults_file: Path,
+    strategy_file: Path,
+    sample_account: AccountInfo,
+    submitted_order: Order,
+    monkeypatch,
+    *,
+    prior_session: date,
+    live_bar: Bar,
+) -> tuple[ExecutionService, _PriorSessionBroker]:
+    """Build a 1D paper service for the queue-at-open scenario.
+
+    Isolates STALENESS as the only variable: the frozen-manifest resolver is
+    patched to return the matching runtime hash (so ``manifest_drift`` passes,
+    exactly as ``test_frozen_manifest_hash_resolved_from_runner_bound_stage``
+    does), the broker reports a prior completed session, and the live provider
+    returns ``live_bar`` (the intraday today-dated bar the gate rejects).
+    """
+    import milodex.promotion.manifest as manifest_module
+    from milodex.strategies.loader import compute_config_hash
+
+    monkeypatch.setattr(
+        manifest_module,
+        "get_active_manifest_hash",
+        lambda strategy_id, stage, event_store: compute_config_hash(strategy_file),
+    )
+
+    broker = _PriorSessionBroker(
+        prior_session=prior_session,
+        account=sample_account,
+        submit_order=submitted_order,
+    )
+    provider = StubProvider(live_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(
+        event_store=event_store,
+        legacy_path=tmp_path / "kill_switch.json",
+    )
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+    return service, broker
+
+
+def _queue_at_open_intent(strategy_file: Path) -> TradeIntent:
+    return TradeIntent(
+        symbol="SPY",
+        side=OrderSide.BUY,
+        quantity=5,
+        order_type=OrderType.MARKET,
+        strategy_config_path=strategy_file,
+        expected_stage="paper",
+    )
+
+
+def test_queue_at_open_override_passes_session_staleness_both_gates_agree(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """The founder's headline: feeding the locked-in session bar passes the 1D gate.
+
+    Queue-at-open drain at RTH: broker latest completed session is the PRIOR
+    session; the live (un-overridden) bar is dated today and would fail the 1D
+    staleness gate. With ``latest_bar_override`` = the prior-session bar, BOTH
+    freshness gates agree it is fresh — the ``data_staleness`` veto passes and the
+    ``data_quality_issue`` disable condition is inactive — and the submit is
+    allowed.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+    # Seed the queued row the runner persisted, so the idempotency CAS succeeds
+    # and evaluation runs the full risk battery (the drain supplies BOTH the key
+    # and the override — they are orthogonal hooks; without the row the CAS would
+    # suppress and short-circuit before staleness ever runs).
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        session_id="sess-A",
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        # session_id matches the seeded row so the CAS clean-handoff fence (P1-1)
+        # passes and the drain consumes its own session's row.
+        session_id="sess-A",
+        idempotency_key=key,
+        latest_bar_override=_session_bar(prior_session),
+    )
+
+    # Gate 1 (the data_staleness veto) passed positively on the override bar.
+    staleness_checks = [c for c in result.risk_decision.checks if c.name == "data_staleness"]
+    assert staleness_checks and staleness_checks[0].passed is True
+    # Gate 2 (the data_quality_issue disable condition) is inactive: a stale bar
+    # would have surfaced disable_condition_active.
+    assert "disable_condition_active" not in result.risk_decision.reason_codes
+    # Neither freshness gate fired.
+    assert "stale_market_data" not in result.risk_decision.reason_codes
+    # The submit is allowed and reached the broker.
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert result.risk_decision.allowed is True
+    assert len(broker.submit_calls) == 1
+
+
+def test_queue_at_open_without_override_is_blocked_stale(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """Necessity / contrast: the SAME scenario without the override is BLOCKED.
+
+    Proves the fix is load-bearing. The live latest-trade bar is dated today
+    while the latest completed session is the prior session, so the 1D gate fails
+    closed and no order reaches the broker.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    result = service.submit_paper(_queue_at_open_intent(strategy_file))
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    # Chokepoint invariant: a blocked submit never reaches the broker.
+    assert broker.submit_calls == []
+
+
+def test_queue_at_open_wrong_date_override_is_still_blocked(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """Gate NOT weakened: an override bar with the WRONG session date is BLOCKED.
+
+    The override changes only WHICH bar the gate sees, never whether the gate
+    runs. A bar dated three sessions back (!= the latest completed session) must
+    still be rejected — the override cannot smuggle a stale bar past the gate.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    # An override bar three sessions old: its session date is not the latest
+    # completed session, so the 1D gate must still block it. No idempotency key:
+    # the block is unmistakably the staleness gate (which runs BEFORE the CAS in
+    # _submit_locked), not CAS suppression.
+    wrong_date = prior_session - timedelta(days=3)
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        latest_bar_override=_session_bar(wrong_date),
+    )
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
+
+
+def test_submit_paper_suppresses_expired_queued_row_with_zero_broker_submits(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """P1-1 service-level probe: an EXPIRED queued row cannot be drained.
+
+    Mirrors the reviewer's probe. The row is expired (its open window passed) but
+    still status='queued' (the sweep has not run). ``get_active_queued_intents``
+    correctly enumerates it as inactive (active_count == 0). Risk would ALLOW the
+    submit (valid prior-session override passes the 1D gate), so the only thing
+    that can stop the broker order is the consume CAS re-asserting expiry. Before
+    P1-1 the CAS WHERE was only ``status = 'queued'`` and this submitted; now the
+    CAS returns 0 and the submit is suppressed with ZERO broker submits.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    key = "rsi2.v1|2026-06-23|buy|SPY"
+    # Expired window; same running session so the ONLY failing drain predicate is
+    # expiry (the clean-handoff fence passes when session_id == running session).
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        session_id="sess-A",
+        expires_at=datetime.now(tz=UTC) - timedelta(hours=1),
+    )
+
+    # Enumeration agrees the row is inactive.
+    active = service._event_store.get_active_queued_intents(
+        "rsi2.v1", now=datetime.now(tz=UTC), running_session_id="sess-A"
+    )
+    assert active == []
+
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        session_id="sess-A",
+        idempotency_key=key,
+        latest_bar_override=_session_bar(prior_session),
+    )
+
+    # Suppressed by the CAS (risk allowed), and NO order reached the broker.
+    assert result.status == ExecutionStatus.BLOCKED
+    assert broker.submit_calls == []
+
+
+def test_evaluate_latest_bar_override_none_uses_live_provider(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """No regression: latest_bar_override=None reads the live provider bar.
+
+    The default None path must be byte-for-byte the existing behavior — the
+    returned ExecutionResult carries the provider's live bar, not an override.
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    # The live provider bar (the fixture) was used, not any override.
+    assert result.latest_bar == latest_bar
+
+
+# ---------------------------------------------------------------------------
+# P1-3: latest_bar_override must NOT bypass non-1D staleness.
+#
+# The override is only legitimate for a 1D queued-intent drain. Two gates close
+# the hole: (a) _submit_locked forwards the override to _evaluate only when a
+# drain is in progress (idempotency_key is not None); (b) _evaluate USES the
+# override only when the resolved strategy config is daily (bar_size == "1D").
+# A non-1D or non-drain caller's override is inert — the live provider bar is
+# used, so a stale provider bar still fails the wall-clock staleness gate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture()
+def intraday_strategy_file(tmp_path: Path) -> Path:
+    """A non-1D (5Min) strategy config: the override must be ignored for it."""
+    path = tmp_path / "intraday_strategy.yaml"
+    path.write_text(
+        """
+strategy:
+  name: "paper_intraday"
+  version: 1
+  description: "Test intraday strategy"
+  enabled: true
+  universe: ["SPY"]
+  parameters: {}
+  tempo:
+    bar_size: "5Min"
+    position_lifecycle: "same_session"
+  risk:
+    max_position_pct: 0.10
+    max_positions: 2
+    daily_loss_cap_pct: 0.02
+    stop_loss_pct: 0.05
+  stage: "paper"
+  backtest:
+    slippage_pct: 0.001
+    commission_per_trade: 0.0
+    min_trades_required: 30
+""".strip(),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _hour_stale_bar() -> Bar:
+    """A provider bar one hour old — well past the 300s wall-clock budget."""
+    return Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(hours=1),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def _fresh_override_bar() -> Bar:
+    """A 1-second-old override the bug would let bypass the staleness gate."""
+    return Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(seconds=1),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1000,
+        vwap=100.0,
+    )
+
+
+def test_non_1d_override_does_not_bypass_staleness(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    intraday_strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """A non-1D caller's fresh override over a stale provider bar is IGNORED.
+
+    The bug: ``_evaluate`` preferred the override unconditionally, so a 1-second
+    override on a 1-hour-stale provider bar bypassed the 300s wall-clock gate and
+    reached the broker. With the fix the override is inert for a 5Min config: the
+    stale provider bar is used and the submit is BLOCKED ``stale_market_data``,
+    zero broker submits. An idempotency_key is supplied so the override is even
+    forwarded to ``_evaluate`` — proving the gate is the bar_size==1D check, not
+    merely the drain-in-progress check.
+
+    The frozen-manifest resolver is patched to the matching hash (as the 1D
+    queue-at-open fixtures do) so manifest drift is not a confounder and STALENESS
+    is the only variable: pre-fix the override bypassed it (the block came from a
+    different gate), post-fix the stale provider bar blocks here.
+    """
+    import milodex.promotion.manifest as manifest_module
+    from milodex.strategies.loader import compute_config_hash
+
+    monkeypatch.setattr(
+        manifest_module,
+        "get_active_manifest_hash",
+        lambda strategy_id, stage, event_store: compute_config_hash(intraday_strategy_file),
+    )
+
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        _hour_stale_bar(),
+        sample_account,
+        submitted_order,
+    )
+    key = "intraday.2026-06-23.BUY.SPY"
+    _append_queued_intent(service._event_store, idempotency_key=key)
+
+    result = service.submit_paper(
+        TradeIntent(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            quantity=5,
+            order_type=OrderType.MARKET,
+            strategy_config_path=intraday_strategy_file,
+            expected_stage="paper",
+        ),
+        idempotency_key=key,
+        latest_bar_override=_fresh_override_bar(),
+    )
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
+
+
+def test_1d_override_without_idempotency_key_is_ignored(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """A 1D caller with NO idempotency_key supplying an override -> override ignored.
+
+    The override is only legitimate for a drain (idempotency_key present).
+    ``_submit_locked`` forwards the override to ``_evaluate`` only when a drain is
+    in progress; a non-drain 1D caller's override is dropped before ``_evaluate``,
+    so the live provider bar (here the today-dated intraday bar the 1D gate
+    rejects) is used and the submit is BLOCKED — the override cannot smuggle a
+    prior-session bar past the gate outside a drain.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+
+    # No idempotency_key -> not a drain -> the (otherwise valid prior-session)
+    # override is dropped in _submit_locked; the today-dated live bar is used and
+    # the 1D session-staleness gate blocks it.
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        latest_bar_override=_session_bar(prior_session),
+    )
+
+    assert result.risk_decision.allowed is False
+    assert "stale_market_data" in result.risk_decision.reason_codes
+    assert broker.submit_calls == []
