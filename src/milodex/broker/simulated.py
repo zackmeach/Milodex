@@ -68,6 +68,10 @@ class SimulatedBroker(BrokerClient):
         )
         self._positions: list[Position] = []
         self._orders: list[Order] = []
+        # Test-only override for the tradable/asset-status read. Maps a symbol
+        # to a forced bool, or to a BaseException raised on read (to exercise
+        # the drain helper's fail-closed catch). Default: derive from closes.
+        self._tradable_overrides: dict[str, bool | BaseException] = {}
 
     # ------------------------------------------------------------------
     # Simulation-state injection (called by engine each day)
@@ -93,6 +97,11 @@ class SimulatedBroker(BrokerClient):
         gate without an exchange calendar.
         """
         self._latest_completed_session = session
+
+    def set_tradable_override(self, symbol: str, value: bool | BaseException) -> None:
+        """Test hook: force is_symbol_tradable for ``symbol`` to a bool, or
+        raise the given exception when read (to exercise the drain catch)."""
+        self._tradable_overrides[symbol.strip().upper()] = value
 
     # ------------------------------------------------------------------
     # Fill price model (engine reconciles cash/position from this)
@@ -208,3 +217,14 @@ class SimulatedBroker(BrokerClient):
         # so the staleness gate (and this value) is never consulted on the
         # real replay path. ``now`` is accepted to satisfy the interface.
         return self._latest_completed_session
+
+    def is_symbol_tradable(self, symbol: str) -> bool | None:
+        normalized = symbol.strip().upper()
+        if normalized in self._tradable_overrides:
+            forced = self._tradable_overrides[normalized]
+            if isinstance(forced, BaseException):
+                raise forced
+            return forced
+        # No override: tradable iff we have a current-day close for it,
+        # else unknown (None) -> the drain policy treats that as DROP.
+        return True if normalized in self._current_closes else None
