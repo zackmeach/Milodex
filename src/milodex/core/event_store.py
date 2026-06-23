@@ -2117,6 +2117,166 @@ class EventStore:
         carried.update(changes)
         return self.append_experiment(ExperimentEvent(recorded_at=datetime.now(tz=UTC), **carried))
 
+    def append_queued_intent(self, event: QueuedIntentEvent) -> int:
+        """Persist a queued intent and return its autoincrement id.
+
+        queue-at-open: a daily runner that confirms a close-bar lock-in while the
+        next session's open is in the future calls this instead of submitting.
+        The ``idempotency_key`` UNIQUE constraint makes a re-persist of the same
+        logical intent raise ``sqlite3.IntegrityError`` rather than double-queue.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO queued_intents (
+                    idempotency_key, strategy_id, strategy_config_path, config_hash,
+                    session_id, trading_session, locked_in_bar_timestamp, symbol, side,
+                    intent_class, notional_pct, expected_stage, expected_max_positions,
+                    expected_max_position_pct, expected_daily_loss_cap_pct,
+                    intent_payload_json, reasoning_json, created_at, expires_at, status,
+                    consumed_at, consumed_by
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    event.idempotency_key,
+                    event.strategy_id,
+                    event.strategy_config_path,
+                    event.config_hash,
+                    event.session_id,
+                    event.trading_session,
+                    event.locked_in_bar_timestamp,
+                    event.symbol,
+                    event.side,
+                    event.intent_class,
+                    event.notional_pct,
+                    event.expected_stage,
+                    event.expected_max_positions,
+                    event.expected_max_position_pct,
+                    event.expected_daily_loss_cap_pct,
+                    (
+                        None
+                        if event.intent_payload_json is None
+                        else _dump_json(event.intent_payload_json)
+                    ),
+                    None if event.reasoning_json is None else _dump_json(event.reasoning_json),
+                    _dt(event.created_at),
+                    _dt(event.expires_at),
+                    event.status,
+                    _dt(event.consumed_at),
+                    event.consumed_by,
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def get_queued_intent(self, intent_id: int) -> QueuedIntentEvent | None:
+        """Return the queued intent with ``id == intent_id``, or ``None``.
+
+        A test/diagnostic single-row read keyed on the autoincrement id — NOT on
+        the drain-authority path. The sole authority for "drainable" is
+        :meth:`get_active_queued_intents`; this bypasses its fences and returns a
+        row regardless of status/expiry, so it must never gate a broker submit.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM queued_intents WHERE id = ? LIMIT 1",
+                (intent_id,),
+            ).fetchone()
+        return None if row is None else _queued_intent_from_row(row)
+
+    def get_active_queued_intents(
+        self,
+        strategy_id: str,
+        *,
+        now: datetime,
+        running_session_id: str,
+    ) -> list[QueuedIntentEvent]:
+        """Return the drainable queued intents for ``strategy_id`` — the SOLE drain
+        authority for queue-at-open.
+
+        A row is drainable iff ALL of:
+          * ``status = 'queued'`` (not already consumed / expired / obsolete),
+          * not expired: ``datetime(expires_at) > datetime(now)``,
+          * clean-handoff holds: the intent was queued by the currently running
+            session (``session_id = running_session_id``) OR its originating run
+            shut down cleanly (``strategy_runs.exit_reason = 'controlled_stop'``).
+
+        The clean-handoff fence (I-4) is enforced HERE, in SQL, so no caller can
+        drain across an unclean process boundary: an ``interrupted`` / ``crashed`` /
+        ``kill_switch`` / ``orphan_recovered`` / NULL exit_reason, or a session with
+        NO ``strategy_runs`` row at all, is dropped. ``controlled_stop`` is matched
+        by literal string equality — NOT ``IS NOT NULL`` — so only a deliberate,
+        cooperative stop hands its queued intent to a successor.
+
+        ``now`` and ``expires_at`` must share tz convention (both UTC ISO) so the
+        ``datetime()`` lexical compare is calendar-correct. ``_dt(now)`` raises if a
+        naive/None ``now`` slips in — desirable; the runner always passes an aware
+        UTC ``now``.
+        """
+        sql = """
+            SELECT qi.* FROM queued_intents AS qi
+            WHERE qi.strategy_id = ?
+              AND qi.status = 'queued'
+              AND datetime(qi.expires_at) > datetime(?)
+              AND (
+                    qi.session_id = ?
+                    OR EXISTS (
+                        SELECT 1 FROM strategy_runs AS sr
+                        WHERE sr.session_id = qi.session_id
+                          AND sr.exit_reason = 'controlled_stop'
+                    )
+                  )
+            ORDER BY qi.id ASC
+        """
+        with self._connect() as connection:
+            rows = connection.execute(sql, (strategy_id, _dt(now), running_session_id)).fetchall()
+        return [_queued_intent_from_row(row) for row in rows]
+
+    def mark_queued_intent_consumed(
+        self, idempotency_key: str, *, consumed_by: str, consumed_at: datetime
+    ) -> int:
+        """Atomically claim a queued intent for submit. Returns rows updated (0 or 1).
+
+        THE drain gate. A single-statement compare-and-swap: flip ``status`` to
+        ``'consumed'`` only if it is still ``'queued'``. The caller proceeds to the
+        broker submit ONLY when this returns 1 — a return of 0 means another process
+        already consumed (or expired/obsoleted) the row, so this caller must NOT
+        submit. Because it is one UPDATE guarded by ``status = 'queued'``, two
+        concurrent successor runners cannot both win: SQLite serializes the writes
+        and exactly one sees rowcount 1.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE queued_intents
+                SET status = 'consumed', consumed_at = ?, consumed_by = ?
+                WHERE idempotency_key = ? AND status = 'queued'
+                """,
+                (_dt(consumed_at), consumed_by, idempotency_key),
+            )
+            connection.commit()
+            return cursor.rowcount
+
+    def mark_queued_intent_expired(self, intent_id: int) -> None:
+        """Mark a queued intent expired (its open window passed undrained)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE queued_intents SET status = 'expired' WHERE id = ?",
+                (intent_id,),
+            )
+            connection.commit()
+
+    def mark_queued_intent_obsolete(self, intent_id: int) -> None:
+        """Mark a queued intent obsolete (superseded before drain — e.g. a newer
+        lock-in for the same strategy/session/side/symbol, or operator override)."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE queued_intents SET status = 'obsolete' WHERE id = ?",
+                (intent_id,),
+            )
+            connection.commit()
+
     def get_backtest_run(self, run_id: str) -> BacktestRunEvent | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2678,6 +2838,48 @@ def _experiment_from_row(row: sqlite3.Row) -> ExperimentEvent:
         evidence_json=None if row["evidence_json"] is None else _load_json(row["evidence_json"]),
         lessons=row["lessons"],
         revisitable=bool(row["revisitable"]),
+    )
+
+
+def _queued_intent_from_row(row: sqlite3.Row) -> QueuedIntentEvent:
+    return QueuedIntentEvent(
+        id=int(row["id"]),
+        idempotency_key=str(row["idempotency_key"]),
+        strategy_id=row["strategy_id"],
+        strategy_config_path=row["strategy_config_path"],
+        config_hash=row["config_hash"],
+        session_id=row["session_id"],
+        trading_session=row["trading_session"],
+        locked_in_bar_timestamp=row["locked_in_bar_timestamp"],
+        symbol=row["symbol"],
+        side=row["side"],
+        intent_class=row["intent_class"],
+        notional_pct=(None if row["notional_pct"] is None else float(row["notional_pct"])),
+        expected_stage=row["expected_stage"],
+        expected_max_positions=(
+            None if row["expected_max_positions"] is None else int(row["expected_max_positions"])
+        ),
+        expected_max_position_pct=(
+            None
+            if row["expected_max_position_pct"] is None
+            else float(row["expected_max_position_pct"])
+        ),
+        expected_daily_loss_cap_pct=(
+            None
+            if row["expected_daily_loss_cap_pct"] is None
+            else float(row["expected_daily_loss_cap_pct"])
+        ),
+        intent_payload_json=(
+            None if row["intent_payload_json"] is None else _load_json(row["intent_payload_json"])
+        ),
+        reasoning_json=(
+            None if row["reasoning_json"] is None else _load_json(row["reasoning_json"])
+        ),
+        created_at=_parse_datetime(row["created_at"]),
+        expires_at=_parse_datetime(row["expires_at"]),
+        status=str(row["status"]),
+        consumed_at=_parse_datetime(row["consumed_at"]),
+        consumed_by=row["consumed_by"],
     )
 
 
