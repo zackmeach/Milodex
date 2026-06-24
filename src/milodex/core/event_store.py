@@ -2483,15 +2483,16 @@ class EventStore:
     def expire_stale_queued_intents(self, *, now: datetime) -> list[QueuedIntentEvent]:
         """Bulk-flip stale ``queued`` rows to ``expired``; return the swept rows.
 
-        Mirrors :meth:`mark_queued_intent_consumed`'s single-connection
-        SELECT-then-UPDATE discipline: in ONE transaction it SELECTs the rows
-        matching ``status = 'queued' AND datetime(expires_at) <= datetime(now)``
-        (reconstructed via :func:`_queued_intent_from_row`), then runs the
-        same-predicate ``UPDATE`` to ``expired`` and commits — so the returned
-        set is exactly the set flipped, atomically. A row already ``consumed`` /
-        ``obsolete`` (or one consumed by a concurrent drain) no longer matches
-        and is never re-touched: the sweep is idempotent and race-safe. It ONLY
-        mutates status; the CALLER writes any audit row and any per-row alert.
+        A single ``UPDATE ... RETURNING *`` flips every row matching
+        ``status = 'queued' AND datetime(expires_at) <= datetime(now)`` to
+        ``expired`` and returns exactly those rows — atomic by construction, so
+        the returned set is precisely the set flipped even under a concurrent
+        consume (a row consumed first no longer matches ``status='queued'`` and
+        is therefore neither flipped nor returned; a separate SELECT-then-UPDATE
+        would over-return in that skew window). A row already ``consumed`` /
+        ``obsolete`` never matches and is never re-touched: the sweep is
+        idempotent and race-safe. It ONLY mutates status; the CALLER writes any
+        audit row and any per-row alert.
 
         Returning the rows (not just a count) is load-bearing for the
         exit-strand guarantee: a swept EXIT leaves ``queued`` status and would
@@ -2509,20 +2510,13 @@ class EventStore:
         with self._connect() as connection:
             rows = connection.execute(
                 """
-                SELECT * FROM queued_intents
-                WHERE status = 'queued' AND datetime(expires_at) <= datetime(?)
-                ORDER BY id ASC
-                """,
-                (_dt(now),),
-            ).fetchall()
-            connection.execute(
-                """
                 UPDATE queued_intents
                 SET status = 'expired'
                 WHERE status = 'queued' AND datetime(expires_at) <= datetime(?)
+                RETURNING *
                 """,
                 (_dt(now),),
-            )
+            ).fetchall()
             connection.commit()
         return [_queued_intent_from_row(row) for row in rows]
 
