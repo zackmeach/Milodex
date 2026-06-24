@@ -912,6 +912,32 @@ class StrategyRunner:
                     # expire; NEVER submit a 0-share order.
                     continue
 
+                # The price the strategy actually sized ``match.quantity`` on is
+                # the TRADED symbol's OWN locked close — NOT ``decision_bar.close``
+                # (which is always universe[0]'s close, because the lock-in persists
+                # the evaluation symbol's bar for EVERY intent regardless of the
+                # symbol it trades). For a cross-sectional 1D strategy whose traded
+                # symbol != universe[0], using universe[0]'s close as the rescale
+                # numerator mixes two symbols' prices and grossly mis-sizes the
+                # order. ``eval_bars[queued.symbol]`` is the traded symbol's bars
+                # truncated to the locked session; its latest close is exactly what
+                # the cross-sectional sizers used (``unit_price = latest_close``).
+                # Read it BEFORE the fresh-price lookup so the entry/exit asymmetry
+                # guard (silent ENTRY re-queue vs EXIT alert+retire) is uniform with
+                # the existing fail-closed branches. Fail CLOSED if the traded
+                # symbol is missing / its truncated BarSet is empty / its close is
+                # non-finite or non-positive.
+                sized_close = self._traded_symbol_locked_close(eval_bars, queued.symbol)
+                if sized_close is None:
+                    if queued.intent_class == "exit":
+                        self._emit_exit_drop_alert(queued, reason="no_sizing_price")
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    logger.warning(
+                        "drain: no sizing price for %s; dropping (fail-closed)",
+                        queued.symbol,
+                    )
+                    continue
+
                 # Fresh-price sizing + cap pricing (ADR 0057 §2). The locked-in
                 # close sized the re-eval and gates staleness, but it must NOT
                 # size entries or price the exposure cap across an overnight gap.
@@ -935,9 +961,11 @@ class StrategyRunner:
                     # ENTRY: rescale the at-open quantity to the fresh price
                     # (notional sizing is linear in 1/price, so this is exactly
                     # the ADR §2 recompute, model-agnostic — no per-strategy
-                    # notional param plumbing). EXITs sell the held lot and are
-                    # NEVER rescaled. ``not (q > 0)`` is NaN-safe.
-                    fresh_qty = math.floor(match.quantity * decision_bar.close / pricing_price)
+                    # notional param plumbing). The numerator is the TRADED symbol's
+                    # own locked close (``sized_close``), the price the strategy
+                    # sized on — NOT universe[0]'s ``decision_bar.close``. EXITs sell
+                    # the held lot and are NEVER rescaled. ``not (q > 0)`` is NaN-safe.
+                    fresh_qty = math.floor(match.quantity * sized_close / pricing_price)
                     if not (fresh_qty > 0):
                         # Fresh price so high the resize floors to 0 -> drop, leave
                         # queued to expire; NEVER submit a 0-share order.
@@ -1029,6 +1057,31 @@ class StrategyRunner:
         if close is None or not (close > 0):  # NaN-safe (NaN > 0 is False)
             return None
         return fresh
+
+    def _traded_symbol_locked_close(
+        self, eval_bars: dict[str, Any], symbol: str
+    ) -> float | None:
+        """Return the TRADED symbol's own locked close from the truncated bars.
+
+        ``eval_bars`` is ``_fetch_bars_by_symbol`` truncated to the locked-in
+        session (``_bars_through``); the latest close of ``eval_bars[symbol]`` is
+        the exact price the strategy sized the at-open quantity on (the
+        cross-sectional sizers use ``unit_price = candidate["latest_close"]``,
+        which equals this value). This is the correct rescale numerator — distinct
+        from ``decision_bar.close``, which is always universe[0]'s close.
+
+        Fails CLOSED (returns ``None``) when the close is not obtainable: the
+        symbol is missing from ``eval_bars``, its truncated BarSet is empty, or its
+        latest close is non-finite / non-positive. The caller routes a ``None`` to
+        the same fail-closed asymmetry guard as a missing fresh price.
+        """
+        bars = eval_bars.get(symbol)
+        if bars is None or len(bars) == 0:
+            return None
+        close = bars.latest().close
+        if close is None or not (close > 0):  # NaN-safe (NaN > 0 is False)
+            return None
+        return float(close)
 
     def _reconstruct_locked_in_bar(self, queued: QueuedIntentEvent) -> Bar:
         """Rebuild the locked-in SESSION bar from the persisted intent payload.
