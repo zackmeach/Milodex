@@ -36,6 +36,7 @@ class StubBroker:
         positions: list[Position] | None = None,
         orders: list[Order] | None = None,
         market_open: bool = True,
+        fill_submits: bool = False,
     ) -> None:
         self.account = account
         self.positions = positions or []
@@ -43,6 +44,11 @@ class StubBroker:
         self.submit_calls: list[dict[str, object]] = []
         self.cancel_all_orders_calls = 0
         self._market_open = market_open
+        # Default OFF preserves every existing test (submit returns PENDING).
+        # When set, submit_order returns a synchronously-FILLED order so an
+        # end-to-end drill can assert the recorded trade reflects a named fill
+        # (broker_status='filled') rather than the async PENDING placeholder.
+        self._fill_submits = fill_submits
         # Queue-at-open drain (ADR 0057) reads tradability via
         # tradable_drop_decision -> broker.is_symbol_tradable. Default True so the
         # drain proceeds; a test flips this to exercise the halted-symbol drop.
@@ -76,12 +82,31 @@ class StubBroker:
 
     def submit_order(self, **kwargs) -> Order:
         self.submit_calls.append(kwargs)
+        quantity = float(kwargs["quantity"])
+        if self._fill_submits:
+            # Synchronous fill: the execution service records the resulting
+            # TradeEvent with broker_status='filled' and reprices the row off
+            # filled_avg_price/filled_quantity (service.py:1063). limit_price is
+            # the fill price proxy for these market-order stubs.
+            return Order(
+                id=f"order-{len(self.submit_calls)}",
+                symbol=str(kwargs["symbol"]),
+                side=kwargs["side"],
+                order_type=kwargs["order_type"],
+                quantity=quantity,
+                time_in_force=kwargs["time_in_force"],
+                status=OrderStatus.FILLED,
+                submitted_at=datetime.now(tz=UTC),
+                filled_quantity=quantity,
+                filled_avg_price=float(kwargs.get("limit_price") or 10.0),
+                filled_at=datetime.now(tz=UTC),
+            )
         return Order(
             id=f"order-{len(self.submit_calls)}",
             symbol=str(kwargs["symbol"]),
             side=kwargs["side"],
             order_type=kwargs["order_type"],
-            quantity=float(kwargs["quantity"]),
+            quantity=quantity,
             time_in_force=kwargs["time_in_force"],
             status=OrderStatus.PENDING,
             submitted_at=datetime.now(tz=UTC),
