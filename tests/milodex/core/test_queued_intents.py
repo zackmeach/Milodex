@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from milodex.core.event_store import EventStore, QueuedIntentEvent
+from milodex.core.event_store import EventStore, ExecutionAttemptEvent, QueuedIntentEvent
 from milodex.strategies.loader import compute_config_hash
 
 _NOW = datetime(2026, 6, 23, 14, 0, tzinfo=UTC)
@@ -451,6 +451,36 @@ def test_mark_expired_and_obsolete(tmp_path):
     assert rows == {"expired": 1, "obsolete": 1}
 
 
+def test_mark_dropped_flips_status_and_excludes_from_drain(tmp_path):
+    """Fix #3: a DECIDED entry drop is terminal — mark_queued_intent_dropped flips
+    the row to 'dropped' and get_active_queued_intents (status='queued' only) no
+    longer returns it, so it is never re-drained."""
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    eid = store.append_queued_intent(_intent())
+    store.mark_queued_intent_dropped(eid)
+
+    assert _status_of(db, "rsi2.v1|2026-06-23|buy|SPY") == "dropped"
+    assert store.get_active_queued_intents("rsi2.v1", now=_NOW, running_session_id="sess-A") == []
+    assert [e.symbol for e in store.list_queued_intents_by_status("dropped")] == ["SPY"]
+
+
+def test_expire_stale_never_touches_dropped(tmp_path):
+    """The expiry sweep flips only 'queued' rows; a 'dropped' row with a past
+    expires_at is left terminal (never re-flipped to 'expired')."""
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    past = datetime(2026, 6, 23, 13, 0, tzinfo=UTC)  # <= _NOW
+    dropped_id = store.append_queued_intent(
+        _intent("rsi2.v1|2026-06-23|buy|IWM", symbol="IWM", expires_at=past)
+    )
+    store.mark_queued_intent_dropped(dropped_id)
+
+    assert store.expire_stale_queued_intents(now=_NOW) == []
+    assert store.list_queued_intents_by_status("expired") == []
+    assert {e.symbol for e in store.list_queued_intents_by_status("dropped")} == {"IWM"}
+
+
 # ─── expiry sweep (Phase 7) ──────────────────────────────────────────────────
 #
 # Launch-time bulk flip of stale 'queued' rows to 'expired'. Housekeeping only:
@@ -583,3 +613,154 @@ def test_list_operator_alerts_tolerates_null_context_json(tmp_path):
 
     assert len(alerts) == 1
     assert alerts[0].context_json == {}
+
+
+# ─── atomic consume CAS + outbox attempt (Fix #2) ───────────────────────────
+#
+# consume_queued_intent_and_append_attempt folds the consume CAS and the
+# 'pending' outbox insert into ONE transaction (one commit). It must:
+#   * re-assert the SAME drain predicates as mark_queued_intent_consumed
+#     (shared _consume_queued_intent_cas — they cannot drift);
+#   * insert the attempt IFF rowcount == 1 (both committed together);
+#   * on any CAS loss (rowcount 0) insert NOTHING and leave the row untouched.
+# This closes the crash window where a 'consumed' row could exist with no order
+# and no recoverable 'pending' attempt (a silent strand for an EXIT).
+
+
+def _attempt(client_order_id: str = "cid-1", **overrides) -> ExecutionAttemptEvent:
+    fields: dict[str, object] = {
+        "client_order_id": client_order_id,
+        "strategy_name": "rsi2.v1",
+        "strategy_config_path": _DEFAULT_CFG_PATH,
+        "session_id": "sess-A",
+        "symbol": "SPY",
+        "side": "buy",
+        "quantity": 4.0,
+        "order_type": "market",
+        "created_at": _NOW,
+        "status": "pending",
+    }
+    fields.update(overrides)
+    return ExecutionAttemptEvent(**fields)  # type: ignore[arg-type]
+
+
+def test_combined_happy_path_consumes_and_writes_attempt_atomically(tmp_path):
+    """rowcount 1: the row is 'consumed' AND the 'pending' attempt is present."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(_intent())
+
+    rowcount = store.consume_queued_intent_and_append_attempt(
+        "rsi2.v1|2026-06-23|buy|SPY",
+        _attempt(),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
+    )
+
+    assert rowcount == 1
+    assert _status_of(tmp_path / "milodex.db", "rsi2.v1|2026-06-23|buy|SPY") == "consumed"
+    attempts = store.list_execution_attempts()
+    assert len(attempts) == 1
+    assert attempts[0].client_order_id == "cid-1"
+    assert attempts[0].status == "pending"
+
+
+def test_combined_second_call_loses_cas_and_writes_no_attempt(tmp_path):
+    """A duplicate (already-consumed) call returns 0 and inserts NO attempt."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(_intent())
+    key = "rsi2.v1|2026-06-23|buy|SPY"
+
+    first = store.consume_queued_intent_and_append_attempt(
+        key, _attempt("cid-1"), now=_NOW, running_session_id="sess-A",
+        consumed_by="sess-A", consumed_at=_NOW,
+    )
+    second = store.consume_queued_intent_and_append_attempt(
+        key, _attempt("cid-2"), now=_NOW, running_session_id="sess-A",
+        consumed_by="sess-B", consumed_at=_NOW,
+    )
+
+    assert first == 1
+    assert second == 0
+    # Exactly one attempt: the race-loser inserted nothing (I-5).
+    attempts = store.list_execution_attempts()
+    assert [a.client_order_id for a in attempts] == ["cid-1"]
+
+
+def test_combined_drops_expired_row_and_writes_no_attempt(tmp_path):
+    """Expired-but-still-'queued' -> rowcount 0, no attempt, row untouched."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(_intent(expires_at=datetime(2026, 6, 23, 13, 0, tzinfo=UTC)))
+
+    rowcount = store.consume_queued_intent_and_append_attempt(
+        "rsi2.v1|2026-06-23|buy|SPY",
+        _attempt(),
+        now=_NOW,  # 14:00 > 13:00 expiry
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
+    )
+
+    assert rowcount == 0
+    assert _status_of(tmp_path / "milodex.db", "rsi2.v1|2026-06-23|buy|SPY") == "queued"
+    assert store.list_execution_attempts() == []
+
+
+@pytest.mark.parametrize(
+    "exit_reason", ["interrupted", "crashed", "kill_switch", "orphan_recovered", None]
+)
+def test_combined_drops_unclean_handoff_and_writes_no_attempt(tmp_path, exit_reason):
+    """Cross-session row whose run did NOT controlled_stop -> 0, no attempt."""
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    store.append_queued_intent(_intent(session_id="sess-OLD"))
+    _seed_run(db, "sess-OLD", exit_reason)
+
+    rowcount = store.consume_queued_intent_and_append_attempt(
+        "rsi2.v1|2026-06-23|buy|SPY",
+        _attempt(),
+        now=_NOW,
+        running_session_id="sess-NEW",
+        consumed_by="sess-NEW",
+        consumed_at=_NOW,
+    )
+
+    assert rowcount == 0
+    assert store.list_execution_attempts() == []
+
+
+def test_combined_drops_config_drifted_row_and_writes_no_attempt(tmp_path):
+    """Stored config_hash != recomputed on-disk hash -> 0, no attempt."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(_intent(config_hash="d" * 64))
+
+    rowcount = store.consume_queued_intent_and_append_attempt(
+        "rsi2.v1|2026-06-23|buy|SPY",
+        _attempt(),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
+    )
+
+    assert rowcount == 0
+    assert _status_of(tmp_path / "milodex.db", "rsi2.v1|2026-06-23|buy|SPY") == "queued"
+    assert store.list_execution_attempts() == []
+
+
+def test_combined_unknown_key_returns_zero_and_writes_no_attempt(tmp_path):
+    """An unknown idempotency_key -> 0, no attempt inserted."""
+    store = EventStore(tmp_path / "milodex.db")
+
+    rowcount = store.consume_queued_intent_and_append_attempt(
+        "nope",
+        _attempt(),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="x",
+        consumed_at=_NOW,
+    )
+
+    assert rowcount == 0
+    assert store.list_execution_attempts() == []

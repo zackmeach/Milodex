@@ -9,6 +9,7 @@ sibling task and is not exercised here.
 
 from __future__ import annotations
 
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -217,3 +218,189 @@ def test_expiry_window_spans_a_weekend(
     intent_id = active[0].id
     row = event_store.get_queued_intent(intent_id)
     assert row.expires_at - row.created_at >= timedelta(days=3)
+
+
+# ---------------------------------------------------------------------------
+# Fix #1 — persist-before-watermark (no silent intent loss)
+# ---------------------------------------------------------------------------
+
+
+def test_persist_failure_does_not_advance_watermark_and_alerts(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A non-IntegrityError persist failure (locked DB / unreadable config) must
+    NOT advance the watermark and MUST emit a durable ``queued_intent_persist_failed``
+    operator alert — otherwise the next cycle's already_seen short-circuit would
+    silently strand the day's intent."""
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    _stub_evaluate(runner, [_buy_intent("spy")])
+
+    def boom(_event):
+        raise sqlite3.OperationalError("database is locked")
+
+    event_store.append_queued_intent = boom
+
+    _drive_lockin(runner, provider)
+
+    # Nothing reached the broker, the watermark did NOT advance (re-eval next cycle),
+    # and the failure surfaced as a durable operator alert.
+    assert broker.submit_calls == []
+    assert runner._last_processed_bar_at is None
+    alerts = event_store.list_operator_alerts(alert_type="queued_intent_persist_failed")
+    assert len(alerts) == 1
+    assert alerts[0].severity == "warning"
+    assert alerts[0].strategy_id == runner._strategy_id
+    assert alerts[0].symbol == "SPY"
+
+
+def test_persist_failure_then_next_cycle_repersists_and_advances(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """After a persist failure (watermark unadvanced), a later cycle must re-evaluate
+    the SAME locked bar, re-persist successfully, and advance the watermark exactly
+    once (idempotent recovery)."""
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    _stub_evaluate(runner, [_buy_intent("spy")])
+    real_append = event_store.append_queued_intent
+
+    calls = {"n": 0}
+
+    def flaky(event):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return real_append(event)
+
+    event_store.append_queued_intent = flaky
+
+    # First lockin: persist raises -> watermark stays None. Confirming the gate
+    # resets the lock-in state machine, so recovery re-arms it (one more stability
+    # window) before re-confirming — correct, safe behavior (retry well inside TTL).
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime().replace(hour=20, minute=5)]
+    runner._now = lambda: fake_now[0]
+    runner.run_cycle()  # cycle 1: pending stability
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # cycle 2: lockin confirms -> persist raises (no advance)
+    assert runner._last_processed_bar_at is None
+
+    # Recovery: re-arm the stability window, then re-confirm + re-persist (the
+    # append_queued_intent stub now succeeds on its second call).
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # re-arm: pending stability
+    assert runner._last_processed_bar_at is None
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    final_now = fake_now[0]
+    runner.run_cycle()  # re-confirm -> persist succeeds -> watermark advances
+
+    assert runner._last_processed_bar_at is not None
+    active = event_store.get_active_queued_intents(
+        runner._strategy_id, now=final_now, running_session_id=runner.session_id
+    )
+    assert len(active) == 1
+
+
+def test_persist_integrity_error_is_swallowed_and_advances(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """An IntegrityError (UNIQUE idempotency_key collision) is an idempotent
+    duplicate: it is swallowed, no operator alert is written, and the watermark
+    advances exactly once."""
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    _stub_evaluate(runner, [_buy_intent("spy")])
+
+    def collide(_event):
+        raise sqlite3.IntegrityError("UNIQUE constraint failed: queued_intents.idempotency_key")
+
+    event_store.append_queued_intent = collide
+
+    _drive_lockin(runner, provider)
+
+    assert broker.submit_calls == []
+    # Idempotent duplicate: watermark advances, no persist-failure alert.
+    assert runner._last_processed_bar_at is not None
+    assert event_store.list_operator_alerts(alert_type="queued_intent_persist_failed") == []
+
+
+def test_partial_persist_failure_retries_only_the_failed_intent(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Multi-intent lock-in where intent #1 (spy) persists but intent #2 (qqq)
+    raises: the watermark stays unadvanced, the alert names the ACTUAL failed
+    intent (qqq, not intents[0]), and the retry re-persists ONLY qqq — spy is
+    skipped via the dedup set (which is added to only AFTER a successful persist),
+    so spy is never double-persisted. This proves the Fix #1 dedup-ordering
+    invariant the single-intent failure tests cannot reach."""
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    _stub_evaluate(runner, [_buy_intent("spy"), _buy_intent("qqq")])
+    real_append = event_store.append_queued_intent
+
+    calls = {"n": 0}
+
+    def flaky(event):
+        calls["n"] += 1
+        # Only the SECOND append of the batch (qqq) raises; spy (#1) and every
+        # later retry succeed.
+        if calls["n"] == 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real_append(event)
+
+    event_store.append_queued_intent = flaky
+
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime().replace(hour=20, minute=5)]
+    runner._now = lambda: fake_now[0]
+    runner.run_cycle()  # cycle 1: pending stability
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # cycle 2: confirm -> spy persists, qqq raises (no advance)
+
+    # spy persisted; qqq did not; watermark unadvanced; alert names the FAILED qqq.
+    assert runner._last_processed_bar_at is None
+    queued = event_store.list_queued_intents_by_status("queued")
+    assert sorted(q.symbol for q in queued) == ["SPY"]
+    alerts = event_store.list_operator_alerts(alert_type="queued_intent_persist_failed")
+    assert len(alerts) == 1
+    assert alerts[0].symbol == "QQQ"
+
+    # Recovery: re-arm + re-confirm on the SAME locked bar. The retry skips spy
+    # (its key is in _processed_intent_keys) and re-persists ONLY qqq.
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # re-arm: pending stability
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    final_now = fake_now[0]
+    runner.run_cycle()  # re-confirm -> qqq re-persists -> watermark advances
+
+    assert runner._last_processed_bar_at is not None
+    active = event_store.get_active_queued_intents(
+        runner._strategy_id, now=final_now, running_session_id=runner.session_id
+    )
+    # Exactly one row each — spy was NOT double-persisted by the retry.
+    assert sorted(q.symbol for q in active) == ["QQQ", "SPY"]
