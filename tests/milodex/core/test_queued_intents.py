@@ -89,7 +89,7 @@ def _status_of(db_path, idempotency_key: str) -> str | None:
 
 def test_schema_version_is_16_after_construction(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
-    assert store.schema_version == 16
+    assert store.schema_version == 17
 
 
 def test_queued_intents_table_exists(tmp_path):
