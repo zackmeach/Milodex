@@ -118,6 +118,7 @@ class ExecutionService:
         reasoning: DecisionReasoning | None = None,
         idempotency_key: str | None = None,
         latest_bar_override: Bar | None = None,
+        pricing_unit_price: float | None = None,
     ) -> ExecutionResult:
         """Submit a paper trade after passing risk evaluation.
 
@@ -137,9 +138,20 @@ class ExecutionService:
         not the latest completed session). The drain instead feeds the locked-in
         daily SESSION bar here so the same gate sees the bar a 1D strategy
         legitimately prices and trades on. The override changes only WHICH bar is
-        evaluated; the staleness gate still runs unchanged and still BLOCKS a bar
-        whose session date is not the latest completed session. ``None`` (every
-        legacy caller) preserves today's behavior byte-for-byte.
+        evaluated for the GATE; the staleness gate still runs unchanged and still
+        BLOCKS a bar whose session date is not the latest completed session.
+        ``None`` (every legacy caller) preserves today's behavior byte-for-byte.
+
+        ``pricing_unit_price`` is the fresh-price companion (ADR 0057 §2). The
+        locked-in session bar drives the staleness GATE, but it must NOT also
+        price the exposure cap: across an overnight gap the stale locked close
+        understates the real order notional and weakens the cap. The drain fetches
+        the current open price once (``data_provider.get_latest_bar``) and threads
+        it here so ``estimated_unit_price`` (and thus every notional / exposure-cap
+        check) prices on the FRESH open while ``context.latest_bar`` keeps the
+        locked bar for the gate. Gated identically to the override: applied only
+        for an in-progress 1D drain; ``None`` (every legacy caller) is byte-for-byte
+        unchanged (cap prices on the live ``get_latest_bar``, as today).
         """
         return self._submit(
             intent,
@@ -148,6 +160,7 @@ class ExecutionService:
             reasoning=reasoning,
             idempotency_key=idempotency_key,
             latest_bar_override=latest_bar_override,
+            pricing_unit_price=pricing_unit_price,
         )
 
     def submit_backtest(
@@ -185,6 +198,7 @@ class ExecutionService:
         reasoning: DecisionReasoning | None = None,
         idempotency_key: str | None = None,
         latest_bar_override: Bar | None = None,
+        pricing_unit_price: float | None = None,
     ) -> ExecutionResult:
         """Serialize the submit critical section per account, then submit.
 
@@ -206,6 +220,7 @@ class ExecutionService:
                 reasoning=reasoning,
                 idempotency_key=idempotency_key,
                 latest_bar_override=latest_bar_override,
+                pricing_unit_price=pricing_unit_price,
             )
         lock = self._submit_lock()
         try:
@@ -233,6 +248,7 @@ class ExecutionService:
                 reasoning=reasoning,
                 idempotency_key=idempotency_key,
                 latest_bar_override=latest_bar_override,
+                pricing_unit_price=pricing_unit_price,
             )
         finally:
             lock.release()
@@ -405,18 +421,23 @@ class ExecutionService:
         reasoning: DecisionReasoning | None = None,
         idempotency_key: str | None = None,
         latest_bar_override: Bar | None = None,
+        pricing_unit_price: float | None = None,
     ) -> ExecutionResult:
         # P1-3: the bar-feeding override is ONLY legitimate for a 1D queued-intent
         # drain. Forward it to _evaluate only when a drain is in progress
         # (idempotency_key is not None); a manual / non-drain caller's override is
         # dropped here so it can never reach the staleness gate. _evaluate applies
         # a second gate (bar_size == "1D") so even within a drain the override is
-        # inert for a non-1D config.
+        # inert for a non-1D config. The fresh-price cap override (ADR 0057 §2)
+        # rides the SAME drain-only gating: dropped here for non-drain callers so a
+        # manual submit always prices on the live provider bar.
+        is_drain = idempotency_key is not None
         result = self._evaluate(
             intent,
             preview_only=False,
             reasoning=reasoning,
-            latest_bar_override=(latest_bar_override if idempotency_key is not None else None),
+            latest_bar_override=(latest_bar_override if is_drain else None),
+            pricing_unit_price=(pricing_unit_price if is_drain else None),
         )
         if not result.risk_decision.allowed:
             self._maybe_activate_kill_switch(result)
@@ -700,6 +721,7 @@ class ExecutionService:
         preview_only: bool,
         reasoning: DecisionReasoning | None = None,
         latest_bar_override: Bar | None = None,
+        pricing_unit_price: float | None = None,
     ) -> ExecutionResult:
         normalized_intent = self._normalize_intent(intent)
         # Full short-circuit applies only to the BYPASS backtest policy
@@ -713,14 +735,13 @@ class ExecutionService:
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
 
         # Queue-at-open drain bar-feeding override (D-1, Option A). When the
-        # caller supplies a bar, evaluate against it instead of the live
-        # latest-trade bar. The whole _evaluate uses this bar — both the
-        # session-aware staleness gate AND the estimated_unit_price risk-cap
-        # pricing below (correct for a 1D strategy, which prices on its daily
-        # session bar). This does NOT weaken the gate: staleness_verdict still
-        # validates the override bar's session date against the latest completed
-        # session and the 7-day ceiling, so a wrong/old override bar is still
-        # BLOCKED. None (every legacy caller) is byte-for-byte unchanged.
+        # caller supplies a bar, the session-aware staleness GATE evaluates
+        # against it instead of the live latest-trade bar (correct for a 1D
+        # strategy, whose freshest bar at the open is legitimately ~a session
+        # old). This does NOT weaken the gate: staleness_verdict still validates
+        # the override bar's session date against the latest completed session
+        # and the 7-day ceiling, so a wrong/old override bar is still BLOCKED.
+        # None (every legacy caller) is byte-for-byte unchanged.
         #
         # P1-3: the override is ONLY legitimate for a 1D drain. _submit_locked
         # already drops it for non-drain callers (idempotency_key is None); here
@@ -745,9 +766,25 @@ class ExecutionService:
         account = self._broker.get_account()
         market_open = self._broker.is_market_open()
 
+        # Cap PRICING is decoupled from the gate bar (ADR 0057 §2). The locked
+        # session bar drives the staleness gate (above), but the exposure cap
+        # must price on a FRESH open: across an overnight gap the stale locked
+        # close understates the real order notional and would let an over-cap
+        # order through. The drain fetches the current open once and threads it
+        # as ``pricing_unit_price``; here it overrides estimated_unit_price ONLY
+        # on the same drain-only gate as the bar override (use_override). For
+        # every other path (legacy callers, non-1D, or a drain that supplied no
+        # fresh price) pricing falls back to ``latest_bar.close`` — byte-for-byte
+        # the prior behavior. ``context.latest_bar`` always stays the gate bar.
+        pricing_price = (
+            pricing_unit_price
+            if (use_override and pricing_unit_price is not None)
+            else latest_bar.close
+        )
+
         request = self._build_execution_request(
             normalized_intent,
-            latest_bar.close,
+            pricing_price,
             strategy_config,
             reasoning=reasoning,
         )

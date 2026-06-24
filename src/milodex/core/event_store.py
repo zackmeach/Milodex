@@ -7,7 +7,7 @@ import sqlite3
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -114,6 +114,27 @@ class ExecutionAttemptEvent:
     broker_order_id: str | None = None
     finalized_at: datetime | None = None
     failure_detail: str | None = None
+    id: int | None = None
+
+
+@dataclass(frozen=True)
+class OperatorAlertEvent:
+    """Durable operator-visible anomaly row (append-only).
+
+    Emitted alongside a ``logger.warning`` so the alert is visible in the moment
+    (log) and reconstructable after the fact (this ledger). First consumer is the
+    dropped-EXIT-intent alert (clean-handoff ambiguity, I-4).
+    """
+
+    alert_type: str
+    severity: str
+    summary: str
+    recorded_at: datetime
+    strategy_id: str | None = None
+    session_id: str | None = None
+    symbol: str | None = None
+    side: str | None = None
+    context_json: dict[str, Any] = field(default_factory=dict)
     id: int | None = None
 
 
@@ -902,6 +923,60 @@ class EventStore:
                 (cutoff.isoformat(),),
             ).fetchall()
         return [_execution_attempt_from_row(row) for row in rows]
+
+    def append_operator_alert(self, event: OperatorAlertEvent) -> int:
+        """Insert a durable operator-alert row (migration 017) and return its id.
+
+        Append-only: records an operator-visible anomaly emitted outside the
+        explanation lane (e.g. a dropped EXIT intent). Written alongside a
+        ``logger.warning`` so the alert is both immediate (log) and durable
+        (this ledger). No existing code reads this table.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                INSERT INTO operator_alerts (
+                    recorded_at,
+                    alert_type,
+                    severity,
+                    summary,
+                    strategy_id,
+                    session_id,
+                    symbol,
+                    side,
+                    context_json
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    _dt(event.recorded_at),
+                    event.alert_type,
+                    event.severity,
+                    event.summary,
+                    event.strategy_id,
+                    event.session_id,
+                    event.symbol,
+                    event.side,
+                    _dump_json(event.context_json),
+                ),
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
+    def list_operator_alerts(
+        self, *, alert_type: str | None = None
+    ) -> list[OperatorAlertEvent]:
+        with self._connect() as connection:
+            if alert_type is None:
+                rows = connection.execute(
+                    "SELECT * FROM operator_alerts ORDER BY id ASC"
+                ).fetchall()
+            else:
+                rows = connection.execute(
+                    "SELECT * FROM operator_alerts WHERE alert_type = ? ORDER BY id ASC",
+                    (alert_type,),
+                ).fetchall()
+        return [_operator_alert_from_row(row) for row in rows]
 
     def append_kill_switch_event(self, event: KillSwitchEvent) -> int:
         with self._connect() as connection:
@@ -2405,6 +2480,55 @@ class EventStore:
             )
             connection.commit()
 
+    def expire_stale_queued_intents(self, *, now: datetime) -> list[QueuedIntentEvent]:
+        """Bulk-flip stale ``queued`` rows to ``expired``; return the swept rows.
+
+        A single ``UPDATE ... RETURNING *`` flips every row matching
+        ``status = 'queued' AND datetime(expires_at) <= datetime(now)`` to
+        ``expired`` and returns exactly those rows — atomic by construction, so
+        the returned set is precisely the set flipped even under a concurrent
+        consume (a row consumed first no longer matches ``status='queued'`` and
+        is therefore neither flipped nor returned; a separate SELECT-then-UPDATE
+        would over-return in that skew window). A row already ``consumed`` /
+        ``obsolete`` never matches and is never re-touched: the sweep is
+        idempotent and race-safe. It ONLY mutates status; the CALLER writes any
+        audit row and any per-row alert.
+
+        Returning the rows (not just a count) is load-bearing for the
+        exit-strand guarantee: a swept EXIT leaves ``queued`` status and would
+        be invisible to a ``status='queued'``-only stranded-exit alerter, so the
+        caller must alert off the swept set directly. Because the flip is guarded
+        by ``status='queued'``, each expired row is swept by exactly one runner —
+        exactly one alert, no cross-runner duplicate.
+
+        This is housekeeping, NOT a safety gate:
+        :meth:`get_active_queued_intents` (the sole drain authority) already
+        excludes expired rows via ``datetime(expires_at) > datetime(now)``, so a
+        stale row is never drainable whether or not this sweep has run. The
+        sweep merely settles the durable status for audit/diagnostics.
+        """
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                UPDATE queued_intents
+                SET status = 'expired'
+                WHERE status = 'queued' AND datetime(expires_at) <= datetime(?)
+                RETURNING *
+                """,
+                (_dt(now),),
+            ).fetchall()
+            connection.commit()
+        return [_queued_intent_from_row(row) for row in rows]
+
+    def list_queued_intents_by_status(self, status: str) -> list[QueuedIntentEvent]:
+        """Return all queued-intent rows with ``status``, ordered by id (test/audit read)."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM queued_intents WHERE status = ? ORDER BY id ASC",
+                (status,),
+            ).fetchall()
+        return [_queued_intent_from_row(row) for row in rows]
+
     def get_backtest_run(self, run_id: str) -> BacktestRunEvent | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2828,6 +2952,25 @@ def _execution_attempt_from_row(row: sqlite3.Row) -> ExecutionAttemptEvent:
         broker_order_id=row["broker_order_id"],
         finalized_at=_parse_datetime(row["finalized_at"]),
         failure_detail=row["failure_detail"],
+    )
+
+
+def _operator_alert_from_row(row: sqlite3.Row) -> OperatorAlertEvent:
+    return OperatorAlertEvent(
+        id=int(row["id"]),
+        recorded_at=_parse_datetime(row["recorded_at"]),
+        alert_type=str(row["alert_type"]),
+        severity=str(row["severity"]),
+        summary=str(row["summary"]),
+        strategy_id=row["strategy_id"],
+        session_id=row["session_id"],
+        symbol=row["symbol"],
+        side=row["side"],
+        # context_json is nullable: a NULL column must not crash the reader
+        # (mirrors _queued_intent_from_row's per-JSON-column None-guard).
+        context_json=(
+            dict(_load_json(row["context_json"])) if row["context_json"] is not None else {}
+        ),
     )
 
 

@@ -190,9 +190,9 @@ def test_list_filter_reflects_latest_status_only(tmp_path):
     assert [e.experiment_id for e in abandoned] == ["exp-a"]
 
 
-def test_schema_version_is_16_after_construction(tmp_path):
+def test_schema_version_is_17_after_construction(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
-    assert store.schema_version == 16
+    assert store.schema_version == 17
 
 
 def test_no_delete_or_in_place_mutate_path_in_source():

@@ -50,7 +50,11 @@ CURRENT_PHASE = 6
 
 # Path prefixes that are inherently exempt from drift (repo-relative, "/"-sep).
 _ADR_PREFIXES = ("docs/adr/",)
-_EVIDENCE_PREFIXES = ("docs/reviews/",)
+# Point-in-time forensic write-ups: dated review records (docs/reviews/) and
+# per-feature assurance-evidence matrices (docs/assurance/, e.g. the D-6
+# clause->test-id ledgers). Like ADRs they preserve the language of the era they
+# record, so their Phase-1 references and currency claims are exempt from drift.
+_EVIDENCE_PREFIXES = ("docs/reviews/", "docs/assurance/")
 _SCRATCH_PREFIXES = ("docs/superpowers/",)
 _CODE_PREFIXES = ("src/", "tests/", "configs/", "scripts/")
 

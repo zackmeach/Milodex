@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import signal
+import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -14,17 +16,25 @@ from uuid import uuid4
 
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
-from milodex.core.event_store import EventStore, StrategyRunEvent
+from milodex.broker.models import OrderSide
+from milodex.core.event_store import (
+    EventStore,
+    ExplanationEvent,
+    OperatorAlertEvent,
+    QueuedIntentEvent,
+    StrategyRunEvent,
+)
 from milodex.data import DataProvider
-from milodex.data.models import BarSet
+from milodex.data.models import Bar, BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
-from milodex.execution.models import ExecutionResult, TradeIntent
+from milodex.execution.models import ExecutionResult, ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.operations.reconciliation import local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
+from milodex.runner.drain_policy import tradable_drop_decision
 from milodex.strategies.base import DecisionReasoning
-from milodex.strategies.loader import StrategyLoader
+from milodex.strategies.loader import StrategyLoader, compute_config_hash
 from milodex.strategies.paper_runner_control import consume_controlled_stop_request
 
 logger = logging.getLogger(__name__)
@@ -267,9 +277,16 @@ class StrategyRunner:
         """
         self._ensure_startup_reconciliation()
         self._maybe_rollover_reconciliation()
+        self._sweep_expired_queued_intents()
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
         if is_daily_bar and market_open:
+            # Phase-3 (queue-at-open, ADR 0057): the post-close lock-in enqueued
+            # today's intent; at the next open re-evaluate it against a fresh
+            # context and submit through the chokepoint. Runs AFTER the rollover
+            # reconcile (above) and MUST NOT advance _last_processed_bar_at — the
+            # authoritative post-close evaluation still owns the watermark (I-3).
+            self._drain_queued_intents()
             return []
         if is_daily_bar and not market_open and self._last_processed_bar_at is not None:
             # Market is closed and today's close has been confirmed via the
@@ -366,6 +383,23 @@ class StrategyRunner:
             # already_seen short-circuit above gates on _last_processed_bar_at.
             self._processed_intent_keys.clear()
             self._processed_intent_bar_at = latest_bar.timestamp
+
+        if is_daily_bar and not market_open:
+            # Phase-1 (queue-at-open, ADR 0057): a daily strategy must NOT submit
+            # at the post-close lock-in — the market is closed and the order
+            # would be vetoed (market_closed) or queued blind to an unknown
+            # next-open price. Persist the locked-in intent; the next at-open
+            # drain re-evaluates against fresh state and submits through the
+            # chokepoint. The watermark already advanced above (exactly once).
+            for intent in intents:
+                intent_key = self._intent_key(intent, latest_bar.timestamp)
+                if intent_key in self._processed_intent_keys:
+                    continue
+                self._processed_intent_keys.add(intent_key)
+                self._persist_queued_intent(intent, latest_bar, decision.reasoning)
+            if self._on_cycle_result is not None:
+                self._on_cycle_result([])
+            return []
 
         results: list[ExecutionResult] = []
         for intent in intents:
@@ -491,6 +525,69 @@ class StrategyRunner:
         )
         self._last_reconcile_ny_day = current_ny_day
 
+    def _sweep_expired_queued_intents(self) -> None:
+        """Flip expired ``queued`` rows to ``expired`` at the manual run-loop /
+        reconcile cadence (I-9: NOT a daemon — no background thread/timer).
+
+        Bookkeeping only: ``get_active_queued_intents`` already excludes expired
+        rows from the drain, so this never gates a trade. It writes ONE durable
+        audit explanation only when rows were actually swept (a quiet fleet emits
+        no audit noise), and deliberately does NOT read or write
+        ``_last_processed_bar_at`` / the lock-in watermark — it is entirely
+        independent of bar processing.
+
+        The sweep is GLOBAL (it flips every expired ``queued`` row regardless of
+        owning strategy); the audit row records only the count and is attributed
+        to the running session that performed the sweep — it does NOT claim the
+        swept rows belong to this strategy.
+
+        Exit-strand guarantee (B1): a swept EXIT leaves ``queued`` -> ``expired``
+        and so is invisible to the still-``queued``-only stranded-exit alerter.
+        The sweep therefore emits an ``exit_intent_dropped`` alert for every
+        swept EXIT directly. The alert carries the OWNING ``strategy_id`` (so a
+        cross-strategy swept exit is correctly attributed) and this session as
+        the sweeping observer. Because the sweep CAS flips each row exactly once
+        (``status='queued'`` predicate), exactly one runner sweeps a given
+        expired exit -> exactly one alert (no cross-runner duplicate).
+        """
+        swept = self._event_store.expire_stale_queued_intents(now=self._now())
+        if not swept:
+            return
+        for row in swept:
+            if row.intent_class == "exit":
+                self._emit_exit_drop_alert(row, reason="expired_undrained")
+        account = self._broker.get_account()
+        self._event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=self._now(),
+                decision_type="no_action",
+                status="no_action",
+                strategy_name=self._strategy_id,
+                strategy_stage=self._loaded.config.stage,
+                strategy_config_path=str(self._loaded.config.path),
+                config_hash=None,
+                symbol=self._evaluation_symbol(),
+                side="hold",
+                quantity=0.0,
+                order_type="none",
+                time_in_force="day",
+                submitted_by="strategy_runner",
+                market_open=self._broker.is_market_open(),
+                latest_bar_timestamp=None,
+                latest_bar_close=None,
+                account_equity=account.equity,
+                account_cash=account.cash,
+                account_portfolio_value=account.portfolio_value,
+                account_daily_pnl=account.daily_pnl,
+                risk_allowed=True,
+                risk_summary=f"Expired {len(swept)} stale queued intent(s) at reconcile.",
+                reason_codes=["queued_intent_expiry_sweep"],
+                risk_checks=[],
+                context={"swept": len(swept)},
+                session_id=self._session_id,
+            )
+        )
+
     def _now(self) -> datetime:
         return datetime.now(tz=UTC)
 
@@ -576,6 +673,459 @@ class StrategyRunner:
             intent.normalized_symbol(),
             intent.side.value,
         )
+
+    # ------------------------------------------------------------------
+    # queue-at-open (Phase-1 persist, ADR 0057)
+    # ------------------------------------------------------------------
+
+    def _trading_session_label(self, bar_timestamp: datetime) -> str:
+        return bar_timestamp.date().isoformat()
+
+    def _idempotency_key(self, intent: TradeIntent, trading_session: str) -> str:
+        # side.value is lowercase ("buy"/"sell"); symbol is uppercased.
+        return (
+            f"{self._strategy_id}|{trading_session}|"
+            f"{intent.side.value}|{intent.normalized_symbol()}"
+        )
+
+    def _intent_class(self, intent: TradeIntent) -> str:
+        return "entry" if intent.side == OrderSide.BUY else "exit"
+
+    def _intent_notional_pct(self, intent: TradeIntent) -> float | None:
+        return getattr(intent, "notional_pct", None)
+
+    def _risk_config_hash(self) -> str:
+        # Persist the hash over the SAME path the drain re-verifies against
+        # (compute_config_hash_or_none in get_active_queued_intents); a mismatch
+        # would silently drop the intent at the open.
+        return compute_config_hash(self._loaded.config.path)
+
+    def _serialize_locked_in_bar(self, bar) -> dict[str, Any]:
+        return {
+            "timestamp": bar.timestamp.isoformat(),
+            "open": bar.open,
+            "high": bar.high,
+            "low": bar.low,
+            "close": bar.close,
+            "volume": bar.volume,
+            "vwap": bar.vwap,
+        }
+
+    def _persist_queued_intent(
+        self, intent: TradeIntent, latest_bar, reasoning: DecisionReasoning | None
+    ) -> None:
+        """Persist a locked-in daily intent for drain at the next session open.
+
+        Phase-1 of queue-at-open (ADR 0057): instead of submitting at the
+        post-close lock-in (the market is closed and the order would be
+        vetoed ``market_closed``), the intent is written to ``queued_intents``
+        as an inert, expiring row. The next at-open drain re-evaluates it
+        against fresh state and submits through the chokepoint.
+        """
+        runner_intent = self._runner_intent(intent)
+        trading_session = self._trading_session_label(latest_bar.timestamp)
+        idempotency_key = self._idempotency_key(runner_intent, trading_session)
+        now = self._now()
+        event = QueuedIntentEvent(
+            idempotency_key=idempotency_key,
+            strategy_id=self._strategy_id,
+            strategy_config_path=str(self._loaded.config.path),
+            config_hash=self._risk_config_hash(),
+            session_id=self._session_id,
+            trading_session=trading_session,
+            locked_in_bar_timestamp=latest_bar.timestamp.isoformat(),
+            symbol=runner_intent.normalized_symbol(),
+            side=runner_intent.side.value,
+            intent_class=self._intent_class(runner_intent),
+            notional_pct=self._intent_notional_pct(runner_intent),
+            expected_stage=runner_intent.expected_stage,
+            expected_max_positions=runner_intent.expected_max_positions,
+            expected_max_position_pct=runner_intent.expected_max_position_pct,
+            expected_daily_loss_cap_pct=runner_intent.expected_daily_loss_cap_pct,
+            intent_payload_json={
+                "symbol": runner_intent.symbol,
+                "side": runner_intent.side.value,
+                "quantity": runner_intent.quantity,
+                "order_type": runner_intent.order_type.value,
+                "time_in_force": runner_intent.time_in_force.value,
+                "locked_in_bar": self._serialize_locked_in_bar(latest_bar),
+            },
+            reasoning_json=(reasoning.asdict() if reasoning is not None else None),
+            created_at=now,
+            # 7-day TTL, NOT 1 day: a +1d window silently kills every Friday->
+            # Monday daily intent (the next open is ~65-85h out across a
+            # weekend/holiday). The session-aware staleness gate is the real
+            # per-open guard, so the TTL only needs to outlast the longest
+            # weekend/holiday gap to the next open.
+            expires_at=now + timedelta(days=7),
+            status="queued",
+        )
+        try:
+            self._event_store.append_queued_intent(event)
+        except sqlite3.IntegrityError:
+            # UNIQUE(idempotency_key) collision = this logical intent is already
+            # queued for this session; persist is idempotent, so swallow.
+            logger.info(
+                "Queued intent already persisted (idempotent): %s",
+                idempotency_key,
+            )
+
+    # ------------------------------------------------------------------
+    # queue-at-open (Phase-3 drain, ADR 0057)
+    # ------------------------------------------------------------------
+
+    def _emit_exit_drop_alert(self, queued: QueuedIntentEvent, *, reason: str) -> None:
+        """Durably record + warn when an EXIT intent is dropped for ambiguity.
+
+        Asymmetry guard: an undrained entry is benign (no fire); an undrained
+        exit can strand a live position, so it MUST be operator-visible. This is
+        observational only — it does NOT submit, retry, or mutate risk state.
+        """
+        logger.warning(
+            "EXIT intent dropped for %s (%s): %s. Position may remain open; "
+            "operator review required.",
+            queued.symbol,
+            queued.side,
+            reason,
+        )
+        self._event_store.append_operator_alert(
+            OperatorAlertEvent(
+                alert_type="exit_intent_dropped",
+                severity="warning",
+                summary=f"EXIT intent for {queued.symbol} dropped: {reason}.",
+                strategy_id=queued.strategy_id,
+                session_id=self._session_id,
+                symbol=queued.symbol,
+                side=queued.side,
+                context_json={"reason": reason, "idempotency_key": queued.idempotency_key},
+                recorded_at=self._now(),
+            )
+        )
+
+    def _alert_stranded_exit_intents(self, drainable: list[QueuedIntentEvent]) -> None:
+        """Alert + retire any still-queued EXIT for THIS strategy that the drain
+        authority excluded (clean-handoff fence I-4 failed, or config drift).
+        A stranded exit can leave a position open, so it must surface. Marking
+        the row obsolete after alerting prevents a re-alert every open cycle
+        (the drain runs each ~60s open poll); the strategy re-emits a fresh exit
+        next post-close if it still holds the position."""
+        drainable_keys = {q.idempotency_key for q in drainable}
+        for q in self._event_store.list_queued_intents_by_status("queued"):
+            if (
+                q.strategy_id == self._strategy_id
+                and q.intent_class == "exit"
+                and q.idempotency_key not in drainable_keys
+            ):
+                self._emit_exit_drop_alert(q, reason="no_clean_handoff")
+                self._event_store.mark_queued_intent_obsolete(q.id)
+
+    def _drain_queued_intents(self) -> None:
+        """Re-evaluate this strategy's active queued intents at the open and submit.
+
+        Phase-3 of queue-at-open (ADR 0057): at the next session open, drain the
+        intents the post-close lock-in enqueued. ``get_active_queued_intents`` is
+        the SOLE drain authority — it enforces ``status='queued'``, the expiry
+        fence, the clean-handoff fence, and the config-hash guard in SQL + on-disk
+        recompute. This loop adds NO redundant fence of its own. Each surviving
+        intent is re-evaluated against a fresh context (current equity + positions)
+        on history through the locked-in completed session bar, and submitted
+        through the chokepoint with the persisted ``idempotency_key`` (the CAS
+        inside ``_submit_locked`` claims the row) and the reconstructed locked-in
+        bar as ``latest_bar_override`` (feeds ONLY the session-aware 1D staleness
+        gate). Sizing + cap pricing use a FRESH open price fetched once here
+        (``_fresh_pricing_bar``, ADR 0057 §2): an ENTRY's quantity is rescaled to
+        the fresh price and the fresh price is threaded down as
+        ``pricing_unit_price`` so the exposure cap prices on the real open, not the
+        stale locked close; no usable fresh price fails CLOSED (entry stays queued,
+        exit alerts + retires). The drain NEVER touches ``_last_processed_bar_at``
+        (I-3) and NEVER calls ``mark_queued_intent_consumed`` (the submit CAS owns
+        that); the only status write here is ``obsolete`` for a flat-ledger /
+        stranded exit.
+        """
+        intents = self._event_store.get_active_queued_intents(
+            self._strategy_id,
+            now=self._now(),
+            running_session_id=self._session_id,
+        )
+        self._alert_stranded_exit_intents(intents)
+        if not intents:
+            return
+        account = self._broker.get_account()
+        for queued in intents:
+            # Per-intent fail-closed isolation (mirrors get_active_queued_intents'
+            # per-row guard): a raise in the PRE-SUBMIT body — e.g. strategy.evaluate()
+            # on a degenerate truncated BarSet — leaves the row queued by construction
+            # (nothing was consumed). Swallow, log, and leave the row queued (retried
+            # next open / expired by the sweep). NEVER change row status on a swallowed
+            # pre-submit raise. The submit call is DELIBERATELY outside this try (below)
+            # because the consume CAS may flip the row to 'consumed' before the broker
+            # call — a raise there is NOT safely re-queuable.
+            try:
+                decision_bar = self._reconstruct_locked_in_bar(queued)
+                td = tradable_drop_decision(self._broker, queued.symbol)
+                if td.drop:
+                    if queued.intent_class == "exit":
+                        # Asymmetry guard: an undrained exit can strand a live
+                        # position. Alert + retire (so a persistently-halted exit
+                        # does not re-alert every cycle); the strategy re-emits a
+                        # fresh exit next post-close if it still holds the lot.
+                        self._emit_exit_drop_alert(queued, reason=td.reason or "not_tradable")
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    logger.warning(
+                        "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
+                    )
+                    continue
+                eval_bars = self._bars_through(
+                    self._fetch_bars_by_symbol(), decision_bar.timestamp
+                )
+                primary_bars = eval_bars[self._evaluation_symbol()]
+                context = replace(
+                    self._loaded.context,
+                    positions=self._current_positions(),
+                    equity=account.equity,
+                    bars_by_symbol=eval_bars,
+                    entry_state=self._build_entry_state(),
+                )
+                decision = self._loaded.strategy.evaluate(primary_bars, context)
+                match = self._match_drain_intent(decision.intents, queued)
+                # ``not (q > 0)`` is NaN-safe (NaN > 0 is False, so NaN is treated as
+                # non-positive and dropped); ``q <= 0`` is NOT (NaN <= 0 is False, so a
+                # NaN quantity would slip through to submit).
+                if match is None or not (match.quantity > 0):
+                    if queued.intent_class == "exit":
+                        if not self._current_positions().get(queued.symbol):
+                            # A 0-share exit on an already-flat strategy ledger is moot —
+                            # the position the exit would close no longer exists. Retire
+                            # the row rather than leave it to expire undrained.
+                            self._event_store.mark_queued_intent_obsolete(queued.id)
+                        else:
+                            # Position STILL HELD but the at-open re-eval derived no exit:
+                            # a path-dependent exit may never re-emit -> surface it. Retire
+                            # the row to avoid a re-alert every ~60s open poll; the strategy
+                            # re-emits a fresh exit next post-close if it still decides to
+                            # exit.
+                            self._emit_exit_drop_alert(
+                                queued, reason="reeval_no_exit_position_open"
+                            )
+                            self._event_store.mark_queued_intent_obsolete(queued.id)
+                    # 0-share entry / no re-derived match -> drop, leave queued to
+                    # expire; NEVER submit a 0-share order.
+                    continue
+
+                # The price the strategy actually sized ``match.quantity`` on is
+                # the TRADED symbol's OWN locked close — NOT ``decision_bar.close``
+                # (which is always universe[0]'s close, because the lock-in persists
+                # the evaluation symbol's bar for EVERY intent regardless of the
+                # symbol it trades). For a cross-sectional 1D strategy whose traded
+                # symbol != universe[0], using universe[0]'s close as the rescale
+                # numerator mixes two symbols' prices and grossly mis-sizes the
+                # order. ``eval_bars[queued.symbol]`` is the traded symbol's bars
+                # truncated to the locked session; its latest close is exactly what
+                # the cross-sectional sizers used (``unit_price = latest_close``).
+                # Read it BEFORE the fresh-price lookup so the entry/exit asymmetry
+                # guard (silent ENTRY re-queue vs EXIT alert+retire) is uniform with
+                # the existing fail-closed branches. Fail CLOSED if the traded
+                # symbol is missing / its truncated BarSet is empty / its close is
+                # non-finite or non-positive.
+                sized_close = self._traded_symbol_locked_close(eval_bars, queued.symbol)
+                if sized_close is None:
+                    if queued.intent_class == "exit":
+                        self._emit_exit_drop_alert(queued, reason="no_sizing_price")
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    logger.warning(
+                        "drain: no sizing price for %s; dropping (fail-closed)",
+                        queued.symbol,
+                    )
+                    continue
+
+                # Fresh-price sizing + cap pricing (ADR 0057 §2). The locked-in
+                # close sized the re-eval and gates staleness, but it must NOT
+                # size entries or price the exposure cap across an overnight gap.
+                # Fetch a confirmably-current fresh price; fail CLOSED if absent.
+                fresh = self._fresh_pricing_bar(queued.symbol, decision_bar)
+                if fresh is None:
+                    if queued.intent_class == "exit":
+                        # Asymmetry guard: an undrained exit can strand a live
+                        # position. Alert + retire (de-spam the ~60s open poll);
+                        # the strategy re-emits a fresh exit next post-close.
+                        self._emit_exit_drop_alert(queued, reason="no_fresh_price")
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    logger.warning(
+                        "drain: no fresh price for %s; dropping (fail-closed)",
+                        queued.symbol,
+                    )
+                    continue
+                pricing_price = fresh.close
+                submit_match = match
+                if queued.intent_class != "exit":
+                    # ENTRY: rescale the at-open quantity to the fresh price
+                    # (notional sizing is linear in 1/price, so this is exactly
+                    # the ADR §2 recompute, model-agnostic — no per-strategy
+                    # notional param plumbing). The numerator is the TRADED symbol's
+                    # own locked close (``sized_close``), the price the strategy
+                    # sized on — NOT universe[0]'s ``decision_bar.close``. EXITs sell
+                    # the held lot and are NEVER rescaled. ``not (q > 0)`` is NaN-safe.
+                    fresh_qty = math.floor(match.quantity * sized_close / pricing_price)
+                    if not (fresh_qty > 0):
+                        # Fresh price so high the resize floors to 0 -> drop, leave
+                        # queued to expire; NEVER submit a 0-share order.
+                        continue
+                    submit_match = replace(match, quantity=float(fresh_qty))
+            except Exception as exc:  # noqa: BLE001 — pre-submit raise: nothing consumed
+                # One poison intent must not abort draining its siblings; the pre-submit
+                # body legitimately leaves the row queued for retry next open / sweep.
+                # ``get_latest_bar`` raising lands here too -> ENTRY stays queued.
+                logger.warning(
+                    "drain: intent %s raised before submit; leaving queued (%s)",
+                    queued.idempotency_key,
+                    exc,
+                )
+                continue
+            # ``submit_match`` is a valid, positive-quantity intent (entry resized to
+            # the fresh price; exit unchanged). The submit is OUTSIDE the pre-submit
+            # try: the consume CAS inside ``_submit_locked`` may flip the row to
+            # 'consumed' BEFORE the broker call, so a raise here means the row is NOT
+            # safely re-queuable — never claim 'leaving queued'. For an EXIT, surface
+            # it (the position may be stranded); an ENTRY raise stays silent.
+            try:
+                result = self._execution_service.submit_paper(
+                    self._runner_intent(submit_match),
+                    session_id=self._session_id,
+                    reasoning=decision.reasoning,
+                    idempotency_key=queued.idempotency_key,
+                    latest_bar_override=decision_bar,
+                    pricing_unit_price=pricing_price,
+                )
+            except Exception as exc:  # noqa: BLE001 — post-CAS submit raise: row may be consumed
+                logger.warning(
+                    "drain: submit raised for %s (row may be consumed; not re-queued): %s",
+                    queued.idempotency_key,
+                    exc,
+                )
+                if queued.intent_class == "exit":
+                    self._emit_exit_drop_alert(queued, reason="submit_error")
+                continue
+            # A routine broker rejection (OrderRejectedError / InsufficientFundsError)
+            # is CAUGHT in the service and RETURNED as status=REJECTED, NOT raised. By
+            # then the consume CAS has already flipped the row to 'consumed' (it runs
+            # before the broker call), so a rejected EXIT is a consumed-but-unsubmitted
+            # STRAND — surface it. status=REJECTED in the drain only ever occurs after
+            # the CAS, so it is the exact strand condition; BLOCKED (idempotency-
+            # suppressed race-loss, or a pre-CAS risk block that leaves the row queued)
+            # is NOT a strand and must not alert. The row is already terminal — the
+            # alert is observational; do not mutate status further. ENTRY stays silent.
+            if (
+                queued.intent_class == "exit"
+                and result.status == ExecutionStatus.REJECTED
+            ):
+                self._emit_exit_drop_alert(queued, reason="submit_rejected")
+
+    def _fresh_pricing_bar(self, symbol: str, locked_bar: Bar) -> Bar | None:
+        """Fetch a CONFIRMABLY-CURRENT fresh bar for drain sizing/cap pricing.
+
+        ADR 0057 §2: the drain must size entries and price the exposure cap on a
+        fresh open price, not the stale locked-in close. The fresh price comes
+        from the live IEX minute bar (``get_latest_bar``), distinct from the
+        locked daily SESSION bar that drives the staleness gate.
+
+        Fails CLOSED (returns ``None``) when no usable fresh price is available:
+
+        * ``get_latest_bar`` raised (provider outage) — caught HERE so the
+          "can't be obtained" case routes through the same fail-closed branch as
+          an unconfirmable bar (an EXIT must alert + retire, not be swallowed by
+          the drain's generic pre-submit handler with no alert);
+        * the fresh bar is not from the current session
+          (``_is_current_session_bar`` — a stale provider returning a prior
+          close is rejected);
+        * the fresh bar is not strictly newer than the locked session bar
+          (a provider echoing the locked bar carries no new price); or
+        * the fresh close is non-finite / non-positive.
+
+        Both date and strict-newness checks bias fail-closed: a drain that cannot
+        confirm a fresh price must not submit on a stale one.
+        """
+        try:
+            fresh = self._data_provider.get_latest_bar(symbol)
+        except Exception as exc:  # noqa: BLE001 — provider outage -> fail closed
+            logger.warning("drain: get_latest_bar failed for %s (%s)", symbol, exc)
+            return None
+        if not self._is_current_session_bar(fresh):
+            return None
+        if not (fresh.timestamp > locked_bar.timestamp):
+            return None
+        close = fresh.close
+        if close is None or not (close > 0):  # NaN-safe (NaN > 0 is False)
+            return None
+        return fresh
+
+    def _traded_symbol_locked_close(
+        self, eval_bars: dict[str, Any], symbol: str
+    ) -> float | None:
+        """Return the TRADED symbol's own locked close from the truncated bars.
+
+        ``eval_bars`` is ``_fetch_bars_by_symbol`` truncated to the locked-in
+        session (``_bars_through``); the latest close of ``eval_bars[symbol]`` is
+        the exact price the strategy sized the at-open quantity on (the
+        cross-sectional sizers use ``unit_price = candidate["latest_close"]``,
+        which equals this value). This is the correct rescale numerator — distinct
+        from ``decision_bar.close``, which is always universe[0]'s close.
+
+        Fails CLOSED (returns ``None``) when the close is not obtainable: the
+        symbol is missing from ``eval_bars``, its truncated BarSet is empty, or its
+        latest close is non-finite / non-positive. The caller routes a ``None`` to
+        the same fail-closed asymmetry guard as a missing fresh price.
+        """
+        bars = eval_bars.get(symbol)
+        if bars is None or len(bars) == 0:
+            return None
+        close = bars.latest().close
+        if close is None or not (close > 0):  # NaN-safe (NaN > 0 is False)
+            return None
+        return float(close)
+
+    def _reconstruct_locked_in_bar(self, queued: QueuedIntentEvent) -> Bar:
+        """Rebuild the locked-in SESSION bar from the persisted intent payload.
+
+        Sourced from ``intent_payload_json["locked_in_bar"]`` (serialized at
+        lock-in), NOT a re-fetch — so the drain prices and gates on the exact
+        completed session bar the post-close evaluation locked in.
+        """
+        raw = queued.intent_payload_json["locked_in_bar"]
+        return Bar(
+            timestamp=datetime.fromisoformat(raw["timestamp"]),
+            open=raw["open"],
+            high=raw["high"],
+            low=raw["low"],
+            close=raw["close"],
+            volume=raw["volume"],
+            vwap=raw.get("vwap"),
+        )
+
+    def _bars_through(
+        self, bars_by_symbol: dict[str, Any], cutoff_ts: datetime
+    ) -> dict[str, Any]:
+        """Truncate every symbol's bars to those at/through ``cutoff_ts``.
+
+        Re-evaluation must replay on history through the locked-in completed
+        session bar, excluding any today-dated in-progress daily bar a live
+        provider may return at the open. This re-validates the signal on the same
+        completed-bar basis it was promoted on, while sizing recomputes against
+        fresh equity in the drain context.
+        """
+        truncated: dict[str, Any] = {}
+        for symbol, bars in bars_by_symbol.items():
+            frame = bars.to_dataframe()
+            truncated[symbol] = BarSet(frame.loc[frame["timestamp"] <= cutoff_ts])
+        return truncated
+
+    def _match_drain_intent(
+        self, intents: list[TradeIntent], queued: QueuedIntentEvent
+    ) -> TradeIntent | None:
+        """Return the re-derived intent matching the queued symbol+side, else None."""
+        for intent in intents:
+            if intent.normalized_symbol() == queued.symbol and intent.side.value == queued.side:
+                return intent
+        return None
 
     def _resolve_config_path(self) -> Path:
         from milodex.strategies.loader import resolve_config_path

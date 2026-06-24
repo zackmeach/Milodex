@@ -6,11 +6,11 @@ from typing import Any
 
 import pandas as pd
 import pytest
-from milodex.strategies.gap_continuation_intraday import GapContinuationIntradayStrategy
 
 from milodex.broker.models import OrderSide
 from milodex.data.models import BarSet
 from milodex.strategies.base import StrategyContext
+from milodex.strategies.gap_continuation_intraday import GapContinuationIntradayStrategy
 
 # ---------------------------------------------------------------------------
 # Fixture helpers

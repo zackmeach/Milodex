@@ -36,6 +36,7 @@ class StubBroker:
         positions: list[Position] | None = None,
         orders: list[Order] | None = None,
         market_open: bool = True,
+        fill_submits: bool = False,
     ) -> None:
         self.account = account
         self.positions = positions or []
@@ -43,6 +44,15 @@ class StubBroker:
         self.submit_calls: list[dict[str, object]] = []
         self.cancel_all_orders_calls = 0
         self._market_open = market_open
+        # Default OFF preserves every existing test (submit returns PENDING).
+        # When set, submit_order returns a synchronously-FILLED order so an
+        # end-to-end drill can assert the recorded trade reflects a named fill
+        # (broker_status='filled') rather than the async PENDING placeholder.
+        self._fill_submits = fill_submits
+        # Queue-at-open drain (ADR 0057) reads tradability via
+        # tradable_drop_decision -> broker.is_symbol_tradable. Default True so the
+        # drain proceeds; a test flips this to exercise the halted-symbol drop.
+        self._symbol_tradable = True
 
     def get_account(self) -> AccountInfo:
         return self.account
@@ -62,6 +72,9 @@ class StubBroker:
     def is_market_open(self) -> bool:
         return self._market_open
 
+    def is_symbol_tradable(self, symbol: str) -> bool:
+        return self._symbol_tradable
+
     def latest_completed_session(self, now: datetime) -> date:
         # Test double: latest session is "today" so the 1D staleness gate
         # treats a fresh (today-dated) bar as current.
@@ -69,12 +82,31 @@ class StubBroker:
 
     def submit_order(self, **kwargs) -> Order:
         self.submit_calls.append(kwargs)
+        quantity = float(kwargs["quantity"])
+        if self._fill_submits:
+            # Synchronous fill: the execution service records the resulting
+            # TradeEvent with broker_status='filled' and reprices the row off
+            # filled_avg_price/filled_quantity (service.py:1063). limit_price is
+            # the fill price proxy for these market-order stubs.
+            return Order(
+                id=f"order-{len(self.submit_calls)}",
+                symbol=str(kwargs["symbol"]),
+                side=kwargs["side"],
+                order_type=kwargs["order_type"],
+                quantity=quantity,
+                time_in_force=kwargs["time_in_force"],
+                status=OrderStatus.FILLED,
+                submitted_at=datetime.now(tz=UTC),
+                filled_quantity=quantity,
+                filled_avg_price=float(kwargs.get("limit_price") or 10.0),
+                filled_at=datetime.now(tz=UTC),
+            )
         return Order(
             id=f"order-{len(self.submit_calls)}",
             symbol=str(kwargs["symbol"]),
             side=kwargs["side"],
             order_type=kwargs["order_type"],
-            quantity=float(kwargs["quantity"]),
+            quantity=quantity,
             time_in_force=kwargs["time_in_force"],
             status=OrderStatus.PENDING,
             submitted_at=datetime.now(tz=UTC),
@@ -1750,7 +1782,17 @@ def test_runner_reevaluates_same_bar_after_close_when_intraday_was_in_progress(
     fake_now[0] = fake_now[0] + timedelta(seconds=30)
     results_after_lockin = runner.run_cycle()
 
-    assert len(results_after_lockin) >= 1, "Stable post-close bar should evaluate exactly once."
+    # Phase-1 (queue-at-open, ADR 0057): the locked-in daily intent is PERSISTED
+    # to queued_intents, not submitted at close. The cycle returns [] and the
+    # broker is never touched; a sibling at-open drain submits later.
+    assert results_after_lockin == [], "Daily post-close locks in via persist, not submit."
+    assert broker.submit_calls == [], "Daily post-close must not reach the broker."
+    active = event_store.get_active_queued_intents(
+        "regime.daily.sma200_rotation.spy_shy.v1",
+        now=fake_now[0],
+        running_session_id=runner.session_id,
+    )
+    assert len(active) == 1, "Stable post-close bar persists exactly one queued intent."
     assert runner._last_processed_bar_at is not None, (
         "Once the post-close bar passes the stability check, the watermark advances."
     )
