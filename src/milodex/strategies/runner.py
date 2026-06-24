@@ -19,6 +19,7 @@ from milodex.broker.models import OrderSide
 from milodex.core.event_store import (
     EventStore,
     ExplanationEvent,
+    OperatorAlertEvent,
     QueuedIntentEvent,
     StrategyRunEvent,
 )
@@ -760,6 +761,51 @@ class StrategyRunner:
     # queue-at-open (Phase-3 drain, ADR 0057)
     # ------------------------------------------------------------------
 
+    def _emit_exit_drop_alert(self, queued: QueuedIntentEvent, *, reason: str) -> None:
+        """Durably record + warn when an EXIT intent is dropped for ambiguity.
+
+        Asymmetry guard: an undrained entry is benign (no fire); an undrained
+        exit can strand a live position, so it MUST be operator-visible. This is
+        observational only — it does NOT submit, retry, or mutate risk state.
+        """
+        logger.warning(
+            "EXIT intent dropped for %s (%s): %s. Position may remain open; "
+            "operator review required.",
+            queued.symbol,
+            queued.side,
+            reason,
+        )
+        self._event_store.append_operator_alert(
+            OperatorAlertEvent(
+                alert_type="exit_intent_dropped",
+                severity="warning",
+                summary=f"EXIT intent for {queued.symbol} dropped: {reason}.",
+                strategy_id=queued.strategy_id,
+                session_id=self._session_id,
+                symbol=queued.symbol,
+                side=queued.side,
+                context_json={"reason": reason, "idempotency_key": queued.idempotency_key},
+                recorded_at=self._now(),
+            )
+        )
+
+    def _alert_stranded_exit_intents(self, drainable: list[QueuedIntentEvent]) -> None:
+        """Alert + retire any still-queued EXIT for THIS strategy that the drain
+        authority excluded (clean-handoff fence I-4 failed, or config drift).
+        A stranded exit can leave a position open, so it must surface. Marking
+        the row obsolete after alerting prevents a re-alert every open cycle
+        (the drain runs each ~60s open poll); the strategy re-emits a fresh exit
+        next post-close if it still holds the position."""
+        drainable_keys = {q.idempotency_key for q in drainable}
+        for q in self._event_store.list_queued_intents_by_status("queued"):
+            if (
+                q.strategy_id == self._strategy_id
+                and q.intent_class == "exit"
+                and q.idempotency_key not in drainable_keys
+            ):
+                self._emit_exit_drop_alert(q, reason="no_clean_handoff")
+                self._event_store.mark_queued_intent_obsolete(q.id)
+
     def _drain_queued_intents(self) -> None:
         """Re-evaluate this strategy's active queued intents at the open and submit.
 
@@ -782,6 +828,7 @@ class StrategyRunner:
             now=self._now(),
             running_session_id=self._session_id,
         )
+        self._alert_stranded_exit_intents(intents)
         if not intents:
             return
         account = self._broker.get_account()
@@ -795,10 +842,16 @@ class StrategyRunner:
                 decision_bar = self._reconstruct_locked_in_bar(queued)
                 td = tradable_drop_decision(self._broker, queued.symbol)
                 if td.drop:
+                    if queued.intent_class == "exit":
+                        # Asymmetry guard: an undrained exit can strand a live
+                        # position. Alert + retire (so a persistently-halted exit
+                        # does not re-alert every cycle); the strategy re-emits a
+                        # fresh exit next post-close if it still holds the lot.
+                        self._emit_exit_drop_alert(queued, reason=td.reason or "not_tradable")
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
                     logger.warning(
                         "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
                     )
-                    # Exit-side operator alert is added in a later task; leave queued.
                     continue
                 eval_bars = self._bars_through(
                     self._fetch_bars_by_symbol(), decision_bar.timestamp
