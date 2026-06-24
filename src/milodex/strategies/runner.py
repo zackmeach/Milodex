@@ -18,13 +18,14 @@ from milodex.broker import BrokerClient
 from milodex.broker.models import OrderSide
 from milodex.core.event_store import EventStore, QueuedIntentEvent, StrategyRunEvent
 from milodex.data import DataProvider
-from milodex.data.models import BarSet
+from milodex.data.models import Bar, BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.operations.reconciliation import local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
+from milodex.runner.drain_policy import tradable_drop_decision
 from milodex.strategies.base import DecisionReasoning
 from milodex.strategies.loader import StrategyLoader, compute_config_hash
 from milodex.strategies.paper_runner_control import consume_controlled_stop_request
@@ -272,6 +273,12 @@ class StrategyRunner:
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
         if is_daily_bar and market_open:
+            # Phase-3 (queue-at-open, ADR 0057): the post-close lock-in enqueued
+            # today's intent; at the next open re-evaluate it against a fresh
+            # context and submit through the chokepoint. Runs AFTER the rollover
+            # reconcile (above) and MUST NOT advance _last_processed_bar_at — the
+            # authoritative post-close evaluation still owns the watermark (I-3).
+            self._drain_queued_intents()
             return []
         if is_daily_bar and not market_open and self._last_processed_bar_at is not None:
             # Market is closed and today's close has been confirmed via the
@@ -691,6 +698,118 @@ class StrategyRunner:
                 "Queued intent already persisted (idempotent): %s",
                 idempotency_key,
             )
+
+    # ------------------------------------------------------------------
+    # queue-at-open (Phase-3 drain, ADR 0057)
+    # ------------------------------------------------------------------
+
+    def _drain_queued_intents(self) -> None:
+        """Re-evaluate this strategy's active queued intents at the open and submit.
+
+        Phase-3 of queue-at-open (ADR 0057): at the next session open, drain the
+        intents the post-close lock-in enqueued. ``get_active_queued_intents`` is
+        the SOLE drain authority — it enforces ``status='queued'``, the expiry
+        fence, the clean-handoff fence, and the config-hash guard in SQL + on-disk
+        recompute. This loop adds NO redundant fence of its own. Each surviving
+        intent is re-evaluated against a fresh context (current equity + positions)
+        on history through the locked-in completed session bar, and submitted
+        through the chokepoint with the persisted ``idempotency_key`` (the CAS
+        inside ``_submit_locked`` claims the row) and the reconstructed locked-in
+        bar as ``latest_bar_override`` (feeds the session-aware 1D staleness gate
+        and the cap pricing). The drain NEVER touches ``_last_processed_bar_at``
+        (I-3) and NEVER calls ``mark_queued_intent_consumed`` (the submit CAS owns
+        that); the only status write here is ``obsolete`` for a flat-ledger exit.
+        """
+        intents = self._event_store.get_active_queued_intents(
+            self._strategy_id,
+            now=self._now(),
+            running_session_id=self._session_id,
+        )
+        if not intents:
+            return
+        account = self._broker.get_account()
+        for queued in intents:
+            decision_bar = self._reconstruct_locked_in_bar(queued)
+            td = tradable_drop_decision(self._broker, queued.symbol)
+            if td.drop:
+                logger.warning(
+                    "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
+                )
+                # Exit-side operator alert is added in a later task; leave queued.
+                continue
+            eval_bars = self._bars_through(self._fetch_bars_by_symbol(), decision_bar.timestamp)
+            primary_bars = eval_bars[self._evaluation_symbol()]
+            context = replace(
+                self._loaded.context,
+                positions=self._current_positions(),
+                equity=account.equity,
+                bars_by_symbol=eval_bars,
+                entry_state=self._build_entry_state(),
+            )
+            decision = self._loaded.strategy.evaluate(primary_bars, context)
+            match = self._match_drain_intent(decision.intents, queued)
+            if match is None or match.quantity <= 0:
+                if queued.intent_class == "exit" and not self._current_positions().get(
+                    queued.symbol
+                ):
+                    # A 0-share exit on an already-flat strategy ledger is moot —
+                    # the position the exit would close no longer exists. Retire
+                    # the row rather than leave it to expire undrained.
+                    self._event_store.mark_queued_intent_obsolete(queued.id)
+                # 0-share entry / no re-derived match -> drop, leave queued to
+                # expire; NEVER submit a 0-share order.
+                continue
+            self._execution_service.submit_paper(
+                self._runner_intent(match),
+                session_id=self._session_id,
+                reasoning=decision.reasoning,
+                idempotency_key=queued.idempotency_key,
+                latest_bar_override=decision_bar,
+            )
+
+    def _reconstruct_locked_in_bar(self, queued: QueuedIntentEvent) -> Bar:
+        """Rebuild the locked-in SESSION bar from the persisted intent payload.
+
+        Sourced from ``intent_payload_json["locked_in_bar"]`` (serialized at
+        lock-in), NOT a re-fetch — so the drain prices and gates on the exact
+        completed session bar the post-close evaluation locked in.
+        """
+        raw = queued.intent_payload_json["locked_in_bar"]
+        return Bar(
+            timestamp=datetime.fromisoformat(raw["timestamp"]),
+            open=raw["open"],
+            high=raw["high"],
+            low=raw["low"],
+            close=raw["close"],
+            volume=raw["volume"],
+            vwap=raw.get("vwap"),
+        )
+
+    def _bars_through(
+        self, bars_by_symbol: dict[str, Any], cutoff_ts: datetime
+    ) -> dict[str, Any]:
+        """Truncate every symbol's bars to those at/through ``cutoff_ts``.
+
+        Re-evaluation must replay on history through the locked-in completed
+        session bar, excluding any today-dated in-progress daily bar a live
+        provider may return at the open. This re-validates the signal on the same
+        completed-bar basis it was promoted on, while sizing recomputes against
+        fresh equity in the drain context.
+        """
+        truncated: dict[str, Any] = {}
+        for symbol, bars in bars_by_symbol.items():
+            frame = bars.to_dataframe()
+            truncated[symbol] = BarSet(frame.loc[frame["timestamp"] <= cutoff_ts])
+        return truncated
+
+    def _match_drain_intent(
+        self, intents: list[TradeIntent], queued: QueuedIntentEvent
+    ) -> TradeIntent | None:
+        """Return the re-derived intent matching the queued symbol+side, else None."""
+        for intent in intents:
+            if intent.normalized_symbol() == queued.symbol and intent.side.value == queued.side:
+                return intent
+        return None
 
     def _resolve_config_path(self) -> Path:
         from milodex.strategies.loader import resolve_config_path

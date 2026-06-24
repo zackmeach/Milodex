@@ -43,6 +43,10 @@ class StubBroker:
         self.submit_calls: list[dict[str, object]] = []
         self.cancel_all_orders_calls = 0
         self._market_open = market_open
+        # Queue-at-open drain (ADR 0057) reads tradability via
+        # tradable_drop_decision -> broker.is_symbol_tradable. Default True so the
+        # drain proceeds; a test flips this to exercise the halted-symbol drop.
+        self._symbol_tradable = True
 
     def get_account(self) -> AccountInfo:
         return self.account
@@ -61,6 +65,9 @@ class StubBroker:
 
     def is_market_open(self) -> bool:
         return self._market_open
+
+    def is_symbol_tradable(self, symbol: str) -> bool:
+        return self._symbol_tradable
 
     def latest_completed_session(self, now: datetime) -> date:
         # Test double: latest session is "today" so the 1D staleness gate
