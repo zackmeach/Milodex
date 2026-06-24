@@ -26,6 +26,8 @@ from collections.abc import Mapping
 
 import pandas as pd
 
+from milodex.strategies._indicators import wilder_rsi as _wilder_rsi
+
 
 def trailing_return(closes: pd.Series, lookback: int) -> float | None:
     """Return the simple trailing return over ``lookback`` bars, or ``None``.
@@ -44,30 +46,14 @@ def trailing_return(closes: pd.Series, lookback: int) -> float | None:
 def wilder_rsi(closes: pd.Series, lookback: int) -> float | None:
     """Return Wilder-smoothed RSI with period ``lookback``, or ``None``.
 
-    Identical formula to the ``meanrev`` family's RSI (see
-    ``meanrev_rsi2_pullback._wilder_rsi``) — re-stated here so the deciders
-    do not import a sibling strategy's private helper.
+    Delegates to the shared :func:`milodex.strategies._indicators.wilder_rsi`
+    so the deciders and the ``meanrev`` family compute one identical RSI. The
+    extra ``lookback < 1`` guard preserves this kit's stricter contract (the
+    shared helper assumes ``lookback >= 1``).
     """
-    if lookback < 1 or len(closes) <= lookback:
+    if lookback < 1:
         return None
-
-    deltas = closes.diff().dropna()
-    if len(deltas) < lookback:
-        return None
-
-    gains = deltas.clip(lower=0.0)
-    losses = (-deltas).clip(lower=0.0)
-
-    avg_gain = float(gains.iloc[:lookback].mean())
-    avg_loss = float(losses.iloc[:lookback].mean())
-    for gain, loss in zip(gains.iloc[lookback:], losses.iloc[lookback:], strict=False):
-        avg_gain = (avg_gain * (lookback - 1) + float(gain)) / lookback
-        avg_loss = (avg_loss * (lookback - 1) + float(loss)) / lookback
-
-    if avg_loss == 0.0:
-        return 50.0 if avg_gain == 0.0 else 100.0
-    rs = avg_gain / avg_loss
-    return 100.0 - (100.0 / (1.0 + rs))
+    return _wilder_rsi(closes, lookback)
 
 
 def ma_distance(closes: pd.Series, length: int) -> float | None:

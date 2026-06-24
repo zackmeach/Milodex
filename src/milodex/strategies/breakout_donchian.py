@@ -31,11 +31,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
-
 from milodex.broker.models import OrderSide, OrderType
 from milodex.data.models import BarSet
 from milodex.execution.models import TradeIntent
+from milodex.strategies._indicators import atr as _atr
 from milodex.strategies.base import (
     Strategy,
     StrategyContext,
@@ -255,33 +254,6 @@ def _validated_parameters(context: StrategyContext) -> dict[str, Any]:
         "market_regime_symbol": market_regime_symbol,
         "market_regime_ma_length": market_regime_ma_length,
     }
-
-
-def _atr(highs: pd.Series, lows: pd.Series, closes: pd.Series, lookback: int) -> float | None:
-    """Return Average True Range over ``lookback`` bars (simple-MA flavour).
-
-    True Range = max(high - low, |high - prior_close|, |low - prior_close|).
-    Phase 1 uses a simple MA over the lookback window. Switching to Wilder
-    smoothing is a new family version per ADR 0015, not a parameter knob.
-
-    Returns None when the history is too short to compute one full window.
-    """
-    if len(closes) < lookback + 1:
-        return None
-    prior_close = closes.shift(1)
-    tr = pd.concat(
-        [
-            (highs - lows),
-            (highs - prior_close).abs(),
-            (lows - prior_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
-    # First TR is undefined (no prior close); start the window after it.
-    tr = tr.dropna()
-    if len(tr) < lookback:
-        return None
-    return float(tr.tail(lookback).mean())
 
 
 def _entry_candidates(

@@ -6,10 +6,11 @@ calendar assumptions — suitable for 24/7 markets (crypto) as well as equities.
 
 ``wilder_rsi_series`` reproduces the Wilder-smoothed RSI used by the existing
 ``meanrev_rsi2_*`` strategies (seed = simple mean of the first ``lookback``
-gains/losses, then the Wilder recursion). It is duplicated here rather than
-imported from a strategy module so the new crypto canaries do not depend on a
-sibling strategy's private function; adopting this shared helper in the
-existing equity strategies is a deliberate, out-of-scope future cleanup.
+gains/losses, then the Wilder recursion). The equity strategies now consume
+these shared helpers too (the previously-deferred cleanup is done): the scalar
+``wilder_rsi`` / ``ema_value`` accessors return the last series value with the
+same insufficient-history semantics the old per-strategy locals had, and
+``atr`` is the single Average True Range used by both breakout strategies.
 """
 
 from __future__ import annotations
@@ -60,3 +61,51 @@ def _rsi_from(avg_gain: float, avg_loss: float) -> float:
         return 50.0 if avg_gain == 0.0 else 100.0
     rs = avg_gain / avg_loss
     return 100.0 - (100.0 / (1.0 + rs))
+
+
+def ema_value(closes: pd.Series, span: int) -> float:
+    """Return the last EMA value (scalar accessor over :func:`ema_series`)."""
+    return float(ema_series(closes, span).iloc[-1])
+
+
+def wilder_rsi(closes: pd.Series, lookback: int) -> float | None:
+    """Return the latest Wilder RSI value, or ``None`` on insufficient history.
+
+    Thin scalar accessor over :func:`wilder_rsi_series`: returns the final
+    series value, or ``None`` when the series has no defined value yet (i.e.
+    ``len(closes) <= lookback``). Bit-for-bit equal to the per-strategy scalar
+    locals it replaces.
+    """
+    if len(closes) <= lookback:
+        return None
+    last = wilder_rsi_series(closes, lookback).iloc[-1]
+    return None if pd.isna(last) else float(last)
+
+
+def atr(highs: pd.Series, lows: pd.Series, closes: pd.Series, lookback: int) -> float | None:
+    """Return Average True Range over ``lookback`` bars (simple-MA flavour).
+
+    True Range = max(high - low, |high - prior_close|, |low - prior_close|).
+    The first TR is undefined (no prior close) and dropped; the window is the
+    last ``lookback`` defined TRs. Returns ``None`` when the history is too
+    short to form one full window. Wilder-smoothed ATR would be a new family
+    version (ADR 0015), not a parameter knob.
+    """
+    highs = highs.astype(float)
+    lows = lows.astype(float)
+    closes = closes.astype(float)
+    if len(closes) < lookback + 1:
+        return None
+    prior_close = closes.shift(1)
+    tr = pd.concat(
+        [
+            (highs - lows),
+            (highs - prior_close).abs(),
+            (lows - prior_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    tr = tr.dropna()
+    if len(tr) < lookback:
+        return None
+    return float(tr.tail(lookback).mean())
