@@ -451,6 +451,36 @@ def test_mark_expired_and_obsolete(tmp_path):
     assert rows == {"expired": 1, "obsolete": 1}
 
 
+def test_mark_dropped_flips_status_and_excludes_from_drain(tmp_path):
+    """Fix #3: a DECIDED entry drop is terminal — mark_queued_intent_dropped flips
+    the row to 'dropped' and get_active_queued_intents (status='queued' only) no
+    longer returns it, so it is never re-drained."""
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    eid = store.append_queued_intent(_intent())
+    store.mark_queued_intent_dropped(eid)
+
+    assert _status_of(db, "rsi2.v1|2026-06-23|buy|SPY") == "dropped"
+    assert store.get_active_queued_intents("rsi2.v1", now=_NOW, running_session_id="sess-A") == []
+    assert [e.symbol for e in store.list_queued_intents_by_status("dropped")] == ["SPY"]
+
+
+def test_expire_stale_never_touches_dropped(tmp_path):
+    """The expiry sweep flips only 'queued' rows; a 'dropped' row with a past
+    expires_at is left terminal (never re-flipped to 'expired')."""
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    past = datetime(2026, 6, 23, 13, 0, tzinfo=UTC)  # <= _NOW
+    dropped_id = store.append_queued_intent(
+        _intent("rsi2.v1|2026-06-23|buy|IWM", symbol="IWM", expires_at=past)
+    )
+    store.mark_queued_intent_dropped(dropped_id)
+
+    assert store.expire_stale_queued_intents(now=_NOW) == []
+    assert store.list_queued_intents_by_status("expired") == []
+    assert {e.symbol for e in store.list_queued_intents_by_status("dropped")} == {"IWM"}
+
+
 # ─── expiry sweep (Phase 7) ──────────────────────────────────────────────────
 #
 # Launch-time bulk flip of stale 'queued' rows to 'expired'. Housekeeping only:

@@ -137,7 +137,8 @@ def test_drain_entry_resize_to_zero_is_dropped(
     risk_defaults_file: Path,
 ):
     """A fresh price so high the resize floors to 0 shares must NOT submit a
-    0-share order; the ENTRY row stays queued (to retry/expire)."""
+    0-share order. This is a DECIDED ENTRY drop (Fix #3): the row is marked terminal
+    'dropped' (a fresh-price determination, not a transient can't-evaluate)."""
     runner, broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -150,7 +151,7 @@ def test_drain_entry_resize_to_zero_is_dropped(
 
     assert result == []
     assert broker.submit_calls == []
-    assert event_store.get_queued_intent(intent_id).status == "queued"
+    assert event_store.get_queued_intent(intent_id).status == "dropped"
 
 
 # ---------------------------------------------------------------------------

@@ -229,8 +229,9 @@ class QueuedIntentEvent:
     queue-at-open durable state. Persisted by the runner at the lock-in-confirmed
     cycle when the next session's open is still in the future; drained — through
     the full risk battery — at that open. NOT append-only: a row's ``status``
-    transitions ``queued`` -> ``consumed`` | ``expired`` | ``obsolete`` via the
-    ``mark_*`` store methods.
+    transitions ``queued`` -> ``consumed`` | ``expired`` | ``obsolete`` | ``dropped``
+    via the ``mark_*`` store methods (``dropped`` = a terminal DECIDED entry drop
+    at the drain — see :meth:`EventStore.mark_queued_intent_dropped`).
 
     ``idempotency_key`` (UNIQUE) = ``f"{strategy_id}|{trading_session}|{side}|{symbol}"``.
     The ``expected_*`` fields snapshot the governance posture at lock-in time so a
@@ -2285,7 +2286,7 @@ class EventStore:
         authority for queue-at-open.
 
         A row is drainable iff ALL of:
-          * ``status = 'queued'`` (not already consumed / expired / obsolete),
+          * ``status = 'queued'`` (not already consumed / expired / obsolete / dropped),
           * not expired: ``datetime(expires_at) > datetime(now)``,
           * clean-handoff holds: the intent was queued by the currently running
             session (``session_id = running_session_id``) OR its originating run
@@ -2559,6 +2560,28 @@ class EventStore:
         with self._connect() as connection:
             connection.execute(
                 "UPDATE queued_intents SET status = 'obsolete' WHERE id = ?",
+                (intent_id,),
+            )
+            connection.commit()
+
+    def mark_queued_intent_dropped(self, intent_id: int) -> None:
+        """Mark a queued intent dropped — a TERMINAL DECIDED-drop status (Fix #3).
+
+        Used by the drain for an ENTRY the strategy/broker decided against on the
+        frozen locked bars (not-tradable/halt, signal no-match/side-flip, or a
+        re-derived/resized 0-share quantity): retrying it every open until TTL is
+        pointless churn, so the row is settled terminally. Distinct from
+        ``obsolete`` (superseded/handoff) for forensic clarity. ``'dropped'`` is
+        not ``'queued'``, so :meth:`get_active_queued_intents` excludes it from
+        future drains and :meth:`expire_stale_queued_intents` never re-touches it.
+
+        NOT for couldn't-evaluate drops (no fresh price / no sizing price) — those
+        stay ``'queued'`` and are retryable (a pre-open launch has no fresh price
+        yet and MUST retry at the real open). The audit reason lives in the
+        per-row explanation the caller writes, not in this status."""
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE queued_intents SET status = 'dropped' WHERE id = ?",
                 (intent_id,),
             )
             connection.commit()

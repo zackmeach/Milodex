@@ -350,11 +350,13 @@ class StrategyRunner:
         )
         decision = self._loaded.strategy.evaluate(primary_bars, context)
         intents = decision.intents
-        if (
-            is_daily_bar
-            and not market_open
-            and not self._maybe_advance_lockin_watermark(latest_bar)
-        ):
+        # Daily post-close: confirm the lock-in stability gate WITHOUT advancing
+        # the watermark (Fix #1). The watermark is advanced exactly once below,
+        # AFTER this cycle's durable work (the no-action record or the queued
+        # persist) succeeds — so a persist failure leaves it unadvanced and the
+        # next cycle re-evaluates the same locked bar and re-persists.
+        daily_lockin_confirmed = is_daily_bar and not market_open
+        if daily_lockin_confirmed and not self._lockin_confirmed(latest_bar):
             return []
         if not is_daily_bar:
             # HR-2: a completed intraday bar is final by construction (its
@@ -374,6 +376,11 @@ class StrategyRunner:
             self._record_no_action(
                 latest_bar.timestamp, latest_bar.close, reasoning=decision.reasoning
             )
+            if daily_lockin_confirmed:
+                # Durable no-action recorded -> safe to advance the watermark
+                # exactly once (Fix #1). The intraday no-intents path already
+                # advanced above (line ~367) and is not gated here.
+                self._last_processed_bar_at = latest_bar.timestamp
             if self._on_cycle_result is not None:
                 self._on_cycle_result([])
             return []
@@ -384,19 +391,39 @@ class StrategyRunner:
             self._processed_intent_keys.clear()
             self._processed_intent_bar_at = latest_bar.timestamp
 
-        if is_daily_bar and not market_open:
+        if daily_lockin_confirmed:
             # Phase-1 (queue-at-open, ADR 0057): a daily strategy must NOT submit
             # at the post-close lock-in — the market is closed and the order
             # would be vetoed (market_closed) or queued blind to an unknown
             # next-open price. Persist the locked-in intent; the next at-open
             # drain re-evaluates against fresh state and submits through the
-            # chokepoint. The watermark already advanced above (exactly once).
-            for intent in intents:
-                intent_key = self._intent_key(intent, latest_bar.timestamp)
-                if intent_key in self._processed_intent_keys:
-                    continue
-                self._processed_intent_keys.add(intent_key)
-                self._persist_queued_intent(intent, latest_bar, decision.reasoning)
+            # chokepoint.
+            #
+            # Fix #1: persist BEFORE advancing the watermark. A non-IntegrityError
+            # failure (locked DB / unreadable config) leaves the watermark
+            # unadvanced so the next cycle re-evaluates the same locked bar and
+            # re-persists (idempotent: the same intent collides harmlessly on
+            # UNIQUE(idempotency_key)), and emits a durable operator alert so the
+            # failure is never silent. An IntegrityError is the idempotent
+            # duplicate and is swallowed inside _persist_queued_intent — it does
+            # NOT reach here, so the watermark advances normally.
+            try:
+                for intent in intents:
+                    intent_key = self._intent_key(intent, latest_bar.timestamp)
+                    if intent_key in self._processed_intent_keys:
+                        continue
+                    self._persist_queued_intent(intent, latest_bar, decision.reasoning)
+                    self._processed_intent_keys.add(intent_key)
+            except Exception as exc:  # noqa: BLE001 — persist failure must not silently strand
+                self._emit_queued_intent_persist_failure(
+                    intents[0], latest_bar, reason=repr(exc)
+                )
+                if self._on_cycle_result is not None:
+                    self._on_cycle_result([])
+                return []
+            # All intents persisted (or were idempotent duplicates) -> advance the
+            # watermark exactly once.
+            self._last_processed_bar_at = latest_bar.timestamp
             if self._on_cycle_result is not None:
                 self._on_cycle_result([])
             return []
@@ -605,14 +632,22 @@ class StrategyRunner:
         """
         return latest_bar.timestamp.date() >= self._now().date()
 
-    def _maybe_advance_lockin_watermark(self, latest_bar) -> bool:
-        """Gate post-close watermark advance on bar finalization stability.
+    def _lockin_confirmed(self, latest_bar) -> bool:
+        """Return whether the post-close lock-in stability gate is satisfied.
 
         Two consecutive identical OHLCV fetches separated by at least
         ``_close_lockin_min_interval_seconds`` confirm the bar has settled.
-        After ``_close_lockin_max_wait_seconds`` without confirmation the
-        watermark advances anyway (CI-1 fail-mode (a)) — the per-cycle
-        explanations preserve forensic visibility into the unstable window.
+        After ``_close_lockin_max_wait_seconds`` without confirmation the gate
+        opens anyway (CI-1 fail-mode (a)) — the per-cycle explanations preserve
+        forensic visibility into the unstable window.
+
+        IMPORTANT (Fix #1): this confirms ONLY; it MUST NOT write
+        ``self._last_processed_bar_at``. The caller advances the watermark
+        exactly once, AFTER the cycle's durable work (no-action record or queued
+        persist) succeeds — so a persist failure leaves the watermark unadvanced
+        and the next cycle re-evaluates and re-persists (idempotent). On
+        confirmation the lock-in state machine is reset here (it has done its
+        job); a later cycle re-arms it from scratch.
         """
         now = self._now()
         signature = (
@@ -630,7 +665,6 @@ class StrategyRunner:
             return False
 
         if (now - self._lockin_started_at).total_seconds() > self._close_lockin_max_wait_seconds:
-            self._last_processed_bar_at = latest_bar.timestamp
             self._reset_lockin()
             return True
 
@@ -642,7 +676,6 @@ class StrategyRunner:
         if (
             now - self._pending_lockin_seen_at
         ).total_seconds() >= self._close_lockin_min_interval_seconds:
-            self._last_processed_bar_at = latest_bar.timestamp
             self._reset_lockin()
             return True
         return False
@@ -774,6 +807,35 @@ class StrategyRunner:
     # queue-at-open (Phase-3 drain, ADR 0057)
     # ------------------------------------------------------------------
 
+    def _mark_drain_entry_dropped(
+        self, queued: QueuedIntentEvent, decision_bar: Bar, *, reason: str
+    ) -> None:
+        """Terminally drop a DECIDED ENTRY at the drain + record a per-row audit row.
+
+        Fix #3: a DECIDED entry drop — not-tradable/halt, signal no-match/side-flip,
+        or a re-derived/resized 0-share quantity — is a determination the
+        strategy/broker made on the FROZEN locked bars. Leaving the row ``queued``
+        re-drains it every open until TTL for no reason. Mark it ``'dropped'``
+        (terminal: excluded from ``get_active_queued_intents`` and untouched by the
+        expiry sweep) and write a ``no_trade`` explanation keyed to the drain
+        session so the drop is auditable. ENTRY-only: EXITs alert + retire via
+        ``_emit_exit_drop_alert`` / ``mark_queued_intent_obsolete`` and are not
+        routed here. Must NOT be called for couldn't-evaluate drops (no fresh
+        price / no sizing price) — those stay retryable.
+        """
+        self._execution_service.record_no_action(
+            strategy_name=self._strategy_id,
+            strategy_stage=self._loaded.config.stage,
+            strategy_config_path=self._loaded.config.path,
+            config_hash=self._loaded.context.config_hash,
+            symbol=queued.symbol,
+            latest_bar_timestamp=decision_bar.timestamp,
+            latest_bar_close=decision_bar.close,
+            session_id=self._session_id,
+            message=f"Queued ENTRY for {queued.symbol} dropped at drain: {reason}.",
+        )
+        self._event_store.mark_queued_intent_dropped(queued.id)
+
     def _emit_exit_drop_alert(self, queued: QueuedIntentEvent, *, reason: str) -> None:
         """Durably record + warn when an EXIT intent is dropped for ambiguity.
 
@@ -798,6 +860,44 @@ class StrategyRunner:
                 symbol=queued.symbol,
                 side=queued.side,
                 context_json={"reason": reason, "idempotency_key": queued.idempotency_key},
+                recorded_at=self._now(),
+            )
+        )
+
+    def _emit_queued_intent_persist_failure(
+        self, intent: TradeIntent, latest_bar, *, reason: str
+    ) -> None:
+        """Durably record + warn when persisting a locked-in queued intent fails.
+
+        Fix #1: a non-``IntegrityError`` persist failure (locked DB / unreadable
+        config) at the post-close lock-in must NOT silently strand the day's
+        intent. The watermark is deliberately left unadvanced so the next cycle
+        re-evaluates and re-persists; this alert guarantees the failure is
+        operator-visible in the moment (log) and after the fact (ledger).
+        """
+        runner_intent = self._runner_intent(intent)
+        symbol = runner_intent.normalized_symbol()
+        side = runner_intent.side.value
+        logger.warning(
+            "Queued-intent persist failed for %s (%s): %s. Watermark NOT advanced; "
+            "the next cycle will re-evaluate and re-persist.",
+            symbol,
+            side,
+            reason,
+        )
+        self._event_store.append_operator_alert(
+            OperatorAlertEvent(
+                alert_type="queued_intent_persist_failed",
+                severity="warning",
+                summary=f"Queued intent for {symbol} failed to persist: {reason}.",
+                strategy_id=self._strategy_id,
+                session_id=self._session_id,
+                symbol=symbol,
+                side=side,
+                context_json={
+                    "reason": reason,
+                    "locked_in_bar_timestamp": latest_bar.timestamp.isoformat(),
+                },
                 recorded_at=self._now(),
             )
         )
@@ -836,11 +936,19 @@ class StrategyRunner:
         (``_fresh_pricing_bar``, ADR 0057 §2): an ENTRY's quantity is rescaled to
         the fresh price and the fresh price is threaded down as
         ``pricing_unit_price`` so the exposure cap prices on the real open, not the
-        stale locked close; no usable fresh price fails CLOSED (entry stays queued,
-        exit alerts + retires). The drain NEVER touches ``_last_processed_bar_at``
-        (I-3) and NEVER calls ``mark_queued_intent_consumed`` (the submit CAS owns
-        that); the only status write here is ``obsolete`` for a flat-ledger /
-        stranded exit.
+        stale locked close.
+
+        Drop taxonomy (Fix #3): a DECIDED ENTRY drop — not-tradable/halt, signal
+        no-match/side-flip, or a re-derived/resized 0-share quantity — is a
+        determination on the FROZEN locked bars, so the row is marked terminal
+        ``'dropped'`` (+ an audit no-action explanation) and never re-drained. A
+        COULDN'T-EVALUATE drop (no fresh price, no sizing price) stays ``'queued'``
+        and is retried at the next open — critical for a pre-open launch, which has
+        no fresh price yet. EXITs are unchanged: they alert + retire (``obsolete``).
+        The drain NEVER touches ``_last_processed_bar_at`` (I-3) and NEVER calls
+        ``mark_queued_intent_consumed`` (the submit CAS owns that); the status
+        writes here are ``obsolete`` (stranded/flat exit) and ``dropped`` (decided
+        entry).
         """
         intents = self._event_store.get_active_queued_intents(
             self._strategy_id,
@@ -871,6 +979,14 @@ class StrategyRunner:
                         # fresh exit next post-close if it still holds the lot.
                         self._emit_exit_drop_alert(queued, reason=td.reason or "not_tradable")
                         self._event_store.mark_queued_intent_obsolete(queued.id)
+                    else:
+                        # DECIDED ENTRY drop on the frozen locked bars (Fix #3):
+                        # a halted/not-tradable symbol is a broker determination,
+                        # not a transient can't-evaluate. Terminate the row so it
+                        # is not re-drained every open until TTL.
+                        self._mark_drain_entry_dropped(
+                            queued, decision_bar, reason=td.reason or "not_tradable"
+                        )
                     logger.warning(
                         "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
                     )
@@ -908,8 +1024,18 @@ class StrategyRunner:
                                 queued, reason="reeval_no_exit_position_open"
                             )
                             self._event_store.mark_queued_intent_obsolete(queued.id)
-                    # 0-share entry / no re-derived match -> drop, leave queued to
-                    # expire; NEVER submit a 0-share order.
+                    else:
+                        # DECIDED ENTRY drop on the frozen locked bars (Fix #3): the
+                        # at-open re-eval produced no matching ENTRY (signal no-match
+                        # or a side-flip — _match_drain_intent requires symbol+side
+                        # equality), or a re-derived 0-share quantity. The strategy
+                        # decided against this entry, so terminate the row rather than
+                        # re-drain it every open until TTL. NEVER submit a 0-share order.
+                        self._mark_drain_entry_dropped(
+                            queued,
+                            decision_bar,
+                            reason="reeval_no_match" if match is None else "reeval_zero_share",
+                        )
                     continue
 
                 # The price the strategy actually sized ``match.quantity`` on is
@@ -967,8 +1093,13 @@ class StrategyRunner:
                     # the held lot and are NEVER rescaled. ``not (q > 0)`` is NaN-safe.
                     fresh_qty = math.floor(match.quantity * sized_close / pricing_price)
                     if not (fresh_qty > 0):
-                        # Fresh price so high the resize floors to 0 -> drop, leave
-                        # queued to expire; NEVER submit a 0-share order.
+                        # DECIDED ENTRY drop (Fix #3): the fresh open price is so high
+                        # the resize floors to 0 shares — a determination against this
+                        # entry, not a transient can't-evaluate. Terminate the row;
+                        # NEVER submit a 0-share order.
+                        self._mark_drain_entry_dropped(
+                            queued, decision_bar, reason="fresh_price_zero_share"
+                        )
                         continue
                     submit_match = replace(match, quantity=float(fresh_qty))
             except Exception as exc:  # noqa: BLE001 — pre-submit raise: nothing consumed

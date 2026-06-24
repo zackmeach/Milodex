@@ -60,6 +60,15 @@ def _record_submits(runner) -> list[dict]:
     return captured
 
 
+def _drop_audit_count(event_store, runner) -> int:
+    """Count this session's drain-drop audit explanations (no_trade rows)."""
+    return sum(
+        1
+        for e in event_store.list_explanations()
+        if e.session_id == runner.session_id and e.decision_type == "no_trade"
+    )
+
+
 def _locked_in_bar_from_provider(runner, symbol: str = "SPY") -> dict:
     bar = runner._data_provider._bars_by_symbol[symbol].latest()
     return {
@@ -267,8 +276,10 @@ def test_drain_zero_share_entry_dropped(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
-    """A 0-share / absent re-derived BUY is dropped (no submit) and the row is
-    NOT marked obsolete — an entry stays queued to expire on its own."""
+    """A 0-share / absent re-derived BUY is a DECIDED ENTRY drop (Fix #3): no submit,
+    the row is marked terminal 'dropped' (NOT left 'queued' to retry every open),
+    and a per-row audit explanation is written. A second run_cycle never re-drains
+    it (get_active excludes 'dropped')."""
     runner, broker, provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -276,11 +287,18 @@ def test_drain_zero_share_entry_dropped(
     # Re-eval yields a 0-share BUY for the queued symbol.
     _force_decision(runner, [_intent("SPY", OrderSide.BUY, quantity=0.0)])
 
+    before = _drop_audit_count(event_store, runner)
     result = runner.run_cycle()
 
     assert result == []
     assert broker.submit_calls == []
-    assert event_store.get_queued_intent(intent_id).status == "queued"
+    assert event_store.get_queued_intent(intent_id).status == "dropped"
+    # A per-row audit explanation was recorded for the drop.
+    assert _drop_audit_count(event_store, runner) == before + 1
+    # A second drain cycle does NOT re-drain a terminal 'dropped' row.
+    runner.run_cycle()
+    assert broker.submit_calls == []
+    assert event_store.get_queued_intent(intent_id).status == "dropped"
 
 
 def test_drain_zero_share_exit_on_flat_ledger_marked_obsolete(
@@ -312,8 +330,9 @@ def test_drain_side_flip_dropped(
 ):
     """A re-eval that flips the side (queued BUY -> re-derived SELL for the same
     symbol) drops at ``_match_drain_intent``'s side-equality requirement -> no
-    submit; the row stays queued (not consumed, not obsolete). Proves the drain
-    never fires the wrong direction on a flipped signal."""
+    submit. This is a DECIDED ENTRY drop (Fix #3): the row is marked terminal
+    'dropped' (not left queued to retry). Proves the drain never fires the wrong
+    direction on a flipped signal and never re-drains the terminal row."""
     runner, broker, provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -325,7 +344,7 @@ def test_drain_side_flip_dropped(
 
     assert result == []
     assert broker.submit_calls == []
-    assert event_store.get_queued_intent(intent_id).status == "queued"
+    assert event_store.get_queued_intent(intent_id).status == "dropped"
 
 
 def test_drain_halted_symbol_dropped(
@@ -333,7 +352,9 @@ def test_drain_halted_symbol_dropped(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
-    """A not-tradable (halted) symbol drops at the drain gate -> no submit; row stays queued."""
+    """A not-tradable (halted) symbol is a DECIDED ENTRY drop at the drain gate
+    (Fix #3): no submit, and the row is marked terminal 'dropped' (not left queued
+    to retry every open until TTL)."""
     runner, broker, provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -345,7 +366,7 @@ def test_drain_halted_symbol_dropped(
 
     assert result == []
     assert broker.submit_calls == []
-    assert event_store.get_queued_intent(intent_id).status == "queued"
+    assert event_store.get_queued_intent(intent_id).status == "dropped"
 
 
 def test_drain_empty_is_noop(

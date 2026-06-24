@@ -217,8 +217,9 @@ def test_drain_entry_drop_does_not_alert(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
-    """A halted ENTRY drop emits no ``exit_intent_dropped`` alert and leaves the
-    row queued (the asymmetry guard fires for exits only)."""
+    """A halted ENTRY drop emits no ``exit_intent_dropped`` alert (the asymmetry
+    guard fires for exits only). Fix #3: a DECIDED entry drop is now terminal
+    ('dropped'), but it still raises NO exit-drop operator alert."""
     runner, broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -231,8 +232,8 @@ def test_drain_entry_drop_does_not_alert(
     assert result == []
     assert broker.submit_calls == []
     assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
-    # Entry stays queued (no obsolete, no alert).
-    assert event_store.get_queued_intent(intent_id).status == "queued"
+    # DECIDED entry drop is terminal ('dropped'), and emits no exit-drop alert.
+    assert event_store.get_queued_intent(intent_id).status == "dropped"
 
 
 # ---------------------------------------------------------------------------
