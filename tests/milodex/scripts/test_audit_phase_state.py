@@ -41,6 +41,9 @@ class TestClassifyPath:
     def test_reviews_is_evidence(self) -> None:
         assert classify_path("docs/reviews/2026-04-22-phase1-health.md") == "evidence"
 
+    def test_assurance_is_evidence(self) -> None:
+        assert classify_path("docs/assurance/D6_QUEUED_INTENT_EVIDENCE_MATRIX.md") == "evidence"
+
     def test_superpowers_is_scratch(self) -> None:
         assert classify_path("docs/superpowers/plans/x.md") == "scratch"
 
