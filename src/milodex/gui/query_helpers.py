@@ -19,6 +19,7 @@ from typing import Any
 import yaml
 
 from milodex.gui import _event_queries
+from milodex.gui._db_logging import log_db_read_error
 from milodex.gui.row_formatters import _CONFIG_SKIP_NAMES, _CONFIG_SKIP_PREFIXES
 from milodex.strategies.loader import StrategyConfig, load_strategy_config
 
@@ -68,7 +69,8 @@ def _latest_promotions(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
             ) latest ON latest.strategy_id = p.strategy_id AND latest.max_id = p.id
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("query_helpers._latest_promotions", exc)
         return {}
     return {row["strategy_id"]: dict(row) for row in rows}
 
@@ -94,7 +96,8 @@ def _latest_session_states(
             ) latest ON latest.strategy_id = sr.strategy_id AND latest.max_id = sr.id
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("query_helpers._latest_session_states", exc)
         return {}
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
@@ -151,7 +154,8 @@ def _latest_orchestration_jobs(conn: sqlite3.Connection) -> dict[str, dict[str, 
             ) latest ON latest.strategy_id = oj.strategy_id AND latest.max_id = oj.id
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("query_helpers._latest_orchestration_jobs", exc)
         return {}
     return {
         row["strategy_id"]: {
@@ -175,7 +179,8 @@ def _latest_pnl(conn: sqlite3.Connection) -> dict[str, Any]:
             LIMIT 20
             """
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("query_helpers._latest_pnl", exc)
         return {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
     if not rows:
         return {"today": 0.0, "todayPct": 0.0, "sparkline": [0.0]}
