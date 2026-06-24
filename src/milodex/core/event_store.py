@@ -2405,6 +2405,43 @@ class EventStore:
             )
             connection.commit()
 
+    def expire_stale_queued_intents(self, *, now: datetime) -> int:
+        """Bulk-flip stale ``queued`` rows to ``expired``; return rows updated.
+
+        Mirrors :meth:`mark_queued_intent_consumed`'s single-statement CAS
+        discipline: one ``UPDATE`` guarded by ``status = 'queued'``, so a row
+        already ``consumed`` / ``obsolete`` (or one consumed by a concurrent
+        drain between any read and this sweep) no longer matches and is never
+        re-touched — the sweep is idempotent and race-safe. It ONLY mutates
+        status; the CALLER writes any audit row.
+
+        This is housekeeping, NOT a safety gate:
+        :meth:`get_active_queued_intents` (the sole drain authority) already
+        excludes expired rows via ``datetime(expires_at) > datetime(now)``, so a
+        stale row is never drainable whether or not this sweep has run. The
+        sweep merely settles the durable status for audit/diagnostics.
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE queued_intents
+                SET status = 'expired'
+                WHERE status = 'queued' AND datetime(expires_at) <= datetime(?)
+                """,
+                (_dt(now),),
+            )
+            connection.commit()
+            return int(cursor.rowcount)
+
+    def list_queued_intents_by_status(self, status: str) -> list[QueuedIntentEvent]:
+        """Return all queued-intent rows with ``status``, ordered by id (test/audit read)."""
+        with self._connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM queued_intents WHERE status = ? ORDER BY id ASC",
+                (status,),
+            ).fetchall()
+        return [_queued_intent_from_row(row) for row in rows]
+
     def get_backtest_run(self, run_id: str) -> BacktestRunEvent | None:
         with self._connect() as connection:
             row = connection.execute(

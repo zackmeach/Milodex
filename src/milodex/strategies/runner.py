@@ -16,7 +16,12 @@ from uuid import uuid4
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient
 from milodex.broker.models import OrderSide
-from milodex.core.event_store import EventStore, QueuedIntentEvent, StrategyRunEvent
+from milodex.core.event_store import (
+    EventStore,
+    ExplanationEvent,
+    QueuedIntentEvent,
+    StrategyRunEvent,
+)
 from milodex.data import DataProvider
 from milodex.data.models import Bar, BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
@@ -270,6 +275,7 @@ class StrategyRunner:
         """
         self._ensure_startup_reconciliation()
         self._maybe_rollover_reconciliation()
+        self._sweep_expired_queued_intents()
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
         if is_daily_bar and market_open:
@@ -516,6 +522,57 @@ class StrategyRunner:
             broker=self._broker,
         )
         self._last_reconcile_ny_day = current_ny_day
+
+    def _sweep_expired_queued_intents(self) -> None:
+        """Flip expired ``queued`` rows to ``expired`` at the manual run-loop /
+        reconcile cadence (I-9: NOT a daemon — no background thread/timer).
+
+        Bookkeeping only: ``get_active_queued_intents`` already excludes expired
+        rows from the drain, so this never gates a trade. It writes ONE durable
+        audit explanation only when rows were actually swept (a quiet fleet emits
+        no audit noise), and deliberately does NOT read or write
+        ``_last_processed_bar_at`` / the lock-in watermark — it is entirely
+        independent of bar processing.
+
+        The sweep is GLOBAL (it flips every expired ``queued`` row regardless of
+        owning strategy); the audit row records only the count and is attributed
+        to the running session that performed the sweep — it does NOT claim the
+        swept rows belong to this strategy.
+        """
+        swept = self._event_store.expire_stale_queued_intents(now=self._now())
+        if swept == 0:
+            return
+        account = self._broker.get_account()
+        self._event_store.append_explanation(
+            ExplanationEvent(
+                recorded_at=self._now(),
+                decision_type="no_action",
+                status="no_action",
+                strategy_name=self._strategy_id,
+                strategy_stage=self._loaded.config.stage,
+                strategy_config_path=str(self._loaded.config.path),
+                config_hash=None,
+                symbol=self._evaluation_symbol(),
+                side="hold",
+                quantity=0.0,
+                order_type="none",
+                time_in_force="day",
+                submitted_by="strategy_runner",
+                market_open=self._broker.is_market_open(),
+                latest_bar_timestamp=None,
+                latest_bar_close=None,
+                account_equity=account.equity,
+                account_cash=account.cash,
+                account_portfolio_value=account.portfolio_value,
+                account_daily_pnl=account.daily_pnl,
+                risk_allowed=True,
+                risk_summary=f"Expired {swept} stale queued intent(s) at reconcile.",
+                reason_codes=["queued_intent_expiry_sweep"],
+                risk_checks=[],
+                context={"swept": swept},
+                session_id=self._session_id,
+            )
+        )
 
     def _now(self) -> datetime:
         return datetime.now(tz=UTC)

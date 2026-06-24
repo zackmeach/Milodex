@@ -449,3 +449,66 @@ def test_mark_expired_and_obsolete(tmp_path):
     with sqlite3.connect(db) as con:
         rows = dict(con.execute("SELECT status, COUNT(*) FROM queued_intents GROUP BY status"))
     assert rows == {"expired": 1, "obsolete": 1}
+
+
+# ─── expiry sweep (Phase 7) ──────────────────────────────────────────────────
+#
+# Launch-time bulk flip of stale 'queued' rows to 'expired'. Housekeeping only:
+# get_active_queued_intents already excludes expired rows from the drain, so the
+# sweep settles durable status for audit — it never gates a trade.
+
+
+def test_expire_stale_flips_only_expired_queued_rows(tmp_path):
+    """A stale (expires_at <= now) queued row flips to 'expired'; a fresh one stays 'queued'."""
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(
+        _intent(
+            "rsi2.v1|2026-06-23|buy|SPY",
+            symbol="SPY",
+            expires_at=datetime(2026, 6, 23, 13, 0, tzinfo=UTC),  # past _NOW (14:00) -> stale
+        )
+    )
+    store.append_queued_intent(
+        _intent(
+            "rsi2.v1|2026-06-23|buy|QQQ",
+            symbol="QQQ",
+            expires_at=datetime(2026, 6, 23, 19, 0, tzinfo=UTC),  # future -> fresh
+        )
+    )
+
+    assert store.expire_stale_queued_intents(now=_NOW) == 1
+
+    expired = store.list_queued_intents_by_status("expired")
+    queued = store.list_queued_intents_by_status("queued")
+    assert [e.symbol for e in expired] == ["SPY"]
+    assert [e.symbol for e in queued] == ["QQQ"]
+
+
+def test_expire_stale_never_touches_consumed_or_obsolete(tmp_path):
+    """A 'consumed' and an 'obsolete' row, both with past expires_at, are left untouched."""
+    import sqlite3
+
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    past = datetime(2026, 6, 23, 13, 0, tzinfo=UTC)  # <= _NOW
+
+    obsolete_id = store.append_queued_intent(
+        _intent("rsi2.v1|2026-06-23|buy|IWM", symbol="IWM", expires_at=past)
+    )
+    store.mark_queued_intent_obsolete(obsolete_id)
+    # Directly stamp a 'consumed' row with a PAST expiry (the consume CAS would
+    # reject an already-expired row, so set status straight in the store).
+    store.append_queued_intent(
+        _intent("rsi2.v1|2026-06-23|buy|DIA", symbol="DIA", expires_at=past)
+    )
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "UPDATE queued_intents SET status = 'consumed' "
+            "WHERE idempotency_key = 'rsi2.v1|2026-06-23|buy|DIA'"
+        )
+        con.commit()
+
+    assert store.expire_stale_queued_intents(now=_NOW) == 0
+    assert store.list_queued_intents_by_status("expired") == []
+    assert {e.symbol for e in store.list_queued_intents_by_status("consumed")} == {"DIA"}
+    assert {e.symbol for e in store.list_queued_intents_by_status("obsolete")} == {"IWM"}
