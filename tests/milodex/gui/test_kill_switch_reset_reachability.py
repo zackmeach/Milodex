@@ -447,3 +447,215 @@ class TestQmlLoadClean:
             f"stdout:\n{result.stdout}\n"
             f"stderr:\n{result.stderr}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Behavioral reachability (burn backlog C2 PILOT)
+#
+# The TestRiskStripWiring / TestMainQmlWiring classes above are SOURCE PINS:
+# they grep the .qml for "signal killSwitchResetClicked()" and
+# "killSwitchResetModal.open = true". That proves the literals exist, not that
+# the entry affordance actually opens the modal. A rename, or a wiring that
+# resolves to ``undefined``, can pass the pin while the flow is dead.
+#
+# This pilot replaces ONE of those pins (the RiskStrip entry path) with a real
+# trigger-and-observe test, to be copied across the remaining pins in a
+# follow-up batch. The source pins are LEFT IN PLACE until this pattern is
+# reviewed and accepted.
+#
+# Pattern (mirrors test_bench_confirmation_modal_behavior.py):
+#   1. INSTANTIATE the real RiskStrip + KillSwitchResetModal (Milodex 1.0
+#      types) in a QQuickView, wired EXACTLY as Main.qml wires them
+#      (RiskStrip.onKillSwitchResetClicked: modal.open = true), with a real
+#      OperationalState whose kill switch is active.
+#   2. TRIGGER the entry affordance: emit RiskStrip's killSwitchResetClicked()
+#      signal -- the same no-arg signal the posture-text MouseArea fires when
+#      the kill switch is active.
+#   3. OBSERVE reachability: the modal's `open` property flips to true and the
+#      modal item becomes effectively visible (isVisible()) -- i.e. the reset
+#      flow is actually REACHED, not merely present in source.
+# ---------------------------------------------------------------------------
+
+try:
+    from PySide6.QtGui import QGuiApplication as _QGuiApplication  # noqa: F401
+
+    _PYSIDE6_AVAILABLE = True
+except ImportError:
+    _PYSIDE6_AVAILABLE = False
+
+import pytest  # noqa: E402
+
+_skip_no_qt = pytest.mark.skipif(
+    not _PYSIDE6_AVAILABLE,
+    reason="PySide6 not installed - skipping kill-switch reset behavior test",
+)
+
+
+def _build_reachability_probe_script() -> str:
+    """Self-contained subprocess script: wire RiskStrip -> modal as Main.qml
+    does, trigger the entry signal, observe the modal opens."""
+    import_root = str(_QML_IMPORT_ROOT)
+    return f"""\
+import os, sys, tempfile, pathlib
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from unittest.mock import MagicMock
+from PySide6.QtCore import QUrl, QTimer, QMetaObject
+from PySide6.QtCore import QObject as _QObjectBase
+from PySide6.QtGui import QGuiApplication
+from PySide6.QtQuick import QQuickView
+
+from milodex.gui.fonts import load_fonts
+from milodex.gui.theme_manager import ThemeManager
+from milodex.gui import qml_setup
+from milodex.gui.operational_state import OperationalState
+
+app = QGuiApplication.instance() or QGuiApplication(sys.argv)
+load_fonts()
+
+tm = ThemeManager()
+
+# Real OperationalState with the kill switch ACTIVE (the operational state in
+# which the reset affordance is meant to be reachable). The modal binds
+# OperationalState.resetKillSwitchToken, so it must be registered.
+ks_store = MagicMock()
+ks_store.get_state.return_value = MagicMock(
+    active=True, reason="test-trip", last_triggered_at=None
+)
+
+def _failing_broker():
+    raise RuntimeError("probe: no broker")
+
+op = OperationalState(
+    broker_client_factory=_failing_broker,
+    kill_switch_store=ks_store,
+    trading_mode="paper",
+    kill_switch_poll_seconds=9999.0,
+    broker_poll_seconds=9999.0,
+)
+
+qml_setup.register_qml_types(theme_manager=tm, operational_state=op)
+
+# Probe wiring is a faithful copy of Main.qml's entry path:
+#   RiskStrip {{ onKillSwitchResetClicked: ksModal.open = true }}
+#   KillSwitchResetModal {{ id: ksModal; onCloseRequested: open = false }}
+probe = b\"\"\"
+import QtQuick
+import Milodex 1.0
+
+Item {{
+    id: probeRoot
+    width: 1200
+    height: 400
+
+    RiskStrip {{
+        id: riskStrip
+        objectName: "riskStripProbe"
+        killSwitchActive: true
+        // Faithful to Main.qml: the entry signal opens the reset modal.
+        onKillSwitchResetClicked: ksModal.open = true
+    }}
+
+    KillSwitchResetModal {{
+        id: ksModal
+        objectName: "killSwitchResetModalProbe"
+        anchors.fill: parent
+        onCloseRequested: ksModal.open = false
+    }}
+}}
+\"\"\"
+
+_qml_file = pathlib.Path(tempfile.mktemp(suffix=".qml"))
+_qml_file.write_bytes(probe)
+
+view = QQuickView()
+view.engine().addImportPath({import_root!r})
+view.setResizeMode(QQuickView.SizeRootObjectToView)
+view.resize(1200, 400)
+view.setSource(QUrl.fromLocalFile(str(_qml_file)))
+
+if view.status() == QQuickView.Error:
+    for e in view.errors():
+        print(str(e.toString()), file=sys.stderr)
+    sys.exit(2)
+
+root = view.rootObject()
+if root is None:
+    print("rootObject() is None", file=sys.stderr)
+    sys.exit(3)
+
+view.show()
+QTimer.singleShot(400, app.quit)
+app.exec()
+
+strip = root.findChild(_QObjectBase, "riskStripProbe")
+modal = root.findChild(_QObjectBase, "killSwitchResetModalProbe")
+if strip is None or modal is None:
+    print("probe items not found", file=sys.stderr)
+    sys.exit(4)
+
+# Precondition: the modal starts CLOSED and invisible -- so the post-trigger
+# observation is a real state change, not a vacuous always-open.
+if bool(modal.property("open")):
+    print("PRECONDITION: modal already open before trigger", file=sys.stderr)
+    sys.exit(5)
+if modal.isVisible():
+    print("PRECONDITION: modal already visible before trigger", file=sys.stderr)
+    sys.exit(6)
+
+# TRIGGER: emit the real entry-affordance signal the posture MouseArea fires.
+if not QMetaObject.invokeMethod(strip, "killSwitchResetClicked"):
+    print("could not invoke killSwitchResetClicked signal", file=sys.stderr)
+    sys.exit(7)
+
+# Pump once so the QML handler (ksModal.open = true) and the resulting
+# visible/binding update propagate through the scene graph.
+QTimer.singleShot(200, app.quit)
+app.exec()
+
+# OBSERVE: the entry affordance actually REACHED the modal.
+if not bool(modal.property("open")):
+    print("OBSERVE: modal did not open after killSwitchResetClicked", file=sys.stderr)
+    sys.exit(8)
+if not modal.isVisible():
+    print("OBSERVE: modal open but not effectively visible", file=sys.stderr)
+    sys.exit(9)
+
+print("REACHABILITY_OK")
+sys.exit(0)
+"""
+
+
+@_skip_no_qt
+def test_risk_strip_kill_switch_reset_opens_modal() -> None:
+    """Driving RiskStrip's entry affordance opens the KillSwitchResetModal.
+
+    Trigger: emit ``killSwitchResetClicked()`` on a RiskStrip wired exactly as
+    Main.qml wires it (``onKillSwitchResetClicked: ksModal.open = true``) with
+    the kill switch active.
+    Observe: the modal flips from closed+invisible to ``open == true`` and
+    effectively visible -- i.e. the reset flow is genuinely REACHED.
+
+    This is the behavioral counterpart to the source pins in
+    TestRiskStripWiring (``signal killSwitchResetClicked()``) and
+    TestMainQmlWiring (``killSwitchResetModal.open = true``). NON-VACUOUS: the
+    probe asserts the modal is closed+invisible BEFORE the trigger, so a
+    vacuous always-open modal fails the precondition; rewiring
+    onKillSwitchResetClicked to a no-op leaves the modal closed and fails the
+    observation. Verified by stubbing the handler to ``{{}}`` -> exit 8
+    ("modal did not open after killSwitchResetClicked").
+    """
+    script = _build_reachability_probe_script()
+    result = subprocess.run(  # noqa: S603
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    assert result.returncode == 0, (
+        "kill-switch reset reachability probe FAILED\n"
+        f"returncode: {result.returncode}\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "REACHABILITY_OK" in result.stdout
