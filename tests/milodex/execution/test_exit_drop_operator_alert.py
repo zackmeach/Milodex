@@ -264,3 +264,112 @@ def test_drainable_exit_does_not_alert(
     assert len(broker.submit_calls) == 1
     assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
     assert event_store.get_queued_intent(intent_id).status == "consumed"
+
+
+# ---------------------------------------------------------------------------
+# 6. Held-position EXIT whose at-open re-eval derives NO match -> alert + obsolete.
+# ---------------------------------------------------------------------------
+
+
+def test_drain_held_exit_reeval_no_match_alerts_and_obsoletes(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A clean-handoff drainable EXIT for a STILL-HELD position whose at-open
+    re-eval derives no matching SELL must alert (a path-dependent exit may never
+    re-emit) and retire the row (reason 'reeval_no_exit_position_open') — not
+    fall silently through to ``continue`` leaving a clean 'queued' row the
+    stranded-exit alerter skips."""
+    runner, broker, _provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    intent_id = _seed_queued_entry(
+        event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
+    )
+    # Position STILL HELD (the exit's lot exists) but the re-eval derives no SELL.
+    runner._current_positions = lambda: {"SPY": 1.0}
+    _force_decision(runner, [])
+
+    result = runner.run_cycle()
+
+    assert result == []
+    assert broker.submit_calls == []
+    alerts = event_store.list_operator_alerts(alert_type="exit_intent_dropped")
+    assert len(alerts) == 1
+    assert alerts[0].symbol == "SPY"
+    assert alerts[0].context_json["reason"] == "reeval_no_exit_position_open"
+    assert event_store.get_queued_intent(intent_id).status == "obsolete"
+
+
+# ---------------------------------------------------------------------------
+# 7. Broker raise AFTER the consume CAS -> alert 'submit_error' (and no lie).
+# ---------------------------------------------------------------------------
+
+
+def _raise_on_submit(runner, exc: Exception) -> None:
+    """Make the execution service's submit_paper raise an infra-style error.
+
+    The consume CAS flips the row to 'consumed' BEFORE the broker call inside
+    ``_submit_locked``; a raise here means the row is NOT safely re-queuable, so
+    the drain must not claim 'leaving queued'.
+    """
+
+    def boom(intent, **kwargs):  # noqa: ARG001
+        raise exc
+
+    runner._execution_service.submit_paper = boom
+
+
+def test_drain_exit_submit_raise_alerts_submit_error(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    caplog,
+):
+    """A broker infra raise out of ``submit_paper`` (the row may already be
+    'consumed' by the CAS) for a clean drainable EXIT must emit an
+    ``exit_intent_dropped`` alert (reason 'submit_error') and must NOT log the
+    pre-submit 'leaving queued' claim — that claim would be false post-CAS."""
+    runner, broker, _provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    _seed_queued_entry(
+        event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
+    )
+    runner._current_positions = lambda: {"SPY": 1.0}
+    _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=1.0)])
+    _raise_on_submit(runner, ConnectionError("broker timeout"))
+
+    with caplog.at_level(logging.WARNING):
+        result = runner.run_cycle()
+
+    assert result == []
+    alerts = event_store.list_operator_alerts(alert_type="exit_intent_dropped")
+    assert len(alerts) == 1
+    assert alerts[0].symbol == "SPY"
+    assert alerts[0].context_json["reason"] == "submit_error"
+    # The false pre-submit 'leaving queued' claim must NOT be logged for this row.
+    messages = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert not any("leaving queued" in m for m in messages)
+    # The submit-raise log is the one that fired.
+    assert any("submit raised" in m for m in messages)
+
+
+def test_drain_entry_submit_raise_does_not_alert(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """An ENTRY whose submit raises emits NO exit-drop alert (entries are silent)."""
+    runner, broker, _provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    _seed_queued_entry(event_store, runner, symbol="SPY", side=OrderSide.BUY)
+    _force_decision(runner, [_intent("SPY", OrderSide.BUY, quantity=1.0)])
+    _raise_on_submit(runner, ConnectionError("broker timeout"))
+
+    result = runner.run_cycle()
+
+    assert result == []
+    assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []

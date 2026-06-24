@@ -539,10 +539,22 @@ class StrategyRunner:
         owning strategy); the audit row records only the count and is attributed
         to the running session that performed the sweep — it does NOT claim the
         swept rows belong to this strategy.
+
+        Exit-strand guarantee (B1): a swept EXIT leaves ``queued`` -> ``expired``
+        and so is invisible to the still-``queued``-only stranded-exit alerter.
+        The sweep therefore emits an ``exit_intent_dropped`` alert for every
+        swept EXIT directly. The alert carries the OWNING ``strategy_id`` (so a
+        cross-strategy swept exit is correctly attributed) and this session as
+        the sweeping observer. Because the sweep CAS flips each row exactly once
+        (``status='queued'`` predicate), exactly one runner sweeps a given
+        expired exit -> exactly one alert (no cross-runner duplicate).
         """
         swept = self._event_store.expire_stale_queued_intents(now=self._now())
-        if swept == 0:
+        if not swept:
             return
+        for row in swept:
+            if row.intent_class == "exit":
+                self._emit_exit_drop_alert(row, reason="expired_undrained")
         account = self._broker.get_account()
         self._event_store.append_explanation(
             ExplanationEvent(
@@ -567,10 +579,10 @@ class StrategyRunner:
                 account_portfolio_value=account.portfolio_value,
                 account_daily_pnl=account.daily_pnl,
                 risk_allowed=True,
-                risk_summary=f"Expired {swept} stale queued intent(s) at reconcile.",
+                risk_summary=f"Expired {len(swept)} stale queued intent(s) at reconcile.",
                 reason_codes=["queued_intent_expiry_sweep"],
                 risk_checks=[],
-                context={"swept": swept},
+                context={"swept": len(swept)},
                 session_id=self._session_id,
             )
         )
@@ -834,10 +846,13 @@ class StrategyRunner:
         account = self._broker.get_account()
         for queued in intents:
             # Per-intent fail-closed isolation (mirrors get_active_queued_intents'
-            # per-row guard): a raise in this body — e.g. strategy.evaluate() on a
-            # degenerate truncated BarSet — must not abort draining the siblings.
-            # Swallow, log, and leave the row queued (retried next open / expired by
-            # the sweep). NEVER change row status on a swallowed raise.
+            # per-row guard): a raise in the PRE-SUBMIT body — e.g. strategy.evaluate()
+            # on a degenerate truncated BarSet — leaves the row queued by construction
+            # (nothing was consumed). Swallow, log, and leave the row queued (retried
+            # next open / expired by the sweep). NEVER change row status on a swallowed
+            # pre-submit raise. The submit call is DELIBERATELY outside this try (below)
+            # because the consume CAS may flip the row to 'consumed' before the broker
+            # call — a raise there is NOT safely re-queuable.
             try:
                 decision_bar = self._reconstruct_locked_in_bar(queued)
                 td = tradable_drop_decision(self._broker, queued.symbol)
@@ -870,16 +885,40 @@ class StrategyRunner:
                 # non-positive and dropped); ``q <= 0`` is NOT (NaN <= 0 is False, so a
                 # NaN quantity would slip through to submit).
                 if match is None or not (match.quantity > 0):
-                    if queued.intent_class == "exit" and not self._current_positions().get(
-                        queued.symbol
-                    ):
-                        # A 0-share exit on an already-flat strategy ledger is moot —
-                        # the position the exit would close no longer exists. Retire
-                        # the row rather than leave it to expire undrained.
-                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    if queued.intent_class == "exit":
+                        if not self._current_positions().get(queued.symbol):
+                            # A 0-share exit on an already-flat strategy ledger is moot —
+                            # the position the exit would close no longer exists. Retire
+                            # the row rather than leave it to expire undrained.
+                            self._event_store.mark_queued_intent_obsolete(queued.id)
+                        else:
+                            # Position STILL HELD but the at-open re-eval derived no exit:
+                            # a path-dependent exit may never re-emit -> surface it. Retire
+                            # the row to avoid a re-alert every ~60s open poll; the strategy
+                            # re-emits a fresh exit next post-close if it still decides to
+                            # exit.
+                            self._emit_exit_drop_alert(
+                                queued, reason="reeval_no_exit_position_open"
+                            )
+                            self._event_store.mark_queued_intent_obsolete(queued.id)
                     # 0-share entry / no re-derived match -> drop, leave queued to
                     # expire; NEVER submit a 0-share order.
                     continue
+            except Exception as exc:  # noqa: BLE001 — pre-submit raise: nothing consumed
+                # One poison intent must not abort draining its siblings; the pre-submit
+                # body legitimately leaves the row queued for retry next open / sweep.
+                logger.warning(
+                    "drain: intent %s raised before submit; leaving queued (%s)",
+                    queued.idempotency_key,
+                    exc,
+                )
+                continue
+            # ``match`` is a valid, positive-quantity intent. The submit is OUTSIDE the
+            # pre-submit try: the consume CAS inside ``_submit_locked`` may flip the row
+            # to 'consumed' BEFORE the broker call, so a raise here means the row is NOT
+            # safely re-queuable — never claim 'leaving queued'. For an EXIT, surface it
+            # (the position may be stranded); an ENTRY raise stays silent.
+            try:
                 self._execution_service.submit_paper(
                     self._runner_intent(match),
                     session_id=self._session_id,
@@ -887,14 +926,14 @@ class StrategyRunner:
                     idempotency_key=queued.idempotency_key,
                     latest_bar_override=decision_bar,
                 )
-            except Exception as exc:  # noqa: BLE001 — fail-closed per-intent isolation
-                # One poison intent must not abort draining its siblings; leave the
-                # row queued (no status write) for retry next open or sweep expiry.
+            except Exception as exc:  # noqa: BLE001 — post-CAS submit raise: row may be consumed
                 logger.warning(
-                    "drain: intent %s raised during drain; leaving queued (%s)",
+                    "drain: submit raised for %s (row may be consumed; not re-queued): %s",
                     queued.idempotency_key,
                     exc,
                 )
+                if queued.intent_class == "exit":
+                    self._emit_exit_drop_alert(queued, reason="submit_error")
                 continue
 
     def _reconstruct_locked_in_bar(self, queued: QueuedIntentEvent) -> Bar:

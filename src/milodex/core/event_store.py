@@ -2480,15 +2480,25 @@ class EventStore:
             )
             connection.commit()
 
-    def expire_stale_queued_intents(self, *, now: datetime) -> int:
-        """Bulk-flip stale ``queued`` rows to ``expired``; return rows updated.
+    def expire_stale_queued_intents(self, *, now: datetime) -> list[QueuedIntentEvent]:
+        """Bulk-flip stale ``queued`` rows to ``expired``; return the swept rows.
 
-        Mirrors :meth:`mark_queued_intent_consumed`'s single-statement CAS
-        discipline: one ``UPDATE`` guarded by ``status = 'queued'``, so a row
-        already ``consumed`` / ``obsolete`` (or one consumed by a concurrent
-        drain between any read and this sweep) no longer matches and is never
-        re-touched — the sweep is idempotent and race-safe. It ONLY mutates
-        status; the CALLER writes any audit row.
+        Mirrors :meth:`mark_queued_intent_consumed`'s single-connection
+        SELECT-then-UPDATE discipline: in ONE transaction it SELECTs the rows
+        matching ``status = 'queued' AND datetime(expires_at) <= datetime(now)``
+        (reconstructed via :func:`_queued_intent_from_row`), then runs the
+        same-predicate ``UPDATE`` to ``expired`` and commits — so the returned
+        set is exactly the set flipped, atomically. A row already ``consumed`` /
+        ``obsolete`` (or one consumed by a concurrent drain) no longer matches
+        and is never re-touched: the sweep is idempotent and race-safe. It ONLY
+        mutates status; the CALLER writes any audit row and any per-row alert.
+
+        Returning the rows (not just a count) is load-bearing for the
+        exit-strand guarantee: a swept EXIT leaves ``queued`` status and would
+        be invisible to a ``status='queued'``-only stranded-exit alerter, so the
+        caller must alert off the swept set directly. Because the flip is guarded
+        by ``status='queued'``, each expired row is swept by exactly one runner —
+        exactly one alert, no cross-runner duplicate.
 
         This is housekeeping, NOT a safety gate:
         :meth:`get_active_queued_intents` (the sole drain authority) already
@@ -2497,7 +2507,15 @@ class EventStore:
         sweep merely settles the durable status for audit/diagnostics.
         """
         with self._connect() as connection:
-            cursor = connection.execute(
+            rows = connection.execute(
+                """
+                SELECT * FROM queued_intents
+                WHERE status = 'queued' AND datetime(expires_at) <= datetime(?)
+                ORDER BY id ASC
+                """,
+                (_dt(now),),
+            ).fetchall()
+            connection.execute(
                 """
                 UPDATE queued_intents
                 SET status = 'expired'
@@ -2506,7 +2524,7 @@ class EventStore:
                 (_dt(now),),
             )
             connection.commit()
-            return int(cursor.rowcount)
+        return [_queued_intent_from_row(row) for row in rows]
 
     def list_queued_intents_by_status(self, status: str) -> list[QueuedIntentEvent]:
         """Return all queued-intent rows with ``status``, ordered by id (test/audit read)."""
@@ -2954,7 +2972,11 @@ def _operator_alert_from_row(row: sqlite3.Row) -> OperatorAlertEvent:
         session_id=row["session_id"],
         symbol=row["symbol"],
         side=row["side"],
-        context_json=dict(_load_json(row["context_json"])),
+        # context_json is nullable: a NULL column must not crash the reader
+        # (mirrors _queued_intent_from_row's per-JSON-column None-guard).
+        context_json=(
+            dict(_load_json(row["context_json"])) if row["context_json"] is not None else {}
+        ),
     )
 
 

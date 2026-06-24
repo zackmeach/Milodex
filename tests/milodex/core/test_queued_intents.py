@@ -476,7 +476,7 @@ def test_expire_stale_flips_only_expired_queued_rows(tmp_path):
         )
     )
 
-    assert store.expire_stale_queued_intents(now=_NOW) == 1
+    assert len(store.expire_stale_queued_intents(now=_NOW)) == 1
 
     expired = store.list_queued_intents_by_status("expired")
     queued = store.list_queued_intents_by_status("queued")
@@ -508,7 +508,78 @@ def test_expire_stale_never_touches_consumed_or_obsolete(tmp_path):
         )
         con.commit()
 
-    assert store.expire_stale_queued_intents(now=_NOW) == 0
+    assert store.expire_stale_queued_intents(now=_NOW) == []
     assert store.list_queued_intents_by_status("expired") == []
     assert {e.symbol for e in store.list_queued_intents_by_status("consumed")} == {"DIA"}
     assert {e.symbol for e in store.list_queued_intents_by_status("obsolete")} == {"IWM"}
+
+
+# ─── expire_stale returns the swept rows (B1) ───────────────────────────────
+#
+# The sweep must RETURN the rows it swept (not just a count) so the runner can
+# alert on any swept EXIT — a swept exit leaves 'queued' status, becoming
+# invisible to the still-'queued'-only stranded-exit alerter.
+
+
+def test_expire_stale_returns_swept_rows(tmp_path):
+    """The sweep returns the QueuedIntentEvent rows it flipped, not just a count.
+
+    The owning strategy_id and idempotency_key must survive so a cross-strategy
+    observer can attribute and alert on a swept EXIT.
+    """
+    store = EventStore(tmp_path / "milodex.db")
+    store.append_queued_intent(
+        _intent(
+            "rsi2.v1|2026-06-23|sell|SPY",
+            symbol="SPY",
+            side="sell",
+            intent_class="exit",
+            expires_at=datetime(2026, 6, 23, 13, 0, tzinfo=UTC),  # past _NOW -> stale
+        )
+    )
+    store.append_queued_intent(
+        _intent(
+            "rsi2.v1|2026-06-23|buy|QQQ",
+            symbol="QQQ",
+            expires_at=datetime(2026, 6, 23, 19, 0, tzinfo=UTC),  # future -> fresh
+        )
+    )
+
+    swept = store.expire_stale_queued_intents(now=_NOW)
+
+    assert [e.symbol for e in swept] == ["SPY"]
+    assert swept[0].intent_class == "exit"
+    assert swept[0].strategy_id == "rsi2.v1"
+    assert swept[0].idempotency_key == "rsi2.v1|2026-06-23|sell|SPY"
+    # The returned set equals the set actually flipped to 'expired'.
+    assert {e.idempotency_key for e in swept} == {
+        e.idempotency_key for e in store.list_queued_intents_by_status("expired")
+    }
+
+
+# ─── operator-alert None-guard (n2) ─────────────────────────────────────────
+
+
+def test_list_operator_alerts_tolerates_null_context_json(tmp_path):
+    """A NULL operator_alerts.context_json must not crash list_operator_alerts.
+
+    The column is nullable; _operator_alert_from_row must None-guard the JSON
+    read (mirroring _queued_intent_from_row) and yield context_json == {}.
+    """
+    import sqlite3
+
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "INSERT INTO operator_alerts "
+            "(recorded_at, alert_type, severity, summary, context_json) "
+            "VALUES (?, 'exit_intent_dropped', 'warning', 'null ctx', NULL)",
+            (_NOW.isoformat(),),
+        )
+        con.commit()
+
+    alerts = store.list_operator_alerts()
+
+    assert len(alerts) == 1
+    assert alerts[0].context_json == {}
