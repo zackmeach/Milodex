@@ -333,3 +333,97 @@ def test_drain_empty_is_noop(
 
     assert result == []
     assert broker.submit_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Full single-session lifecycle: persist (day-1 post-close) -> drain (day-2 open)
+# ---------------------------------------------------------------------------
+
+
+def test_full_daily_lifecycle_persist_then_drain_single_submit(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """One runner, one session: a day-1 post-close lock-in PERSISTS (no submit),
+    the day-2 open DRAINS (exactly one submit through the chokepoint), and a
+    re-drain at the same open is a no-op (the consume CAS already claimed the row).
+
+    Clock/bar alignment (the load-bearing choice for the 1D staleness gate):
+    ``build_barset`` dates the latest SPY/SHY bar to "real today" (21:00 UTC), and
+    the StubBroker's ``latest_completed_session(now)`` returns ``now.date()``. So
+    BOTH phases run on the SAME calendar date as the bars — day-1 post-close at
+    20:05 UTC and day-2 "open" at 13:30 UTC are the same date, only the
+    ``market_open`` flag flips. That keeps ``locked_in_bar.date ==
+    latest_completed_session(now).date`` so the drain's session-aware 1D
+    staleness gate admits the reconstructed locked-in bar. We toggle market_open
+    False->True between phases to model the day boundary without skewing the date.
+    """
+    # Build CLOSED so the day-1 post-close lock-in path runs (not the open drain).
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    # The regime universe's first symbol is the evaluation symbol (SPY here).
+    eval_symbol = runner._evaluation_symbol()
+    # Force a one-BUY decision on every evaluation so BOTH the day-1 persist and
+    # the day-2 drain re-eval deterministically reproduce the same entry.
+    _force_decision(runner, [_intent(eval_symbol, OrderSide.BUY, quantity=1.0)])
+
+    # --- Phase 1: day-1 post-close (market CLOSED) -> persist, do not submit. ---
+    locked_bar = provider._bars_by_symbol[eval_symbol].latest()
+    bar_date = locked_bar.timestamp.to_pydatetime()
+    fake_now = [bar_date.replace(hour=20, minute=5, second=0, microsecond=0)]
+    runner._now = lambda: fake_now[0]
+    runner.run_cycle()  # cycle 1: pending stability (first observation)
+    assert runner._last_processed_bar_at is None
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    persist_result = runner.run_cycle()  # cycle 2: lockin confirms -> persist
+
+    assert persist_result == []
+    assert broker.submit_calls == []  # persisted, NOT submitted
+    # The watermark advanced exactly once at the confirmed lock-in.
+    assert runner._last_processed_bar_at is not None
+    watermark = runner._last_processed_bar_at
+    # Exactly one queued row exists for this strategy.
+    queued = event_store.get_active_queued_intents(
+        runner._strategy_id, now=fake_now[0], running_session_id=runner.session_id
+    )
+    assert len(queued) == 1
+    intent_id = queued[0].id
+    assert queued[0].status == "queued"
+
+    # --- Phase 2: day-2 open (market OPEN) -> drain submits exactly once. ---
+    captured = _record_submits(runner)
+    broker._market_open = True
+    # Same calendar date as the locked-in bar (keeps the staleness gate aligned),
+    # at a market-open wall time. The persisted expires_at is 7 days out, so the
+    # row is still inside its expiry window.
+    fake_now[0] = bar_date.replace(hour=13, minute=30, second=0, microsecond=0)
+    drain_result = runner.run_cycle()
+
+    assert drain_result == []
+    assert len(broker.submit_calls) == 1  # the drain submitted through the chokepoint
+    assert len(captured) == 1
+    assert captured[0]["idempotency_key"] == queued[0].idempotency_key
+    # The drain submitted via the chokepoint with the reconstructed locked-in bar.
+    override = captured[0]["latest_bar_override"]
+    assert override.timestamp == locked_bar.timestamp.to_pydatetime()
+    assert override.close == locked_bar.close
+    # I-3: the open-cycle drain did NOT touch the post-close watermark.
+    assert runner._last_processed_bar_at == watermark
+    # The CAS consumed the row exactly once, tagged with the draining session.
+    row = event_store.get_queued_intent(intent_id)
+    assert row.status == "consumed"
+    assert row.consumed_by == runner.session_id
+
+    # --- Phase 3: re-drain at the same open -> no second submit (CAS idempotent). ---
+    redrain_result = runner.run_cycle()
+
+    assert redrain_result == []
+    assert len(broker.submit_calls) == 1  # STILL one: get_active now returns empty
+    assert len(captured) == 1
+    # Watermark still untouched after the re-drain.
+    assert runner._last_processed_bar_at == watermark
