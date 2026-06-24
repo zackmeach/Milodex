@@ -66,7 +66,6 @@ pythonpath = ["src"]
 addopts = ["-n", "auto", "--maxprocesses=8"]
 markers = [
     "integration: marks tests that hit real APIs (deselect with '-m \"not integration\"')",
-    "flaky_qt_pollution: pre-existing process-global Qt/QML subprocess pollution; passes in isolation, flakes only in full-suite (tracked, not caused by Trading Desk work)",
 ]
 
 # Coverage ratchet (R-XC-016 sister item / ROADMAP_PHASE1.md §7).
