@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import sqlite3
 import sys
 from pathlib import Path
 from typing import TextIO
@@ -258,6 +259,29 @@ def main(
         return 1
     except (BrokerError, ValueError) as exc:
         result = error_result(command_name, str(exc), code="error")
+        print(formatter.render(result), file=stderr)
+        return 1
+    except sqlite3.DatabaseError as exc:
+        # The event store (SQLite) is unreadable. Both cases fail closed; give the
+        # operator the fix instead of a raw sqlite trace under "unexpected_error".
+        db_path = get_data_dir() / "milodex.db"
+        if "locked" in str(exc).lower():
+            message = (
+                f"Event store at {db_path} is locked — another runner, GUI, or CLI is "
+                "writing to it. Stop that process (or wait), then retry. "
+                "See docs/TROUBLESHOOTING.md."
+            )
+            code = "event_store_locked"
+        else:
+            message = (
+                f"Event store at {db_path} is unreadable or corrupt ({exc}). Restore the "
+                f"most recent backup ({db_path}.pre-compact-*.bak) or delete the file to "
+                "recreate an empty store (trade/explanation history is lost). "
+                "See docs/TROUBLESHOOTING.md."
+            )
+            code = "event_store_corrupt"
+        logging.getLogger(__name__).warning("event store unavailable in %s: %s", command_name, exc)
+        result = error_result(command_name, message, code=code)
         print(formatter.render(result), file=stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 — final operator-facing safety net
