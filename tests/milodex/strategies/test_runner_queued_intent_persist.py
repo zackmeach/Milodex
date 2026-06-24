@@ -341,3 +341,66 @@ def test_persist_integrity_error_is_swallowed_and_advances(
     # Idempotent duplicate: watermark advances, no persist-failure alert.
     assert runner._last_processed_bar_at is not None
     assert event_store.list_operator_alerts(alert_type="queued_intent_persist_failed") == []
+
+
+def test_partial_persist_failure_retries_only_the_failed_intent(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Multi-intent lock-in where intent #1 (spy) persists but intent #2 (qqq)
+    raises: the watermark stays unadvanced, the alert names the ACTUAL failed
+    intent (qqq, not intents[0]), and the retry re-persists ONLY qqq — spy is
+    skipped via the dedup set (which is added to only AFTER a successful persist),
+    so spy is never double-persisted. This proves the Fix #1 dedup-ordering
+    invariant the single-intent failure tests cannot reach."""
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    _stub_evaluate(runner, [_buy_intent("spy"), _buy_intent("qqq")])
+    real_append = event_store.append_queued_intent
+
+    calls = {"n": 0}
+
+    def flaky(event):
+        calls["n"] += 1
+        # Only the SECOND append of the batch (qqq) raises; spy (#1) and every
+        # later retry succeed.
+        if calls["n"] == 2:
+            raise sqlite3.OperationalError("database is locked")
+        return real_append(event)
+
+    event_store.append_queued_intent = flaky
+
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime().replace(hour=20, minute=5)]
+    runner._now = lambda: fake_now[0]
+    runner.run_cycle()  # cycle 1: pending stability
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # cycle 2: confirm -> spy persists, qqq raises (no advance)
+
+    # spy persisted; qqq did not; watermark unadvanced; alert names the FAILED qqq.
+    assert runner._last_processed_bar_at is None
+    queued = event_store.list_queued_intents_by_status("queued")
+    assert sorted(q.symbol for q in queued) == ["SPY"]
+    alerts = event_store.list_operator_alerts(alert_type="queued_intent_persist_failed")
+    assert len(alerts) == 1
+    assert alerts[0].symbol == "QQQ"
+
+    # Recovery: re-arm + re-confirm on the SAME locked bar. The retry skips spy
+    # (its key is in _processed_intent_keys) and re-persists ONLY qqq.
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # re-arm: pending stability
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    final_now = fake_now[0]
+    runner.run_cycle()  # re-confirm -> qqq re-persists -> watermark advances
+
+    assert runner._last_processed_bar_at is not None
+    active = event_store.get_active_queued_intents(
+        runner._strategy_id, now=final_now, running_session_id=runner.session_id
+    )
+    # Exactly one row each — spy was NOT double-persisted by the retry.
+    assert sorted(q.symbol for q in active) == ["QQQ", "SPY"]

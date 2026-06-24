@@ -415,8 +415,13 @@ class StrategyRunner:
                     self._persist_queued_intent(intent, latest_bar, decision.reasoning)
                     self._processed_intent_keys.add(intent_key)
             except Exception as exc:  # noqa: BLE001 — persist failure must not silently strand
+                # ``intent`` is the loop variable bound to the intent whose persist
+                # raised (the for-loop above always runs at least once here — the
+                # empty-intents case returned earlier — and Python leaves the loop
+                # var bound), so the alert names the ACTUAL failed intent, not
+                # intents[0].
                 self._emit_queued_intent_persist_failure(
-                    intents[0], latest_bar, reason=repr(exc)
+                    intent, latest_bar, reason=repr(exc)
                 )
                 if self._on_cycle_result is not None:
                     self._on_cycle_result([])

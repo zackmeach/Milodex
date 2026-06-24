@@ -463,6 +463,7 @@ class ExecutionService:
         # into the consume CAS transaction (Fix #2) using the SAME id it then
         # passes to the broker.
         client_order_id: str | None = None
+        attempt: ExecutionAttemptEvent | None = None
         if source != "backtest":
             client_order_id = str(uuid.uuid4())
             attempt = ExecutionAttemptEvent(
@@ -500,12 +501,19 @@ class ExecutionService:
         # When no key is supplied (legacy direct callers) the CAS is skipped and
         # the 'pending' attempt is written via the standalone append (unchanged).
         if idempotency_key is not None:
+            if attempt is None:
+                # Queue-at-open drains are live-only (queued_intents never exist
+                # in a backtest), so a non-backtest source always built `attempt`
+                # above. Fail LOUD rather than NameError if a future caller ever
+                # forwards an idempotency_key from a backtest source.
+                msg = (
+                    "queue-at-open drain submit requires a non-backtest source: "
+                    "idempotency_key is set but no execution attempt was built"
+                )
+                raise ValueError(msg)
             consumed = self._event_store.consume_queued_intent_and_append_attempt(
                 idempotency_key,
-                # Backtest never sets an idempotency_key (no queued_intents in a
-                # simulation), so client_order_id / attempt are always populated
-                # here when a drain reaches this branch.
-                attempt,  # type: ignore[possibly-undefined]
+                attempt,
                 # The CAS re-asserts the full drain predicates (P1-1): now bounds
                 # the expiry fence; session_id is the running session for the
                 # clean-handoff fence (None for a session-less manual submit).
