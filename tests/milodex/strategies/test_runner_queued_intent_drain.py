@@ -16,6 +16,7 @@ from pathlib import Path
 
 from milodex.broker.models import OrderSide, OrderType, TimeInForce
 from milodex.core.event_store import QueuedIntentEvent
+from milodex.data.models import Bar
 from milodex.execution.models import TradeIntent
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
 from tests.milodex.strategies.test_runner import _build_lockin_runner
@@ -135,6 +136,33 @@ def _pin_clock_to_locked_in_bar(runner, symbol: str = "SPY") -> None:
     runner._now = lambda: pinned
 
 
+def _install_fresh_latest_bar(runner, symbol: str = "SPY") -> None:
+    """Make ``get_latest_bar`` return a CONFIRMABLY-FRESH bar for the drain.
+
+    ADR 0057 §2: the drain sizes entries and prices the exposure cap on a fresh
+    open price from ``get_latest_bar`` (``_fresh_pricing_bar``), which fails
+    closed unless the fresh bar is today-dated AND strictly newer than the locked
+    daily session bar. The default ``StubProvider.get_latest_bar`` returns the
+    locked daily bar verbatim (same timestamp) — a degenerate case that never
+    occurs at a real open, where ``get_latest_bar`` yields a today-dated intraday
+    minute bar strictly newer than the locked daily bar. Model that realistic
+    case here so the standard drain tests exercise the submit path; the fresh
+    close equals the locked close so sizing/notional expectations are unchanged.
+    Tests that exercise the fail-closed path override this explicitly.
+    """
+    locked = runner._data_provider._bars_by_symbol[symbol].latest()
+    fresh = Bar(
+        timestamp=locked.timestamp.to_pydatetime() + timedelta(minutes=1),
+        open=locked.open,
+        high=locked.high,
+        low=locked.low,
+        close=locked.close,
+        volume=locked.volume,
+        vwap=locked.vwap,
+    )
+    runner._data_provider.get_latest_bar = lambda _sym: fresh
+
+
 def _build_open_runner(tmp_path, strategy_config_dir, risk_defaults_file):
     runner, broker, provider, event_store = _build_lockin_runner(
         tmp_path=tmp_path,
@@ -143,6 +171,7 @@ def _build_open_runner(tmp_path, strategy_config_dir, risk_defaults_file):
         market_open=True,
     )
     _pin_clock_to_locked_in_bar(runner)
+    _install_fresh_latest_bar(runner)
     return runner, broker, provider, event_store
 
 
@@ -398,6 +427,11 @@ def test_full_daily_lifecycle_persist_then_drain_single_submit(
     # --- Phase 2: day-2 open (market OPEN) -> drain submits exactly once. ---
     captured = _record_submits(runner)
     broker._market_open = True
+    # At the day-2 open ``get_latest_bar`` yields a fresh intraday bar (strictly
+    # newer than the locked daily session bar, same close) — the drain prices the
+    # cap on it (ADR 0057 §2). Without this the default stub echoes the locked bar
+    # verbatim (not strictly newer) and the fresh-price gate fails closed.
+    _install_fresh_latest_bar(runner, eval_symbol)
     # Same calendar date as the locked-in bar (keeps the staleness gate aligned),
     # at a market-open wall time. The persisted expires_at is 7 days out, so the
     # row is still inside its expiry window.

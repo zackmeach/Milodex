@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import signal
 import sqlite3
 import time
@@ -27,7 +28,7 @@ from milodex.data import DataProvider
 from milodex.data.models import Bar, BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
-from milodex.execution.models import ExecutionResult, TradeIntent
+from milodex.execution.models import ExecutionResult, ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
 from milodex.operations.reconciliation import local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
@@ -830,10 +831,16 @@ class StrategyRunner:
         on history through the locked-in completed session bar, and submitted
         through the chokepoint with the persisted ``idempotency_key`` (the CAS
         inside ``_submit_locked`` claims the row) and the reconstructed locked-in
-        bar as ``latest_bar_override`` (feeds the session-aware 1D staleness gate
-        and the cap pricing). The drain NEVER touches ``_last_processed_bar_at``
+        bar as ``latest_bar_override`` (feeds ONLY the session-aware 1D staleness
+        gate). Sizing + cap pricing use a FRESH open price fetched once here
+        (``_fresh_pricing_bar``, ADR 0057 §2): an ENTRY's quantity is rescaled to
+        the fresh price and the fresh price is threaded down as
+        ``pricing_unit_price`` so the exposure cap prices on the real open, not the
+        stale locked close; no usable fresh price fails CLOSED (entry stays queued,
+        exit alerts + retires). The drain NEVER touches ``_last_processed_bar_at``
         (I-3) and NEVER calls ``mark_queued_intent_consumed`` (the submit CAS owns
-        that); the only status write here is ``obsolete`` for a flat-ledger exit.
+        that); the only status write here is ``obsolete`` for a flat-ledger /
+        stranded exit.
         """
         intents = self._event_store.get_active_queued_intents(
             self._strategy_id,
@@ -904,27 +911,62 @@ class StrategyRunner:
                     # 0-share entry / no re-derived match -> drop, leave queued to
                     # expire; NEVER submit a 0-share order.
                     continue
+
+                # Fresh-price sizing + cap pricing (ADR 0057 §2). The locked-in
+                # close sized the re-eval and gates staleness, but it must NOT
+                # size entries or price the exposure cap across an overnight gap.
+                # Fetch a confirmably-current fresh price; fail CLOSED if absent.
+                fresh = self._fresh_pricing_bar(queued.symbol, decision_bar)
+                if fresh is None:
+                    if queued.intent_class == "exit":
+                        # Asymmetry guard: an undrained exit can strand a live
+                        # position. Alert + retire (de-spam the ~60s open poll);
+                        # the strategy re-emits a fresh exit next post-close.
+                        self._emit_exit_drop_alert(queued, reason="no_fresh_price")
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    logger.warning(
+                        "drain: no fresh price for %s; dropping (fail-closed)",
+                        queued.symbol,
+                    )
+                    continue
+                pricing_price = fresh.close
+                submit_match = match
+                if queued.intent_class != "exit":
+                    # ENTRY: rescale the at-open quantity to the fresh price
+                    # (notional sizing is linear in 1/price, so this is exactly
+                    # the ADR §2 recompute, model-agnostic — no per-strategy
+                    # notional param plumbing). EXITs sell the held lot and are
+                    # NEVER rescaled. ``not (q > 0)`` is NaN-safe.
+                    fresh_qty = math.floor(match.quantity * decision_bar.close / pricing_price)
+                    if not (fresh_qty > 0):
+                        # Fresh price so high the resize floors to 0 -> drop, leave
+                        # queued to expire; NEVER submit a 0-share order.
+                        continue
+                    submit_match = replace(match, quantity=float(fresh_qty))
             except Exception as exc:  # noqa: BLE001 — pre-submit raise: nothing consumed
                 # One poison intent must not abort draining its siblings; the pre-submit
                 # body legitimately leaves the row queued for retry next open / sweep.
+                # ``get_latest_bar`` raising lands here too -> ENTRY stays queued.
                 logger.warning(
                     "drain: intent %s raised before submit; leaving queued (%s)",
                     queued.idempotency_key,
                     exc,
                 )
                 continue
-            # ``match`` is a valid, positive-quantity intent. The submit is OUTSIDE the
-            # pre-submit try: the consume CAS inside ``_submit_locked`` may flip the row
-            # to 'consumed' BEFORE the broker call, so a raise here means the row is NOT
-            # safely re-queuable — never claim 'leaving queued'. For an EXIT, surface it
-            # (the position may be stranded); an ENTRY raise stays silent.
+            # ``submit_match`` is a valid, positive-quantity intent (entry resized to
+            # the fresh price; exit unchanged). The submit is OUTSIDE the pre-submit
+            # try: the consume CAS inside ``_submit_locked`` may flip the row to
+            # 'consumed' BEFORE the broker call, so a raise here means the row is NOT
+            # safely re-queuable — never claim 'leaving queued'. For an EXIT, surface
+            # it (the position may be stranded); an ENTRY raise stays silent.
             try:
-                self._execution_service.submit_paper(
-                    self._runner_intent(match),
+                result = self._execution_service.submit_paper(
+                    self._runner_intent(submit_match),
                     session_id=self._session_id,
                     reasoning=decision.reasoning,
                     idempotency_key=queued.idempotency_key,
                     latest_bar_override=decision_bar,
+                    pricing_unit_price=pricing_price,
                 )
             except Exception as exc:  # noqa: BLE001 — post-CAS submit raise: row may be consumed
                 logger.warning(
@@ -935,6 +977,58 @@ class StrategyRunner:
                 if queued.intent_class == "exit":
                     self._emit_exit_drop_alert(queued, reason="submit_error")
                 continue
+            # A routine broker rejection (OrderRejectedError / InsufficientFundsError)
+            # is CAUGHT in the service and RETURNED as status=REJECTED, NOT raised. By
+            # then the consume CAS has already flipped the row to 'consumed' (it runs
+            # before the broker call), so a rejected EXIT is a consumed-but-unsubmitted
+            # STRAND — surface it. status=REJECTED in the drain only ever occurs after
+            # the CAS, so it is the exact strand condition; BLOCKED (idempotency-
+            # suppressed race-loss, or a pre-CAS risk block that leaves the row queued)
+            # is NOT a strand and must not alert. The row is already terminal — the
+            # alert is observational; do not mutate status further. ENTRY stays silent.
+            if (
+                queued.intent_class == "exit"
+                and result.status == ExecutionStatus.REJECTED
+            ):
+                self._emit_exit_drop_alert(queued, reason="submit_rejected")
+
+    def _fresh_pricing_bar(self, symbol: str, locked_bar: Bar) -> Bar | None:
+        """Fetch a CONFIRMABLY-CURRENT fresh bar for drain sizing/cap pricing.
+
+        ADR 0057 §2: the drain must size entries and price the exposure cap on a
+        fresh open price, not the stale locked-in close. The fresh price comes
+        from the live IEX minute bar (``get_latest_bar``), distinct from the
+        locked daily SESSION bar that drives the staleness gate.
+
+        Fails CLOSED (returns ``None``) when no usable fresh price is available:
+
+        * ``get_latest_bar`` raised (provider outage) — caught HERE so the
+          "can't be obtained" case routes through the same fail-closed branch as
+          an unconfirmable bar (an EXIT must alert + retire, not be swallowed by
+          the drain's generic pre-submit handler with no alert);
+        * the fresh bar is not from the current session
+          (``_is_current_session_bar`` — a stale provider returning a prior
+          close is rejected);
+        * the fresh bar is not strictly newer than the locked session bar
+          (a provider echoing the locked bar carries no new price); or
+        * the fresh close is non-finite / non-positive.
+
+        Both date and strict-newness checks bias fail-closed: a drain that cannot
+        confirm a fresh price must not submit on a stale one.
+        """
+        try:
+            fresh = self._data_provider.get_latest_bar(symbol)
+        except Exception as exc:  # noqa: BLE001 — provider outage -> fail closed
+            logger.warning("drain: get_latest_bar failed for %s (%s)", symbol, exc)
+            return None
+        if not self._is_current_session_bar(fresh):
+            return None
+        if not (fresh.timestamp > locked_bar.timestamp):
+            return None
+        close = fresh.close
+        if close is None or not (close > 0):  # NaN-safe (NaN > 0 is False)
+            return None
+        return fresh
 
     def _reconstruct_locked_in_bar(self, queued: QueuedIntentEvent) -> Bar:
         """Rebuild the locked-in SESSION bar from the persisted intent payload.

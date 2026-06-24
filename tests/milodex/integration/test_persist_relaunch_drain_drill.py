@@ -33,6 +33,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from milodex.broker.models import AccountInfo, OrderSide, OrderType, TimeInForce
+from milodex.data.models import Bar
 from milodex.execution import ExecutionService
 from milodex.execution.models import TradeIntent
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
@@ -48,6 +49,24 @@ from tests.milodex.strategies.test_runner import (
 # strategy_config_dir / risk_defaults_file fixtures are provided via conftest.py.
 
 STRATEGY_ID = "regime.daily.sma200_rotation.spy_shy.v1"
+
+
+def _install_fresh_latest_bar(provider, symbol: str) -> None:
+    """Model the at-open ``get_latest_bar`` (ADR 0057 §2): a today-dated intraday
+    bar strictly newer than the locked daily session bar, SAME close. The drain's
+    fresh-price gate (``_fresh_pricing_bar``) fails closed on the default stub,
+    which echoes the locked bar verbatim (not strictly newer)."""
+    locked = provider._bars_by_symbol[symbol].latest()
+    fresh = Bar(
+        timestamp=locked.timestamp.to_pydatetime() + timedelta(minutes=1),
+        open=locked.open,
+        high=locked.high,
+        low=locked.low,
+        close=locked.close,
+        volume=locked.volume,
+        vwap=locked.vwap,
+    )
+    provider.get_latest_bar = lambda _sym: fresh
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +270,9 @@ def test_persist_controlled_stop_relaunch_drain_fill_chain(
     # bar's session date == the latest completed session by construction.
     latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
     runner_b._now = lambda: latest_ts.to_pydatetime().replace(hour=14, minute=30)
+    # At the open the drain prices the cap on a FRESH bar (ADR 0057 §2); model a
+    # today-dated SHY bar strictly newer than the locked daily bar (same close).
+    _install_fresh_latest_bar(provider, "SHY")
 
     runner_b.run_cycle()
 
