@@ -276,6 +276,29 @@ def test_drain_zero_share_exit_on_flat_ledger_marked_obsolete(
     assert event_store.get_queued_intent(intent_id).status == "obsolete"
 
 
+def test_drain_side_flip_dropped(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A re-eval that flips the side (queued BUY -> re-derived SELL for the same
+    symbol) drops at ``_match_drain_intent``'s side-equality requirement -> no
+    submit; the row stays queued (not consumed, not obsolete). Proves the drain
+    never fires the wrong direction on a flipped signal."""
+    runner, broker, provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    intent_id = _seed_queued_entry(event_store, runner, symbol="SPY", side=OrderSide.BUY)
+    # Re-eval re-derives the OPPOSITE side for the same symbol (a SELL).
+    _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=1.0)])
+
+    result = runner.run_cycle()
+
+    assert result == []
+    assert broker.submit_calls == []
+    assert event_store.get_queued_intent(intent_id).status == "queued"
+
+
 def test_drain_halted_symbol_dropped(
     tmp_path: Path,
     strategy_config_dir: Path,

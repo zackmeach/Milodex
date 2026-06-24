@@ -729,43 +729,63 @@ class StrategyRunner:
             return
         account = self._broker.get_account()
         for queued in intents:
-            decision_bar = self._reconstruct_locked_in_bar(queued)
-            td = tradable_drop_decision(self._broker, queued.symbol)
-            if td.drop:
-                logger.warning(
-                    "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
+            # Per-intent fail-closed isolation (mirrors get_active_queued_intents'
+            # per-row guard): a raise in this body — e.g. strategy.evaluate() on a
+            # degenerate truncated BarSet — must not abort draining the siblings.
+            # Swallow, log, and leave the row queued (retried next open / expired by
+            # the sweep). NEVER change row status on a swallowed raise.
+            try:
+                decision_bar = self._reconstruct_locked_in_bar(queued)
+                td = tradable_drop_decision(self._broker, queued.symbol)
+                if td.drop:
+                    logger.warning(
+                        "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
+                    )
+                    # Exit-side operator alert is added in a later task; leave queued.
+                    continue
+                eval_bars = self._bars_through(
+                    self._fetch_bars_by_symbol(), decision_bar.timestamp
                 )
-                # Exit-side operator alert is added in a later task; leave queued.
+                primary_bars = eval_bars[self._evaluation_symbol()]
+                context = replace(
+                    self._loaded.context,
+                    positions=self._current_positions(),
+                    equity=account.equity,
+                    bars_by_symbol=eval_bars,
+                    entry_state=self._build_entry_state(),
+                )
+                decision = self._loaded.strategy.evaluate(primary_bars, context)
+                match = self._match_drain_intent(decision.intents, queued)
+                # ``not (q > 0)`` is NaN-safe (NaN > 0 is False, so NaN is treated as
+                # non-positive and dropped); ``q <= 0`` is NOT (NaN <= 0 is False, so a
+                # NaN quantity would slip through to submit).
+                if match is None or not (match.quantity > 0):
+                    if queued.intent_class == "exit" and not self._current_positions().get(
+                        queued.symbol
+                    ):
+                        # A 0-share exit on an already-flat strategy ledger is moot —
+                        # the position the exit would close no longer exists. Retire
+                        # the row rather than leave it to expire undrained.
+                        self._event_store.mark_queued_intent_obsolete(queued.id)
+                    # 0-share entry / no re-derived match -> drop, leave queued to
+                    # expire; NEVER submit a 0-share order.
+                    continue
+                self._execution_service.submit_paper(
+                    self._runner_intent(match),
+                    session_id=self._session_id,
+                    reasoning=decision.reasoning,
+                    idempotency_key=queued.idempotency_key,
+                    latest_bar_override=decision_bar,
+                )
+            except Exception as exc:  # noqa: BLE001 — fail-closed per-intent isolation
+                # One poison intent must not abort draining its siblings; leave the
+                # row queued (no status write) for retry next open or sweep expiry.
+                logger.warning(
+                    "drain: intent %s raised during drain; leaving queued (%s)",
+                    queued.idempotency_key,
+                    exc,
+                )
                 continue
-            eval_bars = self._bars_through(self._fetch_bars_by_symbol(), decision_bar.timestamp)
-            primary_bars = eval_bars[self._evaluation_symbol()]
-            context = replace(
-                self._loaded.context,
-                positions=self._current_positions(),
-                equity=account.equity,
-                bars_by_symbol=eval_bars,
-                entry_state=self._build_entry_state(),
-            )
-            decision = self._loaded.strategy.evaluate(primary_bars, context)
-            match = self._match_drain_intent(decision.intents, queued)
-            if match is None or match.quantity <= 0:
-                if queued.intent_class == "exit" and not self._current_positions().get(
-                    queued.symbol
-                ):
-                    # A 0-share exit on an already-flat strategy ledger is moot —
-                    # the position the exit would close no longer exists. Retire
-                    # the row rather than leave it to expire undrained.
-                    self._event_store.mark_queued_intent_obsolete(queued.id)
-                # 0-share entry / no re-derived match -> drop, leave queued to
-                # expire; NEVER submit a 0-share order.
-                continue
-            self._execution_service.submit_paper(
-                self._runner_intent(match),
-                session_id=self._session_id,
-                reasoning=decision.reasoning,
-                idempotency_key=queued.idempotency_key,
-                latest_bar_override=decision_bar,
-            )
 
     def _reconstruct_locked_in_bar(self, queued: QueuedIntentEvent) -> Bar:
         """Rebuild the locked-in SESSION bar from the persisted intent payload.
