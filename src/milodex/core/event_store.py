@@ -811,6 +811,54 @@ class EventStore:
                 raise
         return explanation_id, trade_id
 
+    @staticmethod
+    def _insert_execution_attempt(
+        connection: sqlite3.Connection, event: ExecutionAttemptEvent
+    ) -> int:
+        """Insert one execution-attempt row on ``connection`` (no commit). Returns its id.
+
+        Shared by :meth:`append_execution_attempt` (its own transaction) and
+        :meth:`consume_queued_intent_and_append_attempt` (folded into the consume
+        CAS transaction) so the column list cannot drift between the two paths.
+        The caller owns the commit.
+        """
+        cursor = connection.execute(
+            """
+            INSERT INTO execution_attempts (
+                client_order_id,
+                strategy_name,
+                strategy_config_path,
+                session_id,
+                symbol,
+                side,
+                quantity,
+                order_type,
+                created_at,
+                status,
+                broker_order_id,
+                finalized_at,
+                failure_detail
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.client_order_id,
+                event.strategy_name,
+                event.strategy_config_path,
+                event.session_id,
+                event.symbol,
+                event.side,
+                event.quantity,
+                event.order_type,
+                _dt(event.created_at),
+                event.status,
+                event.broker_order_id,
+                _dt(event.finalized_at),
+                event.failure_detail,
+            ),
+        )
+        return int(cursor.lastrowid)
+
     def append_execution_attempt(self, event: ExecutionAttemptEvent) -> int:
         """Insert a pre-submit outbox row (migration 014) and return its id.
 
@@ -819,43 +867,9 @@ class EventStore:
         write fails (P1-02).
         """
         with self._connect() as connection:
-            cursor = connection.execute(
-                """
-                INSERT INTO execution_attempts (
-                    client_order_id,
-                    strategy_name,
-                    strategy_config_path,
-                    session_id,
-                    symbol,
-                    side,
-                    quantity,
-                    order_type,
-                    created_at,
-                    status,
-                    broker_order_id,
-                    finalized_at,
-                    failure_detail
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    event.client_order_id,
-                    event.strategy_name,
-                    event.strategy_config_path,
-                    event.session_id,
-                    event.symbol,
-                    event.side,
-                    event.quantity,
-                    event.order_type,
-                    _dt(event.created_at),
-                    event.status,
-                    event.broker_order_id,
-                    _dt(event.finalized_at),
-                    event.failure_detail,
-                ),
-            )
+            attempt_id = self._insert_execution_attempt(connection, event)
             connection.commit()
-            return int(cursor.lastrowid)
+            return attempt_id
 
     def finalize_execution_attempt(
         self,
@@ -2397,69 +2411,138 @@ class EventStore:
           or a mismatch returns 0 (drop). This shrinks the config TOCTOU to a
           microsecond, lock-held window.
         """
+        with self._connect() as connection:
+            rowcount = self._consume_queued_intent_cas(
+                connection,
+                idempotency_key,
+                now=now,
+                running_session_id=running_session_id,
+                consumed_by=consumed_by,
+                consumed_at=consumed_at,
+            )
+            connection.commit()
+            return rowcount
+
+    @staticmethod
+    def _consume_queued_intent_cas(
+        connection: sqlite3.Connection,
+        idempotency_key: str,
+        *,
+        now: datetime,
+        running_session_id: str | None,
+        consumed_by: str,
+        consumed_at: datetime,
+    ) -> int:
+        """Run THE drain consume CAS on ``connection`` (no commit). Returns rowcount.
+
+        Shared verbatim by :meth:`mark_queued_intent_consumed` (its own
+        transaction) and :meth:`consume_queued_intent_and_append_attempt` (folds
+        the outbox insert into the same transaction). Factoring the config-hash
+        re-verification + the CAS ``UPDATE`` here guarantees the two callers
+        cannot drift on any drain predicate (I-5). The caller owns the commit.
+        """
         # Lazy import: same core<->strategies cycle avoidance as
         # get_active_queued_intents (the strategies package imports event_store
         # at module load). Deferring to call time breaks the cycle; the module is
         # already loaded by the time any drain runs.
         from milodex.strategies.loader import compute_config_hash_or_none
 
-        with self._connect() as connection:
-            # config_hash re-verification (same connection, before the UPDATE).
-            # Read the still-'queued' row's stored path + hash; recompute and drop
-            # on None/mismatch. A separate read is acceptable: the UPDATE below is
-            # guarded by status='queued', and the whole call runs under the
-            # caller's per-account submit lock, so the window is microscopic.
-            row = connection.execute(
-                """
-                SELECT strategy_config_path, config_hash
-                FROM queued_intents
-                WHERE idempotency_key = ? AND status = 'queued'
-                """,
-                (idempotency_key,),
-            ).fetchone()
-            if row is None:
-                return 0
-            stored_hash = row["config_hash"]
-            config_path = row["strategy_config_path"]
-            try:
-                current_hash = (
-                    compute_config_hash_or_none(Path(config_path))
-                    if config_path is not None
-                    else None
-                )
-            except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
-                current_hash = None
-            if stored_hash is None or current_hash is None or current_hash != stored_hash:
-                # Config never frozen, unhashable, or drifted since lock-in:
-                # fail closed and drop (no submit).
-                return 0
-
-            cursor = connection.execute(
-                """
-                UPDATE queued_intents
-                SET status = 'consumed', consumed_at = ?, consumed_by = ?
-                WHERE idempotency_key = ?
-                  AND status = 'queued'
-                  AND datetime(expires_at) > datetime(?)
-                  AND (
-                        session_id = ?
-                        OR EXISTS (
-                            SELECT 1 FROM strategy_runs AS sr
-                            WHERE sr.session_id = queued_intents.session_id
-                              AND sr.exit_reason = 'controlled_stop'
-                        )
-                      )
-                """,
-                (
-                    _dt(consumed_at),
-                    consumed_by,
-                    idempotency_key,
-                    _dt(now),
-                    running_session_id,
-                ),
+        # config_hash re-verification (same connection, before the UPDATE).
+        # Read the still-'queued' row's stored path + hash; recompute and drop
+        # on None/mismatch. A separate read is acceptable: the UPDATE below is
+        # guarded by status='queued', and the whole call runs under the
+        # caller's per-account submit lock, so the window is microscopic.
+        row = connection.execute(
+            """
+            SELECT strategy_config_path, config_hash
+            FROM queued_intents
+            WHERE idempotency_key = ? AND status = 'queued'
+            """,
+            (idempotency_key,),
+        ).fetchone()
+        if row is None:
+            return 0
+        stored_hash = row["config_hash"]
+        config_path = row["strategy_config_path"]
+        try:
+            current_hash = (
+                compute_config_hash_or_none(Path(config_path))
+                if config_path is not None
+                else None
             )
+        except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
+            current_hash = None
+        if stored_hash is None or current_hash is None or current_hash != stored_hash:
+            # Config never frozen, unhashable, or drifted since lock-in:
+            # fail closed and drop (no submit).
+            return 0
+
+        cursor = connection.execute(
+            """
+            UPDATE queued_intents
+            SET status = 'consumed', consumed_at = ?, consumed_by = ?
+            WHERE idempotency_key = ?
+              AND status = 'queued'
+              AND datetime(expires_at) > datetime(?)
+              AND (
+                    session_id = ?
+                    OR EXISTS (
+                        SELECT 1 FROM strategy_runs AS sr
+                        WHERE sr.session_id = queued_intents.session_id
+                          AND sr.exit_reason = 'controlled_stop'
+                    )
+                  )
+            """,
+            (
+                _dt(consumed_at),
+                consumed_by,
+                idempotency_key,
+                _dt(now),
+                running_session_id,
+            ),
+        )
+        return cursor.rowcount
+
+    def consume_queued_intent_and_append_attempt(
+        self,
+        idempotency_key: str,
+        attempt: ExecutionAttemptEvent,
+        *,
+        now: datetime,
+        running_session_id: str | None,
+        consumed_by: str,
+        consumed_at: datetime,
+    ) -> int:
+        """Atomically claim a queued intent AND write its outbox row. Returns rowcount.
+
+        Closes the CAS->outbox crash window (Fix #2): without this, the consume
+        CAS (flip the row to 'consumed') and the pre-submit outbox insert
+        committed in SEPARATE transactions, so a crash between them left a
+        'consumed' intent with NO order at the broker and NO 'pending' attempt for
+        reconciliation to recover — a silent loss (a silent strand for an EXIT).
+
+        Here both writes share ONE transaction with a single ``commit()``: the
+        consume CAS (identical drain predicates to
+        :meth:`mark_queued_intent_consumed`, via the shared
+        :meth:`_consume_queued_intent_cas`) runs first, and the ``attempt`` is
+        inserted IFF ``rowcount == 1``. A CAS loss (rowcount 0 — duplicate /
+        expired / unclean-handoff / config-drift) writes NO attempt and the caller
+        must NOT submit. Exactly-once (I-5) is preserved: the CAS is still the
+        single claim, and a race-loser inserts nothing.
+        """
+        with self._connect() as connection:
+            rowcount = self._consume_queued_intent_cas(
+                connection,
+                idempotency_key,
+                now=now,
+                running_session_id=running_session_id,
+                consumed_by=consumed_by,
+                consumed_at=consumed_at,
+            )
+            if rowcount == 1:
+                self._insert_execution_attempt(connection, attempt)
             connection.commit()
-            return cursor.rowcount
+            return rowcount
 
     def mark_queued_intent_expired(self, intent_id: int) -> None:
         """Mark a queued intent expired (its open window passed undrained)."""

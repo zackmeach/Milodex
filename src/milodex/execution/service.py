@@ -451,21 +451,61 @@ class ExecutionService:
             )
             return result
 
+        # Pre-submit outbox row (P1-02): the durable 'pending' attempt is
+        # committed BEFORE the broker call so a crash anywhere past this point
+        # leaves evidence that an order may exist at the broker (and the
+        # duplicate-order veto counts it). Risk has already allowed the intent —
+        # blocked intents return above and never reach the outbox boundary.
+        # Backtest submits skip the outbox: the simulated broker holds no
+        # recoverable state, and a per-fill outbox write+finalize would double the
+        # simulation's DB traffic for zero audit value. The client_order_id is
+        # generated here (pre-submit) so the drain can fold the attempt insert
+        # into the consume CAS transaction (Fix #2) using the SAME id it then
+        # passes to the broker.
+        client_order_id: str | None = None
+        if source != "backtest":
+            client_order_id = str(uuid.uuid4())
+            attempt = ExecutionAttemptEvent(
+                client_order_id=client_order_id,
+                strategy_name=result.execution_request.strategy_name,
+                strategy_config_path=(
+                    str(result.execution_request.strategy_config_path)
+                    if result.execution_request.strategy_config_path is not None
+                    else None
+                ),
+                session_id=session_id,
+                symbol=result.execution_request.symbol,
+                side=result.execution_request.side.value,
+                quantity=result.execution_request.quantity,
+                order_type=result.execution_request.order_type.value,
+                created_at=datetime.now(tz=UTC),
+                status="pending",
+            )
+
         # Idempotency CAS (queue-at-open drain path — D-1, ADR 0057, I-5). Risk
         # has ALREADY allowed this intent and we hold the per-account submit
-        # lock. The single-statement CAS in the event store flips the queued row
-        # to 'consumed' iff it is still 'queued'; rowcount == 1 means THIS caller
-        # won the race and may submit. rowcount == 0 means a concurrent /
-        # duplicate drain (overnight double-launch, crash-retry) already consumed
-        # it -> suppress: no broker call, no outbox row, an auditable explanation,
-        # the session continues. This sits strictly AFTER the risk-allow gate and
-        # BEFORE the outbox write + broker call, so a benign race-loss can never
+        # lock. Fix #2: the consume CAS and the 'pending' outbox insert are now a
+        # SINGLE atomic transaction (consume_queued_intent_and_append_attempt) —
+        # they commit together or not at all, closing the crash window that could
+        # leave a 'consumed' intent with no order and no recoverable attempt. The
+        # CAS flips the queued row to 'consumed' iff it is still 'queued' (re-
+        # asserting the full drain predicates); rowcount == 1 means THIS caller
+        # won the race, the attempt was inserted in the same transaction, and we
+        # may submit with the pre-generated client_order_id. rowcount != 1 means a
+        # concurrent / duplicate drain (overnight double-launch, crash-retry)
+        # already consumed it -> suppress: NO attempt was inserted, no broker
+        # call, an auditable explanation, the session continues. This sits
+        # strictly AFTER the risk-allow gate, so a benign race-loss can never
         # reach _maybe_activate_kill_switch (only genuine risk blocks do, above).
-        # Skipped entirely when no key is supplied (legacy direct callers) — the
-        # None path is byte-for-byte unchanged.
+        # When no key is supplied (legacy direct callers) the CAS is skipped and
+        # the 'pending' attempt is written via the standalone append (unchanged).
         if idempotency_key is not None:
-            consumed = self._event_store.mark_queued_intent_consumed(
+            consumed = self._event_store.consume_queued_intent_and_append_attempt(
                 idempotency_key,
+                # Backtest never sets an idempotency_key (no queued_intents in a
+                # simulation), so client_order_id / attempt are always populated
+                # here when a drain reaches this branch.
+                attempt,  # type: ignore[possibly-undefined]
                 # The CAS re-asserts the full drain predicates (P1-1): now bounds
                 # the expiry fence; session_id is the running session for the
                 # clean-handoff fence (None for a session-less manual submit).
@@ -486,36 +526,11 @@ class ExecutionService:
                     backtest_run_id=backtest_run_id,
                     idempotency_key=idempotency_key,
                 )
-
-        # Durable pre-submit outbox row (P1-02): committed BEFORE the broker
-        # call so a crash anywhere past this point leaves evidence that an
-        # order may exist at the broker (and the duplicate-order veto counts
-        # it). Risk has already allowed the intent — blocked intents return
-        # above and never reach the outbox boundary. Backtest submits skip
-        # the outbox: the simulated broker holds no recoverable state, and a
-        # per-fill outbox write+finalize would double the simulation's DB
-        # traffic for zero audit value.
-        client_order_id: str | None = None
-        if source != "backtest":
-            client_order_id = str(uuid.uuid4())
-            self._event_store.append_execution_attempt(
-                ExecutionAttemptEvent(
-                    client_order_id=client_order_id,
-                    strategy_name=result.execution_request.strategy_name,
-                    strategy_config_path=(
-                        str(result.execution_request.strategy_config_path)
-                        if result.execution_request.strategy_config_path is not None
-                        else None
-                    ),
-                    session_id=session_id,
-                    symbol=result.execution_request.symbol,
-                    side=result.execution_request.side.value,
-                    quantity=result.execution_request.quantity,
-                    order_type=result.execution_request.order_type.value,
-                    created_at=datetime.now(tz=UTC),
-                    status="pending",
-                )
-            )
+        elif client_order_id is not None:
+            # Non-drain, non-backtest: write the 'pending' attempt in its own
+            # transaction exactly as before (byte-for-byte). The drain path above
+            # already inserted it atomically with the consume CAS.
+            self._event_store.append_execution_attempt(attempt)
 
         try:
             order = self._broker.submit_order(
@@ -766,16 +781,70 @@ class ExecutionService:
         account = self._broker.get_account()
         market_open = self._broker.is_market_open()
 
+        # Fix #5 (defense-in-depth): when ``use_override`` is true, ``latest_bar``
+        # is the locked (stale) override session bar. The exposure cap must NEVER
+        # be priced on it — that is the exact Blocker-1 condition (a gap-up
+        # understates the real notional, slipping an over-cap order through). The
+        # drain always pairs the override with a fresh ``pricing_unit_price``, so
+        # this is unreachable today; but a future caller that set the override for
+        # a 1D config WITHOUT a fresh price must FAIL CLOSED, not fall back to the
+        # stale close. Block with ``missing_fresh_price`` (an ordinary
+        # risk-disallowed result — NOT ``kill_switch_threshold_breached``, so the
+        # kill switch never trips; and a pre-CAS evaluate-stage block, so the
+        # consume CAS in _submit_locked never runs and no queued row is consumed).
+        # The non-override path (use_override false) is unaffected: it still
+        # prices on the live provider bar's close below, byte-for-byte.
+        if use_override and pricing_unit_price is None:
+            decision = RiskDecision(
+                allowed=False,
+                summary=(
+                    "Declined to submit: a 1D queue-at-open drain supplied a stale "
+                    "override bar with no fresh price. Pricing the exposure cap on "
+                    "the stale close is not allowed (fail-closed). No order was sent."
+                ),
+                checks=[
+                    RiskCheckResult(
+                        name="fresh_price",
+                        passed=False,
+                        message=(
+                            "latest_bar_override present but pricing_unit_price is None; "
+                            "refusing to price the cap on the stale override bar"
+                        ),
+                        reason_code="missing_fresh_price",
+                    )
+                ],
+                reason_codes=["missing_fresh_price"],
+            )
+            return ExecutionResult(
+                status=(
+                    ExecutionStatus.PREVIEW if preview_only else ExecutionStatus.BLOCKED
+                ),
+                execution_request=self._build_execution_request(
+                    normalized_intent,
+                    latest_bar.close,
+                    strategy_config,
+                    reasoning=reasoning,
+                ),
+                risk_decision=decision,
+                account=account,
+                market_open=market_open,
+                latest_bar=latest_bar,
+                message="Submit declined: fresh price required for override drain (fail-closed).",
+                recorded_at=datetime.now(tz=UTC),
+            )
+
         # Cap PRICING is decoupled from the gate bar (ADR 0057 §2). The locked
         # session bar drives the staleness gate (above), but the exposure cap
         # must price on a FRESH open: across an overnight gap the stale locked
         # close understates the real order notional and would let an over-cap
         # order through. The drain fetches the current open once and threads it
         # as ``pricing_unit_price``; here it overrides estimated_unit_price ONLY
-        # on the same drain-only gate as the bar override (use_override). For
-        # every other path (legacy callers, non-1D, or a drain that supplied no
-        # fresh price) pricing falls back to ``latest_bar.close`` — byte-for-byte
-        # the prior behavior. ``context.latest_bar`` always stays the gate bar.
+        # on the same drain-only gate as the bar override (use_override) — and the
+        # ``use_override and pricing_unit_price is None`` case already failed
+        # closed above, so within an override the fresh price is guaranteed
+        # non-None here. For every non-override path (legacy callers, non-1D)
+        # pricing falls back to ``latest_bar.close`` — byte-for-byte the prior
+        # behavior. ``context.latest_bar`` always stays the gate bar.
         pricing_price = (
             pricing_unit_price
             if (use_override and pricing_unit_price is not None)

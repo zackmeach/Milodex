@@ -2388,6 +2388,96 @@ def test_submit_paper_without_idempotency_key_is_unchanged(
     assert len(broker.submit_calls) == 1
 
 
+def test_drain_consume_and_outbox_attempt_commit_together(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Fix #2: a winning drain consumes the row AND writes its 'pending' attempt atomically.
+
+    On a successful drain the queued row flips to 'consumed' and exactly one
+    outbox attempt exists, carrying the SAME client_order_id passed to the broker
+    — the two writes commit together (one transaction), closing the CAS->outbox
+    crash window. Uses a today-dated fresh provider bar (no override) so the 1D
+    gate passes and Fix #2's coupling is the only thing under test.
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        session_id="sess-A",
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    result = service._submit_locked(
+        intent, source="paper", session_id="sess-A", idempotency_key=key
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    # Both writes landed together.
+    assert _queued_row_status(service, key) == "consumed"
+    [attempt] = service._event_store.list_execution_attempts()
+    assert attempt.symbol == "SPY"
+    # The attempt's client_order_id is the one threaded to the broker.
+    assert broker.submit_calls[0]["client_order_id"] == attempt.client_order_id
+
+
+def test_drain_cas_loss_writes_neither_consume_nor_attempt_for_this_caller(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """Fix #2: a CAS-losing drain submits nothing and writes no second attempt.
+
+    Two drains for one key: the first wins (consumes + writes its attempt + one
+    broker call); the second loses the CAS — so it inserts NO attempt and makes
+    NO broker call. Exactly one consumed row and one attempt remain (I-5).
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+    _disable_duplicate_order_window(monkeypatch, service)
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        session_id="sess-A",
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    intent = TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET)
+    service._submit_locked(intent, source="paper", session_id="sess-A", idempotency_key=key)
+    second = service._submit_locked(
+        intent, source="paper", session_id="sess-A", idempotency_key=key
+    )
+
+    assert second.status == ExecutionStatus.BLOCKED
+    assert "idempotency_suppressed" in second.risk_decision.reason_codes
+    # Exactly one broker submit and exactly one outbox attempt — the loser wrote
+    # neither (the atomic method inserts the attempt only on rowcount == 1).
+    assert len(broker.submit_calls) == 1
+    assert len(service._event_store.list_execution_attempts()) == 1
+
+
 # ---------------------------------------------------------------------------
 # Queue-at-open bar-feeding override (D-1, Option A).
 #
@@ -2577,6 +2667,10 @@ def test_queue_at_open_override_passes_session_staleness_both_gates_agree(
         session_id="sess-A",
         idempotency_key=key,
         latest_bar_override=_session_bar(prior_session),
+        # A real drain always pairs the override with a fresh open price; supply it
+        # so the Fix #5 fail-closed guard (no fresh price -> missing_fresh_price) is
+        # not the thing under test here — staleness is.
+        pricing_unit_price=100.0,
     )
 
     # Gate 1 (the data_staleness veto) passed positively on the override bar.
@@ -2719,10 +2813,14 @@ def test_submit_paper_suppresses_expired_queued_row_with_zero_broker_submits(
         session_id="sess-A",
         idempotency_key=key,
         latest_bar_override=_session_bar(prior_session),
+        # Supply the fresh price so the Fix #5 guard passes and the EXPIRED-row CAS
+        # (the thing under test) is what suppresses the submit.
+        pricing_unit_price=100.0,
     )
 
     # Suppressed by the CAS (risk allowed), and NO order reached the broker.
     assert result.status == ExecutionStatus.BLOCKED
+    assert "missing_fresh_price" not in result.risk_decision.reason_codes
     assert broker.submit_calls == []
 
 
@@ -2925,3 +3023,162 @@ def test_1d_override_without_idempotency_key_is_ignored(
     assert result.risk_decision.allowed is False
     assert "stale_market_data" in result.risk_decision.reason_codes
     assert broker.submit_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Fix #5: a 1D override drain must NEVER price the exposure cap on the stale
+# override bar. When ``use_override`` is true the override bar is the locked
+# (stale) session close; pricing the cap on it would re-open Blocker-1 across
+# an overnight gap. The fix fails CLOSED: an override drain WITHOUT a fresh
+# ``pricing_unit_price`` is BLOCKED ``missing_fresh_price`` — never a
+# stale-priced submit. It is an ordinary pre-CAS risk block: no broker call, no
+# queued row consumed, the kill switch stays inactive.
+# ---------------------------------------------------------------------------
+
+
+def _queued_row_status(service: ExecutionService, idempotency_key: str) -> str:
+    """Return the durable status of the seeded queued row (asserts it exists)."""
+    rows = service._event_store.list_queued_intents_by_status("queued")
+    rows += service._event_store.list_queued_intents_by_status("consumed")
+    match = [r for r in rows if r.idempotency_key == idempotency_key]
+    assert len(match) == 1
+    return match[0].status
+
+
+def test_override_drain_without_fresh_price_blocks_missing_fresh_price(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """1D drain override + pricing_unit_price=None -> BLOCKED missing_fresh_price.
+
+    The override bar would otherwise be a fresh prior-session bar that PASSES the
+    staleness gate (so the block is unmistakably the new fail-closed price guard,
+    not staleness). With no fresh price the cap can only fall back to the stale
+    override close — exactly the Blocker-1 condition — so the submit must fail
+    closed: no broker order, the queued row stays 'queued' (the pre-CAS block
+    returns before the consume CAS), and the kill switch is untouched.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        session_id="sess-A",
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        session_id="sess-A",
+        idempotency_key=key,
+        latest_bar_override=_session_bar(prior_session),
+        # The drain hook present but NO fresh price: the fail-closed condition.
+        pricing_unit_price=None,
+    )
+
+    assert result.status == ExecutionStatus.BLOCKED
+    assert result.risk_decision.allowed is False
+    assert "missing_fresh_price" in result.risk_decision.reason_codes
+    # It is NOT a staleness block — the override bar is fresh for the gate.
+    assert "stale_market_data" not in result.risk_decision.reason_codes
+    # No order reached the broker.
+    assert broker.submit_calls == []
+    # Pre-CAS block: the queued row was NOT consumed (still claimable).
+    assert _queued_row_status(service, key) == "queued"
+    # An ordinary risk block — the kill switch stays inactive.
+    assert service.get_kill_switch_state().active is False
+    assert service._event_store.list_kill_switch_events() == []
+
+
+def test_override_drain_with_fresh_price_is_unchanged(
+    tmp_path,
+    monkeypatch,
+    risk_defaults_file,
+    strategy_file,
+    sample_account,
+    submitted_order,
+):
+    """A normal drain WITH a fresh pricing_unit_price is unchanged (submits).
+
+    The positive control for Fix #5: when the drain pairs the override bar with a
+    fresh open price (every real drain does), the cap prices on the fresh price
+    and the submit proceeds exactly as before — no missing_fresh_price block.
+    """
+    prior_session, today = _prior_session_dates()
+    service, broker = _build_queue_at_open_service(
+        tmp_path,
+        risk_defaults_file,
+        strategy_file,
+        sample_account,
+        submitted_order,
+        monkeypatch,
+        prior_session=prior_session,
+        live_bar=_today_intraday_bar(today),
+    )
+    key = "rsi2.2026-06-22.BUY.SPY"
+    _append_queued_intent(
+        service._event_store,
+        idempotency_key=key,
+        session_id="sess-A",
+        expires_at=datetime.now(tz=UTC) + timedelta(hours=1),
+    )
+
+    result = service.submit_paper(
+        _queue_at_open_intent(strategy_file),
+        session_id="sess-A",
+        idempotency_key=key,
+        latest_bar_override=_session_bar(prior_session),
+        pricing_unit_price=100.0,
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert result.risk_decision.allowed is True
+    assert "missing_fresh_price" not in result.risk_decision.reason_codes
+    assert len(broker.submit_calls) == 1
+    assert _queued_row_status(service, key) == "consumed"
+
+
+def test_non_override_manual_submit_unaffected_by_fresh_price_guard(
+    tmp_path,
+    risk_defaults_file,
+    latest_bar,
+    sample_account,
+    submitted_order,
+):
+    """A non-override manual submit (override None) is unchanged by Fix #5.
+
+    The fail-closed guard rides the same drain-only ``use_override`` gate as the
+    cap-pricing override: a plain manual submit (no override, no fresh price)
+    still prices on the live ``get_latest_bar`` and submits — never blocked for
+    missing_fresh_price.
+    """
+    service, broker = build_service(
+        tmp_path,
+        risk_defaults_file,
+        latest_bar,
+        sample_account,
+        submitted_order,
+    )
+
+    result = service.submit_paper(
+        TradeIntent(symbol="SPY", side=OrderSide.BUY, quantity=5, order_type=OrderType.MARKET),
+    )
+
+    assert result.status == ExecutionStatus.SUBMITTED
+    assert "missing_fresh_price" not in result.risk_decision.reason_codes
+    assert result.latest_bar == latest_bar
+    assert len(broker.submit_calls) == 1
