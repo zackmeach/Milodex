@@ -230,7 +230,9 @@ def load_strategy_config(path: Path) -> StrategyConfig:
     )
 
     tempo = _mapping(strategy.get("tempo"), "strategy.tempo", path)
-    _require_keys(tempo, {"bar_size", "min_hold_days", "max_hold_days"}, "strategy.tempo", path)
+    # Only bar_size is load-bearing. Hold limits live in parameters.max_hold_days
+    # (the live time-stop); tempo.min/max_hold_days were never read — don't require them.
+    _require_keys(tempo, {"bar_size"}, "strategy.tempo", path)
 
     risk = _mapping(strategy.get("risk"), "strategy.risk", path)
     _require_keys(
