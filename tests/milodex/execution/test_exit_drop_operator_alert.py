@@ -22,7 +22,7 @@ leave queued, NO alert.
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 from milodex.broker.models import OrderSide
@@ -56,7 +56,10 @@ def _seed_queued_exit_with_session(
     idempotency_key = (
         f"{runner._strategy_id}|{trading_session}|{OrderSide.SELL.value}|{normalized}"
     )
-    now = datetime(2026, 6, 19, 13, 30, tzinfo=UTC)
+    # Anchor created_at/expires_at to the runner's clock (not a fixed date) so the
+    # 7-day expiry window never rots past the real wall clock and the global sweep
+    # can't expire the row before the drain. Mirrors test_runner_expiry_sweep.
+    now = runner._now()
     bar_payload = _locked_in_bar_from_provider(runner)
     event = QueuedIntentEvent(
         idempotency_key=idempotency_key,

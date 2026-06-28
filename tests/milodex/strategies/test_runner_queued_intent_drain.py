@@ -11,7 +11,7 @@ exercised end-to-end so the row-scoped consume CAS runs against the threaded key
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from milodex.broker.models import OrderSide, OrderType, TimeInForce
@@ -103,7 +103,10 @@ def _seed_queued_entry(
     normalized = runner_intent.normalized_symbol()
     trading_session = "2026-06-19"
     idempotency_key = f"{runner._strategy_id}|{trading_session}|{side.value}|{normalized}"
-    now = datetime(2026, 6, 19, 13, 30, tzinfo=UTC)
+    # Anchor created_at/expires_at to the runner's clock (not a fixed date) so the
+    # 7-day expiry window never rots past the real wall clock and the global sweep
+    # can't expire the row before the drain. Mirrors test_runner_expiry_sweep.
+    now = runner._now()
     bar_payload = locked_in_bar or _locked_in_bar_from_provider(runner)
     event = QueuedIntentEvent(
         idempotency_key=idempotency_key,
