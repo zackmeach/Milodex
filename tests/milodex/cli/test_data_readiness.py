@@ -82,7 +82,6 @@ def _args(
     universe_ref: str = "universe.test_intraday.v1",
     start: str = "2025-06-17",
     end: str = "2025-06-17",
-    feed_label: str = "fallback",
 ):
     return argparse.Namespace(
         data_command="readiness",
@@ -91,7 +90,6 @@ def _args(
         end=end,
         timeframe=timeframe,
         config_dir=str(config_dir),
-        feed_label=feed_label,
         json_output=False,
     )
 

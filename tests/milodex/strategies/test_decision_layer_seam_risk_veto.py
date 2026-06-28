@@ -197,8 +197,6 @@ def _veto_context(
             ready=True,
             reason_code=None,
             message="test clean reconciliation",
-            local_trading_day="2026-05-25",
-            status="clean",
             broker_connected=True,
         ),
         latest_bar=_fresh_bar(),

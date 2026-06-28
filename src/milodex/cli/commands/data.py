@@ -120,12 +120,6 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Directory containing universe manifests (default: configs).",
     )
     rd_parser.add_argument(
-        "--feed-label",
-        default="fallback",
-        choices=("research_grade", "execution_adjacent", "fallback"),
-        help="Feed-quality label for the verdict (IEX free tier => fallback).",
-    )
-    rd_parser.add_argument(
         "--cross-check-reference",
         action="store_true",
         help=(
@@ -417,7 +411,6 @@ def _run_readiness(args: argparse.Namespace, ctx: CommandContext) -> CommandResu
         timeframe_minutes=minutes,
         requested_start=start,
         requested_end=end,
-        feed_label=args.feed_label,
         reference_daily_by_symbol=reference_daily,
     )
     return _build_readiness_result(args.universe_ref, args.timeframe, report)

@@ -562,11 +562,7 @@ def latest_readiness(
             ready=False,
             reason_code="reconciliation_incomplete",
             message="Latest reconciliation is incomplete because broker state was unavailable.",
-            recorded_at=latest.recorded_at,
-            local_trading_day=latest.local_trading_day,
-            status=latest.status,
             broker_connected=latest.broker_connected,
-            incident_hash=latest.incident_hash,
             context=context,
         )
     if latest.status == "dirty":
@@ -574,11 +570,7 @@ def latest_readiness(
             ready=False,
             reason_code="reconciliation_drift",
             message="Latest reconciliation detected broker/local drift.",
-            recorded_at=latest.recorded_at,
-            local_trading_day=latest.local_trading_day,
-            status=latest.status,
             broker_connected=latest.broker_connected,
-            incident_hash=latest.incident_hash,
             context=context,
         )
     if latest.local_trading_day != today:
@@ -586,22 +578,14 @@ def latest_readiness(
             ready=False,
             reason_code="reconciliation_stale",
             message="Latest clean reconciliation is stale for the current New York trading day.",
-            recorded_at=latest.recorded_at,
-            local_trading_day=latest.local_trading_day,
-            status=latest.status,
             broker_connected=latest.broker_connected,
-            incident_hash=latest.incident_hash,
             context=context,
         )
     return ReconciliationReadiness(
         ready=True,
         reason_code=None,
         message="Latest clean reconciliation is current for today's New York date.",
-        recorded_at=latest.recorded_at,
-        local_trading_day=latest.local_trading_day,
-        status=latest.status,
         broker_connected=latest.broker_connected,
-        incident_hash=latest.incident_hash,
         context=context,
     )
 

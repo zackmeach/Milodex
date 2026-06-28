@@ -10,7 +10,6 @@ the reverse (ADR 0019).
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
 
 
 @dataclass(frozen=True)
@@ -35,14 +34,15 @@ class RiskDecision:
 
 @dataclass(frozen=True)
 class ReconciliationReadiness:
-    """Risk-layer view of the latest durable reconciliation verdict."""
+    """Risk-layer view of the latest durable reconciliation verdict.
+
+    Only what the risk evaluator reads. Provenance (recorded_at, local_trading_day,
+    status, incident_hash) lives on the durable ReconciliationRunEvent and is also
+    carried in ``context`` — don't re-add those fields here.
+    """
 
     ready: bool
     reason_code: str | None
     message: str
-    recorded_at: datetime | None = None
-    local_trading_day: str | None = None
-    status: str | None = None
     broker_connected: bool | None = None
-    incident_hash: str | None = None
     context: dict[str, object] = field(default_factory=dict)

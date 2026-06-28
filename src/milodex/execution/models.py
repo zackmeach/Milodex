@@ -29,15 +29,10 @@ class ExecutionStatus(Enum):
 class UnsupportedOrderTypeError(ValueError):
     """Raised when Phase 1 execution receives a non-market order type."""
 
-    def __init__(
-        self,
-        order_type: OrderType,
-        *,
-        supported_order_types: tuple[OrderType, ...] = (OrderType.MARKET,),
-    ) -> None:
+    def __init__(self, order_type: OrderType) -> None:
         self.order_type = order_type
-        self.supported_order_types = supported_order_types
-        supported = ", ".join(item.value for item in supported_order_types)
+        self.supported_order_types = (OrderType.MARKET,)
+        supported = ", ".join(item.value for item in self.supported_order_types)
         super().__init__(
             f"Unsupported order type '{order_type.value}': "
             f"Phase 1 execution supports market orders only. "

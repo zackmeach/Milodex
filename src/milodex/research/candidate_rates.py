@@ -29,26 +29,18 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from milodex.backtesting.walk_forward_runner import WalkForwardResult
     from milodex.cli._shared import CommandContext
 
+    # (strategy_id, *, start, end) -> (symbol, walk_forward_result)
+    _RunOne = Callable[..., tuple[str, WalkForwardResult]]
+
 logger = logging.getLogger(__name__)
-
-
-class _RateResult(Protocol):
-    """The two fields ``measure_candidate_rates`` reads off a walk-forward run."""
-
-    oos_round_trip_count: int
-    oos_trading_days: int
-
-
-class _RunOne(Protocol):
-    def __call__(self, strategy_id: str, *, start: date, end: date) -> tuple[str, _RateResult]: ...
 
 
 def measure_candidate_rates(
@@ -91,7 +83,7 @@ def measure_candidate_rates(
     return rates
 
 
-def _rate_from_result(result: _RateResult) -> float:
+def _rate_from_result(result: WalkForwardResult) -> float:
     trading_days = result.oos_trading_days
     if trading_days <= 0:
         return 0.0
