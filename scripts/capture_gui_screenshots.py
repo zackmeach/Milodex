@@ -39,7 +39,6 @@ from milodex.gui.fonts import load_fonts
 from milodex.gui.operational_state import OperationalState
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.read_models import BenchState, FrontPageState, LedgerState
-from milodex.gui.strategy_bank_state import StrategyBankState
 from milodex.gui.theme_manager import ThemeManager
 
 
@@ -54,7 +53,6 @@ def _process_events(app: QGuiApplication, ms: int) -> None:
 
 def _make_states() -> tuple[
     OperationalState,
-    StrategyBankState,
     FrontPageState,
     BenchState,
     LedgerState,
@@ -83,13 +81,11 @@ def _make_states() -> tuple[
         kill_switch_poll_seconds=9999.0,
         broker_poll_seconds=9999.0,
     )
-    strategy_bank_state = StrategyBankState(db_path=db_path)
     front_page_state = FrontPageState(db_path=db_path, configs_dir=configs_dir)
     bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
     ledger_state = LedgerState(db_path=db_path)
     return (
         operational_state,
-        strategy_bank_state,
         front_page_state,
         bench_state,
         ledger_state,
@@ -104,7 +100,6 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     states = _make_states()
     (
         operational_state,
-        strategy_bank_state,
         front_page_state,
         bench_state,
         ledger_state,
@@ -113,7 +108,6 @@ def capture(output_dir: Path, *, width: int, min_height: int, max_height: int) -
     register_qml_types(
         theme_manager=theme_manager,
         operational_state=operational_state,
-        strategy_bank_state=strategy_bank_state,
         front_page_state=front_page_state,
         bench_state=bench_state,
         ledger_state=ledger_state,
