@@ -126,50 +126,10 @@ SurfaceBase {
     // ------------------------------------------------------------------
     Rectangle { anchors.fill: parent; color: Theme.color.surface.canvas }
 
-    // ------------------------------------------------------------------
-    // Reusable per-section status banner (loading / error isolation).
-    // One section's error never blanks the surface.
-    // ------------------------------------------------------------------
-    component SectionStatus: Column {
-        id: secStatus
-        property string status: "ready"
-        property string errorMessage: ""
-        property bool   hasData: false
-        width: parent ? parent.width : 0
-        spacing: Theme.space[2]
-        visible: secStatus.status !== "ready" || !secStatus.hasData
-
-        Text {
-            visible: secStatus.status === "loading" && !secStatus.hasData
-            width: parent.width
-            text: "Loading…"
-            color: Theme.color.text.muted
-            font.family:    Theme.typography.body.sm.family
-            font.pixelSize: Theme.typography.body.sm.size
-            font.italic:    true
-        }
-        Text {
-            visible: secStatus.status === "error"
-            width: parent.width
-            text: secStatus.errorMessage !== ""
-                  ? "Unavailable — " + secStatus.errorMessage
-                  : "Unavailable."
-            color: Theme.status.warning
-            font.family:    Theme.typography.body.sm.family
-            font.pixelSize: Theme.typography.body.sm.size
-            font.italic:    true
-            wrapMode: Text.WordWrap
-        }
-        Text {
-            visible: secStatus.status === "ready" && !secStatus.hasData
-            width: parent.width
-            text: "No data yet."
-            color: Theme.color.text.muted
-            font.family:    Theme.typography.body.sm.family
-            font.pixelSize: Theme.typography.body.sm.size
-            font.italic:    true
-        }
-    }
+    // Reusable per-section status banner (loading / error isolation) now
+    // lives in components/SectionStatus.qml (PR-8) — resolved via the
+    // `Milodex 1.0` import above. One section's error never blanks the
+    // surface.
 
     // A small labelled key/value used in Section I.
     component KeyStat: Column {

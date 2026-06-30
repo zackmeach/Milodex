@@ -51,6 +51,7 @@ Item {
     // Each section: { stage, stageRoman, stageName, stageCaption, strategies[] }
     // Each strategy: as_qml() output from _StrategyRow (read_models.py)
     property var benchData: BenchState.sections
+    property bool benchHasData: BenchState.lastRefreshedAt !== ""
 
     // True while any section has a row drag in progress.
     // Used to gate keyboard scroll so arrow keys don't fight the drag.
@@ -282,6 +283,15 @@ Item {
                     width: parent.width
                     height: 1
                     color: Theme.color.border.regular
+                }
+
+                // Section status — loading / error / no-data-yet for the
+                // BenchState read model (PR-8 GUI surface honesty).
+                SectionStatus {
+                    width: parent.width
+                    status: BenchState.dataStatus
+                    errorMessage: BenchState.dataErrorMessage
+                    hasData: root.benchHasData
                 }
             }
 
