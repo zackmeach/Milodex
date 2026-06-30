@@ -10,17 +10,24 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
 dependencies = [
-    "alpaca-py>=0.35.0",
-    "pandas>=2.0",
-    "pyarrow>=15.0",
+    "alpaca-py>=0.43.2,<1",
+    # Core numeric stack — capped at the next (currently unreleased) major. A fresh
+    # install resolves numpy 2.4.x / pandas 3.0.x / pyarrow 24.x today; the caps block
+    # an untested numpy 3 / pandas 4 / pyarrow 25 from landing silently on CI or a clean
+    # install. numpy is declared explicitly because src imports it directly
+    # (intraday_simulation, bench_random_matched_exposure_long); pandas/pyarrow
+    # forward-compat verified clean 2026-06-21 (full suite on pandas 3 / numpy 2).
+    "numpy>=2.0,<3",
+    "pandas>=2.2,<4",
+    "pyarrow>=15.0,<25",
     "PySide6>=6.6,<7",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
-    "rich>=13.7",
+    "rich>=13.7,<16",
     # yfinance: lightweight Yahoo Finance client used exclusively to fetch ^VIX
     # history for the market tape.  Alpaca free tier does not ship VIX (it is a
     # CBOE index, not an equity), so Yahoo is the only viable free path.
-    "yfinance>=0.2",
+    "yfinance>=0.2,<2",
 ]
 
 [project.scripts]
