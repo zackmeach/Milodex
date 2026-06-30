@@ -498,8 +498,7 @@ def _build_synthetic_30min_barset(date_strs: list[str], symbol: str = "SPY") -> 
             price = 500.0 + session_index + bar_index * 0.1
             rows.append(
                 {
-                    "timestamp": open_et.tz_convert("UTC")
-                    + pd.Timedelta(minutes=30 * bar_index),
+                    "timestamp": open_et.tz_convert("UTC") + pd.Timedelta(minutes=30 * bar_index),
                     "open": price,
                     "high": price + 0.1,
                     "low": price - 0.1,
@@ -1206,8 +1205,7 @@ def test_session_boundary_final_bar_sell_realizes_at_session_close() -> None:
         f"(not session-2 9:30 open 500.10); got {sell_prices}"
     )
     assert not any(abs(p - 500.10) < 1e-6 for p in sell_prices), (
-        f"A SELL filled at session-2's 9:30 open 500.10 — overnight carry bug; "
-        f"got {sell_prices}"
+        f"A SELL filled at session-2's 9:30 open 500.10 — overnight carry bug; got {sell_prices}"
     )
 
 
@@ -1814,8 +1812,7 @@ def test_intraday_final_bar_exit_realizes_at_session_close_not_next_open() -> No
         f"(not session-2 open 500.10); got sell fill prices {sell_prices}"
     )
     assert not any(abs(p - 500.10) < 1e-6 for p in sell_prices), (
-        f"A SELL filled at session-2's 9:30 open 500.10 — overnight carry bug; "
-        f"got {sell_prices}"
+        f"A SELL filled at session-2's 9:30 open 500.10 — overnight carry bug; got {sell_prices}"
     )
 
     # EOD equity after session 1 reflects the close-fill: the position is FLAT,
@@ -1843,9 +1840,7 @@ def test_same_session_exit_ignores_after_hours_fill_and_uses_rth_close() -> None
     spy_bars = _build_synthetic_5min_barset(["2024-01-08"], symbol="SPY")
     df = spy_bars.to_dataframe()
     after_hours_ts = (
-        pd.Timestamp("2024-01-08 16:05:00")
-        .tz_localize("America/New_York")
-        .tz_convert("UTC")
+        pd.Timestamp("2024-01-08 16:05:00").tz_localize("America/New_York").tz_convert("UTC")
     )
     df = pd.concat(
         [
@@ -1903,9 +1898,7 @@ def test_same_session_exit_ignores_after_hours_fill_and_uses_rth_close() -> None
         for event in engine._event_store.list_explanations()  # noqa: SLF001
         if event.side == "sell" and event.status == "submitted"
     ]
-    assert sell_explanations[0].context["reasoning"]["rule"] == (
-        "benchmark.intraday_long.exit"
-    )
+    assert sell_explanations[0].context["reasoning"]["rule"] == ("benchmark.intraday_long.exit")
 
 
 def test_multi_session_intraday_position_survives_until_held_days_exit() -> None:

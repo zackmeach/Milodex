@@ -56,9 +56,7 @@ def test_full_concrete_subclass_instantiates() -> None:
 def test_incomplete_subclass_raises_type_error(missing_method: str) -> None:
     """R-DAT-001 (negative): omitting any single abstract method fails instantiation."""
     methods = {
-        name: getattr(_FullProvider, name)
-        for name in _ABSTRACT_METHODS
-        if name != missing_method
+        name: getattr(_FullProvider, name) for name in _ABSTRACT_METHODS if name != missing_method
     }
     incomplete_cls = type(f"_Missing_{missing_method}", (DataProvider,), methods)
     with pytest.raises(TypeError):

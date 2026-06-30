@@ -420,9 +420,7 @@ class StrategyRunner:
                 # empty-intents case returned earlier — and Python leaves the loop
                 # var bound), so the alert names the ACTUAL failed intent, not
                 # intents[0].
-                self._emit_queued_intent_persist_failure(
-                    intent, latest_bar, reason=repr(exc)
-                )
+                self._emit_queued_intent_persist_failure(intent, latest_bar, reason=repr(exc))
                 if self._on_cycle_result is not None:
                     self._on_cycle_result([])
                 return []
@@ -996,9 +994,7 @@ class StrategyRunner:
                         "drain: %s not tradable (%s); dropping", queued.symbol, td.reason
                     )
                     continue
-                eval_bars = self._bars_through(
-                    self._fetch_bars_by_symbol(), decision_bar.timestamp
-                )
+                eval_bars = self._bars_through(self._fetch_bars_by_symbol(), decision_bar.timestamp)
                 primary_bars = eval_bars[self._evaluation_symbol()]
                 context = replace(
                     self._loaded.context,
@@ -1150,10 +1146,7 @@ class StrategyRunner:
             # suppressed race-loss, or a pre-CAS risk block that leaves the row queued)
             # is NOT a strand and must not alert. The row is already terminal — the
             # alert is observational; do not mutate status further. ENTRY stays silent.
-            if (
-                queued.intent_class == "exit"
-                and result.status == ExecutionStatus.REJECTED
-            ):
+            if queued.intent_class == "exit" and result.status == ExecutionStatus.REJECTED:
                 self._emit_exit_drop_alert(queued, reason="submit_rejected")
 
     def _fresh_pricing_bar(self, symbol: str, locked_bar: Bar) -> Bar | None:
@@ -1194,9 +1187,7 @@ class StrategyRunner:
             return None
         return fresh
 
-    def _traded_symbol_locked_close(
-        self, eval_bars: dict[str, Any], symbol: str
-    ) -> float | None:
+    def _traded_symbol_locked_close(self, eval_bars: dict[str, Any], symbol: str) -> float | None:
         """Return the TRADED symbol's own locked close from the truncated bars.
 
         ``eval_bars`` is ``_fetch_bars_by_symbol`` truncated to the locked-in
@@ -1237,9 +1228,7 @@ class StrategyRunner:
             vwap=raw.get("vwap"),
         )
 
-    def _bars_through(
-        self, bars_by_symbol: dict[str, Any], cutoff_ts: datetime
-    ) -> dict[str, Any]:
+    def _bars_through(self, bars_by_symbol: dict[str, Any], cutoff_ts: datetime) -> dict[str, Any]:
         """Truncate every symbol's bars to those at/through ``cutoff_ts``.
 
         Re-evaluation must replay on history through the locked-in completed

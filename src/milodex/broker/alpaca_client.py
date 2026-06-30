@@ -314,9 +314,7 @@ class AlpacaBrokerClient(BrokerClient):
                 start=(now - timedelta(days=14)).date(),
                 end=now.date(),
             )
-            calendar = call_with_retry_on_transient(
-                lambda: self._client.get_calendar(request)
-            )
+            calendar = call_with_retry_on_transient(lambda: self._client.get_calendar(request))
         except Exception:
             # Any transport/parse failure -> fail closed (None). The risk layer
             # blocks the 1D submit rather than trusting an unverified session.

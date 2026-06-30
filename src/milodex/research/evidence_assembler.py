@@ -232,9 +232,7 @@ def assemble_intraday_evidence(
     )
 
     per_symbol: list[SymbolDelta] = []
-    run_ids: dict[str, str | None] = {
-        row.strategy_id: row.run_id for row in batch_result.rows
-    }
+    run_ids: dict[str, str | None] = {row.strategy_id: row.run_id for row in batch_result.rows}
     for sym in symbols:
         candidate_id = f"{candidate_family}.{candidate_template}.{sym.lower()}.v{version}"
         candidate_row = rows_by_id.get(candidate_id)

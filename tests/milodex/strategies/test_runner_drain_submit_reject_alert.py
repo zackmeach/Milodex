@@ -75,9 +75,7 @@ def test_drain_exit_broker_reject_emits_alert(
     runner, _broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
-    rejecting = _InsufficientFundsBroker(
-        account=_broker.account, market_open=True
-    )
+    rejecting = _InsufficientFundsBroker(account=_broker.account, market_open=True)
     _swap_broker(runner, rejecting)
     intent_id = _seed_queued_entry(
         event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
@@ -109,9 +107,7 @@ def test_drain_entry_broker_reject_does_not_alert(
     runner, _broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
-    rejecting = _InsufficientFundsBroker(
-        account=_broker.account, market_open=True
-    )
+    rejecting = _InsufficientFundsBroker(account=_broker.account, market_open=True)
     _swap_broker(runner, rejecting)
     intent_id = _seed_queued_entry(event_store, runner, symbol="SPY", side=OrderSide.BUY)
     _force_decision(runner, [_intent("SPY", OrderSide.BUY, quantity=100.0)])

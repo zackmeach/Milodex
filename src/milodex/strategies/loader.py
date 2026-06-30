@@ -310,10 +310,7 @@ def load_strategy_config(path: Path) -> StrategyConfig:
         raise ValueError(
             f"{path}: strategy.tempo.position_lifecycle is required for non-daily strategies"
         )
-    if (
-        position_lifecycle is not None
-        and position_lifecycle not in _VALID_POSITION_LIFECYCLES
-    ):
+    if position_lifecycle is not None and position_lifecycle not in _VALID_POSITION_LIFECYCLES:
         msg = (
             f"{path}: strategy.tempo.position_lifecycle must be one of "
             f"{', '.join(sorted(_VALID_POSITION_LIFECYCLES))}"
