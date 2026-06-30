@@ -1139,6 +1139,61 @@ def test_strategy_status_surfaces_operator_alerts(tmp_path):
     assert "Queued intent for QQQ failed to persist: locked DB." in output
 
 
+def test_strategy_status_old_warning_alert_not_hidden_by_info_alerts(tmp_path):
+    """An older warning-severity (stranded-exit) alert must remain visible even
+    when 10+ newer info-severity alerts would otherwise push it out of a naive
+    [-10:] tail. A truncation indicator must accompany any omitted alerts."""
+    from milodex.core.event_store import OperatorAlertEvent
+
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    store.append_operator_alert(
+        OperatorAlertEvent(
+            alert_type="exit_intent_dropped",
+            severity="warning",
+            summary="STRANDED EXIT for SPY dropped: ambiguous match.",
+            strategy_id=_STATUS_STRATEGY_ID,
+            session_id="session-status-test",
+            symbol="SPY",
+            side="sell",
+            context_json={"reason": "ambiguous match"},
+            recorded_at=datetime(2026, 6, 9, 14, 0, tzinfo=UTC),
+        )
+    )
+    for i in range(15):
+        store.append_operator_alert(
+            OperatorAlertEvent(
+                alert_type="queued_intent_persist_failed",
+                severity="info",
+                summary=f"Routine info alert {i}.",
+                strategy_id=_STATUS_STRATEGY_ID,
+                session_id="session-status-test",
+                symbol="QQQ",
+                side="buy",
+                context_json={},
+                recorded_at=datetime(2026, 6, 9, 14, 10 + i, tzinfo=UTC),
+            )
+        )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "STRANDED EXIT for SPY dropped: ambiguous match." in output
+    assert "showing" in output and "omitted" in output
+
+
 def test_strategy_status_no_operator_alerts_message(tmp_path):
     config_dir = tmp_path / "configs"
     _write_status_test_config(config_dir)

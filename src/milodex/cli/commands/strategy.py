@@ -125,7 +125,13 @@ def _format_status_block(entry: dict) -> list[str]:
     return lines
 
 
-def _format_operator_alerts_block(alerts: list[dict]) -> list[str]:
+_OPERATOR_ALERT_INFO_TIER = "info"
+_OPERATOR_ALERT_INFO_CAP = 10
+
+
+def _format_operator_alerts_block(
+    alerts: list[dict], *, omitted_info_count: int, total_info_count: int
+) -> list[str]:
     lines = ["Operator Alerts"]
     if not alerts:
         lines.append("No operator alerts.")
@@ -134,6 +140,12 @@ def _format_operator_alerts_block(alerts: list[dict]) -> list[str]:
         lines.append(
             f"  {alert['recorded_at']} [{alert['severity']}] {alert['alert_type']}: "
             f"{alert['summary']}"
+        )
+    if omitted_info_count:
+        shown_info_count = total_info_count - omitted_info_count
+        lines.append(
+            f"  (showing {shown_info_count} of {total_info_count} info alerts; "
+            f"{omitted_info_count} older omitted)"
         )
     return lines
 
@@ -150,7 +162,17 @@ def _run_status(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     alert_events = event_store.list_operator_alerts()
     if args.strategy_id is not None:
         alert_events = [a for a in alert_events if a.strategy_id == args.strategy_id]
-    alert_events = alert_events[-10:]
+    total_alert_count = len(alert_events)
+    # Above-info severities (e.g. "warning", "critical") are never truncated —
+    # an old high-severity alert (stranded exit) must not be hidden behind a
+    # flood of newer low-severity ones. Only the lowest (info) tier is capped
+    # to the most-recent entries, with an explicit omission indicator.
+    above_info = [a for a in alert_events if a.severity != _OPERATOR_ALERT_INFO_TIER]
+    info_only = [a for a in alert_events if a.severity == _OPERATOR_ALERT_INFO_TIER]
+    total_info_count = len(info_only)
+    capped_info = info_only[-_OPERATOR_ALERT_INFO_CAP:]
+    omitted_info_count = total_info_count - len(capped_info)
+    selected = sorted(above_info + capped_info, key=lambda a: (a.recorded_at, a.id or 0))
     alerts = [
         {
             "id": a.id,
@@ -163,17 +185,25 @@ def _run_status(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
             "symbol": a.symbol,
             "side": a.side,
         }
-        for a in alert_events
+        for a in selected
     ]
     lines = ["Strategy Runner Status"]
     if not statuses:
         lines.append("No strategy sessions recorded.")
     for entry in statuses:
         lines.extend(_format_status_block(entry))
-    lines.extend(_format_operator_alerts_block(alerts))
+    lines.extend(
+        _format_operator_alerts_block(
+            alerts, omitted_info_count=omitted_info_count, total_info_count=total_info_count
+        )
+    )
     return CommandResult(
         command="strategy.status",
-        data={"statuses": statuses, "operator_alerts": alerts},
+        data={
+            "statuses": statuses,
+            "operator_alerts": alerts,
+            "operator_alerts_total_count": total_alert_count,
+        },
         human_lines=lines,
     )
 
