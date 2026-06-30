@@ -19,7 +19,7 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 
 from milodex.config import get_alpaca_credentials, get_cache_dir, get_trading_mode
-from milodex.core._alpaca_retry import call_with_retry_on_429
+from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
 from milodex.data.cache import ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.data.provider import DataProvider
@@ -330,8 +330,16 @@ class AlpacaDataProvider(DataProvider):
         return fetched_counts
 
     def get_latest_bar(self, symbol: str) -> Bar:
-        """Fetch the most recent bar from Alpaca."""
-        response = call_with_retry_on_429(
+        """Fetch the most recent bar from Alpaca.
+
+        Retries on transient network failures (ReadTimeout / ConnectTimeout /
+        ConnectionError) as well as 429s: this is an idempotent read on the live
+        trade path (drain fresh-price + cap pricing), so a single connection
+        reset must not propagate out and kill the runner's poll loop. Mirrors the
+        broker-read hardening that followed the 2026-06-17 same-symbol co-run
+        soak (call_with_retry_on_transient).
+        """
+        response = call_with_retry_on_transient(
             lambda: self._client.get_stock_latest_bar(
                 StockLatestBarRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
             )

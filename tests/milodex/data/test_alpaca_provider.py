@@ -644,6 +644,39 @@ class TestRetryOn429:
         assert provider._client.get_stock_bars.call_count == 1
 
 
+class TestGetLatestBarTransientRetry:
+    """get_latest_bar is on the live trade path (drain fresh-price / cap pricing)
+    and is an idempotent read, so a transient connection failure must be retried
+    rather than killing the runner's poll loop (call_with_retry_on_transient)."""
+
+    def test_retries_on_connection_error_then_succeeds(self, provider, mock_alpaca_bar):
+        """First call raises ConnectionError; the retry succeeds and returns the bar."""
+        provider._client.get_stock_latest_bar.side_effect = [
+            requests.exceptions.ConnectionError("connection reset by peer"),
+            {"AAPL": mock_alpaca_bar},
+        ]
+
+        with patch("time.sleep"):
+            result = provider.get_latest_bar("AAPL")
+
+        assert isinstance(result, Bar)
+        assert result.close == 151.0
+        assert provider._client.get_stock_latest_bar.call_count == 2
+
+    def test_retries_on_read_timeout_then_succeeds(self, provider, mock_alpaca_bar):
+        """A transient ReadTimeout is retried, not propagated."""
+        provider._client.get_stock_latest_bar.side_effect = [
+            requests.exceptions.ReadTimeout("read timed out"),
+            {"AAPL": mock_alpaca_bar},
+        ]
+
+        with patch("time.sleep"):
+            result = provider.get_latest_bar("AAPL")
+
+        assert result.close == 151.0
+        assert provider._client.get_stock_latest_bar.call_count == 2
+
+
 def test_timeframe_map_covers_every_timeframe_member() -> None:
     """Every Timeframe enum member must have an Alpaca TimeFrame mapping.
 

@@ -436,14 +436,36 @@ class StrategyRunner:
             intent_key = self._intent_key(intent, latest_bar.timestamp)
             if intent_key in self._processed_intent_keys:
                 continue
+            # Mark processed BEFORE the submit. ``submit_paper`` here has no
+            # idempotency_key/override, so a raise after the broker call but
+            # before return may leave an order placed at the broker — the same
+            # consumed-but-unsubmitted ambiguity the drain guards. Keep the key
+            # marked so a re-poll of this bar never silently re-submits a
+            # possibly-placed order (the intraday already-seen short-circuit
+            # already gates re-evaluation of the same bar; this is the
+            # submission backstop). Fail-safe toward never re-firing.
             self._processed_intent_keys.add(intent_key)
-            results.append(
-                self._execution_service.submit_paper(
-                    self._runner_intent(intent),
-                    session_id=self._session_id,
-                    reasoning=decision.reasoning,
+            try:
+                results.append(
+                    self._execution_service.submit_paper(
+                        self._runner_intent(intent),
+                        session_id=self._session_id,
+                        reasoning=decision.reasoning,
+                    )
                 )
-            )
+            except Exception as exc:  # noqa: BLE001 — one poison intent must not abort siblings
+                # Mirror the drain's post-submit asymmetry guard: an EXIT raise
+                # may strand (or have already placed, then failed to record) a
+                # live position, so surface it; an ENTRY raise is log-only.
+                logger.warning(
+                    "submit raised for %s (%s); continuing to siblings: %s",
+                    intent.normalized_symbol(),
+                    intent.side.value,
+                    exc,
+                )
+                if self._intent_class(intent) == "exit":
+                    self._emit_exit_submit_failure_alert(intent, reason="submit_error")
+                continue
         if self._on_cycle_result is not None:
             self._on_cycle_result(results)
         return results
@@ -863,6 +885,40 @@ class StrategyRunner:
                 symbol=queued.symbol,
                 side=queued.side,
                 context_json={"reason": reason, "idempotency_key": queued.idempotency_key},
+                recorded_at=self._now(),
+            )
+        )
+
+    def _emit_exit_submit_failure_alert(self, intent: TradeIntent, *, reason: str) -> None:
+        """Durably record + warn when a LIVE-loop EXIT submit raises.
+
+        TradeIntent-keyed sibling of ``_emit_exit_drop_alert`` (which is
+        QueuedIntentEvent-keyed for the drain). The live intraday submit loop
+        holds a ``TradeIntent``, not a queued row, but the asymmetry guard is the
+        same: an EXIT submit that raised may have stranded a live position (or
+        placed an order the runner failed to record), so it MUST be operator-
+        visible; an undrained ENTRY is benign and stays silent. Observational
+        only — it does NOT submit, retry, or mutate risk state.
+        """
+        symbol = intent.normalized_symbol()
+        side = intent.side.value
+        logger.warning(
+            "EXIT intent submit failed for %s (%s): %s. Position may remain open; "
+            "operator review required.",
+            symbol,
+            side,
+            reason,
+        )
+        self._event_store.append_operator_alert(
+            OperatorAlertEvent(
+                alert_type="exit_intent_dropped",
+                severity="warning",
+                summary=f"EXIT intent for {symbol} submit failed: {reason}.",
+                strategy_id=self._strategy_id,
+                session_id=self._session_id,
+                symbol=symbol,
+                side=side,
+                context_json={"reason": reason},
                 recorded_at=self._now(),
             )
         )
