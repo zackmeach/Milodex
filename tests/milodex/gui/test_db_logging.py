@@ -44,9 +44,7 @@ def test_different_sites_warn_separately(caplog) -> None:
     assert len(records) == 2
 
 
-def test_real_helper_returns_empty_and_warns_on_sqlite_error(
-    tmp_path: Path, caplog
-) -> None:
+def test_real_helper_returns_empty_and_warns_on_sqlite_error(tmp_path: Path, caplog) -> None:
     """A real read helper still returns its empty container on sqlite3.Error
     (missing table) and emits exactly one rate-limited warning."""
     _reset_rate_limit()
