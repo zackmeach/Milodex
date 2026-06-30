@@ -778,8 +778,7 @@ class ExecutionService:
         # the locked bar internally from the queued intent rather than accept it
         # from the caller, closing the trust gap entirely.
         use_override = (
-            latest_bar_override is not None
-            and getattr(strategy_config, "bar_size", None) == "1D"
+            latest_bar_override is not None and getattr(strategy_config, "bar_size", None) == "1D"
         )
         latest_bar = (
             latest_bar_override
@@ -824,9 +823,7 @@ class ExecutionService:
                 reason_codes=["missing_fresh_price"],
             )
             return ExecutionResult(
-                status=(
-                    ExecutionStatus.PREVIEW if preview_only else ExecutionStatus.BLOCKED
-                ),
+                status=(ExecutionStatus.PREVIEW if preview_only else ExecutionStatus.BLOCKED),
                 execution_request=self._build_execution_request(
                     normalized_intent,
                     latest_bar.close,
@@ -931,9 +928,7 @@ class ExecutionService:
             # One extra broker call per submit; could be cached per-session if
             # it ever shows up in profiling, but YAGNI for now. None on
             # resolution failure -> the 1D gate fails closed.
-            latest_completed_session = self._broker.latest_completed_session(
-                datetime.now(tz=UTC)
-            )
+            latest_completed_session = self._broker.latest_completed_session(datetime.now(tz=UTC))
             context = EvaluationContext(
                 intent=normalized_intent,
                 request=request,

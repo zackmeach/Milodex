@@ -4,6 +4,10 @@ name: CI
 # lint with ruff, run the non-integration suite, and enforce the coverage
 # ratchet. Runs on windows-latest to match the project's Windows-first
 # environment (PySide6/Qt GUI tests need a real display + bundled fonts).
+#
+# Dependencies install from the committed uv.lock (`uv sync --frozen`) so a
+# fresh upstream release can't break a no-code-change PR, and the lockfile
+# stops being inert: `--frozen` fails CI when pyproject.toml and uv.lock drift.
 
 on:
   push:
@@ -17,6 +21,7 @@ concurrency:
 jobs:
   test:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -24,17 +29,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
-      - name: Install (declared deps, editable)
+      - name: Set up uv (cached)
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install (locked, editable + dev extra)
+        run: uv sync --frozen --extra dev
+
+      - name: Lint and format check
         run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Lint
-        run: ruff check src/ tests/
+          uv run ruff check src/ tests/
+          uv run ruff format --check src/ tests/
 
       # Coverage floor lives in pyproject.toml ([tool.coverage.report] fail_under);
       # pytest-cov fails the run when coverage regresses below it.
       - name: Test (non-integration) with coverage floor
-        run: pytest -m "not integration" --cov=src/milodex --cov-report=term-missing
+        run: uv run pytest -m "not integration" --cov=src/milodex --cov-report=term-missing

@@ -99,9 +99,7 @@ def test_fanout_bijection_covers_all_17_symbols_exactly_once(
 
     counts = Counter(sym.upper() for sym in all_symbols)
     duplicates = {s: c for s, c in counts.items() if c > 1}
-    assert not duplicates, (
-        f"{base_path.name}: symbols appear more than once: {duplicates}"
-    )
+    assert not duplicates, f"{base_path.name}: symbols appear more than once: {duplicates}"
 
     # SPY present (via base), DIA present exactly once (via generated)
     assert "SPY" in counts, f"{base_path.name}: SPY missing from combined set"

@@ -203,9 +203,7 @@ def test_batch_result_round_trip(tmp_path: Path):
     json_path = tmp_path / "screen.json"
     _write_screen_json(json_path, original)
 
-    recovered = _batch_result_from_screen_json(
-        json_path, event_store=_provenance_store(original)
-    )
+    recovered = _batch_result_from_screen_json(json_path, event_store=_provenance_store(original))
 
     assert recovered.start_date == original.start_date
     assert recovered.end_date == original.end_date
@@ -277,9 +275,7 @@ def test_batch_result_from_json_tolerates_missing_optional_keys(tmp_path: Path):
             ),
         )
     )
-    result = _batch_result_from_screen_json(
-        json_path, event_store=_provenance_store(expected)
-    )
+    result = _batch_result_from_screen_json(json_path, event_store=_provenance_store(expected))
     assert len(result.rows) == 1
     row = result.rows[0]
     assert row.oos_equity_curve == ()
@@ -553,9 +549,7 @@ def test_screen_json_consistent_provenance_succeeds(tmp_path: Path):
     _write_screen_json(json_path, batch)
 
     # Dates match: JSON has 2024-01-01 – 2024-06-30; args supply the same.
-    result = _batch_result_from_screen_json(
-        json_path, event_store=_provenance_store(batch)
-    )
+    result = _batch_result_from_screen_json(json_path, event_store=_provenance_store(batch))
     assert result.start_date.isoformat() == "2024-01-01"
     assert result.end_date.isoformat() == "2024-06-30"
     assert result.rows[0].run_id is not None  # provenance intact
@@ -588,9 +582,7 @@ def _persisted_run_for(row: BatchRow, batch: BatchResult):
 def _provenance_store(batch: BatchResult):
     store = MagicMock()
     by_run_id = {
-        row.run_id: _persisted_run_for(row, batch)
-        for row in batch.rows
-        if row.run_id is not None
+        row.run_id: _persisted_run_for(row, batch) for row in batch.rows if row.run_id is not None
     }
     store.get_backtest_run.side_effect = by_run_id.get
     return store

@@ -50,8 +50,10 @@ def _patch_fresh_latest_bar(
     freshness predicate. Returns the captured ``get_latest_bar`` call symbols.
     """
     locked = _locked_bar(runner, symbol)
-    fresh_ts = timestamp if timestamp is not None else (
-        locked.timestamp.to_pydatetime() + timedelta(minutes=1)
+    fresh_ts = (
+        timestamp
+        if timestamp is not None
+        else (locked.timestamp.to_pydatetime() + timedelta(minutes=1))
     )
     fresh_bar = Bar(
         timestamp=fresh_ts,
@@ -207,9 +209,7 @@ def test_drain_entry_no_fresh_price_drops_and_stays_queued(
     _force_decision(runner, [_intent("SPY", OrderSide.BUY, quantity=100.0)])
     # Fresh ts == locked ts -> not strictly newer -> fail closed.
     locked = _locked_bar(runner)
-    _patch_fresh_latest_bar(
-        runner, close=20.0, timestamp=locked.timestamp.to_pydatetime()
-    )
+    _patch_fresh_latest_bar(runner, close=20.0, timestamp=locked.timestamp.to_pydatetime())
 
     result = runner.run_cycle()
 
@@ -298,9 +298,7 @@ def test_drain_exit_no_fresh_price_alerts_and_obsoletes(
     _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=5.0)])
     # Fresh ts == locked ts -> not strictly newer -> fail closed.
     locked = _locked_bar(runner)
-    _patch_fresh_latest_bar(
-        runner, close=20.0, timestamp=locked.timestamp.to_pydatetime()
-    )
+    _patch_fresh_latest_bar(runner, close=20.0, timestamp=locked.timestamp.to_pydatetime())
 
     with caplog.at_level(logging.WARNING):
         result = runner.run_cycle()

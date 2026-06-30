@@ -978,9 +978,7 @@ class EventStore:
             connection.commit()
             return int(cursor.lastrowid)
 
-    def list_operator_alerts(
-        self, *, alert_type: str | None = None
-    ) -> list[OperatorAlertEvent]:
+    def list_operator_alerts(self, *, alert_type: str | None = None) -> list[OperatorAlertEvent]:
         with self._connect() as connection:
             if alert_type is None:
                 rows = connection.execute(
@@ -2467,9 +2465,7 @@ class EventStore:
         config_path = row["strategy_config_path"]
         try:
             current_hash = (
-                compute_config_hash_or_none(Path(config_path))
-                if config_path is not None
-                else None
+                compute_config_hash_or_none(Path(config_path)) if config_path is not None else None
             )
         except Exception:  # noqa: BLE001 — fail-closed on the sacred drain path
             current_hash = None

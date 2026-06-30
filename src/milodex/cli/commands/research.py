@@ -216,9 +216,7 @@ def _batch_result_from_screen_json(path: Path, *, event_store: EventStore) -> Ba
         raise ValueError("screen JSON rows contain duplicate strategy_id entries")
     if set(row_strategy_ids) != set(selected_strategy_ids):
         raise ValueError("screen JSON rows do not exactly match selected_strategy_ids roster")
-    successful_run_ids = [
-        row.get("run_id") for row in raw_rows if row.get("run_id") is not None
-    ]
+    successful_run_ids = [row.get("run_id") for row in raw_rows if row.get("run_id") is not None]
     if len(successful_run_ids) != len(set(successful_run_ids)):
         raise ValueError("screen JSON rows contain duplicate run_id entries")
 
@@ -346,9 +344,7 @@ def _validate_screen_payload_row(
     }
     for field_name, persisted_value in expected_values.items():
         if actual_values[field_name] != persisted_value:
-            raise ValueError(
-                f"screen JSON {field_name} does not match persisted run_id '{run_id}'"
-            )
+            raise ValueError(f"screen JSON {field_name} does not match persisted run_id '{run_id}'")
 
 
 def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:

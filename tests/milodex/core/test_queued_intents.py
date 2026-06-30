@@ -403,9 +403,7 @@ def test_consume_drops_config_drifted_row(tmp_path):
 def test_consume_drops_when_config_path_unhashable(tmp_path):
     """Config path missing/unreadable (recompute None) -> CAS returns 0."""
     store = EventStore(tmp_path / "milodex.db")
-    store.append_queued_intent(
-        _intent(strategy_config_path=str(tmp_path / "does_not_exist.yaml"))
-    )
+    store.append_queued_intent(_intent(strategy_config_path=str(tmp_path / "does_not_exist.yaml")))
     assert (
         store.mark_queued_intent_consumed(
             "rsi2.v1|2026-06-23|buy|SPY",
@@ -528,9 +526,7 @@ def test_expire_stale_never_touches_consumed_or_obsolete(tmp_path):
     store.mark_queued_intent_obsolete(obsolete_id)
     # Directly stamp a 'consumed' row with a PAST expiry (the consume CAS would
     # reject an already-expired row, so set status straight in the store).
-    store.append_queued_intent(
-        _intent("rsi2.v1|2026-06-23|buy|DIA", symbol="DIA", expires_at=past)
-    )
+    store.append_queued_intent(_intent("rsi2.v1|2026-06-23|buy|DIA", symbol="DIA", expires_at=past))
     with sqlite3.connect(db) as con:
         con.execute(
             "UPDATE queued_intents SET status = 'consumed' "
@@ -673,12 +669,20 @@ def test_combined_second_call_loses_cas_and_writes_no_attempt(tmp_path):
     key = "rsi2.v1|2026-06-23|buy|SPY"
 
     first = store.consume_queued_intent_and_append_attempt(
-        key, _attempt("cid-1"), now=_NOW, running_session_id="sess-A",
-        consumed_by="sess-A", consumed_at=_NOW,
+        key,
+        _attempt("cid-1"),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
     )
     second = store.consume_queued_intent_and_append_attempt(
-        key, _attempt("cid-2"), now=_NOW, running_session_id="sess-A",
-        consumed_by="sess-B", consumed_at=_NOW,
+        key,
+        _attempt("cid-2"),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-B",
+        consumed_at=_NOW,
     )
 
     assert first == 1

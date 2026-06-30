@@ -53,9 +53,7 @@ def _seed_queued_exit_with_session(
     runner_intent = runner._runner_intent(_intent(symbol, OrderSide.SELL))
     normalized = runner_intent.normalized_symbol()
     trading_session = "2026-06-19"
-    idempotency_key = (
-        f"{runner._strategy_id}|{trading_session}|{OrderSide.SELL.value}|{normalized}"
-    )
+    idempotency_key = f"{runner._strategy_id}|{trading_session}|{OrderSide.SELL.value}|{normalized}"
     # Anchor created_at/expires_at to the runner's clock (not a fixed date) so the
     # 7-day expiry window never rots past the real wall clock and the global sweep
     # can't expire the row before the drain. Mirrors test_runner_expiry_sweep.
@@ -338,9 +336,7 @@ def test_drain_exit_submit_raise_alerts_submit_error(
     runner, broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
-    _seed_queued_entry(
-        event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
-    )
+    _seed_queued_entry(event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit")
     runner._current_positions = lambda: {"SPY": 1.0}
     _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=1.0)])
     _raise_on_submit(runner, ConnectionError("broker timeout"))
