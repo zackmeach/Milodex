@@ -40,6 +40,7 @@ SurfaceBase {
     // ------------------------------------------------------------------
 
     readonly property var summary: FrontPageState.summary || ({})
+    readonly property bool hasSummaryData: FrontPageState.lastRefreshedAt !== ""
     readonly property var asOf: summary.asOf || ""
     readonly property var pnl: summary.pnl || ({ today: 0, todayPct: 0, sparkline: [0] })
     readonly property int totalConfigs: summary.totalConfigs || 0
@@ -149,6 +150,16 @@ SurfaceBase {
                     height: 1
                     color:  Theme.color.border.subtle
                 }
+            }
+
+            // Section status — loading / error / no-data-yet for the
+            // FrontPageState read model. One failed builder never blanks
+            // the rest of the page (PR-8 GUI surface honesty).
+            SectionStatus {
+                width: parent.width
+                status: FrontPageState.dataStatus
+                errorMessage: FrontPageState.dataErrorMessage
+                hasData: root.hasSummaryData
             }
 
             // ====================================================
@@ -702,16 +713,6 @@ SurfaceBase {
                                 cursorShape: Qt.PointingHandCursor
                                 onClicked: Window.window.activeSurface = "bench"
                             }
-                        }
-
-                        // Disabled link: muted color, no hover, no MouseArea.
-                        // Companion PR will enable this once a strategy-detail
-                        // surface exists.
-                        Text {
-                            text: "strategy detail →"
-                            color: Theme.color.text.disabled
-                            font.family:    Theme.typography.body.md.family
-                            font.pixelSize: Theme.typography.body.md.size
                         }
                     }
                 }

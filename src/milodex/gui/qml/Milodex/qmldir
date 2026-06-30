@@ -37,6 +37,7 @@ ElevatedPostureBanner 1.0 components/ElevatedPostureBanner.qml
 ScrollSurface 1.0 components/ScrollSurface.qml
 EditorialHeader 1.0 components/EditorialHeader.qml
 SurfaceBase 1.0 components/SurfaceBase.qml
+SectionStatus 1.0 components/SectionStatus.qml
 Main 1.0 Main.qml
 FrontSurface 1.0 surfaces/FrontSurface.qml
 BenchSurface 1.0 surfaces/BenchSurface.qml

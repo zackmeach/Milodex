@@ -45,6 +45,12 @@ SurfaceBase {
     // ------------------------------------------------------------------
 
     readonly property var entries: LedgerState.entries
+    readonly property bool hasLedgerData: LedgerState.lastRefreshedAt !== ""
+    readonly property bool isFiltered: LedgerState.groupFilter !== "all"
+                                     || LedgerState.stageFilter !== "all"
+                                     || LedgerState.strategyFilter !== "all"
+                                     || LedgerState.outcomeFilter !== "all"
+                                     || LedgerState.timeFilter !== "all"
 
     // sessionBag is inherited from SurfaceBase; Main.qml parameterizes it in on
     // surface load. The surface binds one-way to its timeFormat; the operator-
@@ -129,6 +135,15 @@ SurfaceBase {
                 title: "The Ledger"
                 standfirst: "A chronological record of every promotion, every refusal, every kill-switch fire. The system's behavior, on paper."
                 standfirstWidthFactor: 0.78
+            }
+
+            // Section status — loading / error / no-data-yet for the
+            // LedgerState read model (PR-8 GUI surface honesty).
+            SectionStatus {
+                width: parent.width
+                status: LedgerState.dataStatus
+                errorMessage: LedgerState.dataErrorMessage
+                hasData: root.hasLedgerData
             }
 
             // ====================================================
@@ -257,6 +272,21 @@ SurfaceBase {
             // ====================================================
             // ENTRIES — one per event
             // ====================================================
+
+            // Empty state — honest "nothing yet" vs. "filter excluded
+            // everything" (ADR 0038, mirrors ActivityTable.qml's filter-aware
+            // empty copy). Only shown once the ledger has actually loaded —
+            // the SectionStatus banner above already covers loading/error.
+            Text {
+                visible: root.hasLedgerData && root.entries.length === 0
+                width: parent.width
+                text: root.isFiltered ? "No matching entries." : "No entries yet."
+                color: Theme.color.text.muted
+                font.family:    Theme.typography.body.md.family
+                font.pixelSize: Theme.typography.body.sm.size
+                font.italic:    true
+            }
+
             Repeater {
                 model: root.entries
                 delegate: Item {
@@ -400,7 +430,7 @@ SurfaceBase {
 
             Text {
                 width:  parent.width
-                text: "Filterable by stage, strategy, outcome, date range. Every refusal is a permanent test."
+                text: "Filterable by outcome group and stage. Every refusal is a permanent test."
                 color: Theme.color.text.muted
                 font.family:    Theme.typography.body.md.family
                 font.pixelSize: Theme.typography.body.sm.size

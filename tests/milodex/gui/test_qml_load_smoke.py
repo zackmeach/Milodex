@@ -1733,3 +1733,94 @@ def test_session_bag_exists_with_correct_defaults() -> None:
     setup, _sep, _rest = script.partition(marker)
     composed_script = setup + probe_block
     _run_and_assert(composed_script, "sessionBag defaults probe")
+
+
+# ---------------------------------------------------------------------------
+# PR-8: GUI surface honesty — SectionStatus extraction + FRONT/BENCH/LEDGER
+# dataStatus/dataErrorMessage binding + LedgerSurface empty state + dead
+# "strategy detail" link removal.
+# ---------------------------------------------------------------------------
+
+
+def test_section_status_component_exists_and_is_shared() -> None:
+    """SectionStatus.qml must exist as a standalone component, registered in
+    qmldir, and referenced (not copy-pasted) by FRONT, BENCH, LEDGER, DESK."""
+    component_path = _MILODEX_QML_DIR / "components" / "SectionStatus.qml"
+    assert component_path.exists(), (
+        "components/SectionStatus.qml must exist — extracted from the inline "
+        "DeskSurface.qml component (PR-8)"
+    )
+
+    qmldir_src = (_MILODEX_QML_DIR / "qmldir").read_text(encoding="utf-8")
+    assert "SectionStatus 1.0 components/SectionStatus.qml" in qmldir_src, (
+        "qmldir must register SectionStatus 1.0"
+    )
+
+    for filename in (
+        "surfaces/FrontSurface.qml",
+        "surfaces/BenchSurface.qml",
+        "surfaces/LedgerSurface.qml",
+        "surfaces/DeskSurface.qml",
+    ):
+        src = (_MILODEX_QML_DIR / filename).read_text(encoding="utf-8")
+        assert "SectionStatus {" in src, f"{filename} must reference SectionStatus {{ }}"
+
+    # DeskSurface must no longer declare its own inline copy — it consumes
+    # the shared component from qmldir instead.
+    desk_src = (_MILODEX_QML_DIR / "surfaces" / "DeskSurface.qml").read_text(encoding="utf-8")
+    assert "component SectionStatus:" not in desk_src, (
+        "DeskSurface.qml must not redeclare an inline SectionStatus component "
+        "— it must consume the shared components/SectionStatus.qml (PR-8)"
+    )
+
+
+def test_front_bench_ledger_bind_data_status() -> None:
+    """FRONT/BENCH/LEDGER must bind dataStatus/dataErrorMessage on their
+    backing read model, the way DESK already does (PR-8)."""
+    cases = {
+        "surfaces/FrontSurface.qml": "FrontPageState",
+        "surfaces/BenchSurface.qml": "BenchState",
+        "surfaces/LedgerSurface.qml": "LedgerState",
+    }
+    for filename, state_name in cases.items():
+        src = (_MILODEX_QML_DIR / filename).read_text(encoding="utf-8")
+        assert f"{state_name}.dataStatus" in src, f"{filename} must bind {state_name}.dataStatus"
+        assert f"{state_name}.dataErrorMessage" in src, (
+            f"{filename} must bind {state_name}.dataErrorMessage"
+        )
+
+
+def test_ledger_surface_has_empty_state() -> None:
+    """LedgerSurface must render an explicit empty state when there are no
+    ledger rows yet, distinct from the loading/error SectionStatus banner."""
+    src = (_MILODEX_QML_DIR / "surfaces" / "LedgerSurface.qml").read_text(encoding="utf-8")
+    assert "No entries yet." in src, "LedgerSurface.qml must render an honest empty-ledger message"
+    assert "No matching entries." in src, (
+        "LedgerSurface.qml must distinguish a filtered-to-empty result from a "
+        "genuinely empty ledger (mirrors ActivityTable.qml's filter-aware copy)"
+    )
+
+
+def test_ledger_surface_footer_matches_actual_filters() -> None:
+    """LedgerSurface footer must describe only the filters the UI actually
+    exposes (group + stage chips), not strategy/outcome/date range, which
+    have no control surface — the footer was advertising filters that don't
+    exist (audit PR-8)."""
+    src = (_MILODEX_QML_DIR / "surfaces" / "LedgerSurface.qml").read_text(encoding="utf-8")
+    assert "stage, strategy, outcome, date range" not in src, (
+        "LedgerSurface.qml footer must not advertise filters with no UI control "
+        "(strategy/outcome/date range are read-only 'all' in the read model)"
+    )
+    assert "Filterable by outcome group and stage." in src, (
+        "LedgerSurface.qml footer must describe only the filters that exist (group + stage chips)"
+    )
+
+
+def test_front_surface_dead_strategy_detail_link_removed() -> None:
+    """The permanently-disabled 'strategy detail ->' link (no MouseArea, no
+    navigation target) must be gone — the promised surface doesn't exist and
+    isn't on the roadmap (audit PR-8)."""
+    src = (_MILODEX_QML_DIR / "surfaces" / "FrontSurface.qml").read_text(encoding="utf-8")
+    assert "strategy detail" not in src, (
+        "FrontSurface.qml must not contain the dead 'strategy detail ->' link"
+    )
