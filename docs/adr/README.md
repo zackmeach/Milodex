@@ -85,3 +85,4 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0054](0054-risk-profiles-bounded-operator-preferences.md) | Risk profiles are bounded operator preferences | Accepted |
 | [0055](0055-event-store-per-strategy-position-ledger.md) | Event-store per-strategy position ledger for concurrent runners | Accepted |
 | [0056](0056-cross-process-submit-serialization-per-account-advisory-lock.md) | Cross-process submit serialization uses a per-account advisory lock | Accepted |
+| [0057](0057-daily-execution-queue-at-open.md) | Daily execution resolves via queue-at-open (D-1) | Accepted |
