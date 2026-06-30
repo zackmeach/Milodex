@@ -47,6 +47,7 @@ from typing import Any
 # liveness without importing the GUI package. Re-exported here for the
 # existing GUI callers.
 # ---------------------------------------------------------------------------
+from milodex.gui._db_logging import log_db_read_error
 from milodex.strategies.runner_status import (  # noqa: F401
     _FAILURE_EXIT_REASONS,
     resolve_runner_liveness,
@@ -133,7 +134,8 @@ def latest_backtest_metrics(conn: sqlite3.Connection) -> dict[str, dict[str, Any
     """
     try:
         rows = conn.execute(_SQL_LATEST_BACKTEST).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        log_db_read_error("_event_queries.latest_backtest_metrics", exc)
         return {}
     result: dict[str, dict[str, Any]] = {}
     for row in rows:
