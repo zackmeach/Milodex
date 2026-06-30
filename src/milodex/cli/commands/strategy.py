@@ -125,22 +125,55 @@ def _format_status_block(entry: dict) -> list[str]:
     return lines
 
 
+def _format_operator_alerts_block(alerts: list[dict]) -> list[str]:
+    lines = ["Operator Alerts"]
+    if not alerts:
+        lines.append("No operator alerts.")
+        return lines
+    for alert in alerts:
+        lines.append(
+            f"  {alert['recorded_at']} [{alert['severity']}] {alert['alert_type']}: "
+            f"{alert['summary']}"
+        )
+    return lines
+
+
 def _run_status(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     locks_dir = ctx.locks_dir or get_locks_dir()
+    event_store = ctx.get_event_store()
     statuses = collect_runner_statuses(
-        ctx.get_event_store(),
+        event_store,
         config_dir=ctx.config_dir,
         locks_dir=locks_dir,
         strategy_id=args.strategy_id,
     )
+    alert_events = event_store.list_operator_alerts()
+    if args.strategy_id is not None:
+        alert_events = [a for a in alert_events if a.strategy_id == args.strategy_id]
+    alert_events = alert_events[-10:]
+    alerts = [
+        {
+            "id": a.id,
+            "alert_type": a.alert_type,
+            "severity": a.severity,
+            "summary": a.summary,
+            "recorded_at": a.recorded_at.isoformat(),
+            "strategy_id": a.strategy_id,
+            "session_id": a.session_id,
+            "symbol": a.symbol,
+            "side": a.side,
+        }
+        for a in alert_events
+    ]
     lines = ["Strategy Runner Status"]
     if not statuses:
         lines.append("No strategy sessions recorded.")
     for entry in statuses:
         lines.extend(_format_status_block(entry))
+    lines.extend(_format_operator_alerts_block(alerts))
     return CommandResult(
         command="strategy.status",
-        data={"statuses": statuses},
+        data={"statuses": statuses, "operator_alerts": alerts},
         human_lines=lines,
     )
 

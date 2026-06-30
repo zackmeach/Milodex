@@ -1085,6 +1085,122 @@ def test_strategy_status_json_payload(tmp_path):
     assert statuses[0]["session_id"] == "session-status-test"
 
 
+def test_strategy_status_surfaces_operator_alerts(tmp_path):
+    """Durably recorded operator alerts appear under the status output and
+    in the JSON data payload, most-recent-ordering preserved from the store."""
+    from milodex.core.event_store import OperatorAlertEvent
+
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    store.append_operator_alert(
+        OperatorAlertEvent(
+            alert_type="exit_intent_dropped",
+            severity="warning",
+            summary="EXIT intent for SPY dropped: ambiguous match.",
+            strategy_id=_STATUS_STRATEGY_ID,
+            session_id="session-status-test",
+            symbol="SPY",
+            side="sell",
+            context_json={"reason": "ambiguous match"},
+            recorded_at=datetime(2026, 6, 9, 14, 0, tzinfo=UTC),
+        )
+    )
+    store.append_operator_alert(
+        OperatorAlertEvent(
+            alert_type="queued_intent_persist_failed",
+            severity="warning",
+            summary="Queued intent for QQQ failed to persist: locked DB.",
+            strategy_id=_STATUS_STRATEGY_ID,
+            session_id="session-status-test",
+            symbol="QQQ",
+            side="buy",
+            context_json={"reason": "locked DB"},
+            recorded_at=datetime(2026, 6, 9, 14, 5, tzinfo=UTC),
+        )
+    )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "Operator Alerts" in output
+    assert "EXIT intent for SPY dropped: ambiguous match." in output
+    assert "Queued intent for QQQ failed to persist: locked DB." in output
+
+
+def test_strategy_status_no_operator_alerts_message(tmp_path):
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "No operator alerts." in output
+
+
+def test_strategy_status_json_includes_operator_alerts(tmp_path):
+    from milodex.core.event_store import OperatorAlertEvent
+
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+    store.append_operator_alert(
+        OperatorAlertEvent(
+            alert_type="exit_intent_dropped",
+            severity="warning",
+            summary="EXIT intent for SPY dropped: ambiguous match.",
+            strategy_id=_STATUS_STRATEGY_ID,
+            session_id="session-status-test",
+            symbol="SPY",
+            side="sell",
+            context_json={"reason": "ambiguous match"},
+            recorded_at=datetime(2026, 6, 9, 14, 0, tzinfo=UTC),
+        )
+    )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["strategy", "status", "--json"],
+        event_store_factory=lambda: store,
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    payload = json.loads(stdout.getvalue())
+    assert exit_code == 0
+    alerts = payload["data"]["operator_alerts"]
+    assert len(alerts) == 1
+    assert alerts[0]["summary"] == "EXIT intent for SPY dropped: ambiguous match."
+    assert alerts[0]["strategy_id"] == _STATUS_STRATEGY_ID
+
+
 def test_strategy_status_unknown_strategy_errors(tmp_path):
     config_dir = tmp_path / "configs"
     _write_status_test_config(config_dir)
