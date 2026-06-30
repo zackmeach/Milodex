@@ -50,15 +50,15 @@ Most personal trading projects are a strategy script plus a broker SDK call. Mil
    └───────────────┘   └──────────────┘  └─────────────────────┘
 ```
 
-Thirteen modules in `src/milodex/`: `broker`, `strategies`, `risk`, `execution`, `backtesting`, `data`, `analytics`, `promotion`, `operations`, `core`, `cli`, `commands`, `gui`. Separation of concerns is enforced by the rule that strategies never call the broker directly and the risk layer is never bypassed for convenience.
+Fourteen modules in `src/milodex/`: `broker`, `strategies`, `risk`, `execution`, `backtesting`, `research`, `data`, `analytics`, `promotion`, `operations`, `core`, `cli`, `commands`, `gui`. Separation of concerns is enforced by the rule that strategies never call the broker directly and the risk layer is never bypassed for convenience.
 
 ---
 
 ## By the Numbers
 
-- **56 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0056)
+- **57 ADRs** documenting the reasoning behind consequential architectural decisions (0001–0057)
 - A **`src/`-layout Python 3.11 package** with a test suite mirroring the `src/` tree
-- **90%+ test coverage** with a one-way ratchet (CI fails on regression below the floor)
+- An **89% test-coverage floor** with a one-way ratchet (CI fails on regression below the floor)
 - Ruff-linted, formatted, and clean
 
 ---
@@ -95,6 +95,8 @@ pip install -e ".[dev]"
 
 Copy-Item .env.example .env   # then fill in ALPACA_API_KEY, ALPACA_SECRET_KEY, TRADING_MODE=paper
 ```
+
+> **Use stdlib `python -m venv`, not `uv venv`.** A `uv venv` trampoline `.venv` re-execs the base interpreter, so the code runs under the *base* Python's site-packages — the source of "phantom" runners that start but produce no explanations. Fix + diagnostic: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
 
 ### Daily operator surface (rich-rendered in a TTY)
 

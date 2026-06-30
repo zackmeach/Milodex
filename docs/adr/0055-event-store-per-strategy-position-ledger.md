@@ -49,7 +49,7 @@ On 2026-06-03, four SPY `5Min` intraday strategies (`breakout.orb`, `momentum.vw
 
 **What already exists.** [ADR 0029](0029-per-strategy-position-attribution-at-risk-layer.md) introduced per-strategy position **attribution** at the risk layer: `attribute_position()` and `count_positions_by_strategy()` in [`src/milodex/risk/attribution.py`](../../src/milodex/risk/attribution.py) reconstruct *who owns the current broker net* by walking submitted `trades` rows. [ADR 0024](0024-account-scoped-position-caps-are-authoritative.md) remains the account-wide floor; per-strategy caps are additive ([ADR 0029 Decision 5-7](0029-per-strategy-position-attribution-at-risk-layer.md)). The runner was never updated to consume the same model — it still feeds strategies raw broker net. That asymmetry is the bug.
 
-**Guardrail (effective until soak-verified).** Do **not** co-run multiple strategies on the **same symbol and same account**. Launch-time enforcement on evaluation symbol (`context.universe[0]`) is now code-enforced in `milodex strategy run` (see ADR 0026 addendum); the live-soak guardrail otherwise stays until strategy-scoped positions are verified under fleet operation.
+**Guardrail (original; superseded — see amendment at the top of this ADR).** Launch-time enforcement on evaluation symbol (`context.universe[0]`) was code-enforced in `milodex strategy run` at the time of this ADR but **was removed 2026-06-15** (`211d983`, ADR 0026 addendum); same-symbol, same-account co-run is now **allowed**, with the three invariants the guard proxied closed in the risk/execution layers. The original live-soak guardrail text — *do not co-run multiple strategies on the same symbol and same account* — is retained here for history.
 
 ## Options evaluated
 
