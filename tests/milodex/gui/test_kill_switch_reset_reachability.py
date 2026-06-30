@@ -1193,7 +1193,6 @@ def test_modal_cancel_emits_close_requested() -> None:
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Real-click behavioral tests (burn backlog C2, batch 6 — review follow-up).
 #
@@ -1544,8 +1543,10 @@ def test_risk_strip_posture_click_opens_modal_when_active() -> None:
         "sys.exit(0)\n"
     )
     _run_risk_strip_click(
-        active=True, assertions=assertions,
-        label="posture click opens modal when active", ok_token="POSTURE_CLICK_ACTIVE_OK",
+        active=True,
+        assertions=assertions,
+        label="posture click opens modal when active",
+        ok_token="POSTURE_CLICK_ACTIVE_OK",
     )
 
 
@@ -1585,6 +1586,8 @@ def test_risk_strip_posture_click_does_nothing_when_inactive() -> None:
         "sys.exit(0)\n"
     )
     _run_risk_strip_click(
-        active=False, assertions=assertions,
-        label="posture click no-op when inactive", ok_token="POSTURE_CLICK_INACTIVE_OK",
+        active=False,
+        assertions=assertions,
+        label="posture click no-op when inactive",
+        ok_token="POSTURE_CLICK_INACTIVE_OK",
     )

@@ -384,7 +384,6 @@ def test_reconcile_dirty_completion_updates_result() -> None:
     )
 
 
-
 # ---------------------------------------------------------------------------
 # Real-click behavioral test (burn backlog C2, batch 6 — review follow-up).
 #
