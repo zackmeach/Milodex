@@ -79,6 +79,30 @@ def test_terminal_status_never_reported_as_pending(client, alpaca_status, expect
     assert order.status != OrderStatus.PENDING
 
 
+# Statuses that are NOT terminal — Alpaca documents these as still-live /
+# in-flight, so they must classify as open (PENDING) and count toward
+# in-flight exposure in evaluator.py. "stopped" = a fill is guaranteed but
+# not yet posted; "suspended" = paused, may resume; "pending_review" is
+# currently absent from _STATUS_MAP entirely (must not fall through to the
+# unknown-status WARN path, since the map claims to be exhaustive).
+OPEN_STATUSES = [
+    "stopped",
+    "suspended",
+    "pending_review",
+]
+
+
+@pytest.mark.parametrize("alpaca_status", OPEN_STATUSES)
+def test_inflight_status_classifies_as_open_not_terminal(client, alpaca_status, caplog):
+    with caplog.at_level(logging.WARNING, logger="milodex.broker.alpaca_client"):
+        order = client._translate_order(_alpaca_order(alpaca_status))
+
+    assert order.status == OrderStatus.PENDING
+    assert order.is_open
+    # These are known/mapped statuses, not unknown ones — no WARN.
+    assert not any(record.levelno == logging.WARNING for record in caplog.records)
+
+
 def test_unmapped_status_warns_and_classifies_conservatively(client, caplog):
     with caplog.at_level(logging.WARNING, logger="milodex.broker.alpaca_client"):
         order = client._translate_order(_alpaca_order("some_future_alpaca_status"))

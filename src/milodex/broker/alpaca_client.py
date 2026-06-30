@@ -69,13 +69,18 @@ _TIF_MAP = {
 # terminal status never silently reports as still-PENDING — that would inject
 # phantom open exposure into the risk layer's caps (PR-5b). "done_for_day" and
 # "replaced" are terminal for THIS order (Alpaca opens a new order id on
-# replace), so both map to CANCELLED rather than PENDING.
+# replace), so both map to CANCELLED rather than PENDING. "stopped" (a fill is
+# guaranteed but not yet posted) and "suspended" (paused, may resume) are NOT
+# terminal — both map to PENDING so they keep counting as in-flight exposure;
+# mapping them CANCELLED would undercount risk caps during the transient
+# window (risk-reviewer CONCERN, PR-5b follow-up).
 _STATUS_MAP = {
     "new": OrderStatus.PENDING,
     "accepted": OrderStatus.PENDING,
     "pending_new": OrderStatus.PENDING,
     "accepted_for_bidding": OrderStatus.PENDING,
     "pending_replace": OrderStatus.PENDING,
+    "pending_review": OrderStatus.PENDING,
     "calculated": OrderStatus.PENDING,
     "held": OrderStatus.PENDING,
     "pending_cancel": OrderStatus.CANCELLED,
@@ -86,8 +91,8 @@ _STATUS_MAP = {
     "rejected": OrderStatus.REJECTED,
     "done_for_day": OrderStatus.CANCELLED,
     "replaced": OrderStatus.CANCELLED,
-    "stopped": OrderStatus.CANCELLED,
-    "suspended": OrderStatus.CANCELLED,
+    "stopped": OrderStatus.PENDING,
+    "suspended": OrderStatus.PENDING,
 }
 
 _ORDER_TYPE_MAP = {
