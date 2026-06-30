@@ -221,5 +221,3 @@ def _exit_threshold(rule: str, params: dict[str, Any]) -> dict[str, Any]:
     if rule == "breakout.max_hold":
         return {"max_hold_days": params["max_hold_days"]}
     return {}
-
-

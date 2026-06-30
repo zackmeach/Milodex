@@ -351,5 +351,3 @@ def _exit_threshold(rule: str, parameters: dict[str, Any]) -> dict[str, float | 
     if rule == "meanrev.max_hold":
         return {"max_hold_days": parameters["max_hold_days"]}
     return {}
-
-
