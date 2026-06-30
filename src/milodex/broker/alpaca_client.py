@@ -9,6 +9,7 @@ raises immediately on all other errors.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from datetime import date, datetime, timedelta
 from typing import TypeVar
@@ -50,6 +51,8 @@ from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_o
 
 _T = TypeVar("_T")
 
+logger = logging.getLogger(__name__)
+
 # Map our enums to Alpaca's
 _SIDE_MAP = {
     OrderSide.BUY: AlpacaOrderSide.BUY,
@@ -61,17 +64,30 @@ _TIF_MAP = {
     TimeInForce.GTC: AlpacaTimeInForce.GTC,
 }
 
-# Map Alpaca status strings to our OrderStatus
+# Map Alpaca status strings to our OrderStatus. Explicit and exhaustive over
+# Alpaca's documented order-status set (alpaca.trading.enums.OrderStatus) so a
+# terminal status never silently reports as still-PENDING — that would inject
+# phantom open exposure into the risk layer's caps (PR-5b). "done_for_day" and
+# "replaced" are terminal for THIS order (Alpaca opens a new order id on
+# replace), so both map to CANCELLED rather than PENDING.
 _STATUS_MAP = {
     "new": OrderStatus.PENDING,
     "accepted": OrderStatus.PENDING,
     "pending_new": OrderStatus.PENDING,
+    "accepted_for_bidding": OrderStatus.PENDING,
+    "pending_replace": OrderStatus.PENDING,
+    "calculated": OrderStatus.PENDING,
+    "held": OrderStatus.PENDING,
     "pending_cancel": OrderStatus.CANCELLED,
     "filled": OrderStatus.FILLED,
     "partially_filled": OrderStatus.PARTIALLY_FILLED,
     "canceled": OrderStatus.CANCELLED,
     "expired": OrderStatus.CANCELLED,
     "rejected": OrderStatus.REJECTED,
+    "done_for_day": OrderStatus.CANCELLED,
+    "replaced": OrderStatus.CANCELLED,
+    "stopped": OrderStatus.CANCELLED,
+    "suspended": OrderStatus.CANCELLED,
 }
 
 _ORDER_TYPE_MAP = {
@@ -109,6 +125,22 @@ class AlpacaBrokerClient(BrokerClient):
         tif_str = str(alpaca_order.time_in_force)
         if hasattr(alpaca_order.time_in_force, "value"):
             tif_str = alpaca_order.time_in_force.value
+
+        if order_type_str not in _ORDER_TYPE_MAP:
+            logger.warning(
+                "Unrecognized Alpaca order_type %r on order %s; reporting as MARKET",
+                order_type_str,
+                alpaca_order.id,
+            )
+        if status_str not in _STATUS_MAP:
+            # Conservative: an unrecognized status is reported PENDING (still
+            # open) rather than dropped — over-counting open exposure in the
+            # risk layer's caps is safe, under-counting is not.
+            logger.warning(
+                "Unrecognized Alpaca order status %r on order %s; reporting as PENDING",
+                status_str,
+                alpaca_order.id,
+            )
 
         return Order(
             id=str(alpaca_order.id),
@@ -271,7 +303,8 @@ class AlpacaBrokerClient(BrokerClient):
         try:
             call_with_retry_on_429(lambda: self._client.cancel_order_by_id(order_id))
             return True
-        except APIError:
+        except APIError as exc:
+            logger.warning("cancel_order(%s) failed: %s", order_id, exc)
             return False
 
     def cancel_all_orders(self) -> list[Order]:
@@ -311,7 +344,8 @@ class AlpacaBrokerClient(BrokerClient):
                 lambda: self._client.get_open_position(symbol)
             )
             return self._translate_position(alpaca_pos)
-        except Exception:
+        except Exception as exc:
+            logger.warning("get_position(%s) failed: %s", symbol, exc)
             return None
 
     def get_account(self) -> AccountInfo:
@@ -363,9 +397,10 @@ class AlpacaBrokerClient(BrokerClient):
                 end=now.date(),
             )
             calendar = call_with_retry_on_transient(lambda: self._client.get_calendar(request))
-        except Exception:
+        except Exception as exc:
             # Any transport/parse failure -> fail closed (None). The risk layer
             # blocks the 1D submit rather than trusting an unverified session.
+            logger.warning("latest_completed_session(%s) failed: %s", now, exc)
             return None
 
         if not calendar:
