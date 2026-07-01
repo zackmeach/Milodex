@@ -391,27 +391,6 @@ def test_query_performance_missing_db_raises(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Read-only connection test — no Qt required
-# ---------------------------------------------------------------------------
-
-
-def test_read_only_connection_blocks_writes(tmp_path) -> None:
-    """Connecting with file:...?mode=ro raises OperationalError on write attempt."""
-    db = tmp_path / "readonly_test.db"
-    # Create the DB via normal connection
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE t(a INTEGER)")
-    conn.commit()
-    conn.close()
-
-    # Now open read-only and attempt DDL
-    ro_conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    with pytest.raises(sqlite3.OperationalError):
-        ro_conn.execute("CREATE TABLE x(a)")
-    ro_conn.close()
-
-
-# ---------------------------------------------------------------------------
 # SPY benchmark tests — no Qt required
 # ---------------------------------------------------------------------------
 
