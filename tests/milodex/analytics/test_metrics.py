@@ -114,7 +114,7 @@ def test_sortino_no_downside_returns_none():
 def test_sortino_mixed_returns():
     returns = [0.01, -0.005, 0.02, -0.003]
     s = _sortino(returns)
-    assert s is not None
+    assert s > 0
 
 
 # ---------------------------------------------------------------------------

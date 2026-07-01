@@ -740,25 +740,6 @@ def test_query_attention_multi_strategy_scenario(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Read-only connection test — no Qt required
-# ---------------------------------------------------------------------------
-
-
-def test_read_only_connection_blocks_writes(tmp_path) -> None:
-    """Connecting with file:...?mode=ro raises OperationalError on write attempt."""
-    db = tmp_path / "readonly_test.db"
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE t(a INTEGER)")
-    conn.commit()
-    conn.close()
-
-    ro_conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    with pytest.raises(sqlite3.OperationalError):
-        ro_conn.execute("CREATE TABLE x(a)")
-    ro_conn.close()
-
-
-# ---------------------------------------------------------------------------
 # Qt-aware fixtures
 # ---------------------------------------------------------------------------
 

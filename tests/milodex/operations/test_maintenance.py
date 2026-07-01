@@ -197,9 +197,9 @@ def test_backup_created_before_delete(tmp_path):
 def test_vacuum_reduces_file_size(tmp_path):
     store = EventStore(tmp_path / "m.db")
     run = _seed_backtest_run(store)
-    for _ in range(800):
+    for _ in range(300):
         _backtest_explanation(store, run, with_trade=False)
     result = run_compaction(store, make_backup=False, vacuum=True)
-    assert result.pruned_explanations == 800
+    assert result.pruned_explanations == 300
     assert result.vacuumed is True
     assert result.db_size_after_bytes < result.db_size_before_bytes

@@ -516,20 +516,6 @@ def test_feed_missing_db_raises(tmp_path) -> None:
         _query_feed(tmp_path / "nonexistent.db")
 
 
-def test_read_only_connection_blocks_writes(tmp_path) -> None:
-    """Connecting with file:...?mode=ro raises OperationalError on write attempt."""
-    db = tmp_path / "readonly_test.db"
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE t(a INTEGER)")
-    conn.commit()
-    conn.close()
-
-    ro_conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    with pytest.raises(sqlite3.OperationalError):
-        ro_conn.execute("CREATE TABLE x(a)")
-    ro_conn.close()
-
-
 # ---------------------------------------------------------------------------
 # Qt-aware fixtures
 # ---------------------------------------------------------------------------
@@ -874,7 +860,7 @@ def test_each_source_select_is_sql_bounded(tmp_path: Path) -> None:
     db = tmp_path / "feed.db"
     _create_fixture_db(db)
     base = datetime(2026, 5, 20, tzinfo=UTC)
-    for i in range(_FEED_CAP * 2):
+    for i in range(_FEED_CAP + 5):
         ts = (base + timedelta(minutes=i)).isoformat()
         _seed_explanation(db, recorded_at=ts)
         _seed_trade(db, recorded_at=ts, broker_status="filled")

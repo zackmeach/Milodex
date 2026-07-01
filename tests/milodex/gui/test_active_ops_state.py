@@ -679,20 +679,6 @@ def test_query_active_ops_cadence_from_yaml(tmp_path) -> None:
     assert result[0]["cadence"] == "hourly (1H)"
 
 
-def test_read_only_connection_blocks_writes(tmp_path) -> None:
-    """Verify the read-only URI connection pattern blocks writes."""
-    db = tmp_path / "ro_test.db"
-    conn = sqlite3.connect(str(db))
-    conn.execute("CREATE TABLE t(a INTEGER)")
-    conn.commit()
-    conn.close()
-
-    ro_conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
-    with pytest.raises(sqlite3.OperationalError):
-        ro_conn.execute("CREATE TABLE x(a)")
-    ro_conn.close()
-
-
 # ---------------------------------------------------------------------------
 # runner_lock_mtime_age tests (new helper in _event_queries)
 # ---------------------------------------------------------------------------

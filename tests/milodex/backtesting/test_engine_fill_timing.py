@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pandas as pd
+import pytest
 
 from milodex.backtesting.engine import BacktestEngine
 from milodex.broker.models import OrderSide, OrderType
@@ -177,7 +178,7 @@ def test_buy_decided_on_t_close_fills_at_t_plus_1_open():
     assert len(buys) == 1, f"expected exactly one BUY, got {len(buys)}: {trades!r}"
     expected_fill = 102.0 * (1.0 + slippage)
     actual_fill = buys[0].estimated_unit_price
-    assert actual_fill == pytest_approx(expected_fill), (
+    assert actual_fill == pytest.approx(expected_fill, rel=1e-9, abs=1e-9), (
         f"BUY decided on T close 100 must fill at T+1 open {102.0} * (1+slippage), "
         f"not at T close or T+1 close. expected={expected_fill}, got={actual_fill}"
     )
@@ -250,7 +251,7 @@ def test_sell_decided_on_t_close_fills_at_t_plus_1_open():
     assert len(sells) == 1, f"expected exactly one SELL, got {len(sells)}: {trades!r}"
     expected_fill = 98.0 * (1.0 - slippage)
     actual_fill = sells[0].estimated_unit_price
-    assert actual_fill == pytest_approx(expected_fill), (
+    assert actual_fill == pytest.approx(expected_fill, rel=1e-9, abs=1e-9), (
         f"SELL decided on T close 105 must fill at T+1 open 98.0 * (1-slippage), "
         f"not at T close or T+1 close. expected={expected_fill}, got={actual_fill}"
     )
@@ -315,12 +316,3 @@ def test_pending_order_at_window_boundary_is_dropped():
     assert result.final_equity == 10_000.0, (
         f"equity must be unchanged when boundary order is dropped; got {result.final_equity}"
     )
-
-
-# pytest helpers --------------------------------------------------------------
-
-
-def pytest_approx(value: float, rel: float = 1e-9, abs_: float = 1e-9):
-    import pytest as _pytest
-
-    return _pytest.approx(value, rel=rel, abs=abs_)
