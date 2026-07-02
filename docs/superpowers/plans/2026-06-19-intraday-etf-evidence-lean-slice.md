@@ -12,7 +12,7 @@
 
 ## Context & non-negotiables (carry this — it is load-bearing)
 
-Two grounded findings justify the lean scope (full citations in `docs/INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md`):
+Two grounded findings justify the lean scope (full citations in `docs/reviews/2026-06-18-intraday-etf-evidence-hardening-feedback.md`):
 
 1. **"Price-action only" does NOT make IEX trustworthy.** IEX is ~2.5% of consolidated volume; it under-samples session high/low extremes and never sees the opening/closing auction (`docs/adr/0017-data-source-hierarchy.md:14,32,60`). Baselines cannot detect this — candidate and null run on the *same* biased bars, so the bias cancels in the comparison. **Every v1 verdict must be explicitly labeled IEX-exploratory / non-durable.** The PR4 fidelity gate is the only thing standing between an inward IEX price bias and a "passed" verdict.
 2. **The binding constraint is the data provider.** The consolidated/SIP feed is deferred (ADR 0017); `alpaca_provider` is IEX-hardcoded. This slice is the tooling that becomes durable the moment real data exists and improves the *existing canaries'* evidence today.

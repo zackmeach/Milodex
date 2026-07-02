@@ -140,10 +140,10 @@ data end-to-end without error.
 
 | File | Contents |
 |---|---|
-| `docs/reviews/regime_backtest_trades.csv/d43bcec7-..._trades.csv` | 49 regime trades |
-| `docs/reviews/regime_backtest_trades.csv/d43bcec7-..._equity.csv` | 753-day regime equity curve |
-| `docs/reviews/meanrev_backtest_trades.csv/6ea3ce05-..._trades.csv` | 809 meanrev trades |
-| `docs/reviews/meanrev_backtest_trades.csv/6ea3ce05-..._equity.csv` | 753-day meanrev equity curve |
+| `docs/reviews/phase1.3-backtest-evidence/regime_d43bcec7_trades.csv` | 49 regime trades |
+| `docs/reviews/phase1.3-backtest-evidence/regime_d43bcec7_equity.csv` | 753-day regime equity curve |
+| `docs/reviews/phase1.3-backtest-evidence/meanrev_6ea3ce05_trades.csv` | 809 meanrev trades |
+| `docs/reviews/phase1.3-backtest-evidence/meanrev_6ea3ce05_equity.csv` | 753-day meanrev equity curve |
 
 ---
 

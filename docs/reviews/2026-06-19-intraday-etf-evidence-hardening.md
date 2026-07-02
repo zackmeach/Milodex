@@ -4,7 +4,7 @@
 **Date:** 2026-06-19  
 **Type:** Strategy / research-lane memo, not an implementation plan  
 **Revision note:** Updated after code-grounded review in
-`docs/INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md`.
+`docs/reviews/2026-06-18-intraday-etf-evidence-hardening-feedback.md`.
 
 ## Purpose
 

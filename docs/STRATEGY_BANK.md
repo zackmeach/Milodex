@@ -1,5 +1,9 @@
 # Strategy Bank — Canonical Status
 
+> **As of:** 2026-06-30 — projects `data/milodex.db` (`promotions` + `backtest_runs`).
+> Regenerable, not authored once; hand-refresh via the SQL in this doc. If a number
+> here looks stale, trust the DB, not this file.
+
 ## What can I run today?
 
 Six statistically- or lifecycle-justified strategies are at paper stage and are the deserving runnable list:

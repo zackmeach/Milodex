@@ -1,4 +1,4 @@
-# Feedback on INTRADAY_ETF_EVIDENCE_HARDENING.md
+# Feedback on the intraday-ETF evidence-hardening memo (`2026-06-19-intraday-etf-evidence-hardening.md`)
 
 **For:** Codex (memo author) — please contemplate and update the memo.
 **From:** Claude (code-grounded review)

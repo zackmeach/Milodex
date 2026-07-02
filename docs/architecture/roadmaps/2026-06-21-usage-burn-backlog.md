@@ -714,7 +714,7 @@ file may weaken, bypass, or relax the risk veto, the promotion gate, or the kill
 - **Dimensions:** deferred-work
 - **Locations:**
   - ✅ `src/milodex/data/intraday_readiness.py` (326 lines, merged) — the build this item proposed
-  - `docs/INTRADAY_ETF_EVIDENCE_HARDENING.md:186` (Workstream D spec)
+  - `docs/reviews/2026-06-19-intraday-etf-evidence-hardening.md:186` (Workstream D spec)
 
 **① Verification gate:** read `intraday_readiness.py` against the Workstream-D spec list.
 
@@ -739,7 +739,7 @@ real gap exists, open a new narrow item for exactly that; do **not** rebuild the
 - **Dimensions:** deferred-work
 - **Locations:**
   - ✅ `src/milodex/research/evidence_assembler.py` (731 lines, merged) — the framework this item proposed
-  - `docs/INTRADAY_ETF_EVIDENCE_HARDENING.md:254`, `:909` (Workstream E spec)
+  - `docs/reviews/2026-06-19-intraday-etf-evidence-hardening.md:254`, `:909` (Workstream E spec)
 
 **① Verification gate:** read `evidence_assembler.py` against the Workstream-E spec list.
 

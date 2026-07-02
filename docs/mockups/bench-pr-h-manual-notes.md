@@ -2,9 +2,9 @@
 
 Screenshot capture via offscreen Qt (`QT_QPA_PLATFORM=offscreen`) is possible for
 smoke/load tests but cannot reliably render interactive drag states (mid-drag with
-neighbor-shift animation) or hover states without a display server. States 1 and 4
-were captured as PNGs (`bench-pr-h-1-rest.png`, `bench-pr-h-4-post-drop.png`) via
-the headless render path. States 2 and 3 require interactive observation.
+neighbor-shift animation) or hover states without a display server. State 1
+was captured as a PNG (`bench-pr-h-1-rest.png`) via the headless render path.
+States 2, 3, and 4 require interactive observation (no headless capture exists).
 
 ## State 1 — bench at rest (see bench-pr-h-1-rest.png)
 
@@ -37,7 +37,7 @@ On mouse-press on the handle (`dragHandle` MouseArea):
 - The dragged row has its `Behavior on y` disabled (`enabled: draggingIndex !== index`
   is `false` for the dragged row) so it tracks the cursor without 120ms lag.
 
-## State 4 — post-drop (see bench-pr-h-4-post-drop.png)
+## State 4 — post-drop (manual observation)
 
 On mouse-release:
 - `root.dragging = false`.

@@ -1,7 +1,13 @@
 # Intraday ETF Evidence — Phase 2 Tier-1 Gate Report
 
 **Created:** 2026-06-20 (overnight, autonomous). **For:** operator review at the Tier-1 gate.
-**Branch:** `intraday-etf-evidence-phase2` (worktree). **NOT merged to master.**
+**Branch:** `intraday-etf-evidence-phase2` (worktree).
+
+> **⛔ SUPERSEDED — audit history only.** This gate report captures pre-RTH-lifecycle
+> evidence that was explicitly superseded and never persisted to the experiment registry.
+> For current lane state see
+> [`2026-06-20-intraday-etf-evidence-phase2-complete.md`](2026-06-20-intraday-etf-evidence-phase2-complete.md)
+> and `docs/CURRENT_ROADMAP.md` §3.4. Kept for the record; do not cite as live evidence.
 
 ---
 

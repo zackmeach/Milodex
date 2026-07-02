@@ -29,7 +29,7 @@ The **lean slice is already merged to master and green** (commits `12eeea3..b596
 
 **The headline gap (dominant finding):** the lane's stated purpose — *evaluate an edge across 17 ETFs* — has **zero operational mechanism today**. Every single-symbol intraday strategy trades `sorted(universe)[0]` and **silently discards the other 16**. Pointed at `liquid_etf_core.v1` it trades **DIA only**, on a **cold cache (→ 0 trades → reads as "no edge")**. There is **no batch/fan-out path** (`milodex backtest` takes one strategy_id; the plan's "via the batch path" is fiction). So the *tooling* is built; the lane cannot yet do its job. Closing that is Tier 0 below.
 
-Full detail: `docs/INTRADAY_ETF_EVIDENCE_LEAN_SLICE_BUILD.md` (honest self-assessment) and the lean-slice plan `docs/superpowers/plans/2026-06-19-intraday-etf-evidence-lean-slice.md` ("Review fold" section).
+Full detail: `docs/reviews/2026-06-19-intraday-etf-evidence-lean-slice-build.md` (honest self-assessment) and the lean-slice plan `docs/superpowers/plans/2026-06-19-intraday-etf-evidence-lean-slice.md` ("Review fold" section).
 
 ---
 
@@ -121,9 +121,9 @@ Pause and sync with the operator at: **end of Tier 0** (lane mechanically able t
 
 ## 8. Reference artifacts (read; do not duplicate)
 
-- `docs/INTRADAY_ETF_EVIDENCE_HARDENING.md` — the plan (workstreams A–H; lean slice was C-light+D+E-PR1).
-- `docs/INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md` — first code-grounded review (what exists vs new; the IEX contradiction).
-- `docs/INTRADAY_ETF_EVIDENCE_LEAN_SLICE_BUILD.md` — what shipped last night + honest self-flags.
+- `docs/reviews/2026-06-19-intraday-etf-evidence-hardening.md` — the plan (workstreams A–H; lean slice was C-light+D+E-PR1).
+- `docs/reviews/2026-06-18-intraday-etf-evidence-hardening-feedback.md` — first code-grounded review (what exists vs new; the IEX contradiction).
+- `docs/reviews/2026-06-19-intraday-etf-evidence-lean-slice-build.md` — what shipped last night + honest self-flags.
 - `docs/superpowers/plans/2026-06-19-intraday-etf-evidence-lean-slice.md` — the lean-slice plan + spec-review fold.
 - `docs/GRILL_DECISIONS_2026-06-18.md` — founder direction.
 - `docs/adr/0017-data-source-hierarchy.md` (IEX fallback; SIP/Massive deferred) · `docs/adr/0016-phase1-instrument-whitelist.md` · `docs/SRS.md:297` (R-PRM-011) · `docs/PROMOTION_GOVERNANCE.md:137-149` (Experiment Registry spec).

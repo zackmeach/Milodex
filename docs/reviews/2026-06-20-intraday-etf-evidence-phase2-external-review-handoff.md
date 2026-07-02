@@ -24,9 +24,9 @@ Milodex is a personal autonomous trading system (Python, src-layout, SQLite even
 - **Lint:** `& <venv-python> -m ruff check src/ tests/` (rules E,F,I,N,W,UP; line length 100).
 
 **Reference docs to read for INTENT (then challenge the implementation against them — do not assume the code matches):**
-- `docs/INTRADAY_ETF_EVIDENCE_PHASE2_ORCHESTRATION_BRIEF.md` (the plan / brief — in the *master* working tree, `C:\Users\zdm80\Milodex\docs\`)
-- `docs/INTRADAY_ETF_EVIDENCE_PHASE2_COMPLETE.md` (the builder's completion summary — the thing you're auditing)
-- `docs/INTRADAY_ETF_EVIDENCE_PHASE2_TIER1_GATE.md` (the Tier-1 gate report + resolution log)
+- `docs/reviews/2026-06-19-intraday-etf-evidence-phase2-orchestration-brief.md` (the plan / brief)
+- `docs/reviews/2026-06-20-intraday-etf-evidence-phase2-complete.md` (the builder's completion summary — the thing you're auditing)
+- `docs/reviews/2026-06-20-intraday-etf-evidence-phase2-tier1-gate.md` (the Tier-1 gate report + resolution log)
 - `docs/adr/0017-data-source-hierarchy.md` (IEX non-durability), `docs/adr/0016-phase1-instrument-whitelist.md`, `docs/PROMOTION_GOVERNANCE.md` "Experiment Registry", `docs/SRS.md` R-PRM-011.
 
 ---
