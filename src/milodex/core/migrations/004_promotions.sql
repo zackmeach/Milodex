@@ -4,9 +4,13 @@
 -- metrics at the time of promotion and who approved it.  The table is
 -- append-only — no rows are deleted or updated.
 --
--- promotion_type: 'statistical'      — Sharpe/DD/trade-count thresholds applied
---                 'lifecycle_exempt' — regime / lifecycle-proof strategy, exempt
---                                      per SRS R-PRM-004
+-- promotion_type: 'statistical'       — Sharpe/DD/trade-count thresholds applied
+--                 'lifecycle_exempt'  — policy-listed lifecycle-proof strategy id,
+--                                       exempt per SRS R-PRM-004 (scoped; ADR 0058)
+--                 'operator_override' — deliberate operator bypass of the statistical
+--                                       gate, paper stage only, reason recorded (ADR 0058)
+--                 'demotion'          — a demote/stage-return ledger entry
+-- No CHECK constraint: readers branch on known values and tolerate new strings.
 
 CREATE TABLE promotions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

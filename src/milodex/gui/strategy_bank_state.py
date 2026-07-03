@@ -231,7 +231,10 @@ def _compute_gate_failures(
     - ``"N"`` — trade count < MIN_TRADES
     """
     # Regime strategies are lifecycle-proof and exempt from statistical gate thresholds
-    # (CLAUDE.md "Strategy bank, two roles"; SRS R-PRM-004).
+    # (CLAUDE.md "Strategy bank, two roles"; SRS R-PRM-004). This is a read-model
+    # DISPLAY heuristic; the durable-governance lifecycle-proof identity is
+    # ACTIVE_PROMOTION_POLICY.lifecycle_gate.applies_to (ADR 0058), which the
+    # promotion orchestrator enforces. Display surfaces may lag; no behavior change.
     if family == "regime":
         return []
     failures: list[str] = []

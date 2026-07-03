@@ -435,6 +435,11 @@ def _screen_one(
         updates={"source": "research_screen"},
     )
 
+    # Family-based exemption here is a research-screen display heuristic (a
+    # regime family yields no statistical gate metrics), NOT durable governance.
+    # The authoritative lifecycle-proof identity is
+    # ACTIVE_PROMOTION_POLICY.lifecycle_gate.applies_to (ADR 0058); the durable
+    # promotion path scopes lifecycle_exempt to those ids in the orchestrator.
     gate = check_gate(
         lifecycle_exempt=(family == "regime"),
         to_stage="paper",

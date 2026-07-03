@@ -31,6 +31,14 @@ def test_lifecycle_gate_is_defined_but_not_enforced() -> None:
     assert len(gate.criteria) == 3
 
 
+def test_lifecycle_gate_applies_to_is_the_scoped_identity_source_of_truth() -> None:
+    """ADR 0058: applies_to lists exactly the policy-listed lifecycle-proof ids
+    (the SPY/SHY regime strategy) and is the identity the orchestrator scopes the
+    lifecycle exemption to."""
+    gate = PHASE1_GOVERNANCE_V1.lifecycle_gate
+    assert gate.applies_to == ("regime.daily.sma200_rotation.spy_shy.v1",)
+
+
 def test_evaluate_paper_gate_passing() -> None:
     r = PHASE1_GOVERNANCE_V1.evaluate_research_target(
         sharpe_ratio=0.1,

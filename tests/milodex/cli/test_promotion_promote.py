@@ -10,14 +10,19 @@ from pathlib import Path
 from milodex.cli.main import main as cli_entrypoint
 from milodex.core.event_store import BacktestRunEvent, EventStore
 
-_STRATEGY_ID = "test.daily.promote_slice2.spy.v1"
+# The policy-listed lifecycle-proof id (ADR 0058) so --lifecycle-exempt stays
+# admissible. The statistical path is identity-agnostic, so the statistical
+# tests below are unaffected by this choice.
+_STRATEGY_ID = "regime.daily.sma200_rotation.spy_shy.v1"
+# A non-lifecycle-proof id for scoping / operator-override CLI tests.
+_NON_REGIME_ID = "meanrev.daily.rsi2.spy.v1"
 
 _YAML = """\
 strategy:
   id: "{strategy_id}"
-  family: "test"
-  template: "daily.promote_slice2"
-  variant: "spy"
+  family: "regime"
+  template: "daily.sma200_rotation"
+  variant: "spy_shy"
   version: 1
   description: "slice-2 promote CLI tests"
   enabled: true
@@ -47,6 +52,19 @@ def _write_config(config_dir: Path, stage: str, *, min_trades_required: int = 30
     content = _YAML.format(strategy_id=_STRATEGY_ID, stage=stage).replace(
         "min_trades_required: 30",
         f"min_trades_required: {min_trades_required}",
+    )
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _write_non_regime_config(config_dir: Path, stage: str) -> Path:
+    """Write a non-lifecycle-proof strategy config (ADR 0058 scoping tests)."""
+    path = config_dir / "non_regime_strategy.yaml"
+    content = (
+        _YAML.format(strategy_id=_NON_REGIME_ID, stage=stage)
+        .replace('family: "regime"', 'family: "meanrev"')
+        .replace('template: "daily.sma200_rotation"', 'template: "daily.rsi2"')
+        .replace('variant: "spy_shy"', 'variant: "spy"')
     )
     path.write_text(content, encoding="utf-8")
     return path
@@ -497,3 +515,135 @@ def test_promotion_promote_blocks_when_configured_trade_floor_not_met(tmp_path):
     assert "Trade count" in err.getvalue()
     assert "30" in err.getvalue()
     assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# D-4 (ADR 0058): scoped lifecycle exemption + operator override CLI surface
+# ---------------------------------------------------------------------------
+
+
+def test_promotion_promote_lifecycle_exempt_refused_for_non_regime(tmp_path):
+    """--lifecycle-exempt is refused for a non-lifecycle-proof strategy id and
+    points the operator at --operator-override. No durable write."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_non_regime_config(config_dir, stage="backtest")
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _NON_REGIME_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "trying to sneak a non-regime strategy past the gate",
+            "--risk",
+            "should be refused",
+            "--lifecycle-exempt",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert "operator-override" in err.getvalue()
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert store.list_promotions() == []
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_both_bypass_flags_refused(tmp_path):
+    """--lifecycle-exempt and --operator-override are mutually exclusive."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    _write_config(config_dir, stage="backtest")
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "cannot pick both",
+            "--risk",
+            "ambiguous intent",
+            "--lifecycle-exempt",
+            "--operator-override",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert "mutually exclusive" in err.getvalue()
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert store.list_promotions() == []
+
+
+def test_promotion_promote_operator_override_writes_promotion(tmp_path):
+    """--operator-override lands a non-regime strategy at paper with
+    promotion_type='operator_override' and the reason recorded in evidence."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_non_regime_config(config_dir, stage="backtest")
+
+    exit_code, out, err = _run(
+        [
+            "promotion",
+            "promote",
+            _NON_REGIME_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "deliberate operator bypass for platform smoke",
+            "--risk",
+            "statistical gate deliberately skipped",
+            "--operator-override",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code == 0, err.getvalue()
+    assert "paper" in out.getvalue()
+
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    promotions = store.list_promotions()
+    assert len(promotions) == 1
+    p = promotions[0]
+    assert p.to_stage == "paper"
+    assert p.promotion_type == "operator_override"
+    assert p.evidence_json is not None
+    override = p.evidence_json["gate_check_outcome"]["operator_override"]
+    assert override["reason"].startswith("deliberate operator bypass")
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_operator_override_refused_beyond_paper(tmp_path):
+    """--operator-override is paper-only; a capital-stage target is refused with
+    no durable write."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_non_regime_config(config_dir, stage="paper")
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _NON_REGIME_ID,
+            "--to",
+            "micro_live",
+            "--recommendation",
+            "trying to override into a capital stage",
+            "--risk",
+            "should be refused",
+            "--operator-override",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert err.getvalue().strip() != ""
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert store.list_promotions() == []
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")

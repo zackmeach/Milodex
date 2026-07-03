@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from milodex.promotion.evidence import EvidencePackage, assemble_evidence_package
+from milodex.promotion.policy import ACTIVE_PROMOTION_POLICY, STAGE_PAPER, PromotionCheckResult
 from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.promotion.state_machine import (
     check_gate,
@@ -44,6 +45,16 @@ if TYPE_CHECKING:
 REASON_INVALID_STAGE_TRANSITION = "invalid_stage_transition"
 REASON_MISSING_BACKTEST_RUN = "missing_backtest_run"
 REASON_GATE_FAILED = "gate_failed"
+# D-4 (ADR 0058) scoping + operator-override refusals.
+REASON_LIFECYCLE_EXEMPT_NOT_SCOPED = "lifecycle_exempt_not_scoped"
+REASON_OVERRIDE_FLAGS_CONFLICT = "override_flags_conflict"
+REASON_OVERRIDE_STAGE_NOT_ALLOWED = "operator_override_stage_not_allowed"
+REASON_OVERRIDE_REASON_REQUIRED = "operator_override_reason_required"
+
+# Durable ``promotion_type`` value for a general operator override (ADR 0058).
+# Distinct from ``lifecycle_exempt`` so the ledger never misdescribes a general
+# gate bypass as a lifecycle-proof promotion.
+PROMOTION_TYPE_OPERATOR_OVERRIDE = "operator_override"
 
 
 @dataclass(frozen=True)
@@ -62,6 +73,7 @@ class PromoteRequest:
     approved_by: str
     run_id: str | None = None
     lifecycle_exempt: bool = False
+    operator_override: bool = False
     notes: str | None = None
     now: datetime | None = None
 
@@ -124,6 +136,126 @@ class PromoteError:
 PromoteResult = PromoteSuccess | PromoteBlocked | PromoteError
 
 
+def _check_bypass_admissibility(
+    request: PromoteRequest,
+    *,
+    from_stage: str,
+    to_stage: str,
+) -> PromoteBlocked | None:
+    """Fail-closed admissibility for the two gate-bypass mechanisms (ADR 0058).
+
+    Returns a ``PromoteBlocked`` when the request is inadmissible, or ``None``
+    when the requested bypass (if any) is allowed to proceed. No metric lookup
+    and no durable writes happen here.
+
+    Rules:
+
+    1. ``lifecycle_exempt`` and ``operator_override`` are mutually exclusive —
+       a request that sets both is refused (the operator must name exactly one
+       intent).
+    2. ``lifecycle_exempt`` is scoped to the policy's ``applies_to`` identity
+       list. A lifecycle-exempt request for any other strategy id is refused and
+       pointed at ``--operator-override``.
+    3. ``operator_override`` is allowed ONLY for the paper stage — the autonomy
+       boundary owns capital stages (``micro_live``/``live``), which no operator
+       override may bypass.
+    4. ``operator_override`` requires a non-empty operator reason. The
+       ``recommendation`` field is the operator's written justification and is
+       already mandatory for every promotion; the override reuses it as the
+       recorded reason and refuses if it is blank.
+    """
+    if request.lifecycle_exempt and request.operator_override:
+        return PromoteBlocked(
+            reason_code=REASON_OVERRIDE_FLAGS_CONFLICT,
+            message=(
+                "lifecycle_exempt and operator_override are mutually exclusive — "
+                "a promotion may name at most one gate-bypass mechanism (ADR 0058)."
+            ),
+            from_stage=from_stage,
+            to_stage=to_stage,
+        )
+
+    if request.lifecycle_exempt:
+        allowed_ids = ACTIVE_PROMOTION_POLICY.lifecycle_gate.applies_to
+        if request.strategy_id not in allowed_ids:
+            return PromoteBlocked(
+                reason_code=REASON_LIFECYCLE_EXEMPT_NOT_SCOPED,
+                message=(
+                    f"Strategy '{request.strategy_id}' is not a lifecycle-proof "
+                    f"strategy. The lifecycle exemption is scoped to the promotion "
+                    f"policy's applies_to list {list(allowed_ids)} (ADR 0058). For a "
+                    "deliberate statistical-gate bypass, use --operator-override "
+                    "(paper-stage only, with an operator reason)."
+                ),
+                from_stage=from_stage,
+                to_stage=to_stage,
+            )
+
+    if request.operator_override:
+        if to_stage != STAGE_PAPER:
+            return PromoteBlocked(
+                reason_code=REASON_OVERRIDE_STAGE_NOT_ALLOWED,
+                message=(
+                    f"operator_override may bypass the statistical gate only for the "
+                    f"'{STAGE_PAPER}' stage; '{to_stage}' is a capital stage owned by "
+                    "the autonomy boundary and cannot be operator-overridden (ADR 0058)."
+                ),
+                from_stage=from_stage,
+                to_stage=to_stage,
+            )
+        if not request.recommendation or not request.recommendation.strip():
+            return PromoteBlocked(
+                reason_code=REASON_OVERRIDE_REASON_REQUIRED,
+                message=(
+                    "operator_override requires a non-empty operator reason "
+                    "(the --recommendation field) — a bare gate bypass is refused "
+                    "(ADR 0058)."
+                ),
+                from_stage=from_stage,
+                to_stage=to_stage,
+            )
+
+    return None
+
+
+def _build_gate_check_outcome(
+    request: PromoteRequest,
+    gate_result: PromotionCheckResult,
+) -> dict[str, Any]:
+    """Serialize the durable gate outcome for the evidence package (ADR 0058).
+
+    The statistical shape is preserved verbatim so legacy rows and tests do not
+    change shape. The lifecycle and operator-override paths append extra keys:
+
+    - lifecycle: the three R-PRM-004 criteria, marked unenforced with
+      ``deferred='M4'`` — an honest record that the operational gate was defined
+      but not evaluated (enforcement design belongs to roadmap M4).
+    - operator_override: the operator's reason (the recommendation text),
+      recording that the statistical gate was skipped by an explicit operator act.
+    """
+    outcome: dict[str, Any] = {
+        "allowed": gate_result.allowed,
+        "promotion_type": gate_result.promotion_type,
+        "failures": list(gate_result.failures),
+    }
+
+    if gate_result.promotion_type == PROMOTION_TYPE_OPERATOR_OVERRIDE:
+        outcome["operator_override"] = {
+            "reason": (request.recommendation or "").strip(),
+        }
+        return outcome
+
+    if request.lifecycle_exempt:
+        lifecycle_gate = ACTIVE_PROMOTION_POLICY.lifecycle_gate
+        outcome["lifecycle_criteria"] = {
+            "criteria": list(lifecycle_gate.criteria),
+            "enforced": lifecycle_gate.enforced,
+            "deferred": "M4",
+        }
+
+    return outcome
+
+
 def prepare_and_record_promotion(
     request: PromoteRequest,
     event_store: EventStore,
@@ -161,6 +293,14 @@ def prepare_and_record_promotion(
             to_stage=to_stage,
         )
 
+    # D-4 (ADR 0058) gate-bypass admissibility. These refusals are fail-closed
+    # and evaluated BEFORE any metric lookup — a request that names two
+    # conflicting bypass mechanisms, or an unscoped lifecycle exemption, or an
+    # unqualified operator override, is refused with no side effects.
+    bypass_refusal = _check_bypass_admissibility(request, from_stage=from_stage, to_stage=to_stage)
+    if bypass_refusal is not None:
+        return bypass_refusal
+
     try:
         sharpe_ratio, max_drawdown_pct, trade_count = metrics_from_run(request.run_id, event_store)
     except ValueError as exc:
@@ -171,19 +311,37 @@ def prepare_and_record_promotion(
             to_stage=to_stage,
         )
 
-    gate_result = check_gate(
-        lifecycle_exempt=request.lifecycle_exempt,
-        to_stage=to_stage,
-        sharpe_ratio=sharpe_ratio,
-        max_drawdown_pct=max_drawdown_pct,
-        trade_count=trade_count,
-        min_trade_count=int(config.backtest.get("min_trades_required", 30)),
-    )
     metrics_snapshot: dict[str, float | int | None] = {
         "sharpe_ratio": sharpe_ratio,
         "max_drawdown_pct": max_drawdown_pct,
         "trade_count": trade_count,
     }
+
+    if request.operator_override:
+        # A general operator override is an explicit, loudly-recorded act that
+        # skips the statistical gate. It does NOT route through check_gate's
+        # lifecycle branch — the result is constructed here so the durable
+        # ledger carries promotion_type='operator_override', never a
+        # lifecycle-proof label (ADR 0058). Admissibility (paper-only, non-empty
+        # reason) was already enforced by _check_bypass_admissibility above.
+        gate_result = PromotionCheckResult(
+            allowed=True,
+            promotion_type=PROMOTION_TYPE_OPERATOR_OVERRIDE,
+            failures=[],
+            sharpe_ratio=sharpe_ratio,
+            max_drawdown_pct=max_drawdown_pct,
+            trade_count=trade_count,
+        )
+    else:
+        gate_result = check_gate(
+            lifecycle_exempt=request.lifecycle_exempt,
+            to_stage=to_stage,
+            sharpe_ratio=sharpe_ratio,
+            max_drawdown_pct=max_drawdown_pct,
+            trade_count=trade_count,
+            min_trade_count=int(config.backtest.get("min_trades_required", 30)),
+        )
+
     if not gate_result.allowed:
         return PromoteBlocked(
             reason_code=REASON_GATE_FAILED,
@@ -205,11 +363,7 @@ def prepare_and_record_promotion(
         recommendation=request.recommendation,
         known_risks=list(request.known_risks),
         promotion_type=gate_result.promotion_type,
-        gate_check_outcome={
-            "allowed": gate_result.allowed,
-            "promotion_type": gate_result.promotion_type,
-            "failures": list(gate_result.failures),
-        },
+        gate_check_outcome=_build_gate_check_outcome(request, gate_result),
         metrics_snapshot=metrics_snapshot,
         event_store=event_store,
         now=request.now,

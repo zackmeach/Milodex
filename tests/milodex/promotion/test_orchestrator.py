@@ -18,16 +18,25 @@ from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.promotion.orchestrator import (
     REASON_GATE_FAILED,
     REASON_INVALID_STAGE_TRANSITION,
+    REASON_LIFECYCLE_EXEMPT_NOT_SCOPED,
     REASON_MISSING_BACKTEST_RUN,
+    REASON_OVERRIDE_FLAGS_CONFLICT,
+    REASON_OVERRIDE_STAGE_NOT_ALLOWED,
     PromoteBlocked,
     PromoteError,
     PromoteRequest,
     PromoteSuccess,
+    _check_bypass_admissibility,
     prepare_and_record_promotion,
 )
 
 _NOW = datetime(2026, 5, 21, 18, 0, tzinfo=UTC)
-_STRATEGY_ID = "regime.daily.sma200_rotation.demo.v1"
+# The policy-listed lifecycle-proof strategy id (ADR 0058). Using the real
+# applies_to id keeps the lifecycle-exempt path admissible; the statistical
+# path is identity-agnostic, so the statistical tests are unaffected.
+_STRATEGY_ID = "regime.daily.sma200_rotation.spy_shy.v1"
+# A non-lifecycle-proof id for scoping-refusal tests.
+_NON_REGIME_ID = "meanrev.daily.rsi2.spy.v1"
 
 
 def _write_config(
@@ -35,22 +44,30 @@ def _write_config(
     *,
     stage: str = "backtest",
     min_trades_required: int = 30,
+    strategy_id: str = _STRATEGY_ID,
 ) -> Path:
     """Write a strategy YAML. ``min_trades_required`` is always an int — the
     null path is a known pre-existing CLI/Bench bug (``int(None)`` raises);
     RM-010 preserves bug-for-bug parity and does not exercise that path.
+
+    ``strategy_id`` defaults to the lifecycle-proof id; scoping tests pass a
+    non-regime id. The id is decomposed into family/template/variant/version
+    to satisfy the loader's ``{family}.{template}.{variant}.v{version}`` rule.
     """
     mt = str(min_trades_required)
+    family, template_head, template_tail, variant, version_token = strategy_id.split(".")
+    template = f"{template_head}.{template_tail}"
+    version = version_token.removeprefix("v")
     path = tmp_path / "demo_strategy.yaml"
     path.write_text(
         textwrap.dedent(
             f"""
             strategy:
-              id: "{_STRATEGY_ID}"
-              family: "regime"
-              template: "daily.sma200_rotation"
-              variant: "demo"
-              version: 1
+              id: "{strategy_id}"
+              family: "{family}"
+              template: "{template}"
+              variant: "{variant}"
+              version: {version}
               description: "test"
               enabled: true
               universe:
@@ -316,6 +333,150 @@ def test_lifecycle_exempt_promotion_bypasses_statistical_gate(tmp_path):
     }
     assert result.backtest_run_id is None
     assert 'stage: "paper"' in cfg_path.read_text(encoding="utf-8")
+
+    # D-4 (ADR 0058): the lifecycle path durably records the three R-PRM-004
+    # criteria as unenforced + deferred to M4 — an honest ledger, not a silent
+    # bypass.
+    criteria = result.evidence.gate_check_outcome["lifecycle_criteria"]
+    assert criteria["enforced"] is False
+    assert criteria["deferred"] == "M4"
+    assert len(criteria["criteria"]) == 3
+
+
+# ---------------------------------------------------------------------------
+# D-4 (ADR 0058): lifecycle exemption is scoped; operator override is split.
+# ---------------------------------------------------------------------------
+
+
+def test_lifecycle_exempt_refused_for_non_lifecycle_proof_strategy(tmp_path):
+    """A non-regime strategy cannot claim the lifecycle exemption. Fail closed;
+    point the operator at --operator-override. No durable writes."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, strategy_id=_NON_REGIME_ID)
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation="trying to sneak a non-regime strategy past the gate",
+        known_risks=["this should be refused"],
+        approved_by="operator",
+        run_id=None,
+        lifecycle_exempt=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_LIFECYCLE_EXEMPT_NOT_SCOPED
+    assert "operator-override" in result.message
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+def test_both_bypass_flags_refused(tmp_path):
+    """lifecycle_exempt and operator_override are mutually exclusive."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path)
+
+    request = PromoteRequest(
+        strategy_id=_STRATEGY_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation="cannot pick both",
+        known_risks=["ambiguous intent"],
+        approved_by="operator",
+        run_id=None,
+        lifecycle_exempt=True,
+        operator_override=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_OVERRIDE_FLAGS_CONFLICT
+    assert store.list_promotions_for_strategy(_STRATEGY_ID) == []
+
+
+def test_operator_override_to_paper_succeeds_and_records_reason(tmp_path):
+    """A general operator override lands at paper with
+    promotion_type='operator_override' and the reason recorded in durable
+    evidence — for a non-regime strategy, with no backtest run."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, strategy_id=_NON_REGIME_ID)
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation="deliberate operator bypass: platform smoke of a new edge",
+        known_risks=["statistical gate deliberately skipped"],
+        approved_by="operator",
+        run_id=None,
+        operator_override=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteSuccess)
+    assert result.promotion_type == "operator_override"
+    assert 'stage: "paper"' in cfg_path.read_text(encoding="utf-8")
+
+    override = result.evidence.gate_check_outcome["operator_override"]
+    assert override["reason"].startswith("deliberate operator bypass")
+
+    promotions = store.list_promotions_for_strategy(_NON_REGIME_ID)
+    assert len(promotions) == 1
+    assert promotions[0].promotion_type == "operator_override"
+
+
+def test_operator_override_to_micro_live_refused(tmp_path):
+    """operator_override may never reach a capital stage. End-to-end, a
+    micro_live override is refused with no durable write. (In Phase 1 the
+    stage-transition Phase-1 lock fires first — R-PRM-006 — so the refusal
+    reason is invalid_stage_transition; the paper-only override guard is
+    unit-tested separately below to prove it independently.)"""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="micro_live",
+        recommendation="trying to override into a capital stage",
+        known_risks=["should be refused by the autonomy boundary"],
+        approved_by="operator",
+        run_id=None,
+        operator_override=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    # Refused, no durable write, config untouched — the essential guarantee.
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+def test_operator_override_stage_guard_refuses_capital_stages():
+    """Unit-test the paper-only override guard in isolation (independent of the
+    Phase-1 stage lock): a capital-stage operator_override is refused with
+    REASON_OVERRIDE_STAGE_NOT_ALLOWED."""
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=Path("unused.yaml"),
+        to_stage="micro_live",
+        recommendation="capital-stage override attempt",
+        known_risks=["should be refused"],
+        approved_by="operator",
+        operator_override=True,
+        now=_NOW,
+    )
+    refusal = _check_bypass_admissibility(request, from_stage="paper", to_stage="micro_live")
+    assert isinstance(refusal, PromoteBlocked)
+    assert refusal.reason_code == REASON_OVERRIDE_STAGE_NOT_ALLOWED
 
 
 # ---------------------------------------------------------------------------
