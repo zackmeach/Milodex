@@ -112,10 +112,13 @@ M1 gate remains open — this is not a gate update.*
 - **D-3 Auto-launch vs ADR 0012** — a from-open launch is required for intraday to
   behave as designed, but none exists and [ADR 0012](adr/0012-runtime-and-dual-stop.md)
   forbids a daemon/scheduler in Phase 1. Manual pre-open deploy is the interim.
-- **D-4 Lifecycle-proof operational gate** — it is **define-only / not enforced**
-  ([ADR 0052](adr/0052-promotion-policy-is-a-typed-governance-source-of-truth.md);
-  `promotion/policy.py:154` `enforced=False`), so `--lifecycle-exempt` is a *general*
-  operator override of the statistical gate. Enforce vs document-loudly.
+- **D-4 Lifecycle-proof operational gate — DECIDED (ADR 0058).** "Split now,
+  enforce at M4": `--lifecycle-exempt` is scoped to policy-listed lifecycle-proof
+  ids (`policy.py` `applies_to`); a separate `--operator-override` (paper-only,
+  reasoned, `promotion_type='operator_override'`) is the honest general bypass;
+  the three R-PRM-004 criteria are recorded-as-unenforced with enforcement
+  deferred to M4. `check_gate` and the risk layer untouched.
+  ([ADR 0058](adr/0058-lifecycle-exemption-is-scoped-and-operator-override-is-split.md))
 - **D-5 Evidence-durability labeling stance** — every intraday verdict is
   structurally non-durable on IEX by policy; "closeable" must mean *honestly-labeled
   exploratory verdicts exist*, not *promotion-grade edge*. Lock the definition.
@@ -506,8 +509,8 @@ receives a concise decision brief with a recommended choice → (5) founder deci
 incorporates it at gate completion or formal gate invalidation. **Do not dump raw
 complexity on the founder before the independent review.**
 
-**Currently paused (require the protocol): D-2, D-3, D-4, D-5, D-8, D-9** (§2). *(D-1,
-D-6, D-7 resolved/closed as of 2026-07-02 — see §2.)*
+**Currently paused (require the protocol): D-2, D-3, D-5, D-8, D-9** (§2). *(D-1,
+D-4, D-6, D-7 resolved/closed as of 2026-07-02 — see §2.)*
 
 **Not high-impact — just do it (surgical, no pause):** veto-reason surfacing
 (read-only of an existing field); aggregate-liveness correctness fix; evidence
@@ -527,7 +530,7 @@ original examples; both are now resolved — see §2.)*
 | D-1 daily-execution fork | M0 | M1 |
 | D-2 intraday freeze | M0 | M1 |
 | D-3 auto-launch vs ADR 0012 | M1 | M1 (or M5 if reliability defers it) |
-| D-4 lifecycle-proof gate enforce-vs-document | M1 | M1 |
+| D-4 lifecycle-proof gate enforce-vs-document | M1 | M1 — decided 2026-07-02 ([ADR 0058](adr/0058-lifecycle-exemption-is-scoped-and-operator-override-is-split.md)) |
 | D-5 evidence-durability labeling | M3 | M3 |
 | D-6 closure coverage-floor scope | M0 | M0 |
 | D-7 fault-modes branch adjudication | M0 | M0 (content consumed in M4) |

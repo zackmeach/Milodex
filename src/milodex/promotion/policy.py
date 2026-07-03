@@ -55,14 +55,23 @@ class GateThresholds:
 class LifecycleGateDefinition:
     """Definition-only model of the SRS R-PRM-004 lifecycle-proof gate.
 
+    ``applies_to`` is the typed identity source-of-truth for "which strategy
+    ids are lifecycle-proof" (ADR 0058). The orchestrator scopes the
+    ``lifecycle_exempt`` promotion path to exactly these ids; a lifecycle-exempt
+    request for any other id is refused (fail closed), and a general operator
+    override is offered as a separate, loudly-recorded mechanism.
+
     ``enforced`` is False by deliberate decision: the criteria are modeled
     so the policy is complete and inspectable, but ``check_gate`` still
-    short-circuits lifecycle-exempt promotions to ``allowed=True``. Closing
-    this gap is tracked future work (ADR 0052, "Known gap").
+    short-circuits lifecycle-exempt promotions to ``allowed=True``. Enforcement
+    of criteria (a)/(b)/(c) is deferred to roadmap M4 (ADR 0058) — the design
+    and tooling (fault-injection harness, signal-count metadata, integer-join
+    freshness bound) belong to that milestone.
     """
 
     criteria: tuple[str, ...]
     description: str
+    applies_to: tuple[str, ...] = ()
     enforced: bool = False
 
 
@@ -149,8 +158,10 @@ PHASE1_GOVERNANCE_V1 = PromotionPolicy(
         description=(
             "SRS R-PRM-004 lifecycle-proof paper gate for the regime strategy. "
             "Defined for completeness; NOT enforced in code (check_gate still "
-            "returns allowed=True for lifecycle-exempt promotions). Tracked gap."
+            "returns allowed=True for lifecycle-exempt promotions). Criteria "
+            "enforcement deferred to roadmap M4 (ADR 0058)."
         ),
+        applies_to=("regime.daily.sma200_rotation.spy_shy.v1",),
         enforced=False,
     ),
 )

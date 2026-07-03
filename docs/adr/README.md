@@ -86,3 +86,4 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0055](0055-event-store-per-strategy-position-ledger.md) | Event-store per-strategy position ledger for concurrent runners | Accepted |
 | [0056](0056-cross-process-submit-serialization-per-account-advisory-lock.md) | Cross-process submit serialization uses a per-account advisory lock | Accepted |
 | [0057](0057-daily-execution-queue-at-open.md) | Daily execution resolves via queue-at-open (D-1) | Accepted |
+| [0058](0058-lifecycle-exemption-is-scoped-and-operator-override-is-split.md) | Lifecycle exemption is scoped; operator override is split (D-4) | Accepted |

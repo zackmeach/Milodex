@@ -112,6 +112,77 @@ def _write_strategy(config_dir: Path, *, stage: str, min_trades_required: int = 
     return path
 
 
+# The policy-listed lifecycle-proof id (ADR 0058). The lifecycle-exempt bypass
+# is scoped to this id; the sample STRATEGY_ID above is NOT lifecycle-proof, so
+# the two no-backtest-run happy-path submit tests use this regime config.
+_REGIME_STRATEGY_ID = "regime.daily.sma200_rotation.spy_shy.v1"
+
+_REGIME_YAML_TEMPLATE = textwrap.dedent(
+    """\
+    strategy:
+      id: "regime.daily.sma200_rotation.spy_shy.v1"
+      family: "regime"
+      template: "daily.sma200_rotation"
+      variant: "spy_shy"
+      version: 1
+      description: "Lifecycle-proof regime strategy (bench facade test)."
+      enabled: true
+      universe: ["SPY", "SHY"]
+      parameters:
+        ma_filter_length: 200
+      tempo:
+        bar_size: "1D"
+        min_hold_days: 1
+        max_hold_days: 5
+      risk:
+        max_position_pct: 0.10
+        max_positions: 1
+        daily_loss_cap_pct: 0.02
+        stop_loss_pct: null
+      stage: "{stage}"
+      backtest:
+        commission_per_trade: 0.00
+        min_trades_required: 30
+      disable_conditions_additional: []
+    """
+)
+
+
+def _write_regime_strategy(config_dir: Path, *, stage: str) -> Path:
+    path = config_dir / "regime_strategy.yaml"
+    path.write_text(_REGIME_YAML_TEMPLATE.format(stage=stage), encoding="utf-8")
+    return path
+
+
+def _make_regime_promote_proposal(
+    *,
+    recommendation: str | None = "Regime strategy; lifecycle-exempt per R-PRM-004.",
+    known_risks: list[str] | None = None,
+    approved_by: str = "operator",
+) -> CommandProposal:
+    """Lifecycle-exempt promote proposal for the policy-listed regime id
+    (ADR 0058) — the honest lifecycle-exempt happy path (no backtest run)."""
+    risks = ["whipsaw"] if known_risks is None else list(known_risks)
+    return CommandProposal(
+        action_family=ACTION_FAMILY_PROMOTE_TO_PAPER,
+        strategy_id=_REGIME_STRATEGY_ID,
+        inputs={
+            "to_stage": "paper",
+            "recommendation": recommendation,
+            "known_risks": risks,
+            "run_id": None,
+            "approved_by": approved_by,
+            "lifecycle_exempt": True,
+        },
+        state_snapshot={},
+        preconditions=[],
+        projected_outcome={},
+        blockers=[],
+        proposed_at=datetime.now(),
+        proposal_id="phase-d2-regime-proposal",
+    )
+
+
 def _seed_runner_lock(locks_dir: Path) -> Path:
     """Write a holder file mimicking a *live* active runner.
 
@@ -2440,23 +2511,19 @@ def test_submit_promote_to_paper_lifecycle_exempt_success(
     make_facade, config_dir: Path, event_store: EventStore
 ) -> None:
     """Phase D2 happy path via the lifecycle-exempt branch (no backtest run
-    needed). Asserts atomic manifest + promotion landing and YAML stage
-    rewrite via the same governance callee the CLI uses."""
-    config_path = _write_strategy(config_dir, stage="backtest")
+    needed), using the policy-listed lifecycle-proof regime id (ADR 0058 —
+    the exemption is scoped to that id). Asserts atomic manifest + promotion
+    landing and YAML stage rewrite via the same governance callee the CLI uses."""
+    config_path = _write_regime_strategy(config_dir, stage="backtest")
     facade = make_facade()
-    proposal = _make_promote_to_paper_proposal(
-        recommendation="Regime strategy; lifecycle-exempt per R-PRM-004.",
-        known_risks=["whipsaw"],
-        run_id=None,
-        lifecycle_exempt=True,
-    )
+    proposal = _make_regime_promote_proposal()
 
     result = facade.submit_promote_to_paper(proposal)
 
     assert result.status == "submitted", result.blockers
     assert result.action_family == ACTION_FAMILY_PROMOTE_TO_PAPER
     # Durable refs carry the full promotion + manifest identification.
-    assert result.durable_refs["strategy_id"] == STRATEGY_ID
+    assert result.durable_refs["strategy_id"] == _REGIME_STRATEGY_ID
     assert result.durable_refs["from_stage"] == "backtest"
     assert result.durable_refs["to_stage"] == "paper"
     assert result.durable_refs["promotion_type"] == "lifecycle_exempt"
@@ -2469,7 +2536,7 @@ def test_submit_promote_to_paper_lifecycle_exempt_success(
     # YAML stage line rewritten.
     assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
     # Auto-frozen manifest at the paper stage.
-    manifest = event_store.get_active_manifest_for_strategy(STRATEGY_ID, "paper")
+    manifest = event_store.get_active_manifest_for_strategy(_REGIME_STRATEGY_ID, "paper")
     assert manifest is not None
     assert manifest.stage == "paper"
     assert manifest.config_hash == result.durable_refs["manifest_hash"]
@@ -2740,21 +2807,22 @@ def test_submit_promote_to_paper_threads_approved_by_from_inputs(
     """The CLI default of ``approved_by="operator"`` is overrideable per
     request. The Bench bridge (Phase D3) will source it via the same
     ``_resolve_operator_identity()`` helper used for demote/freeze; the
-    backend just threads the value through to the governance event."""
-    _write_strategy(config_dir, stage="backtest")
+    backend just threads the value through to the governance event.
+
+    Uses the lifecycle-proof regime id so the lifecycle-exempt no-run path is
+    admissible under the ADR 0058 scoping."""
+    _write_regime_strategy(config_dir, stage="backtest")
     facade = make_facade()
-    proposal = _make_promote_to_paper_proposal(
+    proposal = _make_regime_promote_proposal(
         approved_by="operator-cli-override",
         recommendation="lifecycle-exempt",
         known_risks=["w"],
-        run_id=None,
-        lifecycle_exempt=True,
     )
 
     result = facade.submit_promote_to_paper(proposal)
     assert result.status == "submitted", result.blockers
     assert result.durable_refs["approved_by"] == "operator-cli-override"
-    promotions = event_store.list_promotions_for_strategy(STRATEGY_ID)
+    promotions = event_store.list_promotions_for_strategy(_REGIME_STRATEGY_ID)
     assert len(promotions) == 1
     assert promotions[0].approved_by == "operator-cli-override"
 

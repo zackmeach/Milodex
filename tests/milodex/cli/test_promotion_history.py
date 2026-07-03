@@ -69,6 +69,9 @@ def _run(argv: list[str], tmp_path: Path, *, stdout=None, stderr=None):
 
 
 def _promote_and_demote(tmp_path: Path) -> None:
+    # Scaffolding: land the (non-lifecycle-proof) test strategy at paper. The
+    # lifecycle exemption is scoped to policy-listed regime ids (ADR 0058), so a
+    # general operator override is the honest no-backtest-run path here.
     _run(
         [
             "promotion",
@@ -79,8 +82,8 @@ def _promote_and_demote(tmp_path: Path) -> None:
             "--recommendation",
             "ready for paper",
             "--risk",
-            "lifecycle-exempt",
-            "--lifecycle-exempt",
+            "operator override",
+            "--operator-override",
         ],
         tmp_path,
     )
@@ -112,7 +115,7 @@ def test_history_renders_reversal_glyph_for_demotion(tmp_path):
     body = out.getvalue()
     # newest-first: demotion row appears before the promotion row it reverses
     demote_idx = body.find("demotion")
-    promote_idx = body.find("lifecycle_exempt")
+    promote_idx = body.find("operator_override")
     assert demote_idx != -1 and promote_idx != -1
     assert demote_idx < promote_idx
     # reversal glyph with referenced id
@@ -145,8 +148,8 @@ def test_history_limit_truncates(tmp_path):
     assert exit_code == 0
     body = out.getvalue()
     assert "demotion" in body
-    # the older lifecycle_exempt row is beyond the limit
-    assert "lifecycle_exempt" not in body
+    # the older operator_override row is beyond the limit
+    assert "operator_override" not in body
 
 
 def test_history_json_output(tmp_path):
@@ -167,7 +170,7 @@ def test_history_json_output(tmp_path):
     # newest first
     assert events[0]["promotion_type"] == "demotion"
     assert events[0]["reverses_event_id"] == events[1]["id"]
-    assert events[1]["promotion_type"] == "lifecycle_exempt"
+    assert events[1]["promotion_type"] == "operator_override"
     assert events[1]["reverses_event_id"] is None
 
 

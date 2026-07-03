@@ -91,7 +91,21 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     promote_parser.add_argument(
         "--lifecycle-exempt",
         action="store_true",
-        help="Bypass statistical thresholds (regime / lifecycle-proof strategies).",
+        help=(
+            "Bypass statistical thresholds for a policy-listed lifecycle-proof "
+            "strategy id (regime strategy). Scoped per ADR 0058 — refused for any "
+            "other strategy; use --operator-override for a general bypass."
+        ),
+    )
+    promote_parser.add_argument(
+        "--operator-override",
+        action="store_true",
+        help=(
+            "Deliberate operator bypass of the statistical gate (ADR 0058). "
+            "Paper stage only; requires a non-blank --recommendation as the "
+            "recorded reason. Recorded as promotion_type='operator_override'. "
+            "Mutually exclusive with --lifecycle-exempt."
+        ),
     )
     promote_parser.add_argument(
         "--confirm",
@@ -186,6 +200,15 @@ def _freeze(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     _require_evidence_inputs(args)
 
+    # CLI-level fast-fail for the mutually-exclusive bypass flags. The
+    # orchestrator enforces this regardless (CLI is not the only caller), but a
+    # local argparse-style error is friendlier than a governance refusal.
+    if args.lifecycle_exempt and args.operator_override:
+        raise ValueError(
+            "--lifecycle-exempt and --operator-override are mutually exclusive; "
+            "pass at most one (ADR 0058)."
+        )
+
     config_path = resolve_strategy_config_path(args.strategy_id, ctx.config_dir)
     to_stage = args.to_stage
 
@@ -206,6 +229,7 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         approved_by=args.approved_by,
         run_id=args.run_id,
         lifecycle_exempt=args.lifecycle_exempt,
+        operator_override=args.operator_override,
         notes=args.notes,
     )
     result = prepare_and_record_promotion(request, event_store)

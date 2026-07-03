@@ -66,6 +66,10 @@ def _raise(msg: str):
 
 
 def _promote_first(tmp_path: Path) -> None:
+    # Scaffolding: land the (non-lifecycle-proof) test strategy at paper so a
+    # demotion can be exercised. Post-ADR-0058 the lifecycle exemption is scoped
+    # to policy-listed regime ids, so a general operator override is the honest
+    # no-backtest-run path to paper for a non-regime strategy.
     _run(
         [
             "promotion",
@@ -77,7 +81,7 @@ def _promote_first(tmp_path: Path) -> None:
             "ready for paper",
             "--risk",
             "manifest drift risk",
-            "--lifecycle-exempt",
+            "--operator-override",
         ],
         tmp_path,
     )
@@ -114,7 +118,7 @@ def test_demote_to_backtest_updates_yaml_and_links_reversal(tmp_path):
     promotions = store.list_promotions()
     assert len(promotions) == 2
     promote_row, demote_row = promotions[0], promotions[1]
-    assert promote_row.promotion_type == "lifecycle_exempt"
+    assert promote_row.promotion_type == "operator_override"
     assert demote_row.promotion_type == "demotion"
     assert demote_row.from_stage == "paper"
     assert demote_row.to_stage == "backtest"
