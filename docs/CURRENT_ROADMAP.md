@@ -120,7 +120,7 @@ M1 gate remains open — this is not a gate update.*
   structurally non-durable on IEX by policy; "closeable" must mean *honestly-labeled
   exploratory verdicts exist*, not *promotion-grade edge*. Lock the definition.
 - **D-6 Coverage floor for closure — CLOSED (decided at M0).** Founder chose a
-  targeted critical-obligation assurance gate with a versioned allowlist (see §12);
+  targeted critical-obligation assurance gate with a versioned allowlist (see §11);
   not a bare coverage percentage.
 - **D-7 `docs/troubleshooting-fault-modes` branch adjudication — CLOSED.** Branch
   merged as #281 (+134-line additive doc). The "~447 unrelated test deletions" framing
