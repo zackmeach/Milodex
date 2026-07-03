@@ -57,41 +57,56 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 
 ## 2. Current-state banner
 
+*Factual-currency correction applied 2026-07-02 (D-1 resolution + live-fire state);
+M1 gate remains open — this is not a gate update.*
+
 | Field | Value |
 |---|---|
-| **As-of** | 2026-06-22 |
-| **Commit examined** | `51e470f` on branch `chore/reqs-traceability-batch1` (= merge `ea12cc1` + 2 reqs-traceability commits) |
-| **master vs origin** | local `master` `4a6798e` is **6 commits ahead of `origin/master` (`ea12cc1`), unpushed** |
-| **Second worktree** | `C:/Users/zdm80/milodex-reqs-wt` on `reqs-coverage-backfill-batch1` (`a2998c9`, unpushed) |
-| **Last verified gate (this roadmap)** | None — roadmap newly established. Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
-| **Active milestone** | **M1 — Executable paper-fleet truth** (the keystone milestone). M0 **CLOSED 2026-06-22** — retrospective in §11; the M0 doc PR (`docs/m0-ground-truth`) should merge before M1 execution begins. M3 is parallel-eligible. |
+| **As-of** | 2026-07-02 (factual-currency correction; see note below) |
+| **Commit examined** | `11e444b` on `master` (**= `origin/master`**, working tree clean) |
+| **master vs origin** | in sync — `11e444b` on both. *(Superseded: the prior banner's `4a6798e` / 6-ahead-unpushed state no longer exists.)* |
+| **Second worktree** | none active for this roadmap surface. *(Superseded: `C:/Users/zdm80/milodex-reqs-wt` was on an already-merged branch — stale, cleanup-only.)* |
+| **Last verified gate (this roadmap)** | M0 **CLOSED 2026-06-22** (retrospective §11). Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
+| **Active milestone** | **M1 — Executable paper-fleet truth** (the keystone milestone) — **ACTIVE, gate not yet met.** D-1 (daily-execution fork) **RESOLVED**: Option A queue-at-open, shipped [ADR 0057](adr/0057-daily-execution-queue-at-open.md) (#289/#290/#291). Close-side half-proof observed 2026-07-02 (6/6 daily paper runners, clean full session, 8 queued intents locked in at close, `market_closed` veto intact). Open-side (drain → submit → observed fill) **unproven** — next-open relaunch 2026-07-06 is the planned M1 gate event. |
 
 **Current blockers (code-confirmed at HEAD):**
 
-1. **The deployed cohort had no working submit path** (scope: as tested 2026-06-22 —
-   *not* a claim that every possible path is severed). Daily (1D) strategies are
-   vetoed `market_closed` ([`risk/evaluator.py:431`](../src/milodex/risk/evaluator.py))
-   — they *must* decide post-close (runner no-ops while open,
-   [`strategies/runner.py:272`](../src/milodex/strategies/runner.py)) and there is
-   **no daily exemption and no decision-only/queue path** (structural; all 1D incl.
-   the lifecycle-proof regime strategy). The deployed intraday Phase-2 candidates are
-   vetoed `no_frozen_manifest`
+1. **[SUPERSEDED for daily; intraday unchanged]** As tested 2026-06-22, the deployed
+   cohort had no working submit path. **Daily is no longer blocked this way**: D-1
+   resolved as queue-at-open ([ADR 0057](adr/0057-daily-execution-queue-at-open.md),
+   #289/#290/#291) — a daily runner persists a queued intent at close
+   ([`strategies/runner.py:415`](../src/milodex/strategies/runner.py)), drains it
+   during market hours from the live loop
+   ([`runner.py:283-289`](../src/milodex/strategies/runner.py) →
+   `_drain_queued_intents` `runner.py:981`), and submits through the execution
+   chokepoint with the full risk battery + an atomic CAS
+   (`event_store.consume_queued_intent_and_append_attempt`). The `market_closed` veto
+   ([`risk/evaluator.py:437-447`](../src/milodex/risk/evaluator.py)) is **not**
+   relaxed — doctrine intact. Close-side proof observed 2026-07-02 (see §2 banner);
+   open-side (drain → submit → fill) is the M1 gate event, not yet proven. The
+   deployed intraday Phase-2 candidates remain vetoed `no_frozen_manifest`
    ([`risk/evaluator.py:321`](../src/milodex/risk/evaluator.py)) — 16 non-SPY ETF
    replicas carry `stage: paper` but were never `promotion freeze`d. The 5 **frozen**
    SPY intraday canaries are a structurally-open path that produced no fill only
    because the session launched mid-day (open-anchored entries dead; rsi2 locked out
    of already-dipped symbols) — **unexercised, not severed**.
-2. **Repo is materially mid-flight** — master ahead/unpushed, a second worktree,
-   ~13 local branches (many unmerged), the June cleanup-backlog "now-tier" work
-   stranded on unmerged branches, and 4 untracked files
-   ([`GUI_AUDIT_2026-06-22.md`](GUI_AUDIT_2026-06-22.md),
-   two `architecture/roadmaps/` docs, `scripts/livefire_probe.py`).
+2. **[SUPERSEDED]** As of 2026-07-02, `master` is in sync with `origin/master`
+   (`11e444b`), the working tree is clean, and the 4 previously-untracked files are
+   committed; the second worktree (`C:/Users/zdm80/milodex-reqs-wt`) is on an
+   already-merged branch — stale, cleanup-only. Residual non-blocking debt: 4
+   unmerged local branches with real work (`chore/dep-upper-bounds`,
+   `chore/dep-upper-bounds-batch2`, `docs/doc-debt-closeout`,
+   `fix/ruff-i001-gap-continuation`), ~13 stale merged-but-undeleted local branches,
+   ~13 `worktree-wf_*` scratch branches, and one untracked file
+   (`docs/RESUME_EXTRACT.md`).
 
 **Pending high-impact / uncertain decisions (await the §8 decision-pause protocol):**
 
-- **D-1 Daily-execution fork** — queue-at-open (lock-in at close → TIF=day pre-open
-  + mandatory morning re-validation) vs relax `market_hours` for 1D vs reclassify
-  daily as **decision-only**. Risk-policy + execution + runner. *Keystone.*
+- **D-1 Daily-execution fork — RESOLVED.** Decided: Option A, queue-at-open
+  ([ADR 0057](adr/0057-daily-execution-queue-at-open.md), #289/#290/#291). Close-side
+  half-proof observed 2026-07-02 (clean full session, 8 intents queued at close,
+  `market_closed` veto intact); open-side (drain → submit → fill) unproven — the
+  2026-07-06 pre-open relaunch is the planned M1 gate event. *Keystone.*
 - **D-2 Intraday freeze governance** — whether/which of the 16 unfrozen non-SPY ETF
   replicas to `promotion freeze` (prerequisite for any intraday fill).
 - **D-3 Auto-launch vs ADR 0012** — a from-open launch is required for intraday to
@@ -104,11 +119,12 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 - **D-5 Evidence-durability labeling stance** — every intraday verdict is
   structurally non-durable on IEX by policy; "closeable" must mean *honestly-labeled
   exploratory verdicts exist*, not *promotion-grade edge*. Lock the definition.
-- **D-6 Coverage floor for closure** — requirements coverage is 29% (98/138 SRS
-  reqs untested). Decide whether a coverage floor is in-scope for closure or deferred.
-- **D-7 `docs/troubleshooting-fault-modes` branch adjudication** — it carries +134
-  lines of operator fault-mode guidance **and ~447 unrelated test deletions**. Must
-  not merge silently (operational cleanup that may discard valuable state).
+- **D-6 Coverage floor for closure — CLOSED (decided at M0).** Founder chose a
+  targeted critical-obligation assurance gate with a versioned allowlist (see §11);
+  not a bare coverage percentage.
+- **D-7 `docs/troubleshooting-fault-modes` branch adjudication — CLOSED.** Branch
+  merged as #281 (+134-line additive doc). The "~447 unrelated test deletions" framing
+  was stale/unreproducible — corrected here; content consumed in M4.
 - **D-8 Evidence-reconstruction sufficiency** — is *honest non-authoritative
   labeling* enough for closure, or does closure require authoritative event-derived
   evidence reconstruction ([ADR 0050](adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md)
@@ -124,9 +140,11 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 
 **Known limitations in this status assessment (read honestly):**
 
-- **No `git fetch` was performed** (forbidden for this pass). `origin/*` reflects the
-  last local sync; I cannot confirm `origin/master` has not advanced. Local `master`
-  (`4a6798e`) was not file-by-file re-examined for every cluster.
+- **[SUPERSEDED]** The original "no `git fetch` performed" caveat applied to the
+  2026-06-22 assessment at `51e470f`/`4a6798e`. This correction (2026-07-02) did
+  `git fetch` and confirmed local `master` (`11e444b`) = `origin/master`; the
+  underlying content clusters were not re-audited file-by-file beyond the specific
+  claims corrected in this pass.
 - **Reliability evidence is idle-stability only.** The clean ~5h soak (2026-06-22)
   was a **mid-session launch that produced zero fills**. From-open launch and the
   concurrent same-symbol submit path (#270/#262) are **un-exercised** — do not let
@@ -174,7 +192,7 @@ adjudicates** — it does not restate source content.
 | Document | Type | Disposition | Rationale → absorbed by |
 |---|---|---|---|
 | [architecture/roadmaps/2026-06-22-livefire-findings.md](architecture/roadmaps/2026-06-22-livefire-findings.md) | live-evidence | adopted | **Authoritative live read.** Findings 2/3 (no submit path) line-cites verified; Finding 4 (clean soak) confirmed. → M1 (execution truth) + §2 banner. |
-| [architecture/roadmaps/2026-06-10-hardening-roadmap.md](architecture/roadmaps/2026-06-10-hardening-roadmap.md) | historical-plan | partially-adopted | 12/12 executable PRs merged; **DC-2/HR-8 queue-at-open NEVER BUILT** — its proposal is the leading **D-1** option. HR-4 manual kill-switch trip+reset still un-walked → M4. |
+| [architecture/roadmaps/2026-06-10-hardening-roadmap.md](architecture/roadmaps/2026-06-10-hardening-roadmap.md) | historical-plan | partially-adopted | 12/12 executable PRs merged; **DC-2/HR-8 queue-at-open** was the leading **D-1** option — since built and merged ([ADR 0057](adr/0057-daily-execution-queue-at-open.md), #289-#291). HR-4 manual kill-switch trip+reset still un-walked → M4. |
 | [architecture/roadmaps/2026-06-21-usage-burn-backlog.md](architecture/roadmaps/2026-06-21-usage-burn-backlog.md) | backlog | partially-adopted | Internal-refactor tiers (A/B/C/D) = maintainability, **deferred** (§10) unless touch-it. **Tier F product-validation (F1 clean-room, F2 lifecycle rehearsal, F3 fault drills) = trust-closure-relevant** → M4. *Note: "now-tier done as 8 PRs" reflects unmerged branches, not master — the file's own item states (UNVERIFIED) govern.* |
 | [REQUIREMENTS_COVERAGE.md](REQUIREMENTS_COVERAGE.md) | generated | partially-adopted | Content current; stamp lags one commit; 29% coverage is the live backdrop for the in-flight reqs-traceability work. → **D-6** + parallel verification. |
 | [LAUNCH_READINESS.md](LAUNCH_READINESS.md) | frozen snapshot (2026-05-14) | superseded | PASS verdicts pinned to `fee27fe`; §7 outcome record blank/never-tagged; 5 MANUAL-REQUIRED items genuinely unverified. → M4 (drills) + relabel touch-it. |
@@ -279,12 +297,13 @@ M0 ─► M1 ─► M2 ──────────► M4 ─► M5 ─► M6
           needs only M0 + an isolated evidence/worktree state, NOT M1)
 ```
 
-**Keystone dependency:** the **D-1 daily-execution fork** shapes everything
-downstream — pour no execution code until it is chosen via the §8 protocol.
-"Reclassify daily → decision-only" is cheap but loads the entire real-fill burden
-onto intraday (IEX-non-durable, freeze-gated, from-open-launch-dependent);
-"queue-at-open" is a sacred-layer change but lets daily fill. Cost the fork
-downstream, do not pick it for cheapness.
+**Keystone dependency — RESOLVED.** The **D-1 daily-execution fork** shaped
+everything downstream; it is now decided: **queue-at-open**
+([ADR 0057](adr/0057-daily-execution-queue-at-open.md), #289/#290/#291). The
+rejected alternative, "reclassify daily → decision-only," would have been cheap but
+loaded the entire real-fill burden onto intraday (IEX-non-durable, freeze-gated,
+from-open-launch-dependent). Close-side half-proof observed 2026-07-02; open-side
+proof is the remaining M1 gate event (§2).
 
 ---
 
@@ -487,7 +506,8 @@ receives a concise decision brief with a recommended choice → (5) founder deci
 incorporates it at gate completion or formal gate invalidation. **Do not dump raw
 complexity on the founder before the independent review.**
 
-**Currently paused (require the protocol): D-1, D-2, D-3, D-4, D-5, D-6, D-7, D-8, D-9** (§2).
+**Currently paused (require the protocol): D-2, D-3, D-4, D-5, D-8, D-9** (§2). *(D-1,
+D-6, D-7 resolved/closed as of 2026-07-02 — see §2.)*
 
 **Not high-impact — just do it (surgical, no pause):** veto-reason surfacing
 (read-only of an existing field); aggregate-liveness correctness fix; evidence
@@ -496,8 +516,9 @@ authority/freshness *labeling* honesty — **showing** `authoritative=False` tru
 reconstruction, which is large → §10); quit/close + continuity panels (founder
 already *locked* the decision); M0 genuine-drift doc corrections (documenting reality
 is not a decision). *Trap to avoid: pausing on cheap reversible UI while failing to
-pause on D-1, D-7, and the manual-halt TRIP (**D-9** — it reads "just reachability"
-but is ADR-forbidden today).*
+pause on genuinely high-impact decisions like the manual-halt TRIP (**D-9** — it
+reads "just reachability" but is ADR-forbidden today). (D-1 and D-7 were this trap's
+original examples; both are now resolved — see §2.)*
 
 **Decision-ownership map** (every queued decision has exactly one owning gate):
 
