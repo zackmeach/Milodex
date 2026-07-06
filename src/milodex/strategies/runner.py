@@ -30,7 +30,7 @@ from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_f
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
-from milodex.operations.reconciliation import local_trading_day, run_reconciliation
+from milodex.operations.reconciliation import ET_TZ, local_trading_day, run_reconciliation
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
 from milodex.runner.drain_policy import tradable_drop_decision
 from milodex.strategies.base import DecisionReasoning
@@ -647,15 +647,24 @@ class StrategyRunner:
         """True iff the latest daily bar is for the current session (or newer),
         not a prior session's stale close.
 
-        Both sides are UTC: ``_now()`` returns ``datetime.now(tz=UTC)`` and
-        BarSet timestamps are ``datetime64[ns, UTC]`` (data/models.py), so the
-        comparison is dependency-free (no tzdata).  ``>=`` (not ``==``) is
-        required: real bars are never future-dated in production, but the test
-        harness builds today-dated bars against a fixed historical fake clock,
-        so ``==`` would reject them.  A pre-open / weekend launch sees a
-        prior-session bar (date < today) and is correctly declined.
+        The "now" side MUST be compared in ET, not UTC. A daily bar's UTC date
+        equals its ET session date (Alpaca stamps 1D bars at ~04:00-05:00 UTC on
+        the session date, so the UTC calendar date is the session date in either
+        DST offset). But ``datetime.now(tz=UTC).date()`` rolls to the NEXT
+        calendar day at ~20:00 ET, so a UTC comparison declines the *current*
+        session's own close bar as "prior session" during the 20:00-24:00 ET
+        post-close window — suppressing the day's evaluation until the next
+        session (observed 2026-07). Normalize now to the ET session date so a
+        post-close launch works at any evening hour.
+
+        ``>=`` (not ``==``) is required: real bars are never future-dated in
+        production, but the test harness builds today-dated bars against a fixed
+        fake clock, so ``==`` would reject them.  A pre-open / weekend launch
+        sees a prior-session bar (session date < today's ET session date) and is
+        correctly declined.
         """
-        return latest_bar.timestamp.date() >= self._now().date()
+        now_session_date = self._now().astimezone(ET_TZ).date()
+        return latest_bar.timestamp.date() >= now_session_date
 
     def _lockin_confirmed(self, latest_bar) -> bool:
         """Return whether the post-close lock-in stability gate is satisfied.
