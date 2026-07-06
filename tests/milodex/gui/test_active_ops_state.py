@@ -970,8 +970,19 @@ def _make_state(
 
 
 def _drain_pool(state) -> None:
-    state._thread_pool.waitForDone(2000)  # noqa: SLF001
-    QCoreApplication.processEvents()
+    """Poll until the refresh settles (``dataStatus`` leaves "loading").
+
+    Condition-based to survive xdist worker-scheduling delay (root-caused
+    2026-07-06; see test_attention_state._wait_for_pool for the full write-up).
+    """
+    import time
+
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        state._thread_pool.waitForDone(50)  # noqa: SLF001
+        QCoreApplication.processEvents()
+        if state.dataStatus != "loading":
+            break
     QCoreApplication.processEvents()
 
 

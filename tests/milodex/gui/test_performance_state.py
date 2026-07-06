@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -549,9 +550,18 @@ def _make_state(
 
 
 def _wait_for_pool(state) -> None:
-    """Block until the state's thread pool drains, then process Qt events."""
-    state._thread_pool.waitForDone(2000)  # noqa: SLF001
-    QCoreApplication.processEvents()
+    """Poll until the background refresh settles (``dataStatus`` leaves "loading").
+
+    Condition-based, not a fixed budget — a plain ``waitForDone(2000)`` can return
+    before the xdist-delayed worker runs, flaking the caller (root-caused 2026-07-06,
+    same fix as test_attention_state.py). A terminal "error" outcome is not masked.
+    """
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        state._thread_pool.waitForDone(50)  # noqa: SLF001
+        QCoreApplication.processEvents()
+        if state.dataStatus != "loading":
+            break
     QCoreApplication.processEvents()
 
 
