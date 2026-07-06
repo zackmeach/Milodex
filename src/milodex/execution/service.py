@@ -98,20 +98,39 @@ class ExecutionService:
         # must still be recognised as a backtest so it does not couple to
         # today's wall-clock/manifest state while its structural checks run.
         self._is_backtest = is_backtest
-        # G1 (sacred-layer invariant): a NullRiskEvaluator allows every intent
-        # with zero checks. It is ONLY legitimate on an explicitly-declared
-        # backtest service (simulated broker, single process). Forbid it on any
-        # non-backtest service by construction — otherwise a wiring mistake or a
-        # new callsite could inject it onto a paper/live submit path and skip the
-        # kill switch, manifest-drift check, and every exposure cap straight to
-        # the broker. Fail closed, loudly, at wiring time rather than trusting a
-        # per-call type inference.
-        if isinstance(self._risk_evaluator, NullRiskEvaluator) and not is_backtest:
+        # G1 (sacred-layer invariant): the full production risk sweep lives in
+        # ``RiskEvaluator.evaluate`` — the ``_CHECKS`` tuple: kill switch,
+        # manifest drift, exposure caps, duplicate/opposite-side guards, etc.
+        # The ONLY way to skip that sweep is to override ``evaluate``:
+        # ``NullRiskEvaluator`` short-circuits to always-allow;
+        # ``BacktestStructuralRiskEvaluator`` runs only the structural subset
+        # (no kill switch). Both are legitimate ONLY on an explicitly-declared
+        # backtest service (simulated broker, single process). Forbid ANY
+        # class-level ``evaluate`` override on a non-backtest service by
+        # construction, so the check sweep is iterated on every paper/live submit
+        # — closing not just the known ``NullRiskEvaluator`` seam but any present
+        # or future check-skipping / blanket-allow subclass. This is stronger
+        # than an ``isinstance``-per-subclass check (which silently misses the
+        # next backtest-only evaluator) and safer than probing ``evaluate``
+        # behaviour at construction (fragile — needs a synthetic context).
+        #
+        # Deliberate scope (not holes — no callsite reaches either, and both are
+        # in-repo sabotage no constructor guard can catch short of running the
+        # sweep): (1) a subclass that keeps the base ``evaluate`` but overrides an
+        # individual ``_check_*`` to pass vacuously is allowed — this guards the
+        # sweep is *iterated*, not that each check's semantics are intact; (2)
+        # ``type(x)`` reads the CLASS attribute, so an instance-level
+        # ``inst.evaluate = ...`` monkeypatch is invisible here (``type(x)`` is
+        # chosen over ``x.evaluate`` precisely so a metaclass cannot hide a
+        # class-body override). Fail closed, loudly, at wiring time.
+        if not is_backtest and type(self._risk_evaluator).evaluate is not RiskEvaluator.evaluate:
             raise ValueError(
-                "NullRiskEvaluator bypasses all risk checks and is only valid on a "
-                "backtest ExecutionService (is_backtest=True). Refusing to construct a "
-                "non-backtest execution service with a null risk evaluator — the risk "
-                "layer is sacred and must not be bypassed on a paper/live submit path."
+                "Risk evaluator overrides evaluate(), replacing the full production risk "
+                "check sweep (kill switch, manifest drift, exposure caps). Such an evaluator "
+                "(e.g. NullRiskEvaluator or BacktestStructuralRiskEvaluator) is only valid on "
+                "a backtest ExecutionService (is_backtest=True). Refusing to construct a "
+                "non-backtest execution service whose evaluator bypasses the check sweep — the "
+                "risk layer is sacred and must not be bypassed on a paper/live submit path."
             )
 
     def preview(

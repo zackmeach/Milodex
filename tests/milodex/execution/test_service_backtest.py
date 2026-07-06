@@ -31,7 +31,13 @@ from milodex.execution import (
     UnsupportedOrderTypeError,
 )
 from milodex.execution.state import KillSwitchStateStore
-from milodex.risk import BYPASS_SUMMARY, NullRiskEvaluator
+from milodex.risk import (
+    BYPASS_SUMMARY,
+    BacktestStructuralRiskEvaluator,
+    NullRiskEvaluator,
+    RiskEvaluator,
+)
+from milodex.risk.models import RiskDecision
 
 
 class _Broker:
@@ -205,6 +211,80 @@ def test_null_risk_evaluator_forbidden_on_non_backtest_service(tmp_path, risk_de
         event_store=store,
         is_backtest=True,
     )
+
+
+class _AllowAllEvaluator(RiskEvaluator):
+    """A blanket-allow evaluator that subclasses RiskEvaluator DIRECTLY (not
+    NullRiskEvaluator) and overrides evaluate() to skip the entire _CHECKS
+    sweep — the residual seam the isinstance(NullRiskEvaluator) guard missed."""
+
+    def evaluate(self, context):  # type: ignore[override]  # noqa: ARG002
+        return RiskDecision(allowed=True, summary="allow all", checks=[], reason_codes=[])
+
+
+def test_evaluate_overriding_evaluator_forbidden_on_non_backtest_service(
+    tmp_path, risk_defaults_file
+):
+    """G1 (strengthened): the invariant forbids ANY evaluator that overrides
+    evaluate() on a non-backtest service — not just NullRiskEvaluator. A
+    blanket-allow subclass of RiskEvaluator, or the check-skipping
+    BacktestStructuralRiskEvaluator, would replace the full production _CHECKS
+    sweep (kill switch, manifest drift, exposure caps) and reach the broker with
+    no enforcement. Both must be refused at construction on is_backtest=False;
+    the backtest structural evaluator remains valid on a backtest service."""
+    account = AccountInfo(
+        equity=100_000.0,
+        cash=100_000.0,
+        buying_power=100_000.0,
+        portfolio_value=100_000.0,
+        daily_pnl=0.0,
+    )
+    bar = Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(seconds=30),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000_000,
+    )
+    store = EventStore(tmp_path / "milodex.db")
+    ks = KillSwitchStateStore(event_store=store)
+
+    def _construct(evaluator, *, is_backtest):
+        return ExecutionService(
+            broker_client=_Broker(account, None),
+            data_provider=_Provider(bar),
+            risk_defaults_path=risk_defaults_file,
+            kill_switch_store=ks,
+            risk_evaluator=evaluator,
+            event_store=store,
+            is_backtest=is_backtest,
+        )
+
+    # A blanket-allow non-Null subclass is refused on a paper/live service.
+    with pytest.raises(ValueError, match="evaluate"):
+        _construct(_AllowAllEvaluator(), is_backtest=False)
+
+    # The structural backtest evaluator (skips the kill switch) is likewise
+    # refused on a non-backtest service...
+    with pytest.raises(ValueError, match="evaluate"):
+        _construct(BacktestStructuralRiskEvaluator(), is_backtest=False)
+
+    # ...but is valid on an explicitly-declared backtest service.
+    _construct(BacktestStructuralRiskEvaluator(), is_backtest=True)
+
+    # A subclass that does NOT override evaluate() (keeps the full sweep) is
+    # allowed on a paper/live service — the invariant targets the sweep-skip
+    # mechanism, not subclassing per se.
+    class _InstrumentedEvaluator(RiskEvaluator):
+        def __init__(self):
+            self.checked = False
+
+        def _check_kill_switch(self, context):
+            self.checked = True
+            return super()._check_kill_switch(context)
+
+    _construct(_InstrumentedEvaluator(), is_backtest=False)
 
 
 def _seed_backtest_run(store: EventStore, run_id: str = "bt-run-1") -> int:
