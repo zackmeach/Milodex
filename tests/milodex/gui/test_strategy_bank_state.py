@@ -738,6 +738,35 @@ def test_demote_to_backtest_leaves_paper_enters_blocked(tmp_path) -> None:
     assert sid in blocked_ids, "Demoted strategy with backtest evidence must be blocked"
 
 
+def test_demoted_regime_strategy_stays_gate_exempt_in_blocked(tmp_path) -> None:
+    """A lifecycle-proof regime strategy is gate-exempt (family == 'regime').
+
+    Demotion is a supported governance action (ADR 0058), and the GUI builder
+    uses demotion_aware=True, so a demoted regime strategy resurfaces on the
+    blocked path. Regression: _fetch_blocked called _compute_gate_failures
+    without threading family, so the family=='regime' exemption never fired and
+    the strategy was shown spurious S/D/N codes despite being lifecycle-exempt.
+    """
+    from milodex.gui.strategy_bank_state import _query_bank
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    sid = "regime.daily.sma200_rotation.spy_shy.v1"
+    _seed_paper_row(db, sid, sharpe=0.64)
+    # Deliberately failing metrics: without the family exemption these produce S/D/N.
+    _seed_blocked_row(db, sid, "run-bt", sharpe=-1.0, max_dd=99.0, trade_count=1)
+    _seed_demotion_row(db, sid, to_stage="backtest")
+
+    _, blocked = _query_bank(db, demotion_aware=True)
+    row = next((r for r in blocked if r["strategyId"] == sid), None)
+
+    assert row is not None, "Demoted regime strategy with backtest evidence must be in blocked"
+    assert row["gateFailures"] == [], (
+        "Lifecycle-proof regime strategy must stay gate-exempt on the demotion-aware "
+        "blocked path — no spurious S/D/N codes"
+    )
+
+
 def test_demote_to_idle_leaves_paper_enters_blocked(tmp_path) -> None:
     """paper -> demote(idle): strategy NOT in paper, IS in blocked.
 
