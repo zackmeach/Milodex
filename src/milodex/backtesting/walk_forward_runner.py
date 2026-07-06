@@ -410,15 +410,29 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
     for window in windows:
         if not window.equity_curve:
             continue
-        # One return per equity-curve step, kept index-aligned with
-        # ``equity_curve[1:]``. ``daily_returns_from_equity`` drops the step
-        # when the prior day's equity is <= 0, which would shorten the series
-        # and silently misalign dates -> returns; emit 0.0 for those steps so
-        # every curve transition has exactly one paired return.
-        steps = window.equity_curve[1:]
+        # The engine's equity_curve[0] is day-0's EOD equity — there is no
+        # eq_start seed point. When it differs from eq_start (== initial_equity;
+        # every window resimulates from it), the window's FIRST test day produced
+        # real P&L: a same_session intraday round trip can complete on day 0.
+        # Without seeding, that eq_start->day-0 return is dropped from the OOS
+        # stream, while the per-window total_return_pct includes it — the exact
+        # inconsistency the gate-read aggregate had. Seed the window at eq_start
+        # so the day-0 return is captured. A daily T+1 strategy defers fills to
+        # the next bar, so its equity_curve[0] == eq_start exactly and no seed is
+        # added (its day-0 return is genuinely 0) — daily aggregates stay
+        # byte-identical, and every pre-seeded test fixture (curve[0] == initial)
+        # is likewise untouched.
+        curve = window.equity_curve
+        if curve[0][1] != initial_equity:
+            curve = [(curve[0][0], initial_equity), *curve]
+        # One return per equity-curve step, kept index-aligned with ``curve[1:]``.
+        # Emit 0.0 when the prior equity is <= 0 (daily_returns_from_equity drops
+        # such steps) so every curve transition has exactly one paired return and
+        # dates never silently misalign to returns.
+        steps = curve[1:]
         window_returns = [
             (curr - prev) / prev if prev > 0 else 0.0
-            for (_, prev), (_, curr) in zip(window.equity_curve[:-1], steps, strict=True)
+            for (_, prev), (_, curr) in zip(curve[:-1], steps, strict=True)
         ]
         if len(window_returns) != len(steps):
             raise AssertionError(
@@ -427,7 +441,7 @@ def _aggregate_oos(windows: list[WalkForwardWindow], initial_equity: float) -> _
                 f"in window index={window.index}"
             )
         if not stitched:
-            stitched.append((window.equity_curve[0][0], running_equity))
+            stitched.append((curve[0][0], running_equity))
         for (day, _), r in zip(steps, window_returns, strict=True):
             running_equity *= 1.0 + r
             stitched.append((day, running_equity))
