@@ -468,6 +468,42 @@ def test_aggregate_oos_aligns_dates_to_returns_with_nonpositive_prior_day():
     assert aggregate.equity_curve[-1][0] == d + timedelta(days=3)
 
 
+def test_aggregate_oos_captures_day0_return_when_curve_not_seeded():
+    """An engine equity_curve carries NO eq_start seed: curve[0] is day-0's EOD
+    equity. When day-0 produced real P&L (curve[0] != eq_start — e.g. a
+    same_session intraday round trip closes on day 0), the eq_start->day-0 return
+    must feed the OOS aggregate. It was previously dropped (equity_curve[1:])
+    while the per-window total_return_pct included it, so the gate-read
+    oos_sharpe / oos_total_return understated an intraday candidate."""
+    d = date(2024, 1, 1)
+    # Engine shape (no seed): day-0 EOD = 110 (+10% first test day), day-1 = 121.
+    equity_curve = [(d, 110.0), (d + timedelta(days=1), 121.0)]
+    window = WalkForwardWindow(
+        index=0,
+        train_start=date(2023, 1, 1),
+        train_end=date(2023, 12, 31),
+        test_start=d,
+        test_end=d + timedelta(days=1),
+        trading_days=2,
+        trade_count=1,
+        skipped_count=0,
+        initial_equity=100.0,
+        final_equity=121.0,
+        total_return_pct=21.0,
+        sharpe=None,
+        max_drawdown_pct=0.0,
+        equity_curve=equity_curve,
+    )
+
+    aggregate = _aggregate_oos([window], initial_equity=100.0)
+
+    # Both day-0 (+10%) and day-1 (+10%) compounded: 100 -> 110 -> 121 = +21%.
+    # Without the seed the aggregate read only the day-1 return (+10%).
+    assert aggregate.total_return_pct == pytest.approx(21.0, rel=1e-6)
+    # Two returns now (day-0 and day-1), so three stitched equity points.
+    assert len(aggregate.equity_curve) == 3
+
+
 # ---------------------------------------------------------------------------
 # Stability diagnostics
 # ---------------------------------------------------------------------------
