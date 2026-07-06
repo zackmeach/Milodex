@@ -38,6 +38,16 @@ _logger = logging.getLogger(__name__)
 #   paths that assume Adjustment.ALL data, so v2 files must not be reused.
 CACHE_VERSION = "v3"
 
+# Relative tolerance for the full-cache-hit adjustment-epoch probe. A cached bar
+# whose Adjustment.ALL close has drifted by more than this vs a fresh probe of
+# the same bar means a corporate action re-scaled the adjusted series after the
+# cache was built. 1e-4 (0.01%) sits below any MATERIAL dividend/split (a single
+# SPY dividend moves the earliest bar ~3e-3, and the earliest bar compounds every
+# later action, so multi-year caches drift far more) yet well above float64
+# parquet round-trip noise (~0). A sub-cent special dividend (D/P <~ 1e-4) could
+# slip under it — negligible for the liquid-ETF / large-cap Phase-One universe.
+_ADJUSTMENT_EPOCH_EPSILON = 1e-4
+
 # Map our Timeframe enum to Alpaca's TimeFrame objects
 _TIMEFRAME_MAP: dict[Timeframe, TimeFrame] = {
     Timeframe.MINUTE_1: TimeFrame(1, TimeFrameUnit.Minute),
@@ -116,6 +126,23 @@ class AlpacaDataProvider(DataProvider):
                 and cached_range[1] >= end
                 and end < today
             ):
+                # Corporate-action staleness guard (bug sweep #1, HIGH). Every bar
+                # is cached with Adjustment.ALL AS OF FETCH TIME. A split or
+                # dividend AFTER the cache was built re-scales Alpaca's adjusted
+                # series, but ParquetCache.merge dedups by exact timestamp and
+                # never refetches, so a warm read here would silently serve stale-
+                # adjusted prices — corrupting walk-forward comparisons, straddling
+                # indicators, and promotion-gate metrics. Probe the earliest cached
+                # bar and, on divergence, heal by replacing the whole cached range
+                # with freshly-adjusted bars. A probe that cannot be evaluated
+                # (upstream error / no data) fails safe: serve the cache exactly as
+                # before this guard existed — never a new failure mode.
+                if self._adjustment_epoch_current(symbol, timeframe, cached_df, alpaca_tf) is False:
+                    healed = self._heal_stale_adjustment(
+                        symbol, timeframe, cached_range[0], cached_range[1], alpaca_tf
+                    )
+                    if healed is not None and not healed.empty:
+                        cached_df = healed
                 ts = pd.to_datetime(cached_df["timestamp"])
                 mask = (ts.dt.date >= start) & (ts.dt.date <= end)
                 result[symbol] = BarSet(cached_df[mask].reset_index(drop=True))
@@ -269,6 +296,165 @@ class AlpacaDataProvider(DataProvider):
 
         return result
 
+    @staticmethod
+    def _bars_to_df(bars: list) -> pd.DataFrame:
+        """Translate a list of Alpaca bar objects to the canonical cache frame.
+
+        Shared by the adjustment probe/heal and ``backfill_range``. The get_bars
+        Phase-2 hot path deliberately keeps its own inline construction so the
+        hot path stays byte-identical and independent of this helper."""
+        df = pd.DataFrame(
+            [
+                {
+                    "timestamp": b.timestamp,
+                    "open": float(b.open),
+                    "high": float(b.high),
+                    "low": float(b.low),
+                    "close": float(b.close),
+                    "volume": int(b.volume),
+                    "vwap": float(b.vwap) if b.vwap else None,
+                }
+                for b in bars
+            ]
+        )
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        return df
+
+    def _stock_bars_request(
+        self,
+        symbol_or_symbols: str | list[str],
+        start: date,
+        end: date,
+        alpaca_tf: TimeFrame,
+    ) -> StockBarsRequest:
+        """Build an IEX / Adjustment.ALL bars request for ``[start, end]`` inclusive.
+
+        Shared by the adjustment probe, the stale-adjustment heal, and
+        ``backfill_range``. NOT used by the get_bars Phase-2 hot path, which keeps
+        its own inline request construction."""
+        return StockBarsRequest(
+            symbol_or_symbols=symbol_or_symbols,
+            timeframe=alpaca_tf,
+            feed=DataFeed.IEX,
+            adjustment=Adjustment.ALL,
+            start=datetime(start.year, start.month, start.day, tzinfo=UTC),
+            end=datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC),
+        )
+
+    def _adjustment_epoch_current(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        cached_df: pd.DataFrame,
+        alpaca_tf: TimeFrame,
+    ) -> bool | None:
+        """Is the cached adjustment epoch still current for ``symbol``?
+
+        Probes the EARLIEST cached bar with Adjustment.ALL and compares its close
+        to the cached value (relative tolerance ``_ADJUSTMENT_EPOCH_EPSILON``).
+        Returns ``True`` if they agree (serve cache), ``False`` if they diverge (a
+        later split/dividend re-scaled the adjusted series → heal), or ``None`` if
+        the probe cannot be evaluated — in which case the caller fails safe and
+        serves the cache exactly as before this guard. The probe is best-effort:
+        ANY failure (upstream error, no data, no matching bar, a zero/corrupt
+        cached close, or an unexpected error reading the cached frame) yields
+        ``None``, never an exception out of the warm read.
+
+        Earliest-bar sampling is load-bearing: a corporate action at ex-date T
+        re-scales every bar with date < T, so the earliest cached bar sits below
+        any action and detects an epoch change anywhere in or after the cached
+        range. A recent-tail probe would miss an action that falls inside the
+        range. The probe bar is matched to the cached bar by exact timestamp (not
+        positionally): for an intraday cache whose earliest day is partial, the
+        API's first intraday bar need not be the earliest CACHED bar, and
+        comparing two different bars would false-diverge. ponytail: one tiny call
+        per full-cache-hit per symbol; backtests prefetch once per symbol so this
+        is negligible — not batched across symbols (their earliest dates differ)."""
+        # The whole probe is fail-safe: reading the cached frame, the API call,
+        # and parsing the response are all wrapped so ANY failure degrades to
+        # "serve cache" (return None) — the pre-guard behaviour — rather than
+        # raising out of a warm read. The probe is a correctness enhancement,
+        # never a new failure mode.
+        try:
+            ts = pd.to_datetime(cached_df["timestamp"])
+            earliest_idx = ts.idxmin()
+            earliest_ts = ts.loc[earliest_idx]
+            earliest_date = earliest_ts.date()
+            cached_close = float(cached_df.loc[earliest_idx, "close"])
+            if cached_close == 0:
+                return None
+            request = self._stock_bars_request(symbol, earliest_date, earliest_date, alpaca_tf)
+            response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
+            bars = response.data.get(symbol, [])
+            # Match the probe bar to the cached bar by exact timestamp — never
+            # positionally — so an intraday partial first day can't false-diverge.
+            probe_bar = next((b for b in bars if pd.Timestamp(b.timestamp) == earliest_ts), None)
+            if probe_bar is None:
+                return None
+            probe_close = float(probe_bar.close)
+            rel_diff = abs(probe_close - cached_close) / abs(cached_close)
+        except Exception as exc:  # noqa: BLE001 - best-effort probe; any failure serves cache
+            _logger.warning(
+                "adjustment_probe_error symbol=%s err=%s; serving cache (fail-safe)",
+                symbol.upper(),
+                exc,
+            )
+            return None
+        if rel_diff > _ADJUSTMENT_EPOCH_EPSILON:
+            _logger.info(
+                "adjustment_epoch_stale symbol=%s date=%s cached_close=%.6f "
+                "probe_close=%.6f rel_diff=%.2e; healing",
+                symbol.upper(),
+                earliest_date,
+                cached_close,
+                probe_close,
+                rel_diff,
+            )
+            return False
+        return True
+
+    def _heal_stale_adjustment(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        cache_start: date,
+        cache_end: date,
+        alpaca_tf: TimeFrame,
+    ) -> pd.DataFrame | None:
+        """Refetch the whole cached range with fresh adjustments and REPLACE it.
+
+        Invoked when the probe finds the cached adjustment epoch is stale. Uses
+        ``cache.write`` (full replace), NOT ``merge``: an action re-scales bars
+        non-uniformly across the range (only bars before its ex-date shift), and
+        ``merge``'s keep-last dedup would preserve any stale row the refetch does
+        not cover. A full replace of ``[cache_start, cache_end]`` guarantees a
+        single, current adjustment epoch across every cached bar. Returns the
+        fresh frame, or ``None`` if the refetch came back empty or errored (caller
+        keeps the stale cache as a fail-safe rather than serving nothing)."""
+        request = self._stock_bars_request(symbol, cache_start, cache_end, alpaca_tf)
+        try:
+            response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
+        except Exception as exc:  # noqa: BLE001 - heal failure must not break serving the cache
+            _logger.warning(
+                "adjustment_heal_error symbol=%s err=%s; serving stale cache (fail-safe)",
+                symbol.upper(),
+                exc,
+            )
+            return None
+        bars = response.data.get(symbol, [])
+        if not bars:
+            return None
+        df = self._bars_to_df(bars)
+        self._cache.write(symbol, timeframe, df)
+        _logger.info(
+            "adjustment_epoch_healed symbol=%s range=%s..%s bars=%d",
+            symbol.upper(),
+            cache_start,
+            cache_end,
+            len(df),
+        )
+        return df
+
     def backfill_range(
         self,
         symbols: list[str],
@@ -287,22 +473,23 @@ class AlpacaDataProvider(DataProvider):
         is complete and never refetches. Merge is additive and de-duplicating,
         so overlapping an existing range is safe.
 
-        Returns ``{symbol: bars_fetched}``.
+        Re-adjustment scope (be precise — this is NOT a whole-cache re-adjust):
+        the fetched bars carry the CURRENT Adjustment.ALL epoch, and the merge
+        dedups ``keep="last"`` (the fresh rows win), so backfilling a window DOES
+        overwrite the cached bars IN THAT WINDOW with freshly-adjusted values —
+        but only that window. Bars cached OUTSIDE ``[start, end]`` keep their old
+        adjustment epoch. To re-adjust the whole cache after a corporate action,
+        pass the full cached range (or just let :meth:`get_bars` heal it: its
+        full-cache-hit path now probes the earliest bar and auto-heals a stale
+        adjustment epoch — see :meth:`_adjustment_epoch_current`).
 
-        ponytail: the fetch/parse/merge below mirrors get_bars Phase 2/3 by
-        design — duplicated, not shared, so the hot-path get_bars stays
-        byte-identical. DRY into a helper only if a third caller appears.
+        Returns ``{symbol: bars_fetched}``.
         """
         if not symbols:
             return {}
         alpaca_tf = _TIMEFRAME_MAP[timeframe]
-        request = StockBarsRequest(
-            symbol_or_symbols=symbols if len(symbols) > 1 else symbols[0],
-            timeframe=alpaca_tf,
-            feed=DataFeed.IEX,
-            adjustment=Adjustment.ALL,
-            start=datetime(start.year, start.month, start.day, tzinfo=UTC),
-            end=datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=UTC),
+        request = self._stock_bars_request(
+            symbols if len(symbols) > 1 else symbols[0], start, end, alpaca_tf
         )
         response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
         fetched_counts: dict[str, int] = {}
@@ -311,22 +498,7 @@ class AlpacaDataProvider(DataProvider):
             fetched_counts[sym] = len(bars_data)
             if not bars_data:
                 continue
-            df = pd.DataFrame(
-                [
-                    {
-                        "timestamp": b.timestamp,
-                        "open": float(b.open),
-                        "high": float(b.high),
-                        "low": float(b.low),
-                        "close": float(b.close),
-                        "volume": int(b.volume),
-                        "vwap": float(b.vwap) if b.vwap else None,
-                    }
-                    for b in bars_data
-                ]
-            )
-            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
-            self._cache.merge(sym, timeframe, df)
+            self._cache.merge(sym, timeframe, self._bars_to_df(bars_data))
         return fetched_counts
 
     def get_latest_bar(self, symbol: str) -> Bar:

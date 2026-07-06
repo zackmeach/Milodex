@@ -263,7 +263,9 @@ class TestGetBarsBatching:
         assert float(result["AAPL"].to_dataframe()["close"].iloc[0]) == pytest.approx(150.0)
         assert float(result["MSFT"].to_dataframe()["close"].iloc[0]) == pytest.approx(300.0)
 
-        # Cache is readable per-symbol on a second call (no API hit)
+        # Cache is readable per-symbol on a second call. Each symbol's warm read
+        # fires exactly one adjustment-epoch probe (the fixed mock returns the
+        # same closes, so both probes match and no full refetch happens).
         provider._client.get_stock_bars.reset_mock()
         result2 = provider.get_bars(
             symbols=symbols,
@@ -271,7 +273,7 @@ class TestGetBarsBatching:
             start=date(2025, 1, 15),
             end=date(2025, 1, 15),
         )
-        assert provider._client.get_stock_bars.call_count == 0
+        assert provider._client.get_stock_bars.call_count == 2  # one probe per symbol
         assert float(result2["AAPL"].to_dataframe()["close"].iloc[0]) == pytest.approx(150.0)
         assert float(result2["MSFT"].to_dataframe()["close"].iloc[0]) == pytest.approx(300.0)
 
@@ -374,10 +376,14 @@ class TestGetLatestBar:
 
 
 class TestGetBarsCaching:
-    def test_cache_hit_avoids_api_call(self, provider, mock_alpaca_bar):
-        """When cache fully covers the request and end < today, no API call.
+    def test_cache_hit_probes_adjustment_then_serves_cache(self, provider, mock_alpaca_bar):
+        """When cache fully covers the request and end < today, the warm read
+        probes the earliest cached bar for a stale adjustment epoch (one tiny
+        call) and, on a match, serves from cache WITHOUT refetching the full range.
 
-        R-DAT-003: a second identical fetch is served from the Parquet cache.
+        R-DAT-003 + bug-sweep #1 (corporate-action staleness guard): the old
+        contract (zero API calls on a hit) is replaced by 'exactly one probe
+        call, and no full refetch on a match' (a divergence-heal would be +2).
         """
         provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [mock_alpaca_bar]})
         provider.get_bars(
@@ -388,15 +394,196 @@ class TestGetBarsCaching:
         )
         call_count_after_first = provider._client.get_stock_bars.call_count
 
-        # Second call should use cache (end date is in the past)
+        # Second call: probe matches (same close) -> serve cache, no full refetch.
         result = provider.get_bars(
             symbols=["AAPL"],
             timeframe=Timeframe.DAY_1,
             start=date(2025, 1, 15),
             end=date(2025, 1, 15),
         )
-        assert provider._client.get_stock_bars.call_count == call_count_after_first
+        assert provider._client.get_stock_bars.call_count == call_count_after_first + 1
         assert "AAPL" in result
+        assert len(result["AAPL"]) == 1
+
+    def test_adjustment_probe_match_serves_cache_without_full_refetch(self, provider):
+        """On a match, the probe is a SINGLE-DAY request for the EARLIEST cached
+        bar (not the recent tail) and the full multi-day range is not refetched —
+        the served bars are the untouched cached values."""
+        ts13 = datetime(2025, 1, 13, 5, 0, tzinfo=UTC)
+        ts14 = datetime(2025, 1, 14, 5, 0, tzinfo=UTC)
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 100.0), _make_bar(ts14, 101.0), _make_bar(ts15, 102.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+
+        provider._client.get_stock_bars.reset_mock()
+        # Probe returns the same earliest close (100) -> match.
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 100.0)]}
+        )
+        result = provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+
+        assert provider._client.get_stock_bars.call_count == 1  # probe only, no full refetch
+        req = provider._client.get_stock_bars.call_args.args[0]
+        assert req.start.date() == date(2025, 1, 13)  # earliest cached bar...
+        assert req.end.date() == date(2025, 1, 13)  # ...single day, not the full range
+        assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx(
+            [100.0, 101.0, 102.0]
+        )
+
+    def test_stale_adjustment_epoch_heals_on_divergence(self, provider):
+        """A corporate action after caching re-scales the whole adjusted series.
+        The warm-read probe detects the earliest bar's close has drifted and heals
+        by REPLACING the whole cached range with freshly-adjusted bars."""
+        ts13 = datetime(2025, 1, 13, 5, 0, tzinfo=UTC)
+        ts14 = datetime(2025, 1, 14, 5, 0, tzinfo=UTC)
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        # Cold fetch caches three bars at close=100 (the old adjustment epoch).
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 100.0), _make_bar(ts14, 100.0), _make_bar(ts15, 100.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+
+        # Warm read: a 2:1 split re-scales the series to close=50. Probe (earliest,
+        # single day) returns 50; the heal refetch (Jan 13-15) returns 50 for all.
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.side_effect = [
+            MagicMock(data={"AAPL": [_make_bar(ts13, 50.0)]}),  # probe
+            MagicMock(
+                data={"AAPL": [_make_bar(ts13, 50.0), _make_bar(ts14, 50.0), _make_bar(ts15, 50.0)]}
+            ),  # heal refetch of the full range
+        ]
+        result = provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+        assert provider._client.get_stock_bars.call_count == 2  # probe + full refetch
+        assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx([50.0, 50.0, 50.0])
+
+        # The on-disk cache was REPLACED: a subsequent (now-matching) read sees 50.
+        provider._client.get_stock_bars.side_effect = None
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 50.0)]}
+        )
+        result2 = provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+        assert result2["AAPL"].to_dataframe()["close"].tolist() == pytest.approx([50.0, 50.0, 50.0])
+        assert provider._client.get_stock_bars.call_count == 1  # just the matching probe
+
+    def test_adjustment_probe_error_serves_cache_fail_safe(self, provider):
+        """If the probe call errors, serve the cache unchanged (status quo before
+        the guard) — the probe must never become a new failure mode."""
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts15, 100.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        # Warm read: probe raises a non-429 error -> caught -> serve stale cache.
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.side_effect = RuntimeError("probe boom")
+        result = provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+        assert "AAPL" in result
+        assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx([100.0])
+
+    def test_adjustment_probe_malformed_response_serves_cache_fail_safe(self, provider):
+        """A malformed probe RESPONSE (not a network error) — e.g. a bar whose
+        close can't be parsed — must also fail safe and serve the cache. Guards
+        the whole-probe fail-safe (parse errors are wrapped too, not just the
+        network call)."""
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts15, 100.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+
+        # Warm read: probe returns a bar with the right timestamp but an
+        # unparseable close -> float() raises inside the probe -> serve cache.
+        bad_bar = MagicMock()
+        bad_bar.timestamp = ts15
+        bad_bar.close = "not-a-number"
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": [bad_bar]})
+        result = provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 15),
+            end=date(2025, 1, 15),
+        )
+        assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx([100.0])
+
+    def test_backfill_range_readjusts_within_window_only(self, provider):
+        """backfill_range overwrites cached bars IN its window with freshly-
+        adjusted values (merge keep=last), but leaves bars OUTSIDE the window on
+        their old adjustment epoch — the documented re-adjustment scope."""
+        ts13 = datetime(2025, 1, 13, 5, 0, tzinfo=UTC)
+        ts14 = datetime(2025, 1, 14, 5, 0, tzinfo=UTC)
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        # Seed three cached bars at close=100.
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 100.0), _make_bar(ts14, 100.0), _make_bar(ts15, 100.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+
+        # Backfill only [Jan 14, Jan 15] with re-adjusted close=90.
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts14, 90.0), _make_bar(ts15, 90.0)]}
+        )
+        provider.backfill_range(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 14),
+            end=date(2025, 1, 15),
+        )
+
+        cached = provider._cache.read("AAPL", Timeframe.DAY_1).sort_values("timestamp")
+        closes = cached["close"].tolist()
+        # Jan 13 (outside window) keeps old epoch; Jan 14-15 (in window) re-adjusted.
+        assert closes == pytest.approx([100.0, 90.0, 90.0])
 
     def test_today_always_refetched(self, provider, mock_alpaca_bar):
         """Bars for today should always hit the API even if cached."""
