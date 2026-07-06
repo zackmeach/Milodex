@@ -26,7 +26,7 @@ from milodex.broker.models import (
 from milodex.data.models import Bar
 from milodex.execution import ExecutionService, TradeIntent
 from milodex.execution.state import KillSwitchStateStore
-from milodex.risk import RiskDefaults, synthetic_bypass_decision
+from milodex.risk import RiskDefaults
 from milodex.risk.evaluator import RiskEvaluator
 
 # Resolve repo root at import time (before any monkeypatch.chdir changes cwd).
@@ -80,16 +80,23 @@ class _StubProvider:
 
 
 class _SpyEvaluator(RiskEvaluator):
-    """Subclasses RiskEvaluator (not NullRiskEvaluator) so bypass_mode=False and
-    the full EvaluationContext is built before evaluate() is called. Returns an
-    allow-all decision so the call completes without needing a real account state."""
+    """Context-capturing evaluator that runs the REAL production check sweep.
+
+    It deliberately does NOT override ``evaluate()`` — doing so would (correctly)
+    be refused by the non-backtest ExecutionService G1 invariant, which requires
+    the full ``RiskEvaluator._CHECKS`` sweep on any paper/live service. Instead
+    it captures the ``EvaluationContext`` at sweep entry by overriding the first
+    check hook (``_check_kill_switch``) and delegating to ``super()``, so the
+    real sweep still runs. The tests below assert only on the captured context's
+    ``risk_defaults`` (the active-profile routing under test); the allow/block
+    decision is irrelevant to them, and ``preview()`` never submits to a broker."""
 
     def __init__(self) -> None:
         self.last_context = None
 
-    def evaluate(self, context):  # type: ignore[override]
+    def _check_kill_switch(self, context):  # type: ignore[override]
         self.last_context = context
-        return synthetic_bypass_decision()
+        return super()._check_kill_switch(context)
 
 
 def _fixtures() -> tuple[AccountInfo, Bar, Order]:
