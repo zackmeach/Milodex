@@ -665,6 +665,26 @@ def test_terminal_status_failed_when_all_candidates_error(tmp_path):
     assert ev.terminal_status == "failed"
 
 
+def test_all_no_signal_is_inconclusive_not_failed(tmp_path):
+    """A clean run where the candidate never trades (oos_sharpe None, error None on
+    every symbol) is a real "edge never fires here" outcome — inconclusive, NOT an
+    execution failure. Regression: _metric_missing conflated no-signal with error,
+    so per-symbol status was candidate_error, n_candidate_errors == n_total, and
+    terminal_status was "failed", burying the finding under a crash label."""
+    overrides = {sym: {"oos_sharpe": None} for sym in _UNIVERSE}
+    report, _row_id, store = _assemble(tmp_path, _make_batch_result(candidate_overrides=overrides))
+
+    # Per-symbol cells are no-signal, not error.
+    assert {d.status for d in report.per_symbol} == {"candidate_no_signal"}
+    assert report.aggregate["n_candidate_no_signal"] == len(_UNIVERSE)
+    assert report.aggregate["n_candidate_errors"] == 0
+
+    ev = store.get_experiment("intraday-etf-meanrev-2026-06")
+    assert ev is not None
+    assert ev.terminal_status == "inconclusive", "all-no-signal must not read as failed"
+    assert "no trades" in ev.rationale.lower() or "no-signal" in ev.rationale.lower()
+
+
 def test_writer_invariant_refuses_rejected_with_durable_true(tmp_path):
     # A rejected IEX row forced durable=True must be refused by the writer.
     import dataclasses
