@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -769,8 +770,25 @@ def _make_state(db_path: Path, refresh_interval_ms: int = 99_999_999):
 
 
 def _wait_for_pool(state) -> None:
-    state._thread_pool.waitForDone(2000)  # noqa: SLF001
-    QCoreApplication.processEvents()
+    """Wait until the in-flight background refresh has completed AND its
+    QueuedConnection result has been applied on the main thread.
+
+    Condition-based, not a fixed budget. Under CPU-contended parallel execution
+    (pytest-xdist), the per-instance ``QThreadPool`` worker can be scheduled
+    late, so a single ``waitForDone(2000)`` returns before the worker runs and
+    the result signal is never delivered — leaving ``dataStatus == "loading"``
+    and flaking the caller's ``== "ready"`` assertion (root-caused 2026-07-06).
+    Poll until the refresh reaches a terminal state ("ready"/"error", i.e. no
+    longer "loading") or a generous deadline, pumping the event loop each
+    iteration so the queued slot can run. Nothing is masked: an "error" outcome
+    or a true hang leaves the caller's assertion to fail honestly.
+    """
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        state._thread_pool.waitForDone(50)  # noqa: SLF001
+        QCoreApplication.processEvents()
+        if state.dataStatus != "loading":
+            break
     QCoreApplication.processEvents()
 
 
