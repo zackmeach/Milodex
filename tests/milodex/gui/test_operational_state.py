@@ -14,6 +14,7 @@ worker to complete via ``QThreadPool.waitForDone()`` before asserting.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -141,18 +142,22 @@ def _make_state(*, store=None, factory=None, broker_poll_seconds: float = 9999.0
     )
 
 
-def _wait_for_pool(pool=None) -> None:
-    """Block until pending QThreadPool work is done, then drain the event loop.
+def _wait_for_pool(poller) -> None:
+    """Poll until the poller's background refresh settles (``dataStatus`` leaves "loading").
 
-    Pass ``pool`` to drain a specific (per-instance) pool; omit to drain the
-    global pool (kept for legacy call sites).
+    Condition-based, not a fixed budget — a plain ``waitForDone(2000)`` can return
+    before the xdist-delayed worker runs, flaking the caller (root-caused 2026-07-06,
+    same fix as test_attention_state.py). A pool-idle check can't help here: the pool
+    reads idle both before the worker starts and after it finishes, so only the
+    poller's own terminal ``dataStatus`` distinguishes the two. A terminal "error"
+    outcome is not masked — the caller's assertion still fails honestly.
     """
-    if pool is None:
-        pool = QThreadPool.globalInstance()
-    pool.waitForDone(2000)
-    # Give queued signals a chance to deliver to the main thread.
-    QCoreApplication.processEvents()
-    # Some events ship deferred deliveries; processing twice gives them a beat.
+    deadline = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
+        poller._thread_pool.waitForDone(50)  # noqa: SLF001
+        QCoreApplication.processEvents()
+        if poller.dataStatus != "loading":
+            break
     QCoreApplication.processEvents()
 
 
@@ -230,7 +235,7 @@ def test_broker_state_updates_from_factory_call(qapp) -> None:
     state = _make_state(factory=factory)
 
     state._broker_poller._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
+    _wait_for_pool(state._broker_poller)  # noqa: SLF001
 
     assert state.brokerStatus == "connected"
     assert state.equity == 1234.56
@@ -254,14 +259,14 @@ def test_broker_failure_sets_error_status(qapp) -> None:
 
     # First poll succeeds — equity = 999.0
     state._broker_poller._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
+    _wait_for_pool(state._broker_poller)  # noqa: SLF001
     assert state.brokerStatus == "connected"
     assert state.equity == 999.0
 
     # Second poll fails — broker raises
     broker.get_account.side_effect = RuntimeError("alpaca timeout")
     state._broker_poller._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
+    _wait_for_pool(state._broker_poller)  # noqa: SLF001
 
     assert state.brokerStatus == "error"
     assert "alpaca timeout" in state.brokerErrorMessage
@@ -281,14 +286,14 @@ def test_broker_recovery_clears_error(qapp) -> None:
     state = _make_state(factory=factory)
 
     state._broker_poller._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
+    _wait_for_pool(state._broker_poller)  # noqa: SLF001
     assert state.brokerStatus == "error"
 
     # Recover
     broker.get_account.side_effect = None
     broker.get_account.return_value = _make_account(equity=500.0, cash=100.0)
     state._broker_poller._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
+    _wait_for_pool(state._broker_poller)  # noqa: SLF001
 
     assert state.brokerStatus == "connected"
     assert state.brokerErrorMessage == ""
@@ -407,7 +412,7 @@ def test_daily_pnl_updates_from_broker_poll(qapp) -> None:
     state = _make_state(factory=factory)
 
     state._broker_poller._kick_refresh()  # noqa: SLF001
-    _wait_for_pool(state._broker_poller._thread_pool)  # noqa: SLF001
+    _wait_for_pool(state._broker_poller)  # noqa: SLF001
 
     assert state.dailyPnl == 42.50  # noqa: N815
 
