@@ -36,15 +36,17 @@ from milodex.broker.models import (
 class SimulatedBroker(BrokerClient):
     """In-memory broker for backtests. Fills at current simulation-day close.
 
-    The fill price model is:
+    The fill price model is slippage-only:
 
-    - ``BUY  fill = day_close * (1 + slippage_pct) + commission`` as a cost
-    - ``SELL fill = day_close * (1 - slippage_pct) - commission`` as proceeds
+    - ``BUY  fill = day_close * (1 + slippage_pct)``
+    - ``SELL fill = day_close * (1 - slippage_pct)``
 
-    Commission is reported by returning an order whose ``filled_avg_price``
-    already incorporates slippage. The engine is still authoritative for
-    cash/position bookkeeping — the broker reports what *would* have
-    filled, and the engine reconciles.
+    ``filled_avg_price`` carries slippage but NOT commission (see
+    :meth:`fill_price_for`). Commission is applied by the simulation kernel,
+    which is authoritative for cash/position bookkeeping — the broker reports
+    the slippage-adjusted price that *would* have filled, and the engine
+    reconciles (commission added as a cost on buys / subtracted from proceeds on
+    sells).
     """
 
     def __init__(self, *, slippage_pct: float, commission_per_trade: float) -> None:
