@@ -106,7 +106,7 @@ class SymbolDelta:
     candidate_round_trips: int | None
     baselines: dict[str, BaselineCell]
     coverage_pct: float | None
-    status: str  # "ok" | "candidate_error" | "no_baselines"
+    status: str  # "ok" | "candidate_error" | "candidate_no_signal" | "no_baselines"
 
 
 @dataclass(frozen=True)
@@ -298,8 +298,26 @@ def _round_trips(trade_count: int | None) -> int | None:
 
 
 def _metric_missing(row: BatchRow | None) -> bool:
-    """A row contributes no usable metric if absent, errored, or Sharpe is None."""
+    """A row contributes no usable metric if absent, errored, or Sharpe is None.
+
+    Drives delta suppression (no cell delta is computable without a candidate
+    Sharpe). The *cause* — a crash vs a clean no-trade window — is separated by
+    :func:`_candidate_no_signal` when assigning the per-symbol status.
+    """
     return row is None or row.error is not None or row.oos_sharpe is None
+
+
+def _candidate_no_signal(row: BatchRow | None) -> bool:
+    """The candidate ran cleanly but produced no usable metric — 0 trades /
+    undefined Sharpe, NOT a crash.
+
+    ``oos_sharpe`` is legitimately ``None`` whenever a walk-forward window takes
+    too few trades to define a Sharpe (see ``analytics.metrics._sharpe`` and
+    ``walk_forward_runner._aggregate_oos``), with ``error`` unset. Conflating
+    that with an errored/absent row would bury a real "edge never fires here"
+    finding under an execution-failure label.
+    """
+    return row is not None and row.error is None and row.oos_sharpe is None
 
 
 def _build_symbol_delta(
@@ -340,7 +358,9 @@ def _build_symbol_delta(
         )
 
     if candidate_errored:
-        status = "candidate_error"
+        # Split the "no usable metric" umbrella: a clean no-trade window is a
+        # research outcome ("edge never fires here"), not an execution failure.
+        status = "candidate_no_signal" if _candidate_no_signal(candidate_row) else "candidate_error"
     elif not baselines:
         status = "no_baselines"
     else:
@@ -429,11 +449,13 @@ def _build_aggregate(per_symbol: list[SymbolDelta]) -> dict[str, Any]:
         }
 
     n_candidate_errors = sum(1 for d in per_symbol if d.status == "candidate_error")
+    n_candidate_no_signal = sum(1 for d in per_symbol if d.status == "candidate_no_signal")
     verdict = _derive_verdict(per_kind)
     return {
         "per_baseline_kind": per_kind,
         "n_symbols_total": len(per_symbol),
         "n_candidate_errors": n_candidate_errors,
+        "n_candidate_no_signal": n_candidate_no_signal,
         "verdict": verdict,
     }
 
@@ -604,6 +626,16 @@ def _derive_terminal_status(report: IntradayEvidenceReport, predicate: dict[str,
     n_compared_total = sum(k["n_symbols_compared"] for k in per_kind.values())
     n_total = report.aggregate["n_symbols_total"]
     n_errors = report.aggregate["n_candidate_errors"]
+    n_no_signal = report.aggregate.get("n_candidate_no_signal", 0)
+    # Every candidate ran cleanly but never traded (0 trades / undefined Sharpe):
+    # a real "edge never fires in this window" outcome that carries no evidence
+    # either way — inconclusive, NOT failed. Checked before the "nothing
+    # comparable" branch below, which no-signal would otherwise trip (no delta is
+    # computable without a candidate Sharpe). The distinct cause is preserved in
+    # aggregate.n_candidate_no_signal and the rationale, so no new cross-cutting
+    # terminal_status enum value is needed.
+    if n_total > 0 and n_no_signal == n_total:
+        return "inconclusive"
     if n_compared_total == 0 or (n_total > 0 and n_errors == n_total):
         return "failed"
     if predicate["passed"]:
@@ -612,6 +644,17 @@ def _derive_terminal_status(report: IntradayEvidenceReport, predicate: dict[str,
 
 
 def _rationale(report: IntradayEvidenceReport, terminal_status: str) -> str:
+    n_total = report.aggregate["n_symbols_total"]
+    n_no_signal = report.aggregate.get("n_candidate_no_signal", 0)
+    if n_total > 0 and n_no_signal == n_total:
+        # Distinguish the no-signal cause from a mixed/decisive inconclusive so a
+        # human or downstream tooling doesn't read "never traded" as "backtest broke".
+        return (
+            f"IEX-exploratory / non-durable (ADR 0017). Candidate produced no trades "
+            f"on any of {n_total} symbols — edge never fires in this window "
+            f"(no-signal, not an execution error). terminal_status={terminal_status}; "
+            f"revisit under SIP."
+        )
     verdict = report.aggregate["verdict"]
     floor = report.aggregate["per_baseline_kind"].get("unconditional_intraday_long", {})
     median = floor.get("median_delta_sharpe")
