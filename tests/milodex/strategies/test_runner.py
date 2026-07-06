@@ -1696,6 +1696,46 @@ def test_daily_post_close_current_bar_locks_in(
     assert runner._last_processed_bar_at is not None
 
 
+def test_daily_post_close_locks_in_during_et_evening_utc_rollover(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Regression: a fresh daily runner launched in the ~20:00-24:00 ET post-close
+    window must still lock in the current session's close bar.
+
+    In that window UTC has already rolled to the NEXT calendar day, so the old
+    UTC-date ``_is_current_session_bar`` declined the current session's own bar
+    as "prior session" and wrote zero evaluations until the next session.
+    Comparing the now-side in ET fixes it. The fake clock here is a UTC datetime
+    whose UTC date is session+1 but whose ET date is still the session date
+    (00:05 UTC == ~19:05-20:05 ET the prior day).
+    """
+    runner, _, provider, _ = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+        close_lockin_min_interval_seconds=30.0,
+    )
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime().replace(hour=0, minute=5) + timedelta(days=1)]
+    # Precondition: the clock's UTC date is the day AFTER the bar's session date
+    # (the rollover window). Under the old UTC guard this declined the bar.
+    assert fake_now[0].date() > latest_ts.to_pydatetime().date()
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()  # first cycle: pending stability
+    assert runner._last_processed_bar_at is None
+    fake_now[0] = fake_now[0] + timedelta(seconds=30)
+    runner.run_cycle()  # second cycle: lock in
+
+    assert runner._last_processed_bar_at is not None, (
+        "current-session close bar must lock in when launched in the ET evening "
+        "post-close window even though UTC has rolled to the next calendar day"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Regression: in-progress bar must not poison _last_processed_bar_at
 # ---------------------------------------------------------------------------
