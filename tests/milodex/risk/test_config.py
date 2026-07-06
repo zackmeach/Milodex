@@ -58,6 +58,33 @@ def test_all_three_shipped_profiles_pass_ceiling_validation():
         _validate_against_ceilings(merged)  # raises CeilingViolationError if bad
 
 
+def test_require_manual_reset_false_is_rejected(tmp_path):
+    """The kill switch must require manual reset — auto-resume is never
+    acceptable — so a config setting require_manual_reset: false is rejected
+    fail-closed rather than silently loaded and never consulted (the prior
+    behavior the bug sweep flagged)."""
+    from milodex.risk.config import load_risk_defaults
+
+    text = Path("configs/risk_defaults.yaml").read_text(encoding="utf-8")
+    assert "require_manual_reset: true" in text
+    cfg = tmp_path / "risk_defaults.yaml"
+    cfg.write_text(
+        text.replace("require_manual_reset: true", "require_manual_reset: false"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="require_manual_reset must be true"):
+        load_risk_defaults(cfg)
+
+
+def test_require_manual_reset_true_loads(tmp_path):
+    """The shipped default (true) loads cleanly and surfaces on RiskDefaults."""
+    from milodex.risk.config import load_risk_defaults
+
+    defaults = load_risk_defaults(Path("configs/risk_defaults.yaml"))
+    assert defaults.require_manual_reset is True
+
+
 # ---------------------------------------------------------------------------
 # Task 27: loader fallback semantics
 # ---------------------------------------------------------------------------

@@ -11,7 +11,8 @@ kill_switch:
   enabled: true
   # Halt all trading if portfolio drawdown exceeds this threshold
   max_drawdown_pct: 0.10          # 10% portfolio drawdown triggers full stop
-  # Require manual re-enablement after a kill switch event
+  # Manual re-enablement after a kill-switch event is MANDATORY, not a toggle:
+  # auto-resume is never acceptable. Must be true — the loader rejects false.
   require_manual_reset: true
 
 portfolio:
