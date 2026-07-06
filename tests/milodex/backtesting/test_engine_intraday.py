@@ -1494,6 +1494,40 @@ def test_latest_close_at_ts_between_bars_returns_most_recent() -> None:
     )
 
 
+def test_latest_close_at_ts_on_bar_boundary_excludes_that_bar() -> None:
+    """No look-ahead at the exact bar-boundary ts the real event loop produces.
+
+    Bar timestamps are bar-STARTs. A decision event fires at
+    ts = completing_bar.start + bar_size == the START of the next bar. At that ts
+    the next bar has NOT closed yet, so its close must not mark equity. With the
+    old side='right' this returned the 14:40 bar's (future) close; side='left'
+    correctly returns the just-completed 14:35 bar.
+    """
+    from milodex.backtesting.intraday_simulation import _latest_close_at_ts
+
+    spy_df = pd.DataFrame(
+        {
+            "timestamp": [
+                pd.Timestamp("2024-01-08 14:35:00+00:00"),  # close=501.5 (completes 14:40)
+                pd.Timestamp("2024-01-08 14:40:00+00:00"),  # close=502.0 (completes 14:45)
+            ],
+            "close": [501.5, 502.0],
+        }
+    )
+    per_symbol_df = {"SPY": spy_df}
+    per_symbol_ts_utc = {"SPY": pd.DatetimeIndex(pd.to_datetime(spy_df["timestamp"], utc=True))}
+
+    # Decision event after the 14:35 bar completes: ts == 14:40 (next bar's start).
+    ts_boundary = pd.Timestamp("2024-01-08 14:40:00+00:00")
+    closes = _latest_close_at_ts(per_symbol_df, per_symbol_ts_utc, ts=ts_boundary)
+
+    assert "SPY" in closes
+    assert abs(closes["SPY"] - 501.5) < 1e-9, (
+        f"Look-ahead: ts==14:40 must use the completed 14:35 bar (501.5), not the "
+        f"just-opening 14:40 bar's future close (502.0); got {closes['SPY']}"
+    )
+
+
 def test_simulate_intraday_empty_all_bars_returns_initial_equity() -> None:
     """Test C (M-2): non-empty trading_days but empty all_bars → returns initial_equity,
     all zero counts. No crash.

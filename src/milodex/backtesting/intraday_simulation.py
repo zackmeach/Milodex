@@ -16,8 +16,8 @@ Functions:
   available close on or before the day.
 - :func:`_build_visible_bars` — per-symbol :class:`BarSet` view truncated to
   the symbol's current cursor.
-- :func:`_latest_close_at_ts` — latest close per symbol at or before a
-  timestamp (or end-of-history when timestamp is ``None``).
+- :func:`_latest_close_at_ts` — latest close per symbol that has *completed*
+  by a timestamp (bar-start < ts; or end-of-history when timestamp is ``None``).
 - :func:`_advance_cursors` — advance per-symbol cursors past bars whose
   decision time has elapsed; in-place mutation.
 
@@ -294,12 +294,23 @@ def _latest_close_at_ts(
     per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
     ts: pd.Timestamp | None,
 ) -> dict[str, float]:
-    """Return the latest close per symbol at or before ``ts``.
+    """Return the latest close per symbol that has *completed* by ``ts``.
+
+    Bar timestamps are bar-STARTs; a bar's close is realized only at
+    ``start + bar_size``. Decision events fire at a bar boundary
+    ``ts = completing_bar.start + bar_size``, which for a contiguous series is
+    exactly the START of the *next* bar. So we take the latest bar with
+    ``start < ts`` (``side="left"``) — the just-completed bar — NOT ``start <= ts``
+    (``side="right"``), which would include the next bar whose close is one bar in
+    the future. Using ``side="right"`` here leaked that future close into
+    ``equity_at_eval`` and thus into sizing while a position was already held.
+    This matches the strategy's own cursor visibility (``_advance_cursors``
+    excludes the ``ts``-starting bar).
 
     When ``ts`` is ``None``, returns the very last close in each symbol's
     full bar history (used for end-of-backtest bookkeeping).
 
-    Symbols with no bars at or before ``ts`` are omitted.
+    Symbols with no bar completed before ``ts`` are omitted.
     """
     closes: dict[str, float] = {}
     for symbol, df in per_symbol_df.items():
@@ -311,8 +322,8 @@ def _latest_close_at_ts(
         if ts is None:
             closes[symbol] = float(df["close"].iloc[-1])
         else:
-            # Find the latest bar whose timestamp <= ts.
-            idx = dti.searchsorted(ts, side="right") - 1
+            # Latest bar that has completed strictly before ts (no look-ahead).
+            idx = dti.searchsorted(ts, side="left") - 1
             if idx >= 0:
                 closes[symbol] = float(df["close"].iloc[idx])
     return closes
