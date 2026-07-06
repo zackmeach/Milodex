@@ -43,18 +43,19 @@ def _write_config(
     tmp_path: Path,
     *,
     stage: str = "backtest",
-    min_trades_required: int = 30,
+    min_trades_required: int | None = 30,
     strategy_id: str = _STRATEGY_ID,
 ) -> Path:
-    """Write a strategy YAML. ``min_trades_required`` is always an int — the
-    null path is a known pre-existing CLI/Bench bug (``int(None)`` raises);
-    RM-010 preserves bug-for-bug parity and does not exercise that path.
+    """Write a strategy YAML. Pass ``min_trades_required=None`` to emit the
+    ``min_trades_required: null`` the real regime config carries (R-PRM-004
+    lifecycle exemption); the orchestrator must resolve that to the statistical
+    floor rather than crashing on ``int(None)``.
 
     ``strategy_id`` defaults to the lifecycle-proof id; scoping tests pass a
     non-regime id. The id is decomposed into family/template/variant/version
     to satisfy the loader's ``{family}.{template}.{variant}.v{version}`` rule.
     """
-    mt = str(min_trades_required)
+    mt = "null" if min_trades_required is None else str(min_trades_required)
     family, template_head, template_tail, variant, version_token = strategy_id.split(".")
     template = f"{template_head}.{template_tail}"
     version = version_token.removeprefix("v")
@@ -341,6 +342,23 @@ def test_lifecycle_exempt_promotion_bypasses_statistical_gate(tmp_path):
     assert criteria["enforced"] is False
     assert criteria["deferred"] == "M4"
     assert len(criteria["criteria"]) == 3
+
+
+def test_lifecycle_exempt_promotion_with_null_min_trades_does_not_crash(tmp_path):
+    """Regression: the real regime config sets ``min_trades_required: null``
+    (R-PRM-004). The orchestrator built ``check_gate``'s ``min_trade_count`` via
+    ``int(config.backtest.get("min_trades_required", 30))`` — an eager call-site
+    argument that raises ``TypeError`` on the present-but-null key BEFORE
+    check_gate's lifecycle short-circuit can run. That crashed the one strategy
+    the exemption exists for. Present-but-None must resolve to the floor."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, min_trades_required=None)
+
+    result = prepare_and_record_promotion(_lifecycle_exempt_request(cfg_path), store)
+
+    assert isinstance(result, PromoteSuccess)
+    assert result.promotion_type == "lifecycle_exempt"
+    assert 'stage: "paper"' in cfg_path.read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------

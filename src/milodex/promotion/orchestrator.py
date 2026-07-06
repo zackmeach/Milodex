@@ -333,13 +333,22 @@ def prepare_and_record_promotion(
             trade_count=trade_count,
         )
     else:
+        # `.get(k, default)` returns None (not the default) for a present-but-null
+        # key; the regime config sets `min_trades_required: null` (R-PRM-004
+        # lifecycle exemption). Mirror cli._min_trade_count_from_engine: treat
+        # present-but-None as the statistical floor instead of crashing on int(None)
+        # — otherwise the one strategy the lifecycle exemption exists for cannot be
+        # promoted through this path (the crash lands before check_gate's exempt
+        # short-circuit can fire).
+        min_trades_configured = config.backtest.get("min_trades_required")
+        min_trade_count = 30 if min_trades_configured is None else int(min_trades_configured)
         gate_result = check_gate(
             lifecycle_exempt=request.lifecycle_exempt,
             to_stage=to_stage,
             sharpe_ratio=sharpe_ratio,
             max_drawdown_pct=max_drawdown_pct,
             trade_count=trade_count,
-            min_trade_count=int(config.backtest.get("min_trades_required", 30)),
+            min_trade_count=min_trade_count,
         )
 
     if not gate_result.allowed:
