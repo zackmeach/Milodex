@@ -82,6 +82,25 @@ class RiskDefaults:
     max_data_staleness_seconds: int
 
 
+def _require_manual_reset(kill_switch: dict[str, Any]) -> bool:
+    """Read ``kill_switch.require_manual_reset``, enforcing the sacred invariant.
+
+    The kill switch MUST require a manual reset — auto-resume after a kill-switch
+    event is never acceptable (CLAUDE.md "Kill switch requires manual reset";
+    ADR 0054 non-negotiable account guardrail). The field exists to make that
+    invariant explicit in config, NOT as a toggle: a config (or risk-profile
+    overlay) that sets it false is rejected fail-closed rather than silently
+    ignored — the prior behavior was to load the value and never consult it.
+    """
+    if not bool(kill_switch["require_manual_reset"]):
+        raise ValueError(
+            "kill_switch.require_manual_reset must be true: auto-resume after a "
+            "kill-switch event is never acceptable (check configs/risk_defaults.yaml "
+            "or the active risk-profile overlay)."
+        )
+    return True
+
+
 def load_risk_defaults(path: Path) -> RiskDefaults:
     """Load global risk defaults from YAML."""
     data = _load_yaml(path)
@@ -93,7 +112,7 @@ def load_risk_defaults(path: Path) -> RiskDefaults:
     return RiskDefaults(
         kill_switch_enabled=bool(kill_switch["enabled"]),
         kill_switch_max_drawdown_pct=float(kill_switch["max_drawdown_pct"]),
-        require_manual_reset=bool(kill_switch["require_manual_reset"]),
+        require_manual_reset=_require_manual_reset(kill_switch),
         max_single_position_pct=float(portfolio["max_single_position_pct"]),
         max_concurrent_positions=int(portfolio["max_concurrent_positions"]),
         max_total_exposure_pct=float(portfolio["max_total_exposure_pct"]),
@@ -249,7 +268,7 @@ def _risk_defaults_from_dict(data: dict[str, Any]) -> RiskDefaults:
     return RiskDefaults(
         kill_switch_enabled=bool(kill_switch["enabled"]),
         kill_switch_max_drawdown_pct=float(kill_switch["max_drawdown_pct"]),
-        require_manual_reset=bool(kill_switch["require_manual_reset"]),
+        require_manual_reset=_require_manual_reset(kill_switch),
         max_single_position_pct=float(portfolio["max_single_position_pct"]),
         max_concurrent_positions=int(portfolio["max_concurrent_positions"]),
         max_total_exposure_pct=float(portfolio["max_total_exposure_pct"]),
