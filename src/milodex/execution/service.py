@@ -98,6 +98,21 @@ class ExecutionService:
         # must still be recognised as a backtest so it does not couple to
         # today's wall-clock/manifest state while its structural checks run.
         self._is_backtest = is_backtest
+        # G1 (sacred-layer invariant): a NullRiskEvaluator allows every intent
+        # with zero checks. It is ONLY legitimate on an explicitly-declared
+        # backtest service (simulated broker, single process). Forbid it on any
+        # non-backtest service by construction — otherwise a wiring mistake or a
+        # new callsite could inject it onto a paper/live submit path and skip the
+        # kill switch, manifest-drift check, and every exposure cap straight to
+        # the broker. Fail closed, loudly, at wiring time rather than trusting a
+        # per-call type inference.
+        if isinstance(self._risk_evaluator, NullRiskEvaluator) and not is_backtest:
+            raise ValueError(
+                "NullRiskEvaluator bypasses all risk checks and is only valid on a "
+                "backtest ExecutionService (is_backtest=True). Refusing to construct a "
+                "non-backtest execution service with a null risk evaluator — the risk "
+                "layer is sacred and must not be bypassed on a paper/live submit path."
+            )
 
     def preview(
         self,
@@ -267,7 +282,15 @@ class ExecutionService:
         """
         if source == "backtest":
             return False
-        return self._effective_stage(intent) in {"paper", "micro_live", "live"}
+        # Serialize every non-backtest submit. When the stage cannot be resolved
+        # from the intent — a config-less operator `trade submit`, which sets
+        # neither expected_stage nor strategy_config_path, so _effective_stage
+        # returns None — fall back to serializing rather than skipping: it is
+        # still a live-account submit that races runner submits for the same
+        # account-scoped cap. Skipping the None case (the prior behavior) was the
+        # exact ADR 0056 race on the operator manual path.
+        stage = self._effective_stage(intent)
+        return stage is None or stage in {"paper", "micro_live", "live"}
 
     def _effective_stage(self, intent: TradeIntent) -> str | None:
         """Resolve the stage governing this intent.
@@ -753,8 +776,14 @@ class ExecutionService:
         # (BacktestStructuralRiskEvaluator), which must still run its
         # structural checks but must NOT bind the historical replay to live
         # trading-mode/env or a live frozen-manifest lookup.
+        # bypass_mode ⟹ is_backtest by construction (see __init__: a
+        # NullRiskEvaluator can only exist on a backtest service), so the full
+        # short-circuit at the bottom of this method can never fire on a
+        # paper/live path. is_backtest no longer needs to be inferred from the
+        # evaluator type — self._is_backtest (caller-set) is authoritative and
+        # also covers the ENFORCE path (BacktestStructuralRiskEvaluator).
         bypass_mode = isinstance(self._risk_evaluator, NullRiskEvaluator)
-        is_backtest = self._is_backtest or bypass_mode
+        is_backtest = self._is_backtest
         strategy_config = self._load_strategy_config(normalized_intent.strategy_config_path)
 
         # Queue-at-open drain bar-feeding override (D-1, Option A). When the

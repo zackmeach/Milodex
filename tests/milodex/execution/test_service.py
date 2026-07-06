@@ -1905,6 +1905,15 @@ def test_serializes_paper_micro_live_and_live_but_never_backtest(
     assert not service._should_serialize_submit(
         _serialization_intent(strategy_file, "paper"), "backtest"
     )
+    # A config-less operator submit (no expected_stage, no strategy_config_path,
+    # so _effective_stage is None) still serializes on a non-backtest source — it
+    # is a live-account submit that races runner submits for the same account cap.
+    # Skipping it (the prior behavior) was the ADR 0056 race on the operator path.
+    configless = TradeIntent(
+        symbol="SPY", side=OrderSide.BUY, quantity=1.0, order_type=OrderType.MARKET
+    )
+    assert service._should_serialize_submit(configless, "paper")
+    assert not service._should_serialize_submit(configless, "backtest")
 
 
 def test_effective_stage_prefers_expected_stage_then_config(
