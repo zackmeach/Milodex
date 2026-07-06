@@ -85,8 +85,10 @@ M1 gate remains open — this is not a gate update.*
    relaxed — doctrine intact. Close-side proof observed 2026-07-02 (see §2 banner);
    open-side (drain → submit → fill) is the M1 gate event, not yet proven. The
    deployed intraday Phase-2 candidates remain vetoed `no_frozen_manifest`
-   ([`risk/evaluator.py:321`](../src/milodex/risk/evaluator.py)) — 16 non-SPY ETF
-   replicas carry `stage: paper` but were never `promotion freeze`d. The 5 **frozen**
+   ([`risk/evaluator.py:321`](../src/milodex/risk/evaluator.py)) — 32 non-SPY ETF
+   replicas (two 16-symbol families: `benchmark.unconditional_intraday_long.<etf>`
+   and `meanrev.rsi2.intraday.<etf>`) carry `stage: paper` but were never
+   `promotion freeze`d. The 5 **frozen**
    SPY intraday canaries are a structurally-open path that produced no fill only
    because the session launched mid-day (open-anchored entries dead; rsi2 locked out
    of already-dipped symbols) — **unexercised, not severed**.
@@ -107,8 +109,9 @@ M1 gate remains open — this is not a gate update.*
   half-proof observed 2026-07-02 (clean full session, 8 intents queued at close,
   `market_closed` veto intact); open-side (drain → submit → fill) unproven — the
   2026-07-06 pre-open relaunch is the planned M1 gate event. *Keystone.*
-- **D-2 Intraday freeze governance** — whether/which of the 16 unfrozen non-SPY ETF
-  replicas to `promotion freeze` (prerequisite for any intraday fill).
+- **D-2 Intraday freeze governance** — whether/which of the 32 unfrozen non-SPY ETF
+  replicas (two 16-symbol families: `unconditional_intraday_long` + `meanrev.rsi2.intraday`)
+  to `promotion freeze` (prerequisite for any intraday fill).
 - **D-3 Auto-launch vs ADR 0012** — a from-open launch is required for intraday to
   behave as designed, but none exists and [ADR 0012](adr/0012-runtime-and-dual-stop.md)
   forbids a daemon/scheduler in Phase 1. Manual pre-open deploy is the interim.
