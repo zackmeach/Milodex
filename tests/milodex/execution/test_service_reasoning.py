@@ -157,6 +157,8 @@ def test_submit_backtest_threads_reasoning_and_replaces_fill_simulation(
         kill_switch_store=kill_switch_store,
         event_store=event_store,
         risk_evaluator=NullRiskEvaluator(),
+        # A NullRiskEvaluator is only constructible on a backtest service (G1).
+        is_backtest=True,
     )
 
     reasoning = DecisionReasoning(

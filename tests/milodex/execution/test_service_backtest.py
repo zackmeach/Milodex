@@ -145,15 +145,66 @@ def _make_service(
     broker = _Broker(account, filled)
     provider = _Provider(bar)
     store = EventStore(tmp_path / "milodex.db")
+    resolved_evaluator = evaluator or NullRiskEvaluator()
     service = ExecutionService(
         broker_client=broker,
         data_provider=provider,
         risk_defaults_path=risk_defaults_file,
         kill_switch_store=KillSwitchStateStore(event_store=store),
-        risk_evaluator=evaluator or NullRiskEvaluator(),
+        risk_evaluator=resolved_evaluator,
         event_store=store,
+        # A NullRiskEvaluator is only constructible on a backtest service (G1
+        # invariant); this helper exercises the backtest submit path.
+        is_backtest=isinstance(resolved_evaluator, NullRiskEvaluator),
     )
     return service, broker, store
+
+
+def test_null_risk_evaluator_forbidden_on_non_backtest_service(tmp_path, risk_defaults_file):
+    """G1 (sacred layer): a NullRiskEvaluator allows every intent with zero
+    checks, so it must not be constructible on a non-backtest (paper/live)
+    ExecutionService — otherwise a wiring mistake or a new callsite could skip
+    the kill switch, manifest-drift check, and every exposure cap straight to
+    the broker. Fail closed at construction."""
+    account = AccountInfo(
+        equity=100_000.0,
+        cash=100_000.0,
+        buying_power=100_000.0,
+        portfolio_value=100_000.0,
+        daily_pnl=0.0,
+    )
+    bar = Bar(
+        timestamp=datetime.now(tz=UTC) - timedelta(seconds=30),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000_000,
+    )
+    store = EventStore(tmp_path / "milodex.db")
+    ks = KillSwitchStateStore(event_store=store)
+
+    with pytest.raises(ValueError, match="NullRiskEvaluator"):
+        ExecutionService(
+            broker_client=_Broker(account, None),
+            data_provider=_Provider(bar),
+            risk_defaults_path=risk_defaults_file,
+            kill_switch_store=ks,
+            risk_evaluator=NullRiskEvaluator(),
+            event_store=store,
+            is_backtest=False,
+        )
+
+    # The same construction on an explicitly-declared backtest service is allowed.
+    ExecutionService(
+        broker_client=_Broker(account, None),
+        data_provider=_Provider(bar),
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=ks,
+        risk_evaluator=NullRiskEvaluator(),
+        event_store=store,
+        is_backtest=True,
+    )
 
 
 def _seed_backtest_run(store: EventStore, run_id: str = "bt-run-1") -> int:
