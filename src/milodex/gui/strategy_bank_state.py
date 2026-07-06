@@ -358,9 +358,16 @@ def _fetch_blocked(
                 "sharpeRatio": sharpe,
                 "maxDrawdownPct": max_dd,
                 "tradeCount": trade_count or 0,
-                # family arg intentionally omitted — paper-promoted strategies are excluded
-                # above, and the lifecycle-exempt regime strategy lives at paper.
-                "gateFailures": _compute_gate_failures(sharpe, max_dd, trade_count),
+                # Thread family so the lifecycle-proof regime strategy stays
+                # gate-exempt (_compute_gate_failures returns [] for family ==
+                # "regime"). The prior "omitted per original comment" reasoning
+                # only held under the ever-promoted membership; this builder uses
+                # demotion_aware=True, under which a *demoted* regime strategy —
+                # a supported governance action (ADR 0058) — resurfaces here and
+                # was shown spurious S/D/N codes.
+                "gateFailures": _compute_gate_failures(
+                    sharpe, max_dd, trade_count, family=strategy_id.split(".", 1)[0]
+                ),
                 "startedAt": m["started_at"] or "",
                 "runId": m["run_id"] or "",
                 # ADR 0032 audit trail: static flag.
