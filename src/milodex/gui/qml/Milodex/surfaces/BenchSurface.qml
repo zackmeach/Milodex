@@ -278,6 +278,20 @@ Item {
                     wrapMode: Text.WordWrap
                 }
 
+                // Metrics-provenance caption (D-8 deferral / M2 item c) — quiet,
+                // eyebrow-style label so the operator sees at a glance that the
+                // Sharpe / Max-DD / Trades columns below are a read-model
+                // snapshot, not a reconstructed or authoritative gate verdict.
+                // Same label.xs muted-caption treatment as the eyebrow above.
+                Text {
+                    text: "Sharpe · Max-DD · Trades — read-model snapshot, not reconstructed"
+                    color: Theme.color.text.muted
+                    font.family: Theme.typography.label.xs.family
+                    font.pixelSize: Theme.typography.label.xs.size
+                    font.weight: Theme.typography.label.xs.weight
+                    font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                }
+
                 // Hairline below header
                 Rectangle {
                     width: parent.width

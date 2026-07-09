@@ -145,11 +145,11 @@ Item {
         }
         EvidenceField {
             label: "Freshness"
-            value: root._or(root._pktGate.freshness)
+            value: root._or(root._pktGate.freshnessDisplay || root._pktGate.freshness)
         }
         EvidenceField {
             label: "Gate result"
-            value: root._or(root._pktGate.gateResult)
+            value: root._or(root._pktGate.gateResultDisplay || root._pktGate.gateResult)
         }
 
         // ---- EVIDENCE TIMESTAMPS ----

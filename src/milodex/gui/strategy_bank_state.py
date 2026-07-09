@@ -211,6 +211,14 @@ _FLAGGED_NOT_RETIRED: frozenset[str] = frozenset(
     }
 )
 
+# Provenance stamp for sharpe/maxDrawdownPct/tradeCount on every paper and
+# blocked row (D-8 deferral / M2 item c). These metrics are read straight off
+# the event-store snapshot at query time — no event-derived freshness or gate
+# reconstruction happens here (that remains deferred; see bench_actions._evidence_packet
+# for the analogous Bench v1 contract). The GUI renders this as a quiet caption
+# next to the metrics so the operator never mistakes a snapshot for a live verdict.
+_METRICS_PROVENANCE = "read-model snapshot — not reconstructed"
+
 
 # ---------------------------------------------------------------------------
 # Gate-failure computation
@@ -320,6 +328,7 @@ def _fetch_paper(conn: sqlite3.Connection, *, demotion_aware: bool = False) -> l
                 "evidenceRunId": row["evidence_run_id"] or "",
                 # ADR 0032 audit trail: static flag until an audit_notes table exists.
                 "auditFlag": strategy_id in _AUDIT_FLAGGED,
+                "metricsProvenance": _METRICS_PROVENANCE,
             }
         )
     return result
@@ -375,6 +384,7 @@ def _fetch_blocked(
                 # flagFailingNotRetired: strategy is kept at backtest by governance
                 # decision; the dual_absolute callout in STRATEGY_BANK.md explains why.
                 "flagFailingNotRetired": strategy_id in _FLAGGED_NOT_RETIRED,
+                "metricsProvenance": _METRICS_PROVENANCE,
             }
         )
     # Replicate ORDER BY br.strategy_id from the former _SQL_BLOCKED.

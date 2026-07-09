@@ -932,6 +932,10 @@ def test_bench_pr_m_evidence_packet_shape(tmp_path: Path) -> None:
     assert gate["freshness"] == "not_reconstructed_v1"
     assert gate["gateResult"] == "not_reconstructed_v1"
     assert gate["reconstructionDeferred"] is True
+    # GUI audit finding #1 / M2 item c: humanized display copy alongside the
+    # untouched machine sentinel — the modal renders these, not the raw value.
+    assert gate["freshnessDisplay"] == "Deferred (v1) — not yet computed"
+    assert gate["gateResultDisplay"] == "Deferred (v1) — not yet computed"
 
     # Status / session / job mirrors
     status = packet["status"]
@@ -995,10 +999,38 @@ def test_bench_pr_m_evidence_packet_keys_are_stable(tmp_path: Path) -> None:
         "freshness",
         "gateResult",
         "reconstructionDeferred",
+        "freshnessDisplay",
+        "gateResultDisplay",
     }
     assert set(packet["status"].keys()) == {"kind", "word", "tail", "metaLine"}
     assert set(packet["session"].keys()) == {"state", "id", "detail"}
     assert set(packet["job"].keys()) == {"id", "status", "actionType", "detail"}
+
+
+def test_bench_row_carries_metrics_provenance(tmp_path: Path) -> None:
+    """Every Bench row stamps metricsProvenance next to the raw sharpe/
+    maxDrawdownPct/tradeCount fields the ladder renders directly (D-8
+    deferral / M2 item c) — those are read-model-snapshot values, same as
+    evidencePacket's metrics, just visible without opening the dossier.
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+    from milodex.gui.strategy_row import METRICS_PROVENANCE
+
+    assert METRICS_PROVENANCE == "read-model snapshot — not reconstructed"
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+
+    snapshot = build_bench_snapshot(db, configs)
+    row = next(s for s in snapshot["sections"] if s["stage"] == "paper")["strategies"][0]
+
+    assert row["metricsProvenance"] == METRICS_PROVENANCE
 
 
 def test_bench_pr_m_packet_is_independent_of_flat_fields(tmp_path: Path) -> None:
