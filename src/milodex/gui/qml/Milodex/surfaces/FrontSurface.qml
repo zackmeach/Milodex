@@ -741,13 +741,13 @@ SurfaceBase {
             //
             // Gated on MarketTapeState (feeds the index percentages and
             // weatherLine) — its OWN read model, not FrontPageState. On a tape
-            // error, hide the whole block rather than print stale/zero index
-            // moves (mirrors DESK's MarketTape hide-on-error).
+            // error, hide the prose rather than print stale/zero index moves,
+            // and let the section's own SectionStatus banner explain the
+            // absence (mirrors DESK's paired banner + hide-on-error).
             // ====================================================
             Column {
                 width: parent.width
                 spacing: Theme.space[3]
-                visible: MarketTapeState.dataStatus !== "error"
 
                 Text {
                     text: "The Wider Market"
@@ -759,10 +759,17 @@ SurfaceBase {
                     font.capitalization: Font.AllUppercase
                 }
 
+                SectionStatus {
+                    status: MarketTapeState.dataStatus
+                    errorMessage: MarketTapeState.dataErrorMessage
+                    hasData: MarketTapeState.rows.length > 0
+                }
+
                 // Market percentages rendered in data mono (DESIGN.md §5.3); prose in body sans.
                 // When market is unknown, falls back to a single prose Text.
                 Loader {
                     width: parent.width
+                    visible: MarketTapeState.dataStatus !== "error"
                     sourceComponent: root.marketKnown ? marketKnownRow : marketUnknownText
                 }
 
