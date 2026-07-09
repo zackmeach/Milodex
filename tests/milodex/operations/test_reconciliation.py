@@ -820,3 +820,80 @@ def test_stale_pending_attempt_surfaced_as_informational_warning(tmp_path):
     assert not any("coid-fresh-1" in w for w in warnings)
     # Informational only — no incident armed by a stale attempt.
     assert result.incident_reason_codes == []
+
+
+# ---------------------------------------------------------------------------
+# R-OPS-004 v1.3: session-close scoping + const/string consistency
+# ---------------------------------------------------------------------------
+
+
+def test_sync_scoped_to_session_id_only_touches_that_session(tmp_path):
+    """Session-close scoping (M1 retro item (a)): a session_id filter syncs only
+    the orders whose 'submitted' row carries that session, leaving a sibling
+    session's local-only order untouched. An empty match is a no-op, not an error
+    (contrast the single broker_order_id path, which raises)."""
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="mine-1", session_id="sess-A")
+    _seed_open_paper_order(store, broker_order_id="other-1", session_id="sess-B")
+    broker = _OrderSyncBroker(
+        order_status={"mine-1": OrderStatus.FILLED, "other-1": OrderStatus.FILLED}
+    )
+
+    result = sync_local_only_orders(
+        event_store=store,
+        broker=broker,
+        reason="session close",
+        session_id="sess-A",
+        now=_SYNC_NOW,
+    )
+    assert [s.broker_order_id for s in result.synced] == ["mine-1"]
+
+    # The sibling session's order is untouched — still local-only.
+    assert _local_open_count(store) == 1
+    remaining = [
+        r
+        for r in run_reconciliation(
+            event_store=store, broker=_OrderSyncBroker(), persist=False, now=_SYNC_NOW
+        ).order_rows
+        if r.kind == "local_only"
+    ]
+    assert [r.broker_order_id for r in remaining] == ["other-1"]
+
+    # A session with no local-only orders is a clean no-op, not a raise.
+    empty = sync_local_only_orders(
+        event_store=store,
+        broker=broker,
+        reason="quiet",
+        session_id="sess-does-not-exist",
+        now=_SYNC_NOW,
+    )
+    assert empty.synced == []
+    assert empty.explanation_id is None
+
+
+def test_checked_dimensions_version_and_deferred_set_are_v1_3(tmp_path):
+    """R-OPS-004 v1.3 (M1 retro item (a)): filled/canceled catch-up are enforced;
+    only strategy-linkage verification stays deferred; the const and every human
+    string agree on v1.3 (fixing the prior const=v1.1 / strings=v1.2 drift)."""
+    from milodex.operations.reconciliation import (
+        CHECKED_DIMENSIONS,
+        CHECKED_DIMENSIONS_VERSION,
+        DEFERRED_CHECKS,
+    )
+
+    assert CHECKED_DIMENSIONS_VERSION == "R-OPS-004.v1.3"
+    assert DEFERRED_CHECKS == ("strategy_linkage",)
+    assert "filled_since_last_sync" in CHECKED_DIMENSIONS
+    assert "canceled_since_last_sync" in CHECKED_DIMENSIONS
+    assert "strategy_linkage" not in CHECKED_DIMENSIONS
+
+    store = EventStore(tmp_path / "m.db")
+    result = run_reconciliation(
+        event_store=store, broker=_OrderSyncBroker(), persist=False, now=_SYNC_NOW
+    )
+    warning_line = next(w for w in build_warnings(result, store) if "Deferred checks" in w)
+    human_line = next(line for line in human_lines(result, store) if "Deferred checks" in line)
+    for line in (warning_line, human_line):
+        assert "R-OPS-004 v1.3" in line
+        assert "v1.1" not in line
+        assert "v1.2" not in line

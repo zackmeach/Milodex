@@ -69,17 +69,21 @@ Shutdown must never silently discard operationally important context. A kill-swi
 
 Local state and Alpaca must be reconciled at startup, at the start of each workflow window, and on demand. Reconciliation now writes a durable readiness verdict for every run, clean or dirty, including the NY-local trading date, broker connectivity, checked-dimensions version, incident hash/reasons, and JSON-ready summary payload.
 
-For the v1.1 durable gate, exposure-increasing paper previews and submits require the latest clean reconciliation run to have `recorded_at` converted to today's America/New_York calendar date. Missing, stale, dirty, broker-unreachable, or incomplete runs block exposure-increasing paper actions with structured reason codes (`reconciliation_required`, `reconciliation_stale`, `reconciliation_drift`, or `reconciliation_incomplete`). Broker-grounded reducing actions remain allowed; backtests remain exempt.
+For the durable readiness gate, exposure-increasing paper previews and submits require the latest clean reconciliation run to have `recorded_at` converted to today's America/New_York calendar date. Missing, stale, dirty, broker-unreachable, or incomplete runs block exposure-increasing paper actions with structured reason codes (`reconciliation_required`, `reconciliation_stale`, `reconciliation_drift`, or `reconciliation_incomplete`). Broker-grounded reducing actions remain allowed; backtests remain exempt.
 
-The enforced v1.1 dimensions are:
+The enforced (R-OPS-004 v1.3) dimensions are:
 
 - open orders
 - current positions
 - account equity and buying power relevant to policy
 - order identifiers and local submission records
 - any halt- or incident-relevant discrepancies
+- filled-order catch-up since last sync
+- canceled/rejected order parity
 
-Filled-order catch-up since last sync, canceled/rejected order parity, and strategy-to-order linkage remain warning-only deferred dimensions for v1.2. Deferred-dimension warnings do not by themselves make a reconciliation run incomplete or dirty in this slice.
+Filled- and canceled/rejected-order catch-up were promoted from deferred to enforced in v1.3 (founder-approved 2026-07-09). An order that is locally open but no longer open at the broker is detected here as `local_only` order drift — that detection *is* the filled-/canceled-since-last-sync dimension, and it arms the readiness veto. The corrective close is the audited `reconcile sync-orders` path, which the runner also runs best-effort at session close (scoped to its own session's orders). This is a session-close-and-on-demand convergence, **not** a live in-session fill feed.
+
+Strategy-to-order linkage verification remains a warning-only deferred dimension: a reconcile-time pass that flags any local order or position carrying no strategy attribution is not yet implemented. (PR #337 closed linkage *inheritance* on synced corrective rows — synced terminal rows now inherit their strategy and session from the original submission — which is a distinct, write-side fix and does not implement the reconcile-time check.) Deferred-dimension warnings do not by themselves make a reconciliation run incomplete or dirty.
 
 If local and broker state disagree on any execution-critical fact, Milodex must:
 

@@ -28,7 +28,9 @@ _MARKER_RE = re.compile(r"#\s*scaffolded:", re.IGNORECASE)
 # this dict in the same commit that adds or removes a marker.
 CANONICAL_SCAFFOLDED_MARKERS: dict[str, list[str]] = {
     "operations/reconciliation.py": [
-        "deferred reconciliation checks",
+        # R-OPS-004 v1.3: filled-/canceled-since-last-sync were promoted to
+        # enforced; only strategy-linkage verification remains deferred.
+        "deferred reconciliation check",
     ],
 }
 

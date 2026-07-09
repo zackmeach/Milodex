@@ -1109,7 +1109,7 @@ def build_reconcile_view(
             Panel(
                 Text.from_markup(
                     "[yellow]The following dimensions are scaffolded "
-                    "(R-OPS-004 v1.1) and surfaced as warnings only:[/]\n"
+                    "(R-OPS-004 v1.3) and surfaced as warnings only:[/]\n"
                     + "\n".join(f"  • {c}" for c in deferred_checks)
                 ),
                 title="Deferred checks",
