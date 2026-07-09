@@ -93,3 +93,10 @@ reports/
 /working_lane_run.txt
 /prof_*.txt
 docs/reviews/working_lane_*.json
+
+# Backtest export dumps auto-written by the engine — evidence gets relocated to a
+# named folder under docs/reviews/; the raw export dir must never be committed.
+docs/reviews/*_backtest_trades.csv/
+
+# Personal, non-project material — must never be committed into the repo.
+docs/RESUME_*.md

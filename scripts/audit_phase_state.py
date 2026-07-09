@@ -107,11 +107,8 @@ _ALLOWLISTED_DOCS = frozenset(
         # "Phase 1 is market-only"), not claims that Phase 1 is the current phase.
         "docs/architecture/roadmaps/2026-06-10-hardening-roadmap.md",
         "docs/architecture/2026-06-13-cross-process-submit-serialization-design.md",
-        # Phase-1 mentions here are scope qualifiers: a SIP/Massive data path
-        # "deferred to Phase 1.2+" and a citation to the phase-1 instrument
-        # whitelist ADR — not claims that Phase 1 is the current phase.
-        "docs/INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md",
-        "docs/INTRADAY_ETF_EVIDENCE_PHASE2_ORCHESTRATION_BRIEF.md",
+        # (The two intraday-ETF evidence memos formerly allowlisted here moved into
+        # docs/reviews/ — now covered by the _EVIDENCE_PREFIXES exemption.)
         # Phase-1 mentions here are scope/historical qualifiers: the control-tower
         # roadmap cites the ADR 0012 no-daemon-in-Phase-1 constraint, the ADR 0016
         # phase-1 instrument whitelist, and the closed ROADMAP_PHASE1.md — none

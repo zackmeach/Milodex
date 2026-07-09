@@ -204,9 +204,9 @@ adjudicates** — it does not restate source content.
 
 | Document | Disposition | Rationale → absorbed by |
 |---|---|---|
-| [INTRADAY_ETF_EVIDENCE_PHASE2_COMPLETE.md](INTRADAY_ETF_EVIDENCE_PHASE2_COMPLETE.md) | adopted | Honest, self-correcting; Phase 2 merged; **row-2/2.47 evidence SUPERSEDED, fresh 68-cell rerun PENDING** (experiment_registry has **0 rows**). → M3. |
-| [INTRADAY_ETF_EVIDENCE_HARDENING.md](INTRADAY_ETF_EVIDENCE_HARDENING.md) · [_FEEDBACK.md](INTRADAY_ETF_EVIDENCE_HARDENING_FEEDBACK.md) · [_LEAN_SLICE_BUILD.md](INTRADAY_ETF_EVIDENCE_LEAN_SLICE_BUILD.md) · [_PHASE2_ORCHESTRATION_BRIEF.md](INTRADAY_ETF_EVIDENCE_PHASE2_ORCHESTRATION_BRIEF.md) | adopted | Strategy memo + reviews + lean-slice + plan — all realized in merged code; consumed by the completion record. → M3 (lane mechanically complete). |
-| [INTRADAY_ETF_EVIDENCE_PHASE2_TIER1_GATE.md](INTRADAY_ETF_EVIDENCE_PHASE2_TIER1_GATE.md) · [reviews/working_lane_evidence_phase2.md](reviews/working_lane_evidence_phase2.md) | superseded | Pre-RTH-lifecycle evidence; explicitly superseded; not persisted. Audit history only. |
+| [reviews/2026-06-20-intraday-etf-evidence-phase2-complete.md](reviews/2026-06-20-intraday-etf-evidence-phase2-complete.md) | adopted | Honest, self-correcting; Phase 2 merged; **row-2/2.47 evidence SUPERSEDED, fresh 68-cell rerun PENDING** (experiment_registry has **0 rows**). → M3. |
+| [reviews/2026-06-19-intraday-etf-evidence-hardening.md](reviews/2026-06-19-intraday-etf-evidence-hardening.md) · [_FEEDBACK.md](reviews/2026-06-18-intraday-etf-evidence-hardening-feedback.md) · [_LEAN_SLICE_BUILD.md](reviews/2026-06-19-intraday-etf-evidence-lean-slice-build.md) · [_PHASE2_ORCHESTRATION_BRIEF.md](reviews/2026-06-19-intraday-etf-evidence-phase2-orchestration-brief.md) | adopted | Strategy memo + reviews + lean-slice + plan — all realized in merged code; consumed by the completion record. → M3 (lane mechanically complete). |
+| [reviews/2026-06-20-intraday-etf-evidence-phase2-tier1-gate.md](reviews/2026-06-20-intraday-etf-evidence-phase2-tier1-gate.md) · [reviews/working_lane_evidence_phase2.md](reviews/working_lane_evidence_phase2.md) | superseded | Pre-RTH-lifecycle evidence; explicitly superseded; not persisted. Audit history only. |
 | [reviews/2026-06-20-intraday-etf-evidence-phase2-external-review-handoff.md](reviews/2026-06-20-intraday-etf-evidence-phase2-external-review-handoff.md) | adopted | Caught the overnight-null BLOCKER + 4 MAJOR; all fixes in HEAD. Methodology-correctness precedent. |
 | [STRATEGY_BANK.md](STRATEGY_BANK.md) | partially-adopted | Roster accurate (11 frozen), **but the "at most 3 run at once" concurrency section is STALE** (guard removed `211d983`). → strategy-bank-truth touch-it (M1/M2). |
 
@@ -214,11 +214,11 @@ adjudicates** — it does not restate source content.
 
 | Document | Disposition | Rationale → absorbed by |
 |---|---|---|
-| [GUI_AUDIT_2026-06-22.md](GUI_AUDIT_2026-06-22.md) | adopted | Findings ground out in code: evidence non-authoritative, no veto-reason, phantom-vs-count headline, no manual halt, no archetype distinction. → M2. |
+| [reviews/2026-06-22-gui-audit.md](reviews/2026-06-22-gui-audit.md) | adopted | Findings ground out in code: evidence non-authoritative, no veto-reason, phantom-vs-count headline, no manual halt, no archetype distinction. → M2. |
 | [BENCH_BOUNDARY.md](BENCH_BOUNDARY.md) · [DESIGN_SYSTEM.md](DESIGN_SYSTEM.md) · [DESIGN.md](DESIGN.md) | adopted | Current Bench-boundary + design canon; stable foundation. |
 | [PHASE6_BENCH_PREP.md](PHASE6_BENCH_PREP.md) | partially-superseded | Its "no backend mutation" plan is overtaken **only** for the 6 action families [ADR 0051](adr/0051-bench-command-infrastructure-v1.md) opened; ADR 0049's perimeter still binds the rest. Add a forward-pointer; do not treat as fully dead. → status touch-it (M2). |
 | ADR [0050](adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) | partially-adopted | Schema axes adopted; **real event-derived reconstruction deferred (Decision 8)** = the #1 operator-trust gap. Honest *labeling* → M2; authoritative *reconstruction* → §10. |
-| [FRONTEND_FRAMEWORK_AUDIT_2026-06-20.md](FRONTEND_FRAMEWORK_AUDIT_2026-06-20.md) | deferred | Mild-lean-to-stay on QML; switch-trigger (view-layer AI bottleneck) unmet. → §10. |
+| [reviews/2026-06-20-frontend-framework-audit.md](reviews/2026-06-20-frontend-framework-audit.md) | deferred | Mild-lean-to-stay on QML; switch-trigger (view-layer AI bottleneck) unmet. → §10. |
 | [reviews/2026-06-10-gui-wiring-audit.md](reviews/2026-06-10-gui-wiring-audit.md) | partially-adopted | Kill-switch reset reachability FIXED; P1-2/P2-1/P2-2 status = re-confirm on M2 entry. |
 
 ### 3.6 Operations / recovery
@@ -564,7 +564,7 @@ critical path unless a milestone proves it genuinely required for trust closure.
 | SIP / consolidated data feed | [ADR 0017](adr/0017-data-source-hierarchy.md); intraday-evidence lane | The binding constraint on intraday *durability*. Buy only when a promotion case demands it — **do not** pull forward to "close" M3. |
 | God-file / leaked-invariant cleanup | [2026-06-12 deepening audit](reviews/2026-06-12-architecture-deepening-audit.md) | Resolver dup (#7), sacred-layer parity tests (#1-4), workflow-readiness lift (#8). Maintainability. |
 | Capital / portfolio allocator | capability-axes | Off-thesis; design-not-to-preclude. |
-| Frontend-framework switch (PyWebView) | [framework audit](FRONTEND_FRAMEWORK_AUDIT_2026-06-20.md) | Switch-trigger = measured view-layer AI bottleneck only. |
+| Frontend-framework switch (PyWebView) | [framework audit](reviews/2026-06-20-frontend-framework-audit.md) | Switch-trigger = measured view-layer AI bottleneck only. |
 | Product-phase history (Phases 1–5) | ADR 0023/0025/0027/0031/0038 | Closed; cite-and-retire. |
 
 ---
