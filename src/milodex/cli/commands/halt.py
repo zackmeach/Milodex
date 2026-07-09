@@ -63,20 +63,30 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     service = ctx.get_execution_service()
     outcome = service.halt_trading(reason)
     state = service.get_kill_switch_state()
-    runners = _stop_live_runners(ctx)
-    return _build_result(reason, outcome, state, runners)
+    runners, enumeration_error = _stop_live_runners(ctx)
+    return _build_result(reason, outcome, state, runners, enumeration_error)
 
 
-def _stop_live_runners(ctx: CommandContext) -> list[dict[str, Any]]:
+def _stop_live_runners(ctx: CommandContext) -> tuple[list[dict[str, Any]], str | None]:
     """Fan a controlled stop out to every live runner, failing soft.
 
     A per-runner failure (or a wedged/dead runner) never blocks the halt: the
     trip has already completed. Each runner's outcome is reported individually.
+
+    The fleet ENUMERATION itself is also fail-soft: by the time this runs, the
+    trip has already durably engaged the kill switch, so an enumeration failure
+    (corrupt lock file, locks-dir permission error) must not bubble up and make
+    the command report "Unexpected error" for a halt that in fact completed.
+    Returns ``(outcomes, enumeration_error)``; on enumeration failure the
+    outcomes list is empty and the error string is surfaced to the operator.
     """
-    holders = live_runner_holders(ctx.config_dir, ctx.locks_dir)
-    if not holders:
-        return []
-    control = PaperRunnerControl(locks_dir=ctx.locks_dir)
+    try:
+        holders = live_runner_holders(ctx.config_dir, ctx.locks_dir)
+        if not holders:
+            return [], None
+        control = PaperRunnerControl(locks_dir=ctx.locks_dir)
+    except Exception as exc:  # noqa: BLE001 — fail soft: the trip already completed
+        return [], f"{type(exc).__name__}: {exc}"
     outcomes: list[dict[str, Any]] = []
     for strategy_id, holder in sorted(holders.items()):
         try:
@@ -101,7 +111,7 @@ def _stop_live_runners(ctx: CommandContext) -> list[dict[str, Any]]:
                 "error": None,
             }
         )
-    return outcomes
+    return outcomes, None
 
 
 def _build_result(
@@ -109,6 +119,7 @@ def _build_result(
     outcome: Any,
     state: Any,
     runners: list[dict[str, Any]],
+    enumeration_error: str | None,
 ) -> CommandResult:
     lines = ["Operator Manual Halt", f"Reason: {reason}"]
 
@@ -125,7 +136,12 @@ def _build_result(
     lines.append(f"Kill switch: {'active' if state.active else 'INACTIVE (unexpected)'}")
 
     # (c) per-runner controlled-stop outcomes
-    if not runners:
+    if enumeration_error is not None:
+        lines.append(
+            f"Live runners: fleet enumeration failed: {enumeration_error} — the halt "
+            "itself completed; stop runners manually (see docs/TROUBLESHOOTING.md)."
+        )
+    elif not runners:
         lines.append("Live runners: none found — nothing to stop.")
     else:
         stopped = sum(1 for r in runners if r["stop_requested"])
@@ -153,5 +169,6 @@ def _build_result(
         "kill_switch_reason": state.reason,
         "last_triggered_at": state.last_triggered_at,
         "runners": runners,
+        "runner_enumeration_error": enumeration_error,
     }
     return CommandResult(command="halt", data=data, human_lines=lines)

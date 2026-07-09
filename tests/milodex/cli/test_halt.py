@@ -155,3 +155,38 @@ def test_halt_stops_every_live_runner_and_fails_soft(monkeypatch):
     assert "[OK] regime.daily.sma200_rotation.spy_shy.v1" in output
     assert "[FAIL] meanrev.daily.rsi2.spy.v1" in output
     assert service.halt_calls == ["operator manual trip"]
+
+
+def test_halt_succeeds_and_reports_when_fleet_enumeration_fails(monkeypatch):
+    """An enumeration failure after the trip must not make the halt report failure.
+
+    By the time enumeration runs, halt_trading has already durably engaged the
+    switch. If live_runner_holders raises (corrupt lock file, locks-dir
+    permission error), the command must still exit 0 and render the
+    trip-completed output plus an honest enumeration-failure line — not bubble
+    to the generic "Unexpected error" handler claiming the halt failed.
+    """
+    service = StubHaltService()
+
+    def _raising_enumeration(config_dir, locks_dir):
+        raise OSError("locks dir unreadable")
+
+    monkeypatch.setattr(halt_module, "live_runner_holders", _raising_enumeration)
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["halt", "--confirm"],
+        execution_service_factory=lambda: service,
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    # The trip completed and is reported as such.
+    assert service.halt_calls == ["operator manual trip"]
+    assert "Kill switch: active" in output
+    assert "resting orders cancelled" in output
+    # The enumeration failure is surfaced honestly, with the manual-stop pointer.
+    assert "fleet enumeration failed: OSError: locks dir unreadable" in output
+    assert "stop runners manually" in output
