@@ -365,15 +365,31 @@ class _OrderSyncBroker:
         )
 
 
-def _seed_open_paper_order(store, *, broker_order_id, symbol="SPY", side="sell", quantity=10.0):
-    """Append an explanation + a paper trade left in 'submitted' (locally open)."""
+def _seed_open_paper_order(
+    store,
+    *,
+    broker_order_id,
+    symbol="SPY",
+    side="sell",
+    quantity=10.0,
+    status="submitted",
+    strategy_name="s",
+    session_id=None,
+):
+    """Append an explanation + a paper trade left open (locally open).
+
+    ``status`` defaults to 'submitted' (the strategy-linked path). Passing
+    'accepted' (also a member of OPEN_ORDER_STATUSES) seeds a locally-open
+    order with no 'submitted' row of its own -- the operator-attributed /
+    legacy-order fallback case for strategy-linkage lookup.
+    """
     recorded_at = datetime(2026, 5, 28, 19, 0, tzinfo=UTC)
     eid = store.append_explanation(
         ExplanationEvent(
             **_incident_kwargs(
                 decision_type="submit",
                 status="submitted",
-                strategy_name="s",
+                strategy_name=strategy_name,
                 strategy_stage="paper",
                 symbol=symbol,
                 side=side,
@@ -387,7 +403,7 @@ def _seed_open_paper_order(store, *, broker_order_id, symbol="SPY", side="sell",
         TradeEvent(
             explanation_id=eid,
             recorded_at=recorded_at,
-            status="submitted",
+            status=status,
             source="paper",
             symbol=symbol,
             side=side,
@@ -396,13 +412,14 @@ def _seed_open_paper_order(store, *, broker_order_id, symbol="SPY", side="sell",
             time_in_force="day",
             estimated_unit_price=400.0,
             estimated_order_value=400.0 * quantity,
-            strategy_name="s",
+            strategy_name=strategy_name,
             strategy_stage="paper",
             strategy_config_path="c.yaml",
             submitted_by="operator",
             broker_order_id=broker_order_id,
             broker_status="pending",
             message=None,
+            session_id=session_id,
         )
     )
 
@@ -541,6 +558,53 @@ def test_sync_single_order_by_id(tmp_path):
     assert len(result.synced) == 1
     assert result.synced[0].broker_order_id == "ord-1"
     assert _local_open_count(store) == 1
+
+
+def test_sync_inherits_strategy_linkage_from_submitted_row(tmp_path):
+    """M1 retro item (c): a synced terminal row must inherit strategy_name,
+    strategy_stage, strategy_config_path, and session_id from the original
+    'submitted' trade row for the same broker_order_id, instead of the
+    hardcoded strategy_name=None/strategy_stage='paper'/no session_id."""
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(
+        store,
+        broker_order_id="ord-1",
+        strategy_name="momo.rule.v1",
+        session_id="sess-abc",
+    )
+    broker = _OrderSyncBroker(order_status={"ord-1": OrderStatus.CANCELLED})
+    result = sync_local_only_orders(
+        event_store=store, broker=broker, reason="close stale", now=_SYNC_NOW
+    )
+    assert result.synced[0].recorded_status == "cancelled"
+    terminal = next(
+        t for t in store.list_trades() if t.broker_order_id == "ord-1" and t.status == "cancelled"
+    )
+    assert terminal.strategy_name == "momo.rule.v1"
+    assert terminal.strategy_stage == "paper"
+    assert terminal.strategy_config_path == "c.yaml"
+    assert terminal.session_id == "sess-abc"
+
+
+def test_sync_fallback_preserves_null_linkage_when_no_submitted_match(tmp_path):
+    """A locally-open order with no 'submitted' row of its own (e.g. left in
+    'accepted' -- also OPEN_ORDER_STATUSES) has no strategy row to inherit
+    from; today's None/'paper'/no-session fallback behavior must be
+    preserved (operator-attributed or legacy orders)."""
+    store = EventStore(tmp_path / "m.db")
+    _seed_open_paper_order(store, broker_order_id="ord-2", status="accepted")
+    broker = _OrderSyncBroker(order_status={"ord-2": OrderStatus.CANCELLED})
+    result = sync_local_only_orders(
+        event_store=store, broker=broker, reason="close stale", now=_SYNC_NOW
+    )
+    assert result.synced[0].recorded_status == "cancelled"
+    terminal = next(
+        t for t in store.list_trades() if t.broker_order_id == "ord-2" and t.status == "cancelled"
+    )
+    assert terminal.strategy_name is None
+    assert terminal.strategy_stage == "paper"
+    assert terminal.strategy_config_path is None
+    assert terminal.session_id is None
 
 
 # ---------------------------------------------------------------------------
