@@ -237,7 +237,12 @@ class _FakeSingleBacktestEngine:
         )
 
 
-def _process_qt_until(predicate, *, timeout_ms: int = 2_000) -> bool:  # noqa: ANN001
+def _process_qt_until(predicate, *, timeout_ms: int = 10_000) -> bool:  # noqa: ANN001
+    # 10s default ceiling, not 2s: the wait is condition-based (returns the moment
+    # the predicate holds), so a generous ceiling is free on the happy path but
+    # absorbs xdist-loaded CI runners — the 2s budget flaked the async-submit test
+    # on 2026-07-09 (CI run 29046179518). Deliberate negative-waits pass their own
+    # short timeout_ms.
     app = QCoreApplication.instance() or QCoreApplication([])
     deadline = threading.Event()
     timer = QTimer()

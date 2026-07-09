@@ -143,20 +143,26 @@ def _make_state(*, store=None, factory=None, broker_poll_seconds: float = 9999.0
 
 
 def _wait_for_pool(poller) -> None:
-    """Poll until the poller's background refresh settles (``dataStatus`` leaves "loading").
+    """Poll until the poller's in-flight background refresh settles.
 
     Condition-based, not a fixed budget — a plain ``waitForDone(2000)`` can return
     before the xdist-delayed worker runs, flaking the caller (root-caused 2026-07-06,
-    same fix as test_attention_state.py). A pool-idle check can't help here: the pool
-    reads idle both before the worker starts and after it finishes, so only the
-    poller's own terminal ``dataStatus`` distinguishes the two. A terminal "error"
-    outcome is not masked — the caller's assertion still fails honestly.
+    same fix as test_attention_state.py). The settle condition is
+    ``_refresh_in_flight`` going False, NOT ``dataStatus != "loading"``:
+    ``_kick_refresh`` never sets dataStatus back to "loading", so after a first
+    poll lands the status is already terminal and a status-based wait returns
+    before a SECOND kick's worker has run on a slow runner — exactly the
+    ``test_broker_failure_sets_error_status`` CI flake of 2026-07-09 (run
+    29048702843). ``_refresh_in_flight`` is set True synchronously by
+    ``_kick_refresh`` and flips False only inside the completion/failure slot,
+    so it distinguishes every poll, first or later. A terminal "error" outcome
+    is not masked — the caller's assertion still fails honestly.
     """
     deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         poller._thread_pool.waitForDone(50)  # noqa: SLF001
         QCoreApplication.processEvents()
-        if poller.dataStatus != "loading":
+        if not poller._refresh_in_flight:  # noqa: SLF001
             break
     QCoreApplication.processEvents()
 

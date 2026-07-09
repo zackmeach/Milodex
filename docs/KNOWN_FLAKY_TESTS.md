@@ -1,5 +1,36 @@
 # Known Flaky Tests
 
+## RESOLVED 2026-07-09: CI-slow async-wait flakes in bench-bridge and operational-state tests
+
+### Affected (no longer flaky)
+
+```
+tests/milodex/gui/test_bench_command_bridge.py::test_submit_paper_runner_async_methods_return_queued_and_emit_final_results
+tests/milodex/gui/test_operational_state.py::test_broker_failure_sets_error_status
+```
+
+Both flaked on GitHub Actions on 2026-07-09 (runs 29046179518 and 29048702843) on
+docs-only/test-only PRs, passed locally and on CI rerun.
+
+### Root causes (two distinct defects in the same family)
+
+- **Bench bridge:** `_process_qt_until` was condition-based but carried a **2s
+  default ceiling** — too tight for an xdist-loaded CI runner to schedule the
+  async bridge worker. Fixed by raising the default ceiling to 10s (free on the
+  happy path; deliberate negative-waits pass their own short `timeout_ms`).
+- **Operational state:** `_wait_for_pool` waited on `dataStatus != "loading"`,
+  which is only sound for a **first** poll. `PollingReadModel._kick_refresh`
+  never sets `dataStatus` back to "loading", so after a first poll lands the
+  status is already terminal and the wait returns before a **second** kick's
+  worker runs — the two multi-kick tests (`test_broker_failure_sets_error_status`,
+  `test_broker_recovery_clears_error`) raced it. Fixed by waiting on
+  `_refresh_in_flight` going False (set True synchronously by the kick, cleared
+  only in the completion/failure slot — sound for every poll). The other six
+  `_wait_for_pool` copies in the gui tests are single-poll-only, so their
+  status-based condition remains sound and was left unchanged.
+
+---
+
 ## RESOLVED 2026-06-17: in-process Qt application-singleton pollution
 
 ### Affected (no longer flaky)
