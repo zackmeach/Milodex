@@ -111,8 +111,7 @@ def test_promotion_file_contains_no_experiment_cli_or_assembler_imports(src_file
             continue
         for forbidden in _FORBIDDEN_IMPORT_PREFIXES:
             assert not stripped.startswith(forbidden), (
-                f"{src_file.name} must not import {forbidden!r} (D-5 C+ firewall). "
-                f"Line: {line!r}"
+                f"{src_file.name} must not import {forbidden!r} (D-5 C+ firewall). Line: {line!r}"
             )
 
 
