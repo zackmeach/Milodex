@@ -422,6 +422,18 @@ def sync_local_only_orders(
                 f"order {target} is not a current local-only order; nothing to sync"
             )
 
+    # Map broker_order_id -> the original 'submitted' TradeEvent so a synced
+    # terminal row can inherit strategy linkage (M1 retro item (c)) instead of
+    # hardcoding strategy_name=None/strategy_stage="paper"/no session_id.
+    # Single-pass over the same OOM-safe iter_trades generator contract used
+    # above; id-ASC order means a later 'submitted' row for the same
+    # broker_order_id (shouldn't happen -- client_order_id is unique) wins.
+    submitted_by_order_id: dict[str, TradeEvent] = {}
+    if candidates:
+        for trade in event_store.iter_trades():
+            if trade.status == "submitted" and trade.broker_order_id:
+                submitted_by_order_id[trade.broker_order_id] = trade
+
     def _net_adjustment(symbol: str) -> float:
         return sum(a.delta_qty for a in event_store.list_reconciliation_adjustments(symbol=symbol))
 
@@ -503,6 +515,7 @@ def sync_local_only_orders(
         )
         for row, recorded, broker_status in to_append:
             local = row.local or {}
+            submitted = submitted_by_order_id.get(row.broker_order_id)
             event_store.append_trade(
                 TradeEvent(
                     explanation_id=explanation_id,
@@ -516,13 +529,14 @@ def sync_local_only_orders(
                     time_in_force="day",
                     estimated_unit_price=0.0,
                     estimated_order_value=0.0,
-                    strategy_name=None,
-                    strategy_stage="paper",
-                    strategy_config_path=None,
+                    strategy_name=submitted.strategy_name if submitted else None,
+                    strategy_stage=submitted.strategy_stage if submitted else "paper",
+                    strategy_config_path=submitted.strategy_config_path if submitted else None,
                     submitted_by="reconcile",
                     broker_order_id=row.broker_order_id,
                     broker_status=broker_status,
                     message=f"order-status sync: {reason.strip()}",
+                    session_id=submitted.session_id if submitted else None,
                 )
             )
 
