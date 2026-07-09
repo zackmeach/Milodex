@@ -95,6 +95,38 @@ def live_runner_eval_symbols(
     return live_by_symbol
 
 
+def live_runner_holders(
+    config_dir: Path,
+    locks_dir: Path,
+) -> dict[str, dict[str, Any]]:
+    """Map strategy IDs to lock-holder metadata for every live runner.
+
+    Returns ``{strategy_id: holder_dict}`` for strategies whose per-strategy
+    runner lock is held by an identity-verified live process. Stale or
+    recycled-PID locks are ignored (they report as absent, so a hard-killed
+    runner is not treated as live). Used by ``milodex halt`` to fan a
+    controlled stop out to the whole live fleet.
+    """
+    holders: dict[str, dict[str, Any]] = {}
+    for path in sorted(Path(config_dir).glob("*.yaml")):
+        try:
+            config = load_strategy_config(path)
+        except ValueError as exc:
+            logger.debug("Skipping invalid config %s: %s", path, exc)
+            continue
+        lock = AdvisoryLock(runner_lock_name(config.strategy_id), locks_dir=locks_dir)
+        holder = live_lock_holder(lock)
+        if holder is None:
+            continue
+        holders[config.strategy_id] = {
+            "pid": holder.pid,
+            "hostname": holder.hostname,
+            "holder_name": holder.holder_name,
+            "started_at": holder.started_at.isoformat(),
+        }
+    return holders
+
+
 def controlled_stop_request_path(locks_dir: Path, strategy_id: str) -> Path:
     """Return the file path used to request a controlled paper-runner stop."""
     return Path(locks_dir) / f"{runner_lock_name(strategy_id)}.controlled_stop.json"

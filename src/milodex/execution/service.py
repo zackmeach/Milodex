@@ -32,6 +32,7 @@ from milodex.execution.models import (
     ExecutionRequest,
     ExecutionResult,
     ExecutionStatus,
+    HaltOutcome,
     TradeIntent,
     UnsupportedOrderTypeError,
 )
@@ -697,12 +698,43 @@ class ExecutionService:
         """Return current kill-switch state."""
         return self._kill_switch_store.get_state()
 
-    def trigger_kill_switch(self, reason: str) -> None:
-        """Activate the kill switch. Single entry point for every trigger source.
+    def halt_trading(self, reason: str) -> HaltOutcome:
+        """Halt all trading — THE shared trip, one halt, one meaning.
 
-        Callers include the risk-threshold path (daily-loss breach) and the
-        operator-initiated SIGINT path in :class:`StrategyRunner`. Routing
-        every activation through here keeps the audit trail in one place.
+        Used by both the automatic daily-loss breach path
+        (:meth:`_maybe_activate_kill_switch`) and the operator-initiated
+        manual trip (``milodex halt``; ADR 0005 Addendum 2026-07-09 / D-9):
+        best-effort :meth:`BrokerClient.cancel_all_orders` — a cancel failure
+        is logged and NEVER blocks the halt — **then** the durable kill-switch
+        flip via :meth:`trigger_kill_switch`.
+
+        A bare state flip that leaves resting orders live is not a halt and
+        must not exist as a callable seam for future callers; route every
+        halt through here. (:meth:`trigger_kill_switch` remains only as the
+        low-level durable-activation primitive this method delegates to.)
+        """
+        cancel_error: str | None = None
+        try:
+            self._broker.cancel_all_orders()
+        except Exception as exc:  # noqa: BLE001 — fail-safe: cancel failure never blocks the halt
+            cancel_error = f"{type(exc).__name__}: {exc}"
+            _logger.warning(
+                "Halt: broker cancel_all_orders failed; activating the kill switch anyway.",
+                exc_info=True,
+            )
+        self.trigger_kill_switch(reason)
+        return HaltOutcome(orders_cancelled=cancel_error is None, cancel_error=cancel_error)
+
+    def trigger_kill_switch(self, reason: str) -> None:
+        """Activate the kill switch (durable state flip only).
+
+        Low-level primitive: it flips durable state but does **not** cancel
+        resting orders. Callers that mean "halt trading" must use
+        :meth:`halt_trading` (which cancels first); a bare flip that leaves
+        orders live is not a halt (ADR 0005 Addendum point 2). This method is
+        retained as the single durable-activation entry point that
+        :meth:`halt_trading` delegates to, keeping the audit trail in one
+        place.
         """
         self._kill_switch_store.activate(reason)
 
@@ -1120,20 +1152,10 @@ class ExecutionService:
             if self._kill_switch_store.get_state().active:
                 return
             # R-P2-5: "halt all trading" includes orders already resting at
-            # the broker. Cancel open orders before activating, mirroring the
-            # operator SIGINT path (StrategyRunner.shutdown mode="kill_switch").
-            # Fail-safe posture: a cancel failure must NEVER block activation —
-            # the switch engages regardless; the failure is logged for
-            # forensics.
-            try:
-                self._broker.cancel_all_orders()
-            except Exception:
-                _logger.warning(
-                    "Kill-switch activation: broker cancel_all_orders failed; "
-                    "activating the switch anyway.",
-                    exc_info=True,
-                )
-            self.trigger_kill_switch("Daily loss exceeded kill switch threshold.")
+            # the broker. Route through the shared halt (cancel-then-flip,
+            # cancel failure never blocks activation) used by the operator
+            # manual trip too — one halt, one meaning (ADR 0005 Addendum).
+            self.halt_trading("Daily loss exceeded kill switch threshold.")
 
     def _record_execution(
         self,
