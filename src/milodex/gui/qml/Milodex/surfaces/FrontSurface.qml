@@ -67,7 +67,7 @@ SurfaceBase {
         spyPct: _tapeSpy !== null ? _tapeSpy : 0,
         qqqPct: _tapeQqq !== null ? _tapeQqq : 0,
         iwmPct: _tapeIwm !== null ? _tapeIwm : 0,
-        weatherLine: MarketTapeState.dataStatus === "ok" ? "" : "Market tape pending.",
+        weatherLine: MarketTapeState.dataStatus !== "error" ? "" : "Market tape pending.",
         regime: marketKnown ? "live" : "UNKNOWN",
     })
     readonly property string sessionLine: "Today | Market "
@@ -244,10 +244,17 @@ SurfaceBase {
 
             // ====================================================
             // TODAY — P&L block with sparkline
+            //
+            // Gated on FrontPageState (feeds pnl): on error/first-load the
+            // property defaults would render a fabricated calm "$0.00 / Flat /
+            // No realized movement" — hide the block instead (mirrors DESK's
+            // per-section hide-on-error contract). The SectionStatus banner
+            // above stays visible and carries the honest state.
             // ====================================================
             Column {
                 width: parent.width
                 spacing: Theme.space[3]
+                visible: FrontPageState.dataStatus !== "error"
 
                 Text {
                     text: root.pnlIsFlat ? "Flat" : "Today"
@@ -342,10 +349,16 @@ SurfaceBase {
 
             // ====================================================
             // YOUR STRATEGIES — prose + tally
+            //
+            // Gated on FrontPageState (feeds totalConfigs / runningCount /
+            // liveCount / stageTally): on error the zero defaults would render
+            // a fabricated "00 on the bench / 0 of your 0 strategies / all-zero
+            // tally". Hide on error rather than assert a false calm.
             // ====================================================
             Column {
                 width: parent.width
                 spacing: Theme.space[4]
+                visible: FrontPageState.dataStatus !== "error"
 
                 // Heading row with right-aligned count
                 Item {
@@ -509,10 +522,15 @@ SurfaceBase {
             // definition list (small-caps labels in left gutter, mono
             // values right). Actions are inline text links, not
             // pinned-bottom CTA buttons.
+            //
+            // Gated on FrontPageState (feeds feature): on error the empty
+            // feature default would render a fabricated "No strategy needs
+            // attention / no queue" idle card. Hide on error.
             // ====================================================
             Column {
                 width: parent.width
                 spacing: Theme.space[3]
+                visible: FrontPageState.dataStatus !== "error"
 
                 Item {
                     width:  parent.width
@@ -720,10 +738,16 @@ SurfaceBase {
 
             // ====================================================
             // THE WIDER MARKET — single italic prose line
+            //
+            // Gated on MarketTapeState (feeds the index percentages and
+            // weatherLine) — its OWN read model, not FrontPageState. On a tape
+            // error, hide the whole block rather than print stale/zero index
+            // moves (mirrors DESK's MarketTape hide-on-error).
             // ====================================================
             Column {
                 width: parent.width
                 spacing: Theme.space[3]
+                visible: MarketTapeState.dataStatus !== "error"
 
                 Text {
                     text: "The Wider Market"
