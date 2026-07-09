@@ -225,8 +225,11 @@ def test_main_qml_loads_without_errors_via_subprocess():
     """
     from milodex.gui.app import QML_IMPORT_PATH
 
-    qml_path = str(QML_IMPORT_PATH / "Milodex" / "Main.qml")
-    import_path = str(QML_IMPORT_PATH)
+    # as_posix(): these strings are repr'd into generated source. A raw Windows
+    # path inside a QML string literal parses `\<digit>` as a rejected legacy
+    # octal escape (breaks under any worktree/tmp path like `...\1df...`).
+    qml_path = (QML_IMPORT_PATH / "Milodex" / "Main.qml").as_posix()
+    import_path = QML_IMPORT_PATH.as_posix()
 
     # Main.qml's default surface is FrontSurface; register a stub OperationalState
     # with a failing broker factory so the surface renders in its
@@ -375,8 +378,13 @@ def test_design_system_showcase_loads_without_errors_via_subprocess():
     """
     from milodex.gui.app import QML_IMPORT_PATH
 
-    import_path = str(QML_IMPORT_PATH)
-    showcase_path = str(QML_IMPORT_PATH / "Milodex" / "surfaces" / "DesignSystemShowcase.qml")
+    # as_posix(): showcase_path is repr'd INTO the QML wrapper string below —
+    # a raw Windows path there parses `\<digit>` as a rejected legacy octal
+    # escape (breaks under any worktree/tmp path like `...\1df...`).
+    import_path = QML_IMPORT_PATH.as_posix()
+    showcase_path = (
+        QML_IMPORT_PATH / "Milodex" / "surfaces" / "DesignSystemShowcase.qml"
+    ).as_posix()
 
     # DesignSystemShowcase is not a registered qmldir type -- it is a plain QML
     # file.  We use a Loader with an explicit file URL so the engine loads it by
