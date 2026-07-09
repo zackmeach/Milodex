@@ -33,7 +33,7 @@ In practice most conflicts are resolved by the normative subsystem spec (the SRS
 | [0002](0002-parquet-as-cache.md) | Parquet as local historical cache | Accepted |
 | [0003](0003-config-driven-strategies.md) | Strategy parameters live in YAML, not code | Accepted |
 | [0004](0004-paper-only-phase-one.md) | Paper-only trading for all of phase one | Accepted |
-| [0005](0005-kill-switch-manual-reset.md) | Kill switch requires manual reset | Accepted |
+| [0005](0005-kill-switch-manual-reset.md) | Kill switch requires manual reset | Accepted — amended 2026-07-09 (operator manual trip, D-9) |
 | [0006](0006-abc-pattern-for-external-integrations.md) | Abstract base classes for external integrations | Accepted |
 | [0007](0007-argparse-for-cli.md) | `argparse` for the CLI | Accepted |
 | [0008](0008-risk-layer-veto-architecture.md) | Risk layer has veto over execution | Accepted |
