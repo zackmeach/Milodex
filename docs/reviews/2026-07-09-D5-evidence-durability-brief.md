@@ -1,9 +1,16 @@
-# D-5 Decision Brief — Evidence-Durability Labeling Stance
+# D-5 Decision Record — Evidence-Durability Labeling Stance
 
 *2026-07-09. Prepared per the CURRENT_ROADMAP §8 decision-pause protocol: primary
-framing + independent dissent review (reviewer explicitly asked to dissent),
-reconciled below. Founder decides; the decision lands in a decision record /
-ADR-adjacent note, and the roadmap incorporates it at the M3 gate.*
+framing + independent dissent review (reviewer explicitly asked to dissent) +
+a final independent Opus judgment pass, reconciled below.*
+
+> **DECIDED 2026-07-09.** The founder delegated the final call to the
+> independent Opus judgment pass ("if it sharpens the recommendation, proceed;
+> if it gives pause, return to me"). Verdict: **SHARPEN** — the stance below is
+> adopted as amended in the "Sharpen amendments" section. The founder separately
+> confirmed directly: (a) the ≥3 closure verdicts may all be IEX-exploratory
+> (no SIP purchase for M3), and (b) the official evidence-run window is
+> **2022-01-01 → 2026-06-13**. The roadmap incorporates this at the M3 gate.
 
 ## The decision
 
@@ -80,6 +87,44 @@ Concretely, the decision record would lock:
    every symbol's 5Min cache; wider = more walk-forward folds) — the window the
    scratch rehearsal uses, and the free parameter the official registry rows
    will permanently record.
+
+## Sharpen amendments (final Opus judgment pass, 2026-07-09 — adopted)
+
+The judgment pass confirmed all three load-bearing facts against code, upheld
+the stance, and corrected three things:
+
+1. **C+ test spec (load-bearing).** The brief's original spec — "an AST/import
+   test, same pattern as the existing chokepoint-invariant tests" — would be
+   **decorative**. Promotion legitimately imports `milodex.core.event_store`
+   and holds a live `EventStore` (`promotion/orchestrator.py:305`); the
+   registry reads (`list_experiments` / `get_experiment` / `append_experiment`
+   / `update_experiment`, `event_store.py:2090-2171`) ride on that same,
+   unforbiddable object — a breach adds **no new import**, so a broker-style
+   import-forbid (`tests/milodex/broker/test_broker_layer_separation.py`)
+   passes right through it. The corrected spec: (a) scan `promotion/**.py`
+   source for references to the four experiment method names and the
+   `experiment_registry`/`experiment` table tokens, **and** (b) a clean
+   import-forbid on `cli.commands.experiment`, `cli.commands.research`, and
+   `research.evidence_assembler` (which promotion has no legitimate reason to
+   import). Belt-and-suspenders, because the dangerous capability arrives via
+   a legitimately-imported object.
+2. **Scope honesty on C+.** C+ prevents exploratory rows leaking into a
+   promotion **codepath** — not into a **capital decision**. In a
+   human-in-the-loop system the realistic capital-decision leak is an
+   operator-facing surface (a GUI read model or `commands/` facade) rendering
+   an exploratory verdict in a promotion/capital context. Today `gui/` and
+   `commands/` carry **zero** `experiment_registry` reads — record that as an
+   invariant to preserve; the operator-facing durability defense is owned by
+   B / D-8 / M2, not by C+.
+3. **Wording-fix execution note.** "Intraday" appears in the roadmap in two
+   senses. Correct only the **durability** usages to "IEX-sourced" (§4, M3,
+   D-5, lines ~269/306-durability-clause/564, and the D-2 brief line 46);
+   leave "intraday" intact where it denotes the **execution/real-fill lane**
+   (e.g. the D-1 rationale "loaded the real-fill burden onto intraday").
+   Logged latent consequence: the universalized bound also frames the capital
+   gate's own IEX-sourced walk-forward evidence as non-durable-until-SIP —
+   surfaces at the next real capital-promotion case, consistent with the
+   unchanged §10 SIP trigger. No strategy is at a capital stage today.
 
 ## Dissent findings incorporated (attribution)
 
