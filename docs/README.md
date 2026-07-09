@@ -99,6 +99,7 @@ Authority Order, authority rank 5 — see [`adr/README.md`](adr/README.md)).
 | audits/ | Dated whole-repo audit snapshots (e.g. the weekly audit). Point-in-time. Distinct from `architecture/audits/`, which holds architecture-framework audits only. |
 | architecture/ | Architecture framework docs, `audits/`, `interface-explorations/`, and `roadmaps/`. Point-in-time except `roadmaps/` (living trackers — judge by content). |
 | incidents/ | Dated incident write-ups. Resolved/frozen. |
+| sweeps/ | Janitor-sweep reports + the running `sweeps/LOG.md` index (living). Each dated sweep report is point-in-time. |
 | overnight/ | Overnight autonomous-run after-action reports + launch briefs. Dated/frozen, point-in-time. |
 | mockups/, prototypes/ | Bench/GUI design exploration — non-binding visual material. |
 | bench/ | Bench surface notes. |
