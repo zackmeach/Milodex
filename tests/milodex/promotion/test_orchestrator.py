@@ -21,6 +21,7 @@ from milodex.promotion.orchestrator import (
     REASON_LIFECYCLE_EXEMPT_NOT_SCOPED,
     REASON_MISSING_BACKTEST_RUN,
     REASON_OVERRIDE_FLAGS_CONFLICT,
+    REASON_OVERRIDE_REASON_REQUIRED,
     REASON_OVERRIDE_STAGE_NOT_ALLOWED,
     PromoteBlocked,
     PromoteError,
@@ -495,6 +496,78 @@ def test_operator_override_stage_guard_refuses_capital_stages():
     refusal = _check_bypass_admissibility(request, from_stage="paper", to_stage="micro_live")
     assert isinstance(refusal, PromoteBlocked)
     assert refusal.reason_code == REASON_OVERRIDE_STAGE_NOT_ALLOWED
+
+
+def test_operator_override_with_none_recommendation_refused(tmp_path):
+    """operator_override requires a non-empty operator reason. A None
+    recommendation is refused end-to-end with no durable write, config
+    untouched — a bare gate bypass is not allowed (ADR 0058)."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, strategy_id=_NON_REGIME_ID)
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation=None,
+        known_risks=["bare gate bypass attempt"],
+        approved_by="operator",
+        run_id=None,
+        operator_override=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_OVERRIDE_REASON_REQUIRED
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+def test_operator_override_with_blank_recommendation_refused(tmp_path):
+    """A whitespace-only recommendation is treated as blank (the guard
+    ``.strip()``s before checking) and refused the same as a missing one."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, strategy_id=_NON_REGIME_ID)
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation="   ",
+        known_risks=["bare gate bypass attempt"],
+        approved_by="operator",
+        run_id=None,
+        operator_override=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_OVERRIDE_REASON_REQUIRED
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+def test_operator_override_reason_guard_refuses_blank_recommendation():
+    """Unit-test the reason guard in isolation (independent of the full
+    orchestration flow): a blank-recommendation operator_override is refused
+    with REASON_OVERRIDE_REASON_REQUIRED."""
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=Path("unused.yaml"),
+        to_stage="paper",
+        recommendation="",
+        known_risks=["should be refused"],
+        approved_by="operator",
+        operator_override=True,
+        now=_NOW,
+    )
+    refusal = _check_bypass_admissibility(request, from_stage="backtest", to_stage="paper")
+    assert isinstance(refusal, PromoteBlocked)
+    assert refusal.reason_code == REASON_OVERRIDE_REASON_REQUIRED
 
 
 # ---------------------------------------------------------------------------
