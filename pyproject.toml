@@ -35,7 +35,7 @@ milodex = "milodex.cli.main:main"
 
 [project.optional-dependencies]
 dev = [
-    "ruff",
+    "ruff==0.15.11",
     "pytest<10",
     "pytest-cov<8",
     # Parallel test execution. The full suite is ~6min serial, but the cost is
