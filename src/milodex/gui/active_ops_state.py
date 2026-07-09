@@ -317,6 +317,7 @@ class ActiveOpsState(PollingReadModel):
     """
 
     runnersChanged = Signal()  # noqa: N815
+    liveCountChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -345,6 +346,7 @@ class ActiveOpsState(PollingReadModel):
         self._locks_dir = locks_dir
 
         self._runners: list[dict[str, Any]] = []
+        self._live_count = 0
         super().__init__(
             builder=lambda: _build_active_ops_snapshot(db_path, configs_dir, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
@@ -354,13 +356,26 @@ class ActiveOpsState(PollingReadModel):
     def _apply_result(self, result: dict[str, Any]) -> None:
         runners = result["runners"]
         runners_changed = runners != self._runners
+        # PID-verified liveness count (GUI audit finding #3 / M2 item b): the
+        # ACTIVE OPERATIONS headline must count only rows whose sessionState
+        # resolved to "running" (lock_verified_live), not every open row —
+        # a phantom row stays visible in `runners` but is excluded here.
+        live_count = sum(1 for r in runners if r.get("sessionState") == "running")
+        live_count_changed = live_count != self._live_count
         self._runners = runners
+        self._live_count = live_count
         if runners_changed:
             self.runnersChanged.emit()
+        if live_count_changed:
+            self.liveCountChanged.emit()
 
     def _get_runners(self) -> list:
         return self._runners
 
+    def _get_live_count(self) -> int:
+        return self._live_count
+
     runners = Property("QVariantList", _get_runners, notify=runnersChanged)
+    liveCount = Property(int, _get_live_count, notify=liveCountChanged)  # noqa: N815
 
     # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel

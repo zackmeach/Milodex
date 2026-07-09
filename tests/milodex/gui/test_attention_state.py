@@ -604,7 +604,11 @@ def test_relationship_c_subset_of_underperforming(tmp_path) -> None:
 
 
 def test_query_attention_running_now(tmp_path) -> None:
-    """running_now counts distinct strategies with ended_at IS NULL."""
+    """running_now counts distinct strategies with ended_at IS NULL.
+
+    Called with no locks_dir (legacy raw count, back-compat guard) — GUI
+    audit finding #3 / M2 item b.
+    """
     from milodex.gui.attention_state import _query_attention
 
     db = tmp_path / "att.db"
@@ -616,6 +620,54 @@ def test_query_attention_running_now(tmp_path) -> None:
     _seed_strategy_run(db, strategy_id="s3", ended_at=datetime.now(tz=UTC).isoformat())
 
     result = _query_attention(db)
+    assert result["running_now"] == 2
+
+
+def test_query_attention_running_now_pid_verified_when_locks_dir_given(tmp_path) -> None:
+    """With an explicit locks_dir, running_now only counts PID-verified sessions.
+
+    GUI audit finding #3 / M2 item b: an open ``strategy_runs`` row with no
+    genuinely-live lock holder (phantom) must NOT inflate the "Running Now"
+    rollup, even though the raw ``ended_at IS NULL`` count would include it.
+    """
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui.attention_state import _query_attention
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    # s1: genuinely live (real held lock). s2: phantom (open row, no live lock).
+    _seed_strategy_run(db, strategy_id="s1", session_id="sess-s1")
+    _seed_strategy_run(db, strategy_id="s2", session_id="sess-s2")
+
+    lock = AdvisoryLock(runner_lock_name("s1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        result = _query_attention(db, locks_dir=locks_dir)
+        assert result["running_now"] == 1
+    finally:
+        lock.release()
+
+
+def test_query_attention_running_now_locks_dir_none_is_legacy_raw_count(tmp_path) -> None:
+    """Back-compat guard: locks_dir=None keeps the legacy raw open-session count.
+
+    Same fixture as the PID-verified test above (one genuinely-live, one
+    phantom), but without a locks_dir — both open sessions must still count,
+    since no lock surface is available to distinguish them.
+    """
+    from milodex.gui.attention_state import _query_attention
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+
+    _seed_strategy_run(db, strategy_id="s1", session_id="sess-s1")
+    _seed_strategy_run(db, strategy_id="s2", session_id="sess-s2")
+
+    result = _query_attention(db, locks_dir=None)
     assert result["running_now"] == 2
 
 
