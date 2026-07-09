@@ -4,6 +4,7 @@
 All tests mock the Alpaca SDK -- no real API calls.
 """
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
@@ -549,6 +550,85 @@ class TestGetBarsCaching:
             end=date(2025, 1, 15),
         )
         assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx([100.0])
+
+    def test_heal_cache_write_error_serves_stale_cache_fail_safe(self, provider, caplog):
+        """SWP-01: if the divergence heal's cache.write raises (e.g. a Windows
+        parquet file-lock IOError), the heal must fail safe — serve the stale
+        cached frame, log a WARN, and never raise out of the warm read. The
+        widened fail-safe now spans parse + write, not just the refetch call."""
+        ts13 = datetime(2025, 1, 13, 5, 0, tzinfo=UTC)
+        ts14 = datetime(2025, 1, 14, 5, 0, tzinfo=UTC)
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        # Seed three cached bars at close=100 (the old adjustment epoch).
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 100.0), _make_bar(ts14, 100.0), _make_bar(ts15, 100.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+
+        # Warm read: probe diverges (50 vs 100) -> heal; but cache.write raises.
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.side_effect = [
+            MagicMock(data={"AAPL": [_make_bar(ts13, 50.0)]}),  # probe -> diverge
+            MagicMock(
+                data={"AAPL": [_make_bar(ts13, 50.0), _make_bar(ts14, 50.0), _make_bar(ts15, 50.0)]}
+            ),  # heal refetch of the full range
+        ]
+        with patch.object(provider._cache, "write", side_effect=OSError("parquet locked")):
+            with caplog.at_level(logging.WARNING):
+                result = provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 13),
+                    end=date(2025, 1, 15),
+                )
+
+        # No exception; the stale cached frame (100s) is served unchanged.
+        assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx(
+            [100.0, 100.0, 100.0]
+        )
+        assert "adjustment_heal_error" in caplog.text
+
+    def test_heal_empty_refetch_warns_and_serves_stale_cache(self, provider, caplog):
+        """SWP-05: a divergence heal whose refetch comes back EMPTY (a non-
+        converging heal) must log a WARN (adjustment_heal_empty) and serve the
+        stale cache — not silently return None after the probe's 'healing' INFO."""
+        ts13 = datetime(2025, 1, 13, 5, 0, tzinfo=UTC)
+        ts14 = datetime(2025, 1, 14, 5, 0, tzinfo=UTC)
+        ts15 = datetime(2025, 1, 15, 5, 0, tzinfo=UTC)
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": [_make_bar(ts13, 100.0), _make_bar(ts14, 100.0), _make_bar(ts15, 100.0)]}
+        )
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 15),
+        )
+
+        # Warm read: probe diverges (50) -> heal; the heal refetch returns nothing.
+        provider._client.get_stock_bars.reset_mock()
+        provider._client.get_stock_bars.side_effect = [
+            MagicMock(data={"AAPL": [_make_bar(ts13, 50.0)]}),  # probe -> diverge
+            MagicMock(data={"AAPL": []}),  # heal refetch empty
+        ]
+        with caplog.at_level(logging.WARNING):
+            result = provider.get_bars(
+                symbols=["AAPL"],
+                timeframe=Timeframe.DAY_1,
+                start=date(2025, 1, 13),
+                end=date(2025, 1, 15),
+            )
+
+        assert provider._client.get_stock_bars.call_count == 2  # probe + empty heal refetch
+        assert result["AAPL"].to_dataframe()["close"].tolist() == pytest.approx(
+            [100.0, 100.0, 100.0]
+        )
+        assert "adjustment_heal_empty" in caplog.text
 
     def test_backfill_range_readjusts_within_window_only(self, provider):
         """backfill_range overwrites cached bars IN its window with freshly-
