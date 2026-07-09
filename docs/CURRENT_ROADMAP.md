@@ -57,41 +57,33 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 
 ## 2. Current-state banner
 
-*Factual-currency correction applied 2026-07-02 (D-1 resolution + live-fire state);
-M1 gate remains open — this is not a gate update.*
+*Gate update 2026-07-09: M1 closed (retrospective §11).*
 
 | Field | Value |
 |---|---|
-| **As-of** | 2026-07-02 (factual-currency correction; see note below) |
-| **Commit examined** | `11e444b` on `master` (**= `origin/master`**, working tree clean) |
-| **master vs origin** | in sync — `11e444b` on both. *(Superseded: the prior banner's `4a6798e` / 6-ahead-unpushed state no longer exists.)* |
-| **Second worktree** | none active for this roadmap surface. *(Superseded: `C:/Users/zdm80/milodex-reqs-wt` was on an already-merged branch — stale, cleanup-only.)* |
-| **Last verified gate (this roadmap)** | M0 **CLOSED 2026-06-22** (retrospective §11). Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
-| **Active milestone** | **M1 — Executable paper-fleet truth** (the keystone milestone) — **ACTIVE, gate not yet met.** D-1 (daily-execution fork) **RESOLVED**: Option A queue-at-open, shipped [ADR 0057](adr/0057-daily-execution-queue-at-open.md) (#289/#290/#291). Close-side half-proof observed 2026-07-02 (6/6 daily paper runners, clean full session, 8 queued intents locked in at close, `market_closed` veto intact). Open-side (drain → submit → observed fill) **unproven** — next-open relaunch 2026-07-06 is the planned M1 gate event. |
+| **As-of** | 2026-07-09 (M1 gate closure) |
+| **Commit examined** | `d3722cb` on `master` (= `origin/master` at examination; this gate closure lands as the next PR) |
+| **master vs origin** | in sync at `d3722cb`. |
+| **Second worktree** | none active for this roadmap surface. |
+| **Last verified gate (this roadmap)** | **M1 CLOSED 2026-07-09** (retrospective §11). Prior: M0 closed 2026-06-22. Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
+| **Active milestone** | **M2 — Operator-visible execution truth** — **ACTIVE (opened 2026-07-09).** M3 (research verdicts) is parallel-eligible and unstarted (`experiment_registry` = 0 rows). M1 evidence: 2026-07-06 full session — pre-open launch, queue-at-open drain submitted 5 real paper orders at 13:30–13:31 UTC, morning re-validation vetoed 3, clean `controlled_stop`; fills durably recorded via the deferred order-status sync (explanation `1034415`, run 2026-07-09) and reconciliation CLEAN diff=0 (run `93d749c5`, 2026-07-09 — a post-hoc open-market reconcile with the fleet down, not a session-scoped close reconcile; disclosed in the §11 deviations). |
 
 **Current blockers (code-confirmed at HEAD):**
 
-1. **[SUPERSEDED for daily; intraday unchanged]** As tested 2026-06-22, the deployed
-   cohort had no working submit path. **Daily is no longer blocked this way**: D-1
-   resolved as queue-at-open ([ADR 0057](adr/0057-daily-execution-queue-at-open.md),
-   #289/#290/#291) — a daily runner persists a queued intent at close
-   ([`strategies/runner.py:415`](../src/milodex/strategies/runner.py)), drains it
-   during market hours from the live loop
-   ([`runner.py:283-289`](../src/milodex/strategies/runner.py) →
-   `_drain_queued_intents` `runner.py:981`), and submits through the execution
-   chokepoint with the full risk battery + an atomic CAS
-   (`event_store.consume_queued_intent_and_append_attempt`). The `market_closed` veto
-   ([`risk/evaluator.py:437-447`](../src/milodex/risk/evaluator.py)) is **not**
-   relaxed — doctrine intact. Close-side proof observed 2026-07-02 (see §2 banner);
-   open-side (drain → submit → fill) is the M1 gate event, not yet proven. The
-   deployed intraday Phase-2 candidates remain vetoed `no_frozen_manifest`
+1. **[RESOLVED for daily — proven live 2026-07-06; intraday unchanged.]** The daily
+   queue-at-open path ([ADR 0057](adr/0057-daily-execution-queue-at-open.md),
+   #289/#290/#291) is now **proven end-to-end**: lock-in-at-close (2026-07-02 and
+   2026-07-06), next-open drain → morning re-validation → submit through the
+   chokepoint (5 real paper orders 2026-07-06 13:30–13:31 UTC; 3 re-validation
+   vetoes), broker fills durably recorded, reconciliation CLEAN diff=0 (§11 M1
+   retrospective). The `market_closed` veto was never relaxed — doctrine intact.
+   The deployed intraday Phase-2 candidates remain vetoed `no_frozen_manifest`
    ([`risk/evaluator.py:321`](../src/milodex/risk/evaluator.py)) — 32 non-SPY ETF
    replicas (two 16-symbol families: `benchmark.unconditional_intraday_long.<etf>`
    and `meanrev.rsi2.intraday.<etf>`) carry `stage: paper` but were never
-   `promotion freeze`d. The 5 **frozen**
-   SPY intraday canaries are a structurally-open path that produced no fill only
-   because the session launched mid-day (open-anchored entries dead; rsi2 locked out
-   of already-dipped symbols) — **unexercised, not severed**.
+   `promotion freeze`d. The 5 **frozen** SPY intraday canaries are a
+   structurally-open path that has never been exercised from the open (D-2/D-3
+   remain open; re-owned to M5 at the M1 close — see §8).
 2. **[SUPERSEDED]** As of 2026-07-02, `master` is in sync with `origin/master`
    (`11e444b`), the working tree is clean, and the 4 previously-untracked files are
    committed; the second worktree (`C:/Users/zdm80/milodex-reqs-wt`) is on an
@@ -104,17 +96,21 @@ M1 gate remains open — this is not a gate update.*
 
 **Pending high-impact / uncertain decisions (await the §8 decision-pause protocol):**
 
-- **D-1 Daily-execution fork — RESOLVED.** Decided: Option A, queue-at-open
+- **D-1 Daily-execution fork — RESOLVED and PROVEN.** Decided: Option A, queue-at-open
   ([ADR 0057](adr/0057-daily-execution-queue-at-open.md), #289/#290/#291). Close-side
-  half-proof observed 2026-07-02 (clean full session, 8 intents queued at close,
-  `market_closed` veto intact); open-side (drain → submit → fill) unproven — the
-  2026-07-06 pre-open relaunch is the planned M1 gate event. *Keystone.*
+  proof 2026-07-02; open-side proof 2026-07-06 (drain → re-validation → submit → fill,
+  reconcile diff=0). Both halves observed — see the §11 M1 retrospective. *Keystone —
+  closed.*
 - **D-2 Intraday freeze governance** — whether/which of the 32 unfrozen non-SPY ETF
   replicas (two 16-symbol families: `unconditional_intraday_long` + `meanrev.rsi2.intraday`)
-  to `promotion freeze` (prerequisite for any intraday fill).
+  to `promotion freeze` (prerequisite for any intraday fill). **Re-owned M1 → M5 at
+  the M1 close** (the fill proof rode the daily path; intraday fills are first needed
+  for M5 multi-session/from-open reliability).
 - **D-3 Auto-launch vs ADR 0012** — a from-open launch is required for intraday to
   behave as designed, but none exists and [ADR 0012](adr/0012-runtime-and-dual-stop.md)
   forbids a daemon/scheduler in Phase 1. Manual pre-open deploy is the interim.
+  **Re-owned to M5 at the M1 close** (the §8 map's pre-authorized "reliability
+  defers it" branch).
 - **D-4 Lifecycle-proof operational gate — DECIDED (ADR 0058).** "Split now,
   enforce at M4": `--lifecycle-exempt` is scoped to policy-listed lifecycle-proof
   ids (`policy.py` `applies_to`); a separate `--operator-override` (paper-only,
@@ -386,7 +382,7 @@ proof is the remaining M1 gate event (§2).
 
 ---
 
-### M1 — Executable paper-fleet truth  · **ACTIVE** *(keystone milestone; opened 2026-06-22)*
+### M1 — Executable paper-fleet truth  · **CLOSED 2026-07-09** *(keystone milestone; opened 2026-06-22; retrospective: §11)*
 
 - **Intended outcome.** A deliberately authorized cohort completes one **clean
   full-session-from-open** run in which an order actually **fills**, and every step
@@ -530,9 +526,9 @@ original examples; both are now resolved — see §2.)*
 
 | Decision | Framed at | Decided at |
 |---|---|---|
-| D-1 daily-execution fork | M0 | M1 |
-| D-2 intraday freeze | M0 | M1 |
-| D-3 auto-launch vs ADR 0012 | M1 | M1 (or M5 if reliability defers it) |
+| D-1 daily-execution fork | M0 | M1 — decided ([ADR 0057](adr/0057-daily-execution-queue-at-open.md)); proven at the M1 gate (§11) |
+| D-2 intraday freeze | M0 | ~~M1~~ → **M5** (re-owned at the M1 close — daily carried the fill proof; decide when intraday fills are needed) |
+| D-3 auto-launch vs ADR 0012 | M1 | **M5** (the "reliability defers it" branch taken at the M1 close) |
 | D-4 lifecycle-proof gate enforce-vs-document | M1 | M1 — decided 2026-07-02 ([ADR 0058](adr/0058-lifecycle-exemption-is-scoped-and-operator-override-is-split.md)) |
 | D-5 evidence-durability labeling | M3 | M3 |
 | D-6 closure coverage-floor scope | M0 | M0 |
@@ -669,6 +665,109 @@ At each gate completion, append one block. Never edit a prior block.
 - **Must any prior gate be invalidated/reopened?** No prior roadmap gate exists
   (M0 was first). The **D-6 decision strengthens the §12 closure gate** (assurance,
   not coverage-%) — folded into §12 at this close.
+
+### [M1] — Executable paper-fleet truth — RETROSPECTIVE (closed 2026-07-09, master `d3722cb` at examination)
+
+- **Planned outcome:** a deliberately authorized cohort completes one clean
+  full-session-from-open run in which an order actually **fills**, every step
+  (decision → veto → submit → fill → stop → reconcile) explainable, with D-1
+  branch-specific proof for queue-at-open (lock-in-at-close + next-open submission
+  + the mandatory morning re-validation pass).
+- **What actually shipped:** D-1 decided as queue-at-open
+  ([ADR 0057](adr/0057-daily-execution-queue-at-open.md), #289/#290/#291); D-4
+  decided ([ADR 0058](adr/0058-lifecycle-exemption-is-scoped-and-operator-override-is-split.md),
+  #307). Two live-fire sessions: **2026-07-02** (close-side: 6/6 daily paper
+  runners, clean full session, 8 intents persisted to `queued_intents` behind the
+  intact `market_closed` veto, `controlled_stop` clean) and **2026-07-06**
+  (open-side: pre-open relaunch 13:00 UTC, launch reconciliation clean, drain
+  fired at the open). Fill-evidence closure performed 2026-07-09 via the existing
+  `milodex reconcile sync-orders` deferred-dimension mechanism.
+- **PRs / commits merged:** #289/#290/#291 (ADR 0057 implementation), #306
+  (roadmap currency), #307 (ADR 0058), plus the risk/execution hardening merged
+  mid-milestone (#309–#322, incl. G1 source-lock #314/#319 and kill-switch
+  manual-reset enforcement #317). This retrospective lands as its own PR.
+- **Verification performed (commands + results actually observed):**
+  event-store queries against `data/milodex.db` (2026-07-09): 5 submit
+  explanations `1033338`/`1033339`/`1033341`/`1033342`/`1033343`
+  (`decision_type='submit'`, `risk_allowed=1`) with matching `trades` rows
+  carrying broker order-ids; 3 morning re-validation vetoes
+  (`1033340`/`1033344`/`1033345`, `blocked`, `max_concurrent_positions_exceeded`);
+  6/6 `strategy_runs` for 2026-07-06 ended `controlled_stop` 20:15 UTC.
+  `milodex reconcile sync-orders` (2026-07-09 19:49 UTC) → "Synced 14 order(s):
+  14 filled, 0 cancelled, 0 rejected" (explanation `1034415`; the 5 gate orders
+  plus 9 prior-session orders); post-sync `trades` rows
+  `status='filled'`/`broker_status='filled'` verified for all five 7/6 broker
+  order-ids. `milodex reconcile` (19:50 UTC) → **CLEAN**, 0 mismatches on
+  4 symbols (JNJ 38 / SPY −13 / XLF 364 / XLV 122, local = broker), persisted as
+  `reconciliation_runs` id 151 (`93d749c5`), `incident_recorded=0`. This gate
+  closure was independently adversarially reviewed (APPROVE-WITH-EDITS; the
+  edits are incorporated in the deviations below).
+- **Live evidence (named events):** submitted 2026-07-06 13:30:19–13:31:41 UTC —
+  XLF 182 (donchian `cc6f6394`), XLF 182 (atr_channel `2c764b8a`), XLV 61
+  (donchian `ca10938c`), XLV 61 (atr_channel `646a8c0e`), JNJ 38 (tsmom
+  `7314311d`); all five filled at broker, fills durably recorded (append-only
+  fill rows joined by broker order-id, sync explanation `1034415`);
+  reconciliation diff = 0 (run `93d749c5`). D-1 branch proof: lock-in-at-close
+  observed 7/02 and 7/06; next-open submission observed 7/06; morning
+  re-validation observed 7/06 (3 vetoes). The known per-strategy WARN (broker
+  SPY net −13 vs strategy-ledger sum 0) is the ADR 0055 informational dimension —
+  account-level local and broker agree at −13.
+- **Cleanup absorbed (touch-it items):** none in this closure (evidence sync +
+  doc update only). The mid-milestone hardening PRs (#309–#322) were sweep- and
+  review-driven, adjudicated in their own PRs.
+- **Decisions made:** D-1 → ADR 0057 (decided 2026-07-02, proven 2026-07-06/09).
+  D-4 → ADR 0058. **D-2 and D-3 were NOT decided at M1** — re-owned to M5 (§8
+  map updated): the fill proof rode the daily path, so intraday freeze (D-2) and
+  from-open launch (D-3) are first *required* by M5's multi-session/from-open
+  reliability outcome.
+- **Deviations from the plan:** (1) The fill was **not recorded live during the
+  session** — paper fill status is a deferred reconciliation dimension
+  (`filled_since_last_sync`, warnings-only per R-OPS-004 v1.2), so the event
+  store carried `broker_status='pending'` for 3 days until the operator-run
+  order sync closed it. Within the mechanism's design, but the gap between
+  "working in fact" and "proven in the event store" was real. (2) **The diff=0
+  reconciliation is not session-scoped.** The 2026-07-06 reconciles (ids
+  145–150) all ran pre-open at 13:00 UTC — *before* any drain/submit/fill — and
+  no post-close reconcile ran on 7/06. The CLEAN diff=0 run (`93d749c5`) ran
+  2026-07-09 19:50 UTC, mid-open-market, with the fleet down and the position
+  set static since 7/06. It is factually clean and the filled positions match,
+  but the exit criterion's "over one clean full session, with reconciliation
+  diff = 0" is satisfied by a detached later reconcile, not a session-close
+  one. (3) **The chain is reconstructable from the event store, not from
+  `explanations` alone.** The synced fill rows carry `strategy_name=NULL` and
+  `session_id=NULL` (their explanation is the batch `reconcile_order_sync` row
+  `1034415`); the fill hop joins to the decision via `trades.broker_order_id`,
+  and the stop hop lives in `strategy_runs`, not `explanations`. Decision and
+  veto hops are in `explanations` directly. (4) The 2026-07-06 drain **retried
+  vetoed queued intents every runner cycle all session** (~1,067 blocked submit
+  explanations in one day for 3 vetoed intents) — fail-closed and safe, but an
+  explanation-noise firehose. (5) **A veto does not consume a queued intent**,
+  so the 3 vetoed 7/02 intents stayed `queued` and the same symbols were
+  re-locked at the 7/06 close under a new `trading_session` idempotency key —
+  two live queued rows per symbol/strategy until the older trio expired 7/09.
+  A future drain with both live would rely on the risk battery
+  (duplicate-order / max-concurrent vetoes) rather than the queue itself to
+  prevent a double submit.
+- **Newly discovered work (→ milestone or §10):** (a) **Live/automatic fill-status
+  recording + a session-close reconcile step** (promote `filled_since_last_sync`
+  from deferred-warning to an in-session or end-of-session sync, so the diff=0
+  evidence is session-scoped next time) → M2 (it is operator-visible execution
+  truth) or M5; decide at M2 entry. (b) **Drain queued-intent hygiene**: veto-retry
+  backoff/dedup (one veto explanation per intent per session) *and* adjudicate
+  whether a terminally-vetoed intent should be consumed/expired rather than left
+  `queued` alongside its next-session re-lock (deviation 5) → M2-adjacent, small
+  but touches the drain seam — risk-invariant review required. (c) **Strategy
+  linkage on synced fills** → existing deferred dimension, adjudicate with (a).
+  (d) Fleet-down position management: daily strategies hold 1–5-day positions,
+  but exits only evaluate while a runner is up — multi-day fleet downtime leaves
+  open positions unmanaged; fold into M5's multi-session reliability definition.
+- **May the next gate open?** **Yes — M2 opens** (operator-visible execution
+  truth, on a fleet that now demonstrably transacts). **M3 remains
+  parallel-eligible and unstarted** (`experiment_registry` = 0 rows) — it is the
+  most starved lane relative to the research-OS priority rank and should run in
+  parallel with M2.
+- **Must any prior gate be invalidated/reopened?** No. M0's baseline held; the
+  M1 evidence contradicts nothing recorded at M0.
 
 ---
 
