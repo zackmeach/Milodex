@@ -283,9 +283,14 @@ def _fetch_submitted_trade_rows_for_strategy(
     - The latest status per ``broker_order_id`` wins, so a corrective terminal
       row appended by ``sync_local_only_orders`` reverses the original
       optimistic ``submitted`` contribution: submitted→filled counts once,
-      submitted→cancelled counts zero. Corrective rows carry
-      ``strategy_name=None``, so they are looked up by order id in a second
-      query — a strategy-name-filtered fetch alone can never see them. The
+      submitted→cancelled counts zero. Corrective rows may carry the inherited
+      ``strategy_name`` of their submitted row (M1 retro item (c)) or NULL
+      (operator-attributed / legacy orders), so they are looked up by order id
+      in a second query — a strategy-name-filtered fetch alone cannot be
+      relied on to see them. When a linked corrective row DOES appear in the
+      strategy-name fetch, the ``seen_orders`` dedup below skips it (first
+      row per order id wins, id ASC = the original submitted row), so
+      inherited linkage does not double-count. The
       original strategy row (its id-position, price, timestamp) is what the
       fold consumes; the corrective row only decides whether it counts.
       (``fold_positions`` folds the corrective row itself instead — equal
