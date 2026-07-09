@@ -62,6 +62,7 @@ def _seed_explanation(
     risk_allowed: int = 1,
     session_id: str = "sess-001",
     backtest_run_id: str | None = None,
+    reason_codes_json: str = "[]",
 ) -> int:
     conn = sqlite3.connect(str(db))
     cur = conn.execute(
@@ -75,7 +76,7 @@ def _seed_explanation(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 'market', 'day', 'test', 1,
                 10000.0, 10000.0, 10000.0, 0.0,
-                'ok', '[]', '{}', '{}')
+                'ok', ?, '{}', '{}')
         """,
         (
             recorded_at,
@@ -89,6 +90,7 @@ def _seed_explanation(
             risk_allowed,
             session_id,
             backtest_run_id,
+            reason_codes_json,
         ),
     )
     row_id = cur.lastrowid
@@ -507,6 +509,73 @@ def test_feed_detail_null_broker_status(tmp_path) -> None:
 
     feed = _query_feed(db)
     assert feed[0]["detail"] == "sell 3.0 @ submitted/pending"
+
+
+def test_feed_rejection_carries_parsed_reason(tmp_path) -> None:
+    """A rejection row's ``reason`` is the comma-joined reason_codes_json list."""
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db(db)
+    ts = datetime(2026, 5, 17, 10, 0, 0, tzinfo=UTC).isoformat()
+    _seed_explanation(
+        db,
+        recorded_at=ts,
+        risk_allowed=0,
+        reason_codes_json='["kill_switch_active", "max_concurrent_positions_exceeded"]',
+    )
+
+    feed = _query_feed(db)
+    assert len(feed) == 1
+    assert feed[0]["kind"] == "rejection"
+    assert feed[0]["reason"] == "kill_switch_active, max_concurrent_positions_exceeded"
+
+
+def test_feed_rejection_malformed_reason_codes_falls_back_to_empty(tmp_path) -> None:
+    """Malformed reason_codes_json on a rejection row yields reason == ''."""
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db(db)
+    ts = datetime(2026, 5, 17, 10, 0, 0, tzinfo=UTC).isoformat()
+    _seed_explanation(
+        db,
+        recorded_at=ts,
+        risk_allowed=0,
+        reason_codes_json="not valid json",
+    )
+
+    feed = _query_feed(db)
+    assert len(feed) == 1
+    assert feed[0]["kind"] == "rejection"
+    assert feed[0]["reason"] == ""
+
+
+def test_feed_non_rejection_rows_have_empty_reason(tmp_path) -> None:
+    """Signal, order, fill, and backtest rows all carry reason == '' (uniform shape)."""
+    from milodex.gui.activity_feed_state import _query_feed
+
+    db = tmp_path / "feed.db"
+    _create_fixture_db(db)
+    ts = datetime(2026, 5, 17, 10, 0, 0, tzinfo=UTC).isoformat()
+    _seed_explanation(
+        db,
+        recorded_at=ts,
+        risk_allowed=1,
+        reason_codes_json='["should_be_ignored"]',
+    )
+    _seed_trade(
+        db,
+        recorded_at=ts,
+        status="submitted",
+        broker_status=None,
+    )
+
+    feed = _query_feed(db)
+    assert len(feed) == 2
+    for row in feed:
+        assert row["kind"] in {"signal", "order"}
+        assert row["reason"] == ""
 
 
 def test_feed_missing_db_raises(tmp_path) -> None:

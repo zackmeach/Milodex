@@ -895,18 +895,22 @@ SurfaceBase {
                 ]
 
                 // Normalize ActivityFeedState rows {time,strategy,kind,detail,
-                // symbol,tone} → ActivityTable shape {ts,kind,subject,detail,
-                // tone}. Presentational mapping only; no query logic.
+                // symbol,tone,reason} → ActivityTable shape {ts,kind,subject,
+                // detail,tone}. Presentational mapping only; no query logic.
+                // Rejection rows fold the vetoing rule (reason) into detail —
+                // GUI audit finding #2 (veto-reason surfacing).
                 readonly property var _tableRows: {
                     var src = ActivityFeedState.rows
                     var out = []
                     for (var i = 0; i < src.length; i++) {
                         var r = src[i]
+                        var detail = r.detail || ""
+                        if (r.reason) detail = detail + " — " + r.reason
                         out.push({
                             ts: root.shortTime(r.time),
                             kind: r.kind,
                             subject: (r.strategy || "") + (r.symbol ? " · " + r.symbol : ""),
-                            detail: r.detail || "",
+                            detail: detail,
                             tone: r.tone || "data"
                         })
                     }
