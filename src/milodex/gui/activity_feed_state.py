@@ -38,6 +38,9 @@ Each normalized row is a dict with keys:
 - ``detail``   — concise human string (see formats below)
 - ``symbol``   — ``symbol`` (empty string for backtest rows)
 - ``tone``     — one of: ``positive``, ``negative``, ``data``, ``muted``
+- ``reason``   — vetoing rule(s), comma-joined from ``explanations.reason_codes_json``
+  (e.g. ``"max_concurrent_positions_exceeded"``); populated only for
+  ``kind='rejection'`` rows, ``""`` for every other kind (uniform row shape)
 
 Detail string formats:
 - explanations: ``"{decision_type}/{status}"``  (e.g. ``"submit/submitted"``)
@@ -60,6 +63,7 @@ the full capped feed is always returned.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from datetime import UTC, datetime
@@ -126,7 +130,8 @@ SELECT
     END                                       AS kind,
     decision_type || '/' || status            AS detail,
     symbol                                    AS symbol,
-    risk_allowed                              AS risk_allowed
+    risk_allowed                              AS risk_allowed,
+    reason_codes_json                         AS reason_codes_json
 FROM explanations
 WHERE {EXPLANATION_PAPER_SQL}
 ORDER BY recorded_at DESC
@@ -175,6 +180,23 @@ def _coerce_iso(time_raw: str) -> str:
         return dt.isoformat()
     except Exception:  # noqa: BLE001
         return time_raw
+
+
+def _reason_from_codes(reason_codes_json: str | None) -> str:
+    """Parse ``reason_codes_json`` into a short human string.
+
+    Joins the reason codes with ", " (e.g. ``"max_concurrent_positions_exceeded"``).
+    Malformed / NULL / non-list JSON falls back to ``""`` — never raises.
+    """
+    if not reason_codes_json:
+        return ""
+    try:
+        codes = json.loads(reason_codes_json)
+    except (TypeError, ValueError):
+        return ""
+    if not isinstance(codes, list):
+        return ""
+    return ", ".join(str(c) for c in codes)
 
 
 def _backtest_detail(sharpe: float | None, max_dd: float | None, n: int | None) -> str:
@@ -230,6 +252,9 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
                 "detail": row["detail"],
                 "symbol": row["symbol"],
                 "tone": _row_tone(kind, risk_allowed=row["risk_allowed"]),
+                "reason": (
+                    _reason_from_codes(row["reason_codes_json"]) if kind == "rejection" else ""
+                ),
             }
         )
 
@@ -245,6 +270,7 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
                 "detail": row["detail"],
                 "symbol": row["symbol"],
                 "tone": _row_tone(kind),
+                "reason": "",
             }
         )
 
@@ -260,6 +286,7 @@ def _query_feed(db_path: Path) -> list[dict[str, Any]]:
                 ),
                 "symbol": "",
                 "tone": _row_tone("backtest"),
+                "reason": "",
             }
         )
 
