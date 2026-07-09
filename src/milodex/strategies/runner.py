@@ -496,17 +496,11 @@ class StrategyRunner:
         if mode in ("controlled", "controlled_stop"):
             exit_reason = "controlled_stop"
         elif mode == "kill_switch":
-            # Mirror the service path (HR-6 / R-P2-5): a broker failure must
-            # NEVER block kill-switch activation — cancel best-effort, engage
-            # unconditionally.
-            try:
-                self._broker.cancel_all_orders()
-            except Exception:  # noqa: BLE001
-                logger.warning(
-                    "Kill-switch shutdown: cancel_all_orders failed; activating the switch anyway.",
-                    exc_info=True,
-                )
-            self._execution_service.trigger_kill_switch("Operator requested kill switch.")
+            # Route through the shared halt (HR-6 / R-P2-5): best-effort
+            # cancel_all_orders — a broker failure NEVER blocks activation —
+            # then the durable flip. Same method the breach path and the
+            # operator manual trip use (ADR 0005 Addendum / D-9).
+            self._execution_service.halt_trading("Operator requested kill switch.")
             exit_reason = "kill_switch"
         elif mode == "interrupted":
             exit_reason = "interrupted"

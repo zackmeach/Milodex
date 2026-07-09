@@ -55,6 +55,8 @@ A consolidated read-only snapshot of *what evidence-shaped data the GUI has for 
 - `gate.reconstructionDeferred is True`
 - No `command*`, `proposal*`, `submit*`, `dispatch*`, `broker`, or `eventStore` keys at any depth
 
+`gate.freshnessDisplay` / `gate.gateResultDisplay` (GUI audit finding #1 / M2 item c) are humanized operator-facing copy of the two sentinels above ("Deferred (v1) — not yet computed") — display-layer only, the raw machine sentinels are unchanged.
+
 **What the Evidence Packet is NOT:** an authoritative gate verdict, a freshness reconstruction from the event store, a basis for an automated decision.
 
 ### 2. Action Intent Preview (`action.actionIntentPreview`, PR N)

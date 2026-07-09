@@ -805,6 +805,115 @@ def test_risk_triggered_kill_switch_no_duplicate_cancel_when_already_active(
     )
 
 
+def test_halt_trading_cancels_orders_then_activates(
+    tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+):
+    """halt_trading cancels resting orders BEFORE the durable kill-switch flip.
+
+    ADR 0005 Addendum point 2: one halt, one meaning — cancel-then-flip. The
+    probe captures the switch state at the moment cancel runs; it must still be
+    inactive, proving cancel precedes activation.
+    """
+
+    class OrderProbingBroker(StubBroker):
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.active_at_cancel: bool | None = None
+            self.state_getter = None
+
+        def cancel_all_orders(self) -> list[Order]:
+            self.cancel_all_calls += 1
+            if self.state_getter is not None:
+                self.active_at_cancel = self.state_getter().active
+            return []
+
+    broker = OrderProbingBroker(account=sample_account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(event_store=event_store, legacy_path=tmp_path / "ks.json")
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+    broker.state_getter = service.get_kill_switch_state
+
+    outcome = service.halt_trading("operator manual trip")
+
+    assert broker.cancel_all_calls == 1
+    assert broker.active_at_cancel is False, "cancel must run before the switch activates"
+    assert service.get_kill_switch_state().active is True
+    assert outcome.orders_cancelled is True
+    assert outcome.cancel_error is None
+
+
+def test_halt_trading_activates_even_when_cancel_fails(
+    tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+):
+    """A broker cancel failure NEVER blocks the halt — the switch engages regardless."""
+
+    class CancelFailingBroker(StubBroker):
+        def cancel_all_orders(self) -> list[Order]:
+            self.cancel_all_calls += 1
+            raise RuntimeError("broker connection lost")
+
+    broker = CancelFailingBroker(account=sample_account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(event_store=event_store, legacy_path=tmp_path / "ks.json")
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+
+    outcome = service.halt_trading("operator manual trip")
+
+    assert broker.cancel_all_calls == 1
+    assert service.get_kill_switch_state().active is True
+    assert outcome.orders_cancelled is False
+    assert "broker connection lost" in (outcome.cancel_error or "")
+
+
+def test_halt_trading_records_reason_and_counts_as_activation(
+    tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
+):
+    """A manual trip lands as an ``activated`` event carrying the operator reason.
+
+    The provenance rides the ``reason`` string with NO new ``event_type`` value,
+    so the two hard-coded counters that key on ``activated`` — the promotion
+    evidence trip counter (``promotion/evidence.py``) and the trade-report
+    kill-switch reader (``cli/commands/report.py``) — both count a manual trip.
+    """
+    broker = StubBroker(account=sample_account, submit_order=submitted_order)
+    provider = StubProvider(latest_bar)
+    event_store = EventStore(tmp_path / "data" / "milodex.db")
+    _append_clean_reconciliation_run(event_store)
+    store = KillSwitchStateStore(event_store=event_store, legacy_path=tmp_path / "ks.json")
+    service = ExecutionService(
+        broker_client=broker,
+        data_provider=provider,
+        risk_defaults_path=risk_defaults_file,
+        kill_switch_store=store,
+        event_store=event_store,
+    )
+
+    service.halt_trading("operator judgement: pull the plug")
+
+    events = event_store.list_kill_switch_events()
+    assert [e.event_type for e in events] == ["activated"]
+    assert events[0].reason == "operator judgement: pull the plug"
+    # Mirrors the promotion evidence counter (evidence.py) and report reader.
+    activation_count = sum(1 for e in events if e.event_type == "activated")
+    assert activation_count == 1
+
+
 def test_preview_and_submit_record_explanations_and_trades(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):

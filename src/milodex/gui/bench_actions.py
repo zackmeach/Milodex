@@ -422,6 +422,26 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
     }
 
 
+#: Operator-facing copy for the Bench v1 gate sentinel (GUI audit finding #1 /
+#: M2 item c). The raw machine value below (``"not_reconstructed_v1"``) used to
+#: render verbatim in BenchEvidenceModal.qml's Freshness / Gate-result fields —
+#: this is the humanized display-layer mapping only. It does NOT change the
+#: machine value itself (D-8 deferral: ``gate.freshness`` / ``gate.gateResult``
+#: stay byte-identical) — see ``_humanize_gate_sentinel``.
+_GATE_SENTINEL_DISPLAY = "Deferred (v1) — not yet computed"
+
+
+def _humanize_gate_sentinel(value: str) -> str:
+    """Map the Bench v1 machine gate sentinel to operator-facing copy.
+
+    Display-layer only: unknown values pass through unchanged so a future
+    real sentinel doesn't get silently swallowed by this mapping.
+    """
+    if value == "not_reconstructed_v1":
+        return _GATE_SENTINEL_DISPLAY
+    return value
+
+
 def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
     """Normalized read-only Evidence Packet for a Bench row (PR M, ADR 0049).
 
@@ -436,7 +456,14 @@ def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
     False and the ``gate.reconstructionDeferred`` flag MUST stay True
     until real event-derived evidence reconstruction lands; downstream
     UI uses them to keep the v1 framing explicit.
+
+    ``gate.freshnessDisplay`` / ``gate.gateResultDisplay`` (GUI audit finding
+    #1 / M2 item c) are humanized copies of ``gate.freshness`` / ``gate.gateResult``
+    for the Evidence modal to render instead of the raw machine sentinel — the
+    machine fields themselves are untouched.
     """
+    freshness = "not_reconstructed_v1"
+    gate_result = "not_reconstructed_v1"
     return {
         "schemaVersion": 1,
         "strategyId": row.strategy_id,
@@ -465,9 +492,11 @@ def _evidence_packet(row: _StrategyRow) -> dict[str, Any]:
         },
         "gate": {
             "failures": list(row.gate_failures),
-            "freshness": "not_reconstructed_v1",
-            "gateResult": "not_reconstructed_v1",
+            "freshness": freshness,
+            "gateResult": gate_result,
             "reconstructionDeferred": True,
+            "freshnessDisplay": _humanize_gate_sentinel(freshness),
+            "gateResultDisplay": _humanize_gate_sentinel(gate_result),
         },
         "status": {
             "kind": row.status_kind,

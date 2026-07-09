@@ -18,6 +18,15 @@ from typing import Any
 
 from milodex.gui.bench_v1 import EvidenceRecord, Stage
 
+# Provenance stamp for the raw sharpe/maxDrawdownPct/tradeCount fields the Bench
+# ladder renders directly (BenchSurface.qml formattedSharpe/formattedMaxDD/
+# formattedTrades). These are the same read-model-snapshot values carried in
+# evidencePacket.metrics — this constant just makes the non-authoritative,
+# not-reconstructed provenance visible next to the ladder metrics themselves,
+# not only inside the per-row Evidence dossier. See bench_actions._evidence_packet
+# for the packet-level contract this mirrors (D-8 deferral / M2 item c).
+METRICS_PROVENANCE = "read-model snapshot — not reconstructed"
+
 
 @dataclass(frozen=True)
 class _StrategyRow:
@@ -77,6 +86,7 @@ class _StrategyRow:
             "sharpe": self.sharpe,
             "maxDrawdownPct": self.max_drawdown_pct,
             "tradeCount": self.trade_count or 0,
+            "metricsProvenance": METRICS_PROVENANCE,
             "evidenceRunId": self.evidence_run_id,
             "promotedAt": self.promoted_at,
             "promotionType": self.promotion_type,

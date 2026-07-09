@@ -41,6 +41,20 @@ class UnsupportedOrderTypeError(ValueError):
 
 
 @dataclass(frozen=True)
+class HaltOutcome:
+    """Result of a trading halt (``ExecutionService.halt_trading``).
+
+    ``orders_cancelled`` is ``True`` when the best-effort broker
+    ``cancel_all_orders`` returned without error. A cancel failure NEVER
+    blocks the halt (the kill switch engages regardless); ``cancel_error``
+    then carries the failure detail for the operator/forensics.
+    """
+
+    orders_cancelled: bool
+    cancel_error: str | None = None
+
+
+@dataclass(frozen=True)
 class TradeIntent:
     """Initial user- or strategy-originated trade proposal."""
 

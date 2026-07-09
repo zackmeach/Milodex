@@ -1004,11 +1004,10 @@ def test_bench_pr_m_confirmation_modal_reads_packet() -> None:
 def test_bench_pr_m_no_authoritative_freshness_claims() -> None:
     """PR M must NOT claim authoritative freshness/gate reconstruction in QML."""
     forbidden_phrases = (
-        # The packet exposes a non-authoritative sentinel; the QML must surface
-        # the sentinel verbatim and never invent reconstructed verdicts.
-        # Phrases here are claim-shaped — existing negative framings like
-        # "never mistakes this snapshot for an authoritative gate result"
-        # are deliberately not matched.
+        # The packet exposes a non-authoritative sentinel; the QML must never
+        # invent reconstructed verdicts. Phrases here are claim-shaped —
+        # existing negative framings like "never mistakes this snapshot for
+        # an authoritative gate result" are deliberately not matched.
         "freshness reconstructed",
         "gate reconstructed",
         "freshness: pass",
@@ -1021,13 +1020,31 @@ def test_bench_pr_m_no_authoritative_freshness_claims() -> None:
             assert phrase.lower() not in src.lower(), (
                 f"{filename} must not contain authoritative-claim phrase {phrase!r}"
             )
-    # The non-reconstructed sentinel must appear somewhere on the Evidence
-    # modal so operators see the explicit deferral.
+    # GUI audit finding #1 / M2 item c: the modal humanizes the freshness/
+    # gateResult sentinel (bench_actions._evidence_packet's gate.freshnessDisplay
+    # / gate.gateResultDisplay) instead of rendering the raw machine value
+    # verbatim. It still reads the raw _pktGate.freshness/.gateResult property
+    # paths as a resilient fallback if a future read-model rebuild omits the
+    # display fields — see BenchEvidenceModal.qml's existing packet-fallback
+    # pattern (module docstring, "Prefer the normalized evidencePacket...").
     evidence_src = (_MILODEX_QML_DIR / "components" / "BenchEvidenceModal.qml").read_text(
         encoding="utf-8"
     )
+    assert "_pktGate.freshnessDisplay" in evidence_src, (
+        "BenchEvidenceModal.qml must render the packet's humanized freshnessDisplay"
+    )
+    assert "_pktGate.gateResultDisplay" in evidence_src, (
+        "BenchEvidenceModal.qml must render the packet's humanized gateResultDisplay"
+    )
     assert "_pktGate.freshness" in evidence_src and "_pktGate.gateResult" in evidence_src, (
-        "BenchEvidenceModal.qml must render the packet's freshness/gateResult sentinels"
+        "BenchEvidenceModal.qml must keep a fallback read of the raw freshness/gateResult"
+    )
+    # The raw machine sentinel itself must never appear as a literal string in
+    # this file — humanizing happens in Python (bench_actions._evidence_packet);
+    # QML only binds to the already-humanized *Display fields.
+    assert "not_reconstructed_v1" not in evidence_src, (
+        "BenchEvidenceModal.qml must not hardcode the raw sentinel literal — "
+        "humanize in bench_actions._evidence_packet instead"
     )
 
 
@@ -1823,4 +1840,40 @@ def test_front_surface_dead_strategy_detail_link_removed() -> None:
     src = (_MILODEX_QML_DIR / "surfaces" / "FrontSurface.qml").read_text(encoding="utf-8")
     assert "strategy detail" not in src, (
         "FrontSurface.qml must not contain the dead 'strategy detail ->' link"
+    )
+
+
+# ---------------------------------------------------------------------------
+# M2 item c: metrics-provenance labeling (founder-approved, D-8 deferral)
+# ---------------------------------------------------------------------------
+
+
+def test_strategy_row_renders_metrics_provenance_caption() -> None:
+    """StrategyRow.qml must expose metricsProvenance and render it as a quiet
+    inline caption — the same italic-serif marginalia treatment already used
+    for `note` / flagFailingNotRetired, not a warning badge."""
+    src = (_MILODEX_QML_DIR / "components" / "StrategyRow.qml").read_text(encoding="utf-8")
+    assert "property string metricsProvenance" in src, (
+        "StrategyRow.qml must declare property string metricsProvenance"
+    )
+    assert 'root.metricsProvenance !== ""' in src, (
+        "StrategyRow.qml must gate the provenance caption on a non-empty metricsProvenance"
+    )
+    assert "read-model snapshot" in src, (
+        "StrategyRow.qml must render a 'read-model snapshot' caption near the metrics"
+    )
+    # Must reuse the existing muted/italic-deck idiom, not invent a new warning style.
+    assert "Theme.typography.deck.family" in src and "Theme.color.text.muted" in src
+
+
+def test_bench_surface_renders_metrics_provenance_caption() -> None:
+    """BenchSurface.qml must carry a quiet page-level caption stating the
+    Sharpe/Max-DD/Trades ladder columns are a read-model snapshot, not a
+    reconstructed or authoritative gate verdict (D-8 deferral / M2 item c)."""
+    src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
+    assert "read-model snapshot" in src, (
+        "BenchSurface.qml must caption the ladder metrics as a read-model snapshot"
+    )
+    assert "not reconstructed" in src.lower(), (
+        "BenchSurface.qml's provenance caption must state the metrics are not reconstructed"
     )

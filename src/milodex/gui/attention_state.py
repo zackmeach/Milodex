@@ -2,7 +2,9 @@
 
 Aggregates operator-actionable signals from the event store:
 
-- ``runningNow``       — strategies currently executing (ended_at IS NULL).
+- ``runningNow``       — strategies currently executing (ended_at IS NULL AND
+                         PID-verified live when a locks_dir is supplied; see
+                         "runningNow liveness" below).
 - ``paperTesting``     — strategies promoted to paper stage.
 - ``backtestOnly``     — strategies blocked at backtest (not yet promoted).
 - ``needsReview``      — strategies needing operator action (cases a/b/c).
@@ -111,8 +113,8 @@ def _compute_underperforming(
 # SQL helpers for _query_attention
 # ---------------------------------------------------------------------------
 
-_SQL_RUNNING_NOW = """
-SELECT COUNT(DISTINCT strategy_id) AS cnt
+_SQL_RUNNING_STRATEGY_IDS = """
+SELECT DISTINCT strategy_id
 FROM strategy_runs
 WHERE ended_at IS NULL
 """
@@ -184,11 +186,20 @@ INNER JOIN (
 """
 
 
-def _query_attention(db_path: Path) -> dict[str, Any]:
+def _query_attention(db_path: Path, locks_dir: Path | None = None) -> dict[str, Any]:
     """Query the event store for all attention-state signals.
 
     Opens a read-only connection.  Calls :func:`_query_bank` for paper/blocked
     classification (no SQL duplication per spec §8 scope-drift rule).
+
+    ``running_now`` (GUI audit finding #3 / M2 item b): with ``locks_dir=None``
+    this is the legacy raw count of distinct strategies with an open
+    (``ended_at IS NULL``) session — the back-compat guard existing callers
+    rely on.  With an explicit ``locks_dir``, each open session is
+    PID-verified via :func:`milodex.gui._event_queries.runner_lock_live`
+    (mirrors the resolver ``active_ops_state.py`` already applies per row)
+    and only genuinely-live runners are counted — a hard-killed runner whose
+    ``strategy_runs`` row never closed no longer inflates this rollup.
 
     Returns a dict with keys:
     - ``running_now``: int
@@ -206,9 +217,10 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        # --- runningNow ---
-        row = conn.execute(_SQL_RUNNING_NOW).fetchone()
-        running_now: int = row["cnt"] if row else 0
+        # --- runningNow: candidate open sessions (PID-verified below) ---
+        running_ids: list[str] = [
+            r["strategy_id"] for r in conn.execute(_SQL_RUNNING_STRATEGY_IDS).fetchall()
+        ]
 
         # --- sets for gate computation ---
         promoted_to_paper: set[str] = {
@@ -247,6 +259,18 @@ def _query_attention(db_path: Path) -> dict[str, Any]:
 
     finally:
         conn.close()
+
+    # --- runningNow: PID-verify when a locks_dir is given (M2 item b) ---
+    # Back-compat guard: locks_dir=None means no lock surface to inspect, so
+    # phantom detection stays OFF and the legacy raw open-session count is
+    # kept — same guard shape as resolve_runner_liveness's own locks_dir=None
+    # short-circuit in active_ops_state.py.
+    if locks_dir is None:
+        running_now: int = len(running_ids)
+    else:
+        running_now = sum(
+            1 for sid in running_ids if _event_queries.runner_lock_live(sid, locks_dir)
+        )
 
     # -----------------------------------------------------------------------
     # Compute needsReview and underperforming
@@ -377,9 +401,9 @@ def _build_drift_list(
 # ---------------------------------------------------------------------------
 
 
-def _build_attention_snapshot(db_path: Path) -> dict[str, Any]:
+def _build_attention_snapshot(db_path: Path, locks_dir: Path | None = None) -> dict[str, Any]:
     """Adapter for ``PollingReadModel`` — packs attention query into polling dict."""
-    result = _query_attention(db_path)
+    result = _query_attention(db_path, locks_dir=locks_dir)
     result["lastRefreshedAt"] = datetime.now(tz=UTC).isoformat()
     return result
 
@@ -403,6 +427,7 @@ class AttentionState(PollingReadModel):
     def __init__(
         self,
         db_path: Path | None = None,
+        locks_dir: Path | None = None,
         refresh_interval_ms: int = 30_000,
         parent: QObject | None = None,
     ) -> None:
@@ -411,10 +436,16 @@ class AttentionState(PollingReadModel):
 
             db_path = get_data_dir() / "milodex.db"
         self._db_path = db_path
+        # Unlike ActiveOpsState, locks_dir is NOT eagerly resolved to the real
+        # production locks dir when None — a bare `AttentionState(db_path=...)`
+        # (as many existing tests construct it) must keep the legacy raw
+        # running_now count (see _query_attention's locks_dir=None guard).
+        # Production wiring (gui/app.py) passes the real locks_dir explicitly.
+        self._locks_dir = locks_dir
         self._rollups: dict[str, Any] = {}
         self._drift_list: list[dict[str, Any]] = []
         super().__init__(
-            builder=lambda: _build_attention_snapshot(db_path),
+            builder=lambda: _build_attention_snapshot(db_path, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
             parent=parent,
         )

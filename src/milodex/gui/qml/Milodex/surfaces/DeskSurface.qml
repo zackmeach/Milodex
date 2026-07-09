@@ -555,7 +555,7 @@ SurfaceBase {
                         title: "Active Operations"
                         Text {
                             text: ActiveOpsState.runners.length > 0
-                                  ? ActiveOpsState.runners.length + " runners"
+                                  ? ActiveOpsState.liveCount + " runners"
                                   : ""
                             color: Theme.color.text.muted
                             font.family:    Theme.typography.data.sm.family

@@ -729,6 +729,7 @@ Item {
                             stage:       "paper"
                             metricValue: "+0.64"
                             tradeCount:  433
+                            metricsProvenance: "read-model snapshot — not reconstructed"
                         }
                         StrategyRow {
                             width: parent.width

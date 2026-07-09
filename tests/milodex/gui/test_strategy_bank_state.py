@@ -711,6 +711,7 @@ def test_blocked_dict_shape(tmp_path) -> None:
         "runId",
         "auditFlag",
         "flagFailingNotRetired",
+        "metricsProvenance",
     }
     assert required_keys.issubset(row.keys()), (
         f"Missing keys in blocked row: {required_keys - row.keys()}"
@@ -718,6 +719,26 @@ def test_blocked_dict_shape(tmp_path) -> None:
     assert isinstance(row["gateFailures"], list)
     assert isinstance(row["auditFlag"], bool)
     assert isinstance(row["flagFailingNotRetired"], bool)
+
+
+def test_paper_and_blocked_rows_carry_metrics_provenance(tmp_path) -> None:
+    """Every paper/blocked row stamps the same non-authoritative provenance
+    constant (D-8 deferral / M2 item c) — sharpe/maxDrawdownPct/tradeCount are
+    a read-model snapshot, never reconstructed from the event store.
+    """
+    from milodex.gui.strategy_bank_state import _METRICS_PROVENANCE, _query_bank
+
+    assert _METRICS_PROVENANCE == "read-model snapshot — not reconstructed"
+
+    db = tmp_path / "test.db"
+    _create_fixture_db(db)
+    _seed_paper_row(db, "breakout.daily.atr_channel.sector_etfs.v1", sharpe=0.64)
+    _seed_blocked_row(db, "seasonality.daily.turn_of_month.spy.v1", "run-x", sharpe=-0.27)
+
+    paper, blocked = _query_bank(db)
+
+    assert paper[0]["metricsProvenance"] == _METRICS_PROVENANCE
+    assert blocked[0]["metricsProvenance"] == _METRICS_PROVENANCE
 
 
 # ---------------------------------------------------------------------------

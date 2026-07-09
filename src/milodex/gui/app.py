@@ -406,7 +406,7 @@ def run_app() -> int:
     performance_state = PerformanceState(db_path=db_path, cache_dir=cache_dir)
     risk_throughput_state = RiskThroughputState(db_path=db_path)
     active_ops_state = ActiveOpsState(db_path=db_path, configs_dir=configs_dir, locks_dir=locks_dir)
-    attention_state = AttentionState(db_path=db_path)
+    attention_state = AttentionState(db_path=db_path, locks_dir=locks_dir)
     market_tape_state = MarketTapeState(cache_dir=cache_dir)
     activity_feed_state = ActivityFeedState(db_path=db_path)
 
