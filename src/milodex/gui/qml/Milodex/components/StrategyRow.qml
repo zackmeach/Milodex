@@ -36,6 +36,13 @@
 //   auditFlag          : bool     — optional; when true renders a "*" superscript after strategyId
 //   flagFailingNotRetired : bool  — optional; when true renders inline italic serif marginalia
 //                                   "flagged, not retired" alongside gate chips
+//   metricsProvenance  : string   — optional; when non-empty renders a quiet inline
+//                                   caption after the trade-count column, signalling that
+//                                   metricValue/tradeCount are an unreconstructed read-model
+//                                   snapshot (D-8 deferral / M2 item c) rather than a live,
+//                                   authoritative verdict. Same italic-serif marginalia
+//                                   treatment as `note` / flagFailingNotRetired — a caption,
+//                                   not a warning badge.
 //   signal clicked()
 //
 // MOTION DISCIPLINE (DESIGN_SYSTEM.md §5.3, §8):
@@ -80,6 +87,11 @@ Item {
     //   strategy is kept at backtest pending a methodology decision, not retired.
     //   Renders as editorial commentary (deck token), not as a warning badge.
     property bool   flagFailingNotRetired: false
+    // metricsProvenance: optional provenance stamp for metricValue/tradeCount
+    //   (e.g. "read-model snapshot — not reconstructed"). Non-empty renders a
+    //   quiet italic-serif caption after the trade-count column — see the
+    //   property doc block above.
+    property string metricsProvenance: ""
 
     signal clicked()
 
@@ -360,6 +372,22 @@ Item {
             verticalAlignment:   Text.AlignVCenter
             horizontalAlignment: Text.AlignRight
             Layout.preferredWidth: Theme.column.tradeCount
+        }
+
+        // Metrics-provenance caption (D-8 deferral / M2 item c) — quiet italic
+        // marginalia after the trade-count column, same treatment as the
+        // flagFailingNotRetired note above. Only rendered when the read model
+        // sets metricsProvenance; empty by default so existing call sites see
+        // no change.
+        Text {
+            visible: root.metricsProvenance !== ""
+            text:  "— read-model snapshot"
+            color: Theme.color.text.muted
+            font.family:    Theme.typography.deck.family
+            font.pixelSize: Theme.typography.deck.size
+            font.weight:    Theme.typography.deck.weight
+            font.italic:    Theme.typography.deck.italic
+            Layout.alignment: Qt.AlignVCenter
         }
 
         // (badge column removed in PR E polish pass — lifecycle-exempt callout
