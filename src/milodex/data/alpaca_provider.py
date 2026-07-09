@@ -219,27 +219,7 @@ class AlpacaDataProvider(DataProvider):
             symbol_or_symbols: str | list[str] = (
                 batch_symbols[0] if len(batch_symbols) == 1 else batch_symbols
             )
-            request = StockBarsRequest(
-                symbol_or_symbols=symbol_or_symbols,
-                timeframe=alpaca_tf,
-                feed=DataFeed.IEX,
-                adjustment=Adjustment.ALL,
-                start=datetime(
-                    fetch_start.year,
-                    fetch_start.month,
-                    fetch_start.day,
-                    tzinfo=UTC,
-                ),
-                end=datetime(
-                    fetch_end.year,
-                    fetch_end.month,
-                    fetch_end.day,
-                    23,
-                    59,
-                    59,
-                    tzinfo=UTC,
-                ),
-            )
+            request = self._stock_bars_request(symbol_or_symbols, fetch_start, fetch_end, alpaca_tf)
             response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
 
             # Split the batched response back into per-symbol DataFrames.
@@ -300,9 +280,7 @@ class AlpacaDataProvider(DataProvider):
     def _bars_to_df(bars: list) -> pd.DataFrame:
         """Translate a list of Alpaca bar objects to the canonical cache frame.
 
-        Shared by the adjustment probe/heal and ``backfill_range``. The get_bars
-        Phase-2 hot path deliberately keeps its own inline construction so the
-        hot path stays byte-identical and independent of this helper."""
+        Shared by the adjustment probe/heal and ``backfill_range``."""
         df = pd.DataFrame(
             [
                 {
@@ -329,9 +307,8 @@ class AlpacaDataProvider(DataProvider):
     ) -> StockBarsRequest:
         """Build an IEX / Adjustment.ALL bars request for ``[start, end]`` inclusive.
 
-        Shared by the adjustment probe, the stale-adjustment heal, and
-        ``backfill_range``. NOT used by the get_bars Phase-2 hot path, which keeps
-        its own inline request construction."""
+        Shared by the get_bars Phase-2 batch path, the adjustment probe, the
+        stale-adjustment heal, and ``backfill_range``."""
         return StockBarsRequest(
             symbol_or_symbols=symbol_or_symbols,
             timeframe=alpaca_tf,
@@ -429,11 +406,26 @@ class AlpacaDataProvider(DataProvider):
         ``merge``'s keep-last dedup would preserve any stale row the refetch does
         not cover. A full replace of ``[cache_start, cache_end]`` guarantees a
         single, current adjustment epoch across every cached bar. Returns the
-        fresh frame, or ``None`` if the refetch came back empty or errored (caller
-        keeps the stale cache as a fail-safe rather than serving nothing)."""
+        fresh frame, or ``None`` if the refetch came back empty or if any step
+        (refetch, parse, or cache write) errored (caller keeps the stale cache as a
+        fail-safe rather than serving nothing). The whole refetch→parse→write span
+        is fail-safe: a parse error or a parquet-write IOError (documented Windows
+        file-lock hazard) degrades to serving the stale cache, never a new
+        exception out of the warm read."""
         request = self._stock_bars_request(symbol, cache_start, cache_end, alpaca_tf)
         try:
             response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
+            bars = response.data.get(symbol, [])
+            if not bars:
+                _logger.warning(
+                    "adjustment_heal_empty symbol=%s range=%s..%s; serving stale cache (fail-safe)",
+                    symbol.upper(),
+                    cache_start,
+                    cache_end,
+                )
+                return None
+            df = self._bars_to_df(bars)
+            self._cache.write(symbol, timeframe, df)
         except Exception as exc:  # noqa: BLE001 - heal failure must not break serving the cache
             _logger.warning(
                 "adjustment_heal_error symbol=%s err=%s; serving stale cache (fail-safe)",
@@ -441,11 +433,6 @@ class AlpacaDataProvider(DataProvider):
                 exc,
             )
             return None
-        bars = response.data.get(symbol, [])
-        if not bars:
-            return None
-        df = self._bars_to_df(bars)
-        self._cache.write(symbol, timeframe, df)
         _logger.info(
             "adjustment_epoch_healed symbol=%s range=%s..%s bars=%d",
             symbol.upper(),
