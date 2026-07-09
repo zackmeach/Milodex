@@ -1051,6 +1051,53 @@ def test_refresh_populates_runners(qapp, tmp_path) -> None:
     state.stop()
 
 
+@_skip_no_qt
+def test_live_count_excludes_phantom_row_but_runners_list_includes_it(qapp, tmp_path) -> None:
+    """liveCount (GUI audit finding #3 / M2 item b) counts only PID-verified rows.
+
+    Seeds one genuinely-live runner (real held lock) and one phantom (open
+    session, no live lock).  The `runners` list must still surface both rows
+    -- phantoms stay visible in the table -- but `liveCount` must be 1, not 2.
+    """
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    _ = qapp
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime.now(tz=UTC)
+    t = (now - timedelta(hours=1)).isoformat()
+
+    _seed_run(db, "strat.live.v1", "sess-live", t)
+    _seed_run(db, "strat.phantom.v1", "sess-phantom", t)
+
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    lock = AdvisoryLock(runner_lock_name("strat.live.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        state = _make_state(db, locks_dir=locks_dir)
+        state._kick_refresh()  # noqa: SLF001
+        _drain_pool(state)
+
+        runners = state.runners
+        assert len(runners) == 2
+        ids = {r["strategyId"] for r in runners}
+        assert ids == {"strat.live.v1", "strat.phantom.v1"}
+
+        live_row = next(r for r in runners if r["strategyId"] == "strat.live.v1")
+        phantom_row = next(r for r in runners if r["strategyId"] == "strat.phantom.v1")
+        assert live_row["sessionState"] == "running"
+        assert phantom_row["sessionState"] == "phantom"
+
+        assert state.liveCount == 1
+
+        state.stop()
+    finally:
+        lock.release()
+
+
 # Lifecycle scaffold tests (missing-DB error, error-after-success preservation,
 # in-flight drop, stop-drains-worker) were removed in PR C of RM-007 — those
 # contracts are now covered ONCE in tests/milodex/gui/test_polling_lifecycle.py.
