@@ -118,27 +118,33 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
   the three R-PRM-004 criteria are recorded-as-unenforced with enforcement
   deferred to M4. `check_gate` and the risk layer untouched.
   ([ADR 0058](adr/0058-lifecycle-exemption-is-scoped-and-operator-override-is-split.md))
-- **D-5 Evidence-durability labeling stance** — every intraday verdict is
-  structurally non-durable on IEX by policy; "closeable" must mean *honestly-labeled
-  exploratory verdicts exist*, not *promotion-grade edge*. Lock the definition.
+- **D-5 Evidence-durability labeling stance — DECIDED (2026-07-09).** Labeling-only
+  closure: durability is a **feed** property (IEX-sourced), not a tempo property;
+  "closeable" = honestly-labeled exploratory verdicts exist. Mandatory C+ firewall
+  merged (#334, `tests/milodex/promotion/test_experiment_registry_firewall.py`).
+  Record: [reviews/2026-07-09-D5-evidence-durability-brief.md](reviews/2026-07-09-D5-evidence-durability-brief.md).
 - **D-6 Coverage floor for closure — CLOSED (decided at M0).** Founder chose a
   targeted critical-obligation assurance gate with a versioned allowlist (see §11);
   not a bare coverage percentage.
 - **D-7 `docs/troubleshooting-fault-modes` branch adjudication — CLOSED.** Branch
   merged as #281 (+134-line additive doc). The "~447 unrelated test deletions" framing
   was stale/unreproducible — corrected here; content consumed in M4.
-- **D-8 Evidence-reconstruction sufficiency** — is *honest non-authoritative
-  labeling* enough for closure, or does closure require authoritative event-derived
-  evidence reconstruction ([ADR 0050](adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md)
-  Decision 8)? Product-defining for a research-OS-first system; the GUI audit's #1
-  trust gap. Decided via the protocol — not by roadmap prose.
-- **D-9 Manual emergency-halt governance** — a production manual kill-switch **TRIP**
-  affordance is **explicitly not authorized** by
-  [ADR 0051](adr/0051-bench-command-infrastructure-v1.md) §Non-goals (line 286) or
-  [ADR 0049](adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md)
-  Decision 4 (the kill switch's home, the Anchor view, was deleted). Requires
-  independent review + an ADR amendment before any implementation — it is **not**
-  "just reachability."
+- **D-8 Evidence-reconstruction sufficiency — DECIDED (2026-07-10, A-amended).**
+  Honest labeling closes M2, **extended to the action surface**: the adversarial
+  dissent found the Promote-to-Paper affordance computes from a hardcoded
+  `Freshness.FRESH` while the dossier honestly says freshness is not computed —
+  one display-only follow-up PR adds evidence age + a "freshness not computed (v1)"
+  caveat to the promote confirmation. ADR 0050 v2 stays deferred; the
+  menu-freshness gap is the named standing v2 motivator (revisit at the M4/M5
+  boundary). Load-bearing control is adversarial audit, not labels. Record:
+  [reviews/2026-07-10-D8-evidence-reconstruction-brief.md](reviews/2026-07-10-D8-evidence-reconstruction-brief.md).
+- **D-9 Manual emergency-halt governance — DECIDED (2026-07-09, A2).** Operator
+  manual trip authorized via [ADR 0005 addendum](adr/0005-kill-switch-manual-reset.md):
+  `milodex halt` = shared cancel-then-flip (`ExecutionService.halt_trading`) +
+  fail-soft fleet controlled-stop, `--confirm` required (#338 governance, #341
+  implementation, double risk-review). GUI trip stays forbidden (ADR 0049/0051
+  unmodified). Record:
+  [reviews/2026-07-09-D9-manual-halt-brief.md](reviews/2026-07-09-D9-manual-halt-brief.md).
 
 **Known limitations in this status assessment (read honestly):**
 
@@ -429,13 +435,13 @@ proof is the remaining M1 gate event (§2).
   finalized until the D-1 fork decides whether "decision-only" is an archetype).
   Re-confirm GUI-wiring P1-2/P2-1/P2-2 on entry — **done 2026-07-10, all three
   RESOLVED at HEAD (§2)**.
-- **Decision-gated within M2.** (a) **Manual emergency-halt (D-9):** a production
-  kill-switch TRIP is **not** authorized by ADR 0051 §Non-goals / ADR 0049 Decision 4
-  (and the Anchor view that hosted it was deleted), so it needs an ADR amendment
-  before build — *not* "just reachability." (b) **Evidence reconstruction (D-8):**
-  whether honest non-authoritative *labeling* satisfies closure, or authoritative
-  event-derived reconstruction (ADR 0050 v2) is required, is decided before M2's
-  operator-trust gate can close.
+- **Decision-gated within M2 — both gates now decided.** (a) **Manual
+  emergency-halt (D-9): DECIDED 2026-07-09 (A2)** — ADR 0005 addendum authorized the
+  operator trip; `milodex halt` shipped (#338/#341). (b) **Evidence reconstruction
+  (D-8): DECIDED 2026-07-10 (A-amended)** — labeling closes M2, extended to the
+  promote affordance (evidence age + freshness caveat, one display-only follow-up
+  PR); ADR 0050 v2 deferred with the menu-freshness gap as its standing motivator
+  (§2 / §10).
 
 ### M3 — Current research verdicts  *(parallel-eligible after M0; not gated by M1)*
 
@@ -519,8 +525,9 @@ receives a concise decision brief with a recommended choice → (5) founder deci
 incorporates it at gate completion or formal gate invalidation. **Do not dump raw
 complexity on the founder before the independent review.**
 
-**Currently paused (require the protocol): D-2, D-3, D-5, D-8, D-9** (§2). *(D-1,
-D-4, D-6, D-7 resolved/closed as of 2026-07-02 — see §2.)*
+**Currently paused (require the protocol): D-2, D-3** (both re-owned to M5). *(D-1,
+D-4, D-6, D-7 resolved/closed as of 2026-07-02; D-5 decided 2026-07-09; D-9 decided
+2026-07-09; D-8 decided 2026-07-10 — see §2.)*
 
 **Not high-impact — just do it (surgical, no pause):** veto-reason surfacing
 (read-only of an existing field); aggregate-liveness correctness fix; evidence
@@ -571,7 +578,7 @@ critical path unless a milestone proves it genuinely required for trust closure.
 | ML / LLM decision layer (axis-3 thesis) | [capability-axes](architecture/2026-05-30-harness-capability-axes.md) | Backtestable non-rule decider done; LLM decider (forward-only, shadow-first) unscoped. |
 | Milodex Score / durable-P/L formula | [GRILL_DECISIONS](GRILL_DECISIONS_2026-06-18.md) | Founder wants it; **formula deferred**; unbuilt. Off the critical path. |
 | Governed / auto-discovered universes | GRILL_DECISIONS vs VISION research discipline | Founder direction vs "curated-universe-first." Reconcile in a future ADR. |
-| Authoritative evidence reconstruction | [ADR 0050](adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) Decision 8 | **Decision-gated (D-8)**, not deferred-by-prose. M2 ships *honest labeling*; whether *authoritative* reconstruction is required for closure (research-OS is priority-rank-1) or is a post-closure item is decided via §8 before M2's gate closes. |
+| Authoritative evidence reconstruction | [ADR 0050](adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) Decision 8 | **D-8 DECIDED 2026-07-10 (A-amended)**: labeling closes M2; v2 stays here, post-closure. Standing motivator: the menu's hardcoded-FRESH promote affordance ([D-8 record](reviews/2026-07-10-D8-evidence-reconstruction-brief.md)) — **revisit at the M4/M5 boundary review.** |
 | SIP / consolidated data feed | [ADR 0017](adr/0017-data-source-hierarchy.md); intraday-evidence lane | The binding constraint on intraday *durability*. Buy only when a promotion case demands it — **do not** pull forward to "close" M3. |
 | God-file / leaked-invariant cleanup | [2026-06-12 deepening audit](reviews/2026-06-12-architecture-deepening-audit.md) | Resolver dup (#7), sacred-layer parity tests (#1-4), workflow-readiness lift (#8). Maintainability. |
 | Capital / portfolio allocator | capability-axes | Off-thesis; design-not-to-preclude. |
