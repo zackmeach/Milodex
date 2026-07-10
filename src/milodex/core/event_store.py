@@ -1171,22 +1171,34 @@ class EventStore:
         return None if row is None else row["config_hash"]
 
     def count_paper_trades(self, strategy_id: str) -> int:
-        """Count paper-source trades for ``strategy_id``.
+        """Count distinct paper orders that reached the broker for ``strategy_id``.
 
-        A bounded ``COUNT(*)`` replacing a full-table ``list_trades()`` load in
-        promotion-evidence assembly. Predicate matches the comprehension it
-        replaced exactly: ``source = 'paper' AND strategy_name = ?`` (stage is
-        intentionally not filtered). Memory stays flat regardless of table size
-        — unlike the unbounded load that OOM-froze the workstation when the
-        runner fleet launched concurrently
+        Semantics (decided 2026-07-09): one count per **order that actually
+        went to the broker**, in any lifecycle state. ``preview`` and
+        ``blocked`` rows are excluded — they are decisions, not trades, and
+        rejections are already reported separately by
+        :meth:`count_paper_rejections` (the pre-fix unfiltered ``COUNT(*)``
+        silently folded thousands of blocked rows into a metric named
+        "trade count"). Rows sharing a ``broker_order_id`` count once, so a
+        sync-appended corrective terminal row (which inherits its submitted
+        row's ``strategy_name`` since #337) does not double-count its order;
+        rows without a ``broker_order_id`` count individually. The
+        status/dedup vocabulary mirrors the per-strategy attribution fold
+        (``risk/attribution.py`` ``_effective_paper_fill_rows``). Stage is
+        intentionally not filtered.
+
+        Bounded ``COUNT`` — memory stays flat regardless of table size, unlike
+        the unbounded load that OOM-froze the workstation when the runner
+        fleet launched concurrently
         (docs/incidents/2026-05-29-runner-fleet-oom-freeze.md).
         """
         with self._connect() as connection:
             row = connection.execute(
                 """
-                SELECT COUNT(*)
+                SELECT COUNT(DISTINCT COALESCE(broker_order_id, 'row:' || id))
                 FROM trades
                 WHERE source = 'paper' AND strategy_name = ?
+                  AND status NOT IN ('preview', 'blocked')
                 """,
                 (strategy_id,),
             ).fetchone()
