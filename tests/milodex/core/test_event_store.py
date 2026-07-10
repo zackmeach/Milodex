@@ -1718,9 +1718,13 @@ def test_iter_trades_returns_lazy_generator(tmp_path):
 #
 # count_paper_trades / count_paper_rejections replace the full-table
 # list_trades() + list_explanations() loads in promotion-evidence assembly
-# (_derive_paper_counts). They MUST preserve the exact predicates of the
-# comprehensions they replace:
-#   trades:       source = 'paper'  AND strategy_name = ?   (NO stage filter)
+# (_derive_paper_counts). Predicates:
+#   trades:       source = 'paper' AND strategy_name = ?   (NO stage filter),
+#                 status NOT IN ('preview','blocked'), one count per
+#                 broker_order_id (rows without an order id count singly) —
+#                 semantics fixed 2026-07-09: "distinct orders that reached
+#                 the broker", not raw row count (which folded blocked
+#                 decision rows and #337 corrective rows into "trades").
 #   explanations: strategy_name = ? AND strategy_stage = 'paper' AND risk_allowed = 0
 # ---------------------------------------------------------------------------
 
@@ -1731,6 +1735,8 @@ def _append_paper_trade(
     strategy_name: str,
     source: str = "paper",
     strategy_stage: str = "paper",
+    status: str = "filled",
+    broker_order_id: str | None = None,
 ) -> None:
     explanation_id = store.append_explanation(
         ExplanationEvent(**_explanation_kwargs(submitted_by="operator"))
@@ -1739,7 +1745,7 @@ def _append_paper_trade(
         TradeEvent(
             explanation_id=explanation_id,
             recorded_at=datetime(2026, 5, 7, 14, 0, tzinfo=UTC),
-            status="filled",
+            status=status,
             source=source,
             symbol="SPY",
             side="buy",
@@ -1752,7 +1758,7 @@ def _append_paper_trade(
             strategy_stage=strategy_stage,
             strategy_config_path="configs/x.yaml",
             submitted_by="operator",
-            broker_order_id=None,
+            broker_order_id=broker_order_id,
             broker_status=None,
             message=None,
         )
@@ -1761,7 +1767,7 @@ def _append_paper_trade(
 
 def test_count_paper_trades_filters_on_source_and_strategy_not_stage(tmp_path):
     """Counts trades where source='paper' and strategy matches; source and
-    strategy are filtered, stage is NOT (matching the replaced comprehension)."""
+    strategy are filtered, stage is NOT."""
     store = EventStore(tmp_path / "milodex.db")
     _append_paper_trade(store, strategy_name="alpha", strategy_stage="paper")
     _append_paper_trade(
@@ -1769,6 +1775,32 @@ def test_count_paper_trades_filters_on_source_and_strategy_not_stage(tmp_path):
     )  # stage not filtered
     _append_paper_trade(store, strategy_name="alpha", source="backtest")  # excluded: source
     _append_paper_trade(store, strategy_name="beta")  # excluded: strategy
+
+    assert store.count_paper_trades("alpha") == 2
+
+
+def test_count_paper_trades_excludes_preview_and_blocked_decision_rows(tmp_path):
+    """preview/blocked rows are decisions, not trades — rejections are already
+    reported separately by count_paper_rejections (semantics fix 2026-07-09)."""
+    store = EventStore(tmp_path / "milodex.db")
+    _append_paper_trade(store, strategy_name="alpha", status="submitted", broker_order_id="o-1")
+    _append_paper_trade(store, strategy_name="alpha", status="blocked")
+    _append_paper_trade(store, strategy_name="alpha", status="preview")
+
+    assert store.count_paper_trades("alpha") == 1
+
+
+def test_count_paper_trades_counts_a_synced_corrective_pair_once(tmp_path):
+    """Regression for the #337 interaction: a sync-appended corrective terminal
+    row inherits its submitted row's strategy_name and shares its
+    broker_order_id — the ORDER must count once, not twice. A legacy row with
+    no broker_order_id still counts individually."""
+    store = EventStore(tmp_path / "milodex.db")
+    # submitted + synced-filled corrective pair for the same order
+    _append_paper_trade(store, strategy_name="alpha", status="submitted", broker_order_id="o-9")
+    _append_paper_trade(store, strategy_name="alpha", status="filled", broker_order_id="o-9")
+    # legacy direct fill without an order id
+    _append_paper_trade(store, strategy_name="alpha", status="filled", broker_order_id=None)
 
     assert store.count_paper_trades("alpha") == 2
 
