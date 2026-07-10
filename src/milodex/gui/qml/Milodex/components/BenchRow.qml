@@ -46,6 +46,12 @@ Item {
     property string strategyId: ""
     property string stage: "paper"
 
+    // Archetype tag (roadmap M2): one of
+    // "canary" | "baseline" | "paper" | "blocked" | "research".
+    // Classified in Python (strategy_row.classify_archetype); QML only
+    // displays the string as a quiet uppercase chip — no re-derivation here.
+    property string archetype: ""
+
     // Numeric metrics — pass formatted string ("-" for IDLE em-dash)
     property string sharpe: "-"
     property string maxDD: "-"
@@ -618,14 +624,49 @@ Item {
                 elide: Text.ElideRight
             }
 
-            Text {
+            // ID line — dotted strategy id preceded by a quiet archetype chip.
+            Row {
                 width: parent.width
-                text: root.strategyId
-                color: Theme.color.text.muted
-                font.family: Theme.typography.data.xs.family
-                font.pixelSize: Theme.typography.data.xs.size
-                font.features: Theme.typography.data.xs.features
-                elide: Text.ElideRight
+                spacing: Theme.space[2]
+
+                // Archetype chip — small bordered pill, uppercase label.
+                // Neutral treatment (border.subtle + text.secondary): visibly
+                // distinct as a category tag, not loud. Hidden when unset.
+                Rectangle {
+                    id: archetypeChip
+                    visible: root.archetype.length > 0
+                    anchors.verticalCenter: parent.verticalCenter
+                    radius: Theme.radius.sm
+                    color: "transparent"
+                    border.color: Theme.color.border.regular
+                    border.width: 1
+                    implicitWidth: archetypeLabel.implicitWidth + Theme.space[2] * 2
+                    implicitHeight: archetypeLabel.implicitHeight + Theme.space[1]
+
+                    Text {
+                        id: archetypeLabel
+                        anchors.centerIn: parent
+                        text: root.archetype.toUpperCase()
+                        color: Theme.color.text.secondary
+                        font.family: Theme.typography.label.xs.family
+                        font.pixelSize: Theme.typography.label.xs.size
+                        font.weight: Theme.typography.label.xs.weight
+                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                        font.capitalization: Font.AllUppercase
+                    }
+                }
+
+                Text {
+                    width: parent.width - (archetypeChip.visible
+                                           ? archetypeChip.width + parent.spacing : 0)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: root.strategyId
+                    color: Theme.color.text.muted
+                    font.family: Theme.typography.data.xs.family
+                    font.pixelSize: Theme.typography.data.xs.size
+                    font.features: Theme.typography.data.xs.features
+                    elide: Text.ElideRight
+                }
             }
         }
     }

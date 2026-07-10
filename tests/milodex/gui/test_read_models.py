@@ -559,8 +559,24 @@ def test_regime_strategy_has_empty_gate_failures(tmp_path: Path) -> None:
     _write_regime_config(configs, strategy_id, stage="paper")
     db = tmp_path / "milodex.db"
     _create_db(db)
-    # No backtest or promotion records — metrics are all None, which would normally
+    # Lifecycle-exempt promotion with NULL metrics — the regime strategy's real
+    # shape (a lifecycle-exempt regime can't accumulate gate-able trades). The
+    # promotion record is required for paper-section membership (YAML stage
+    # alone clamps to backtest); metrics stay all-None, which would normally
     # trigger all three gate failures (S, D, N) for a non-regime strategy.
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO promotions
+            (recorded_at, strategy_id, from_stage, to_stage, promotion_type, approved_by,
+             backtest_run_id, sharpe_ratio, max_drawdown_pct, trade_count, notes)
+        VALUES ('2026-05-15T12:00:00+00:00', ?, 'backtest', 'paper', 'lifecycle_exempt',
+                'test', 'run-regime', NULL, NULL, NULL, 'lifecycle-proof')
+        """,
+        (strategy_id,),
+    )
+    conn.commit()
+    conn.close()
 
     snapshot = build_bench_snapshot(db, configs)
     paper = next(section for section in snapshot["sections"] if section["stage"] == "paper")
@@ -632,6 +648,8 @@ def test_kanban_snapshot_exposes_five_lanes_and_card_axes(tmp_path: Path) -> Non
     db = tmp_path / "milodex.db"
     _create_db(db)
     _seed_backtest(db, named_id)
+    # Paper-stage YAML needs its promotion record (binding stage source).
+    _seed_promotion(db, named_id)
 
     snapshot = build_kanban_snapshot(db, configs)
 
@@ -682,6 +700,8 @@ def test_kanban_snapshot_derives_session_state_from_strategy_runs(tmp_path: Path
     _write_strategy_config(configs, strategy_id, stage="paper", display_name='"RSI-2 Pullback"')
     db = tmp_path / "milodex.db"
     _create_db(db)
+    # Paper-stage YAML needs its promotion record (binding stage source).
+    _seed_promotion(db, strategy_id)
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
@@ -762,6 +782,8 @@ def test_bench_snapshot_open_run_no_live_lock_is_phantom_no_stop_trading(
     strategy_id = "meanrev.daily.rsi2pullback.v1"
     _write_strategy_config(configs, strategy_id, stage="paper")
     db = event_store_db
+    # Paper-stage YAML needs its promotion record (binding stage source).
+    _seed_promotion(db, strategy_id)
     locks_dir = tmp_path / "locks"
     locks_dir.mkdir()
 
@@ -798,6 +820,8 @@ def test_bench_snapshot_open_run_locks_dir_none_is_legacy_running(
     strategy_id = "meanrev.daily.rsi2pullback.v1"
     _write_strategy_config(configs, strategy_id, stage="paper")
     db = event_store_db
+    # Paper-stage YAML needs its promotion record (binding stage source).
+    _seed_promotion(db, strategy_id)
 
     conn = sqlite3.connect(str(db))
     conn.execute(
@@ -830,6 +854,8 @@ def test_bench_snapshot_marks_controlled_stop_paper_evidence_completed(
     _write_strategy_config(configs, strategy_id, stage="paper")
     db = tmp_path / "milodex.db"
     _create_db(db)
+    # Paper-stage YAML needs its promotion record (binding stage source).
+    _seed_promotion(db, strategy_id)
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
@@ -885,6 +911,8 @@ def test_bench_snapshot_marks_reaper_closed_paper_evidence_warning(
     _write_strategy_config(configs, strategy_id, stage="paper")
     db = tmp_path / "milodex.db"
     _create_db(db)
+    # Paper-stage YAML needs its promotion record (binding stage source).
+    _seed_promotion(db, strategy_id)
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
@@ -1145,6 +1173,92 @@ def test_bench_row_carries_metrics_provenance(tmp_path: Path) -> None:
     row = next(s for s in snapshot["sections"] if s["stage"] == "paper")["strategies"][0]
 
     assert row["metricsProvenance"] == METRICS_PROVENANCE
+
+
+def test_bench_row_carries_archetype(tmp_path: Path) -> None:
+    """Every Bench row carries the Python-classified archetype through as_qml()
+    (roadmap M2). A genuinely-promoted (promotion-record-backed) meanrev edge
+    reads as ``paper``; a backtest strategy with real failing evidence reads as
+    ``blocked``; a never-evaluated backtest strategy reads as ``research``
+    (matching _status_copy's "Config valid — awaiting evidence", NOT blocked).
+
+    Isolated snapshots per case because ``_write_strategy_config`` pins the
+    canonical id/family/template/variant (the loader rejects a mismatched id),
+    so a single configs dir cannot hold two distinct strategies.
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+
+    # Promoted → paper.
+    paper_configs = tmp_path / "paper_configs"
+    paper_configs.mkdir()
+    _write_strategy_config(paper_configs, strategy_id, stage="paper")
+    paper_db = tmp_path / "paper.db"
+    _create_db(paper_db)
+    _seed_backtest(paper_db, strategy_id)
+    _seed_promotion(paper_db, strategy_id)
+    paper_snapshot = build_bench_snapshot(paper_db, paper_configs)
+    paper_row = next(s for s in paper_snapshot["sections"] if s["stage"] == "paper")["strategies"][
+        0
+    ]
+    assert paper_row["archetype"] == "paper"
+
+    # Backtest with REAL failing evidence → blocked.
+    blk_configs = tmp_path / "blk_configs"
+    blk_configs.mkdir()
+    _write_strategy_config(blk_configs, strategy_id, stage="backtest")
+    blk_db = tmp_path / "blk.db"
+    _create_db(blk_db)
+    _seed_backtest(blk_db, strategy_id, sharpe=0.1, max_drawdown_pct=20.0, trade_count=10)
+    blk_snapshot = build_bench_snapshot(blk_db, blk_configs)
+    blk_row = next(s for s in blk_snapshot["sections"] if s["stage"] == "backtest")["strategies"][0]
+    assert blk_row["gateFailures"]
+    assert blk_row["archetype"] == "blocked"
+
+    # Bare backtest, never evaluated (all metrics None) → research, NOT blocked:
+    # gate failures without evidence are the fail-closed display heuristic, and
+    # the row's own status word is "Config valid" (awaiting evidence).
+    bt_configs = tmp_path / "bt_configs"
+    bt_configs.mkdir()
+    _write_strategy_config(bt_configs, strategy_id, stage="backtest")
+    bt_db = tmp_path / "bt.db"
+    _create_db(bt_db)
+    bt_snapshot = build_bench_snapshot(bt_db, bt_configs)
+    bt_row = next(s for s in bt_snapshot["sections"] if s["stage"] == "backtest")["strategies"][0]
+    assert bt_row["statusWord"] == "Config valid"
+    assert bt_row["archetype"] == "research"
+
+
+def test_bench_yaml_paper_without_promotion_record_clamps_to_backtest(tmp_path: Path) -> None:
+    """A config claiming ``stage: paper`` with NO promotion ledger row was never
+    promoted — promotion records, not YAML stage, are the binding stage source
+    (docs/STRATEGY_BANK.md). The builder clamps the row to the backtest section
+    AND classifies it non-"paper", moving section and archetype together (the
+    16 meanrev.rsi2.intraday.<etf> replicas are exactly this shape: paper YAML,
+    0 promotions, 0 completed backtest runs → research).
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    # Deliberately NO promotion seed. (No backtest evidence either — matching
+    # the live-db state of the 16 replicas.)
+
+    snapshot = build_bench_snapshot(db, configs)
+    paper = next(s for s in snapshot["sections"] if s["stage"] == "paper")
+    backtest = next(s for s in snapshot["sections"] if s["stage"] == "backtest")
+
+    assert paper["strategies"] == []
+    assert len(backtest["strategies"]) == 1
+    row = backtest["strategies"][0]
+    assert row["stage"] == "backtest"
+    assert row["archetype"] != "paper"
+    assert row["archetype"] == "research"
 
 
 def test_bench_pr_m_packet_is_independent_of_flat_fields(tmp_path: Path) -> None:

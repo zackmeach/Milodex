@@ -28,6 +28,65 @@ from milodex.gui.bench_v1 import EvidenceRecord, Stage
 METRICS_PROVENANCE = "read-model snapshot — not reconstructed"
 
 
+def classify_archetype(
+    family: str,
+    stage: str,
+    promotion_type: str | None,
+    gate_failures: list[str],
+) -> str:
+    """Classify a strategy row into one of five operator-facing archetypes.
+
+    Returns exactly one of: ``"canary" | "baseline" | "paper" | "blocked" |
+    "research"``. These make the BENCH surface's roster visibly distinct
+    (roadmap M2 outcome): canaries, baselines, research (deciders), blocked,
+    and promoted paper strategies each read as their own kind.
+
+    "Decision-only" is deliberately NOT an archetype (D-1 resolved: daily
+    strategies execute — the decider paradigm is a *how*, not a lifecycle
+    class), so decider families (``scored`` / ``tree``) fold into ``research``.
+
+    Priority-ordered — FIRST MATCH WINS. The order is load-bearing because
+    the archetypes overlap (e.g. one intraday canary is benchmark-family, and
+    the deciders sit at backtest with failing gates). Roster semantics per
+    docs/STRATEGY_BANK.md:
+
+    1. ``promotion_type == "lifecycle_exempt"`` AND ``family != "regime"``
+       → ``"canary"``. The five intraday SPY harness canaries were promoted
+       lifecycle-exempt pre-ADR-0058; post-0058 the flag is scoped to the
+       regime strategy, so a non-regime lifecycle-exempt promotion is durably
+       the canary signature. Latent accepted edge: a demoted canary would
+       still read ``canary`` via its retained lifecycle_exempt promotion row
+       (``_latest_promotions`` skips demotion rows) — accepted; no roster
+       member is in this state.
+    2. ``family == "benchmark"`` → ``"baseline"`` (no_trade /
+       time_of_day_null / unconditional_intraday_long / random_matched_exposure
+       null templates).
+    3. ``stage in ("paper", "micro_live", "live")`` → ``"paper"`` (promoted
+       edge; includes the regime lifecycle-proof strategy, which is exempt
+       from rule 1 above and lands here).
+    4. ``family in ("scored", "tree")`` → ``"research"`` (never-promote
+       seam-proof deciders; they carry failing/NULL-WF backtest gates but must
+       NOT read as ``blocked`` — docs/STRATEGY_BANK.md "Decision-layer
+       seam-proof deciders". This rule MUST precede rule 5.).
+    5. ``stage == "backtest"`` AND ``gate_failures`` non-empty → ``"blocked"``.
+       The builder passes evidence-grounded failures only: a never-evaluated
+       row (all metrics None) feeds ``[]`` here and falls through to rule 6,
+       matching ``_status_copy``'s "Config valid — awaiting evidence" read.
+    6. else → ``"research"``.
+    """
+    if promotion_type == "lifecycle_exempt" and family != "regime":
+        return "canary"
+    if family == "benchmark":
+        return "baseline"
+    if stage in ("paper", "micro_live", "live"):
+        return "paper"
+    if family in ("scored", "tree"):
+        return "research"
+    if stage == "backtest" and gate_failures:
+        return "blocked"
+    return "research"
+
+
 @dataclass(frozen=True)
 class _StrategyRow:
     strategy_id: str
@@ -52,6 +111,7 @@ class _StrategyRow:
     promoted_at: str = ""
     promotion_type: str = ""
     gate_failures: tuple[str, ...] = ()
+    archetype: str = ""
     status_kind: str = "info"
     status_word: str = "Configured"
     status_tail: str = "ready for evidence review."
@@ -97,6 +157,7 @@ class _StrategyRow:
             "promotedAt": self.promoted_at,
             "promotionType": self.promotion_type,
             "gateFailures": list(self.gate_failures),
+            "archetype": self.archetype,
             "statusKind": self.status_kind,
             "statusWord": self.status_word,
             "statusTail": self.status_tail,
