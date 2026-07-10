@@ -54,7 +54,10 @@ def classify_archetype(
        → ``"canary"``. The five intraday SPY harness canaries were promoted
        lifecycle-exempt pre-ADR-0058; post-0058 the flag is scoped to the
        regime strategy, so a non-regime lifecycle-exempt promotion is durably
-       the canary signature.
+       the canary signature. Latent accepted edge: a demoted canary would
+       still read ``canary`` via its retained lifecycle_exempt promotion row
+       (``_latest_promotions`` skips demotion rows) — accepted; no roster
+       member is in this state.
     2. ``family == "benchmark"`` → ``"baseline"`` (no_trade /
        time_of_day_null / unconditional_intraday_long / random_matched_exposure
        null templates).
@@ -66,6 +69,9 @@ def classify_archetype(
        NOT read as ``blocked`` — docs/STRATEGY_BANK.md "Decision-layer
        seam-proof deciders". This rule MUST precede rule 5.).
     5. ``stage == "backtest"`` AND ``gate_failures`` non-empty → ``"blocked"``.
+       The builder passes evidence-grounded failures only: a never-evaluated
+       row (all metrics None) feeds ``[]`` here and falls through to rule 6,
+       matching ``_status_copy``'s "Config valid — awaiting evidence" read.
     6. else → ``"research"``.
     """
     if promotion_type == "lifecycle_exempt" and family != "regime":

@@ -223,9 +223,26 @@ def _strategy_rows(
         trade_count = _int_or_none(promotion.get("trade_count"), metrics.get("trade_count"))
         failures = tuple(_compute_gate_failures(sharpe, max_dd, trade_count, config.family))
         effective_stage = config.stage if config.stage in _VISIBLE_STAGES else "backtest"
+        # Promotion records — not YAML stage — are the binding source for a
+        # promoted stage (docs/STRATEGY_BANK.md "How to refresh"). A config
+        # claiming paper/micro_live/live with NO promotion ledger row was never
+        # promoted (and would be no_frozen_manifest-vetoed by the risk layer),
+        # so it is at-backtest in reality — clamp it, same spirit as the
+        # non-visible-stage clamp above. This moves the row's SECTION and its
+        # archetype together, so the chip can never contradict the ladder.
+        if effective_stage in {"paper", "micro_live", "live"} and not promotion:
+            effective_stage = "backtest"
         promotion_type = str(promotion.get("promotion_type") or "")
+        # Feed the classifier only evidence-grounded gate failures: when all
+        # three metrics are None the strategy was never evaluated, and the
+        # surface's own status copy reads "Config valid — awaiting evidence"
+        # (_status_copy checks all-None BEFORE failures). "blocked" must mean
+        # "evaluated and failed the gate", so a never-evaluated row falls
+        # through to "research" instead of wearing a BLOCKED chip beside an
+        # awaiting-evidence status word.
+        evaluated = not (sharpe is None and max_dd is None and trade_count is None)
         archetype = classify_archetype(
-            config.family, effective_stage, promotion_type, list(failures)
+            config.family, effective_stage, promotion_type, list(failures) if evaluated else []
         )
         evidence_by_stage = _bench_evidence_by_stage(metrics, config.family)
         runs_in_flight = _bench_runs_in_flight(job)
