@@ -81,6 +81,9 @@ Window {
         property string perfSlice: "Week"
         property string throughputSlice: "Week"
         property string timeFormat: "24h"  // "24h" | "12h"
+        // Bench archetype filter (roadmap M2). "all" | "paper" | "canary" |
+        // "baseline" | "research" | "blocked". Session-only, like the slices.
+        property string benchArchetypeFilter: "all"
     }
 
     // ------------------------------------------------------------------
@@ -156,6 +159,12 @@ Window {
         function onThroughputSliceChanged() {
             if (surfaceLoader.item && surfaceLoader.item.throughputSlice !== undefined) {
                 sessionBag.throughputSlice = surfaceLoader.item.throughputSlice
+            }
+        }
+        // Bench archetype filter write-back (ignored on non-Bench surfaces).
+        function onArchetypeFilterChanged() {
+            if (surfaceLoader.item && surfaceLoader.item.archetypeFilter !== undefined) {
+                sessionBag.benchArchetypeFilter = surfaceLoader.item.archetypeFilter
             }
         }
     }
@@ -357,6 +366,11 @@ Window {
             if (surfaceLoader.item && surfaceLoader.item.perfSlice !== undefined) {
                 surfaceLoader.item.perfSlice = sessionBag.perfSlice
                 surfaceLoader.item.throughputSlice = sessionBag.throughputSlice
+            }
+            // Seed the Bench archetype filter (undefined-guarded — skipped on
+            // surfaces without the property, same pattern as the slices above).
+            if (surfaceLoader.item && surfaceLoader.item.archetypeFilter !== undefined) {
+                surfaceLoader.item.archetypeFilter = sessionBag.benchArchetypeFilter
             }
             if (surfaceLoader.item && surfaceLoader.item.sessionBag !== undefined) {
                 surfaceLoader.item.sessionBag = sessionBag

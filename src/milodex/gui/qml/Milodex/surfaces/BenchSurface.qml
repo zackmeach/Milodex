@@ -53,6 +53,28 @@ Item {
     property var benchData: BenchState.sections
     property bool benchHasData: BenchState.lastRefreshedAt !== ""
 
+    // Archetype filter (roadmap M2). Client-side predicate over each section's
+    // rows, keyed on the Python-owned `archetype` field. "all" shows every row.
+    // Seeded from / written back to Main.qml sessionBag (session persistence),
+    // matching the DeskSurface perfSlice/throughputSlice pattern.
+    property string archetypeFilter: "all"
+
+    readonly property var archetypeFilterOptions: [
+        { label: "All",      value: "all" },
+        { label: "Paper",    value: "paper" },
+        { label: "Canary",   value: "canary" },
+        { label: "Baseline", value: "baseline" },
+        { label: "Research", value: "research" },
+        { label: "Blocked",  value: "blocked" }
+    ]
+
+    // True when a row survives the active archetype filter. Pure display
+    // predicate — no archetype logic is re-derived here (Python owns it).
+    function matchesArchetypeFilter(row) {
+        if (root.archetypeFilter === "all") return true
+        return (row.archetype || "") === root.archetypeFilter
+    }
+
     // True while any section has a row drag in progress.
     // Used to gate keyboard scroll so arrow keys don't fight the drag.
     property bool anyDragging: false
@@ -299,6 +321,33 @@ Item {
                     color: Theme.color.border.regular
                 }
 
+                // Archetype filter — type-only SegmentedToggle (app filter
+                // idiom). Filters every section's rows by archetype; "All"
+                // clears it. Selection persists across page switches via
+                // Main.qml sessionBag.
+                Row {
+                    width: parent.width
+                    spacing: Theme.space[3]
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "Filter"
+                        color: Theme.color.text.muted
+                        font.family: Theme.typography.label.xs.family
+                        font.pixelSize: Theme.typography.label.xs.size
+                        font.weight: Theme.typography.label.xs.weight
+                        font.letterSpacing: Theme.typography.label.xs.letterSpacing
+                        font.capitalization: Font.AllUppercase
+                    }
+
+                    SegmentedToggle {
+                        anchors.verticalCenter: parent.verticalCenter
+                        options: root.archetypeFilterOptions
+                        current: root.archetypeFilter
+                        onActivated: function(value) { root.archetypeFilter = value }
+                    }
+                }
+
                 // Section status — loading / error / no-data-yet for the
                 // BenchState read model (PR-8 GUI surface honesty).
                 SectionStatus {
@@ -444,13 +493,26 @@ Item {
                         // Guard: never rebuild row order while a drag is in progress —
                         // doing so would destroy the delegate under the cursor.
                         if (draggingIndex >= 0) return
-                        rowOrder = (sectionData && sectionData.strategies)
-                                   ? sectionData.strategies.slice()
-                                   : []
+                        var all = (sectionData && sectionData.strategies)
+                                  ? sectionData.strategies : []
+                        var filtered = []
+                        for (var i = 0; i < all.length; ++i) {
+                            if (root.matchesArchetypeFilter(all[i])) filtered.push(all[i])
+                        }
+                        rowOrder = filtered
                     }
 
                     Component.onCompleted: syncRows()
                     onSectionDataChanged: { if (draggingIndex < 0) syncRows() }
+
+                    // Re-filter when the operator changes the archetype filter.
+                    // Same drag guard as syncRows — never rebuild mid-drag.
+                    Connections {
+                        target: root
+                        function onArchetypeFilterChanged() {
+                            if (sectionRoot.draggingIndex < 0) sectionRoot.syncRows()
+                        }
+                    }
 
                     Column {
                         id: sectionCol
@@ -667,6 +729,7 @@ Item {
                                     stage: sectionData.stage
                                     strategyName: modelData.name || modelData.displayName || ""
                                     strategyId: modelData.strategyId || ""
+                                    archetype: modelData.archetype || ""
                                     sharpe: root.formattedSharpe(modelData)
                                     maxDD: root.formattedMaxDD(modelData)
                                     tradeCount: root.formattedTrades(modelData)

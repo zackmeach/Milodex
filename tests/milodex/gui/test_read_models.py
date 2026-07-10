@@ -1033,6 +1033,45 @@ def test_bench_row_carries_metrics_provenance(tmp_path: Path) -> None:
     assert row["metricsProvenance"] == METRICS_PROVENANCE
 
 
+def test_bench_row_carries_archetype(tmp_path: Path) -> None:
+    """Every Bench row carries the Python-classified archetype through as_qml()
+    (roadmap M2). A promoted (paper) meanrev edge reads as ``paper``; a bare
+    backtest strategy with no evidence fails the gate and reads as ``blocked``.
+
+    Two isolated snapshots because ``_write_strategy_config`` pins the canonical
+    id/family/template/variant (the loader rejects a mismatched id), so a single
+    configs dir cannot hold two distinct strategies.
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+
+    # Promoted → paper.
+    paper_configs = tmp_path / "paper_configs"
+    paper_configs.mkdir()
+    _write_strategy_config(paper_configs, strategy_id, stage="paper")
+    paper_db = tmp_path / "paper.db"
+    _create_db(paper_db)
+    _seed_backtest(paper_db, strategy_id)
+    _seed_promotion(paper_db, strategy_id)
+    paper_snapshot = build_bench_snapshot(paper_db, paper_configs)
+    paper_row = next(s for s in paper_snapshot["sections"] if s["stage"] == "paper")["strategies"][
+        0
+    ]
+    assert paper_row["archetype"] == "paper"
+
+    # Bare backtest, no evidence → S/D/N gate failures → blocked.
+    bt_configs = tmp_path / "bt_configs"
+    bt_configs.mkdir()
+    _write_strategy_config(bt_configs, strategy_id, stage="backtest")
+    bt_db = tmp_path / "bt.db"
+    _create_db(bt_db)
+    bt_snapshot = build_bench_snapshot(bt_db, bt_configs)
+    bt_row = next(s for s in bt_snapshot["sections"] if s["stage"] == "backtest")["strategies"][0]
+    assert bt_row["gateFailures"]
+    assert bt_row["archetype"] == "blocked"
+
+
 def test_bench_pr_m_packet_is_independent_of_flat_fields(tmp_path: Path) -> None:
     """The packet is a copy: mutating it must not leak back into flat row keys."""
     from milodex.gui.read_models import build_bench_snapshot
