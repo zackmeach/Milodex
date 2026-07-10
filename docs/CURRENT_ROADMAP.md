@@ -154,8 +154,18 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 - **Some 2026-06-10 GUI-wiring-audit items (P1-2 promote-born-`data_stale`, P2-1
   stop-during-kill-switch, P2-2 GUI reconcile) were flagged by one reader as
   unresolved, but the 2026-06-10 hardening execution log records HR-5/HR-9/HR-10 as
-  merged.** Treated here as **needs re-confirmation on entry** (M2), not as
-  confirmed-broken.
+  merged.** ~~Treated here as **needs re-confirmation on entry** (M2), not as
+  confirmed-broken.~~ **Re-confirmed RESOLVED against code at HEAD on M2 entry
+  (2026-07-10):** P1-2 → `_data_freshness_issue` measures real latest-bar age and
+  returns clean when fresh (`commands/bench.py`, HR-9 `005977b`/#225); P2-1 → the
+  stop family's kill-switch check is inspected-not-required, so stop proposals warn
+  instead of blocking during a kill-switch event (`commands/bench.py`, HR-5
+  `2a09297`/#219; the #341 `milodex halt` lever is orthogonal); P2-2 → GUI can
+  trigger a reconcile and see the clean/dirty result (`bench_command_bridge.py`
+  `runReconciliationAsync` → Risk Office drawer, HR-10 `bde9cf5`/#228). Residuals
+  logged, non-blocking: flat 24h freshness threshold false-blocks weekends
+  (trading-day-aware threshold is the named HR-9 follow-on); HR-5's supervised
+  paper trip+stop walk-through remains queued (M4 drill territory).
 
 ---
 
@@ -219,7 +229,7 @@ adjudicates** — it does not restate source content.
 | [PHASE6_BENCH_PREP.md](PHASE6_BENCH_PREP.md) | partially-superseded | Its "no backend mutation" plan is overtaken **only** for the 6 action families [ADR 0051](adr/0051-bench-command-infrastructure-v1.md) opened; ADR 0049's perimeter still binds the rest. Add a forward-pointer; do not treat as fully dead. → status touch-it (M2). |
 | ADR [0050](adr/0050-strategy-evidence-has-a-freshness-axis-distinct-from-promotion-stage.md) | partially-adopted | Schema axes adopted; **real event-derived reconstruction deferred (Decision 8)** = the #1 operator-trust gap. Honest *labeling* → M2; authoritative *reconstruction* → §10. |
 | [reviews/2026-06-20-frontend-framework-audit.md](reviews/2026-06-20-frontend-framework-audit.md) | deferred | Mild-lean-to-stay on QML; switch-trigger (view-layer AI bottleneck) unmet. → §10. |
-| [reviews/2026-06-10-gui-wiring-audit.md](reviews/2026-06-10-gui-wiring-audit.md) | partially-adopted | Kill-switch reset reachability FIXED; P1-2/P2-1/P2-2 status = re-confirm on M2 entry. |
+| [reviews/2026-06-10-gui-wiring-audit.md](reviews/2026-06-10-gui-wiring-audit.md) | partially-adopted | Kill-switch reset reachability FIXED; P1-2/P2-1/P2-2 re-confirmed RESOLVED at HEAD on M2 entry (2026-07-10, see §2). |
 
 ### 3.6 Operations / recovery
 
@@ -417,7 +427,8 @@ proof is the remaining M1 gate event (§2).
   (honest *labeling*); canaries/baselines/research/blocked/paper visibly distinct.
   **Strictly after M1** (mechanics before UI; the archetype taxonomy cannot be
   finalized until the D-1 fork decides whether "decision-only" is an archetype).
-  Re-confirm GUI-wiring P1-2/P2-1/P2-2 on entry.
+  Re-confirm GUI-wiring P1-2/P2-1/P2-2 on entry — **done 2026-07-10, all three
+  RESOLVED at HEAD (§2)**.
 - **Decision-gated within M2.** (a) **Manual emergency-halt (D-9):** a production
   kill-switch TRIP is **not** authorized by ADR 0051 §Non-goals / ADR 0049 Decision 4
   (and the Anchor view that hosted it was deleted), so it needs an ADR amendment
