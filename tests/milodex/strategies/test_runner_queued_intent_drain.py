@@ -17,7 +17,7 @@ from pathlib import Path
 from milodex.broker.models import OrderSide, OrderType, TimeInForce
 from milodex.core.event_store import QueuedIntentEvent
 from milodex.data.models import Bar
-from milodex.execution.models import TradeIntent
+from milodex.execution.models import ExecutionResult, ExecutionStatus, TradeIntent
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
 from tests.milodex.strategies.test_runner import _build_lockin_runner
 
@@ -485,3 +485,94 @@ def test_full_daily_lifecycle_persist_then_drain_single_submit(
     assert len(captured) == 1
     # Watermark still untouched after the re-drain.
     assert runner._last_processed_bar_at == watermark
+
+
+# ---------------------------------------------------------------------------
+# Per-session ENTRY veto dedup (drain veto hygiene, 2026-07-10)
+#
+# A queued ENTRY whose drain submit returns BLOCKED (pre-CAS risk veto — the row
+# stays 'queued' by design) must not re-submit + re-write a blocked explanation
+# on every ~60s open poll this session. EXITs are DELIBERATELY exempt: a blocked
+# exit guards an open position and its veto can clear mid-session, so it retries.
+# ---------------------------------------------------------------------------
+
+
+def _blocking_submit(runner) -> dict:
+    """Stub submit_paper to return a BLOCKED result (no order) and count calls."""
+    calls = {"n": 0}
+    real_request_builder = runner._execution_service._build_execution_request
+
+    def blocked_submit(intent, **kwargs):
+        calls["n"] += 1
+        request = real_request_builder(
+            runner._execution_service._normalize_intent(intent), 10.0, None
+        )
+        return ExecutionResult(
+            status=ExecutionStatus.BLOCKED,
+            execution_request=request,
+            risk_decision=None,
+            account=runner._broker.get_account(),
+            market_open=True,
+            latest_bar=None,
+            message="Blocked by risk veto (row stays queued).",
+        )
+
+    runner._execution_service.submit_paper = blocked_submit
+    return calls
+
+
+def test_drain_entry_blocked_not_resubmitted_second_pass(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """An ENTRY whose drain submit returns BLOCKED is recorded in the per-session
+    veto set and skipped on the next drain pass: no second submit, row stays queued."""
+    runner, broker, provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    intent_id = _seed_queued_entry(event_store, runner, symbol="SPY", side=OrderSide.BUY)
+    _force_decision(runner, [_intent("SPY", OrderSide.BUY, quantity=1.0)])
+    calls = _blocking_submit(runner)
+
+    runner._drain_queued_intents()
+
+    assert calls["n"] == 1
+    assert event_store.get_queued_intent(intent_id).status == "queued"
+    assert intent_id in runner._drain_vetoed_row_ids
+
+    # Second drain pass this session: the vetoed entry is skipped -> no re-submit.
+    runner._drain_queued_intents()
+
+    assert calls["n"] == 1
+    assert event_store.get_queued_intent(intent_id).status == "queued"
+
+
+def test_drain_exit_blocked_is_resubmitted_second_pass(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Asymmetry pin: an EXIT whose drain submit returns BLOCKED is NOT added to the
+    veto set and DOES re-submit on the next drain pass (its veto can clear mid-session)."""
+    runner, broker, provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    intent_id = _seed_queued_entry(
+        event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
+    )
+    runner._current_positions = lambda: {"SPY": 5.0}
+    _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=5.0)])
+    calls = _blocking_submit(runner)
+
+    runner._drain_queued_intents()
+
+    assert calls["n"] == 1
+    assert intent_id not in runner._drain_vetoed_row_ids
+    assert event_store.get_queued_intent(intent_id).status == "queued"
+
+    # Second drain pass: a blocked EXIT retries every poll (no dedup).
+    runner._drain_queued_intents()
+
+    assert calls["n"] == 2
+    assert event_store.get_queued_intent(intent_id).status == "queued"

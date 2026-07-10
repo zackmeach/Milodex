@@ -84,3 +84,13 @@ Option A's trigger is the operator's **manual pre-open relaunch** draining the d
 - **Distinct from D-2** (intraday freeze governance) — a sibling M1 deliverable (demote the divergent intraday YAMLs, load/promotion preflight validation, SPY-canary pre-open launch, no new non-SPY freezes), tracked separately and not in scope here.
 - **Distinct from D-3 (auto-launch)** — A assumes manual pre-open relaunch; auto-launch is a separate founder decision still to be framed, and wiring resubmit to a scheduler crosses into it (see the manual-launch assumption above).
 - **D-4** (lifecycle-proof gate enforce-vs-document) remains to be framed.
+
+## Addendum — drain queued-intent veto hygiene (2026-07-10)
+
+Two drain behaviors observed in the M1-retro that spammed the audit trail without changing any risk outcome, both fixed here (runner + event store only; no risk/execution/veto touch):
+
+1. **Per-session ENTRY-veto dedup.** A queued ENTRY whose drain submit returns `BLOCKED` (pre-CAS risk veto — the row stays `status='queued'` by design) was re-evaluated and re-submitted on every ~60s open poll, writing a fresh blocked explanation each time (up to ~390 rows/intent/day). The drain now records the vetoed row id in an in-memory per-session set and skips it on subsequent polls. The set is in-memory only, so a runner restart retries the veto once (one extra explanation per restart — acceptable). **EXITs are deliberately exempt** and keep retrying every poll: a blocked exit guards an open position and its veto (e.g. an opposite-side resting order) can clear mid-session.
+
+2. **Supersede-at-lock-in.** The idempotency key embeds the trading session, so the next session's post-close lock-in mints a NEW row for the same logical intent while an older vetoed row is still `queued` under its 7-day TTL; at the next open BOTH drained (the second hit the duplicate-order veto and spammed until TTL). The lock-in persist now retires older `queued` rows for the same `(strategy_id, symbol, side, intent_class)` to `obsolete` (`supersede_queued_intents`), keeping only the just-persisted row — regardless of why the older row survived (risk veto, no-fresh-price retry, pre-open launch). Fail-soft: a supersede failure never aborts the persist. Side-flips are not superseded here (the drain's re-eval match already terminally drops a stale opposite-side entry as `reeval_no_match`).
+
+**Adjudication.** A risk-vetoed queued intent keeps `status='queued'` for its natural lifecycle; it is retired by supersession at the next lock-in of the same logical intent, or by TTL expiry — **no terminal-veto taxonomy is introduced**, and both changes only reduce submits (fail-safe). The nine invariants and the risk battery are untouched.

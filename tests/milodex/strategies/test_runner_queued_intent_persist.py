@@ -14,6 +14,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from milodex.broker.models import OrderSide, OrderType, TimeInForce
+from milodex.data.models import Bar
 from milodex.execution.models import TradeIntent
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
 from tests.milodex.strategies.test_runner import _build_lockin_runner
@@ -404,3 +405,94 @@ def test_partial_persist_failure_retries_only_the_failed_intent(
     )
     # Exactly one row each — spy was NOT double-persisted by the retry.
     assert sorted(q.symbol for q in active) == ["QQQ", "SPY"]
+
+
+# ---------------------------------------------------------------------------
+# Supersede-at-lock-in (drain veto hygiene, 2026-07-10)
+#
+# The session-scoped idempotency key mints a NEW row each lock-in, so an older
+# 'queued' row for the same logical intent (strategy, symbol, side, class) can
+# linger under its 7-day TTL and co-drain. The lock-in persist now retires such
+# stale rows to 'obsolete', keeping only the just-persisted row.
+# ---------------------------------------------------------------------------
+
+
+def _session_bar(provider, date_str: str, symbol: str = "SPY") -> Bar:
+    """A locked-in session Bar dated ``date_str`` (drives trading_session + key)."""
+    base = provider._bars_by_symbol[symbol].latest()
+    return Bar(
+        timestamp=datetime.fromisoformat(f"{date_str}T20:00:00+00:00"),
+        open=base.open,
+        high=base.high,
+        low=base.low,
+        close=base.close,
+        volume=int(base.volume),
+        vwap=base.vwap,
+    )
+
+
+def test_persist_new_session_supersedes_stale_same_logical_intent(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A new-session lock-in supersedes an OLDER queued row with the same
+    (strategy, symbol, side, class) but a different idempotency_key. A row with a
+    different symbol or side is untouched; the just-persisted row stays queued."""
+    runner, _, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    runner._now = lambda: datetime(2026, 6, 19, 20, 5, tzinfo=UTC)
+    reasoning = _reasoning()
+    old_bar = _session_bar(provider, "2026-06-18")
+    # Prior-session rows: same logical SPY/buy, plus a different symbol and side.
+    runner._persist_queued_intent(_buy_intent("spy"), old_bar, reasoning)
+    runner._persist_queued_intent(_buy_intent("qqq"), old_bar, reasoning)
+    runner._persist_queued_intent(_sell_intent("spy"), old_bar, reasoning)
+
+    sid = runner._strategy_id
+    # Current-session lock-in for the SAME logical SPY/buy intent.
+    runner._persist_queued_intent(
+        _buy_intent("spy"), _session_bar(provider, "2026-06-19"), reasoning
+    )
+
+    queued = {q.idempotency_key for q in event_store.list_queued_intents_by_status("queued")}
+    obsolete = {q.idempotency_key for q in event_store.list_queued_intents_by_status("obsolete")}
+    # Only the stale SPY/buy row was superseded.
+    assert obsolete == {f"{sid}|2026-06-18|buy|SPY"}
+    # The current row plus the untouched different-symbol / different-side rows stay queued.
+    assert queued == {
+        f"{sid}|2026-06-19|buy|SPY",
+        f"{sid}|2026-06-18|buy|QQQ",
+        f"{sid}|2026-06-18|sell|SPY",
+    }
+
+
+def test_repersist_same_key_does_not_obsolete_own_row(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A same-session re-persist (UNIQUE collision -> IntegrityError branch) runs
+    supersede with keep_idempotency_key == its own key, so its own row is NOT
+    obsoleted: the row stays queued and nothing is marked obsolete."""
+    runner, _, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    runner._now = lambda: datetime(2026, 6, 19, 20, 5, tzinfo=UTC)
+    bar = _session_bar(provider, "2026-06-19")
+    runner._persist_queued_intent(_buy_intent("spy"), bar, _reasoning())
+    # Re-persist the same logical intent: append raises IntegrityError (swallowed),
+    # supersede keeps this same key -> no self-obsolete.
+    runner._persist_queued_intent(_buy_intent("spy"), bar, _reasoning())
+
+    sid = runner._strategy_id
+    queued = [q.idempotency_key for q in event_store.list_queued_intents_by_status("queued")]
+    assert queued == [f"{sid}|2026-06-19|buy|SPY"]
+    assert event_store.list_queued_intents_by_status("obsolete") == []
