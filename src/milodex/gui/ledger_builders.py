@@ -77,7 +77,11 @@ def _kill_switch_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]:
                 "stage": "system",
                 "transition": "session",
                 "outcome": str(row["event_type"]).upper(),
-                "outcomeKind": "fired" if row["event_type"] == "triggered" else "info",
+                # The store's only writers (execution/state.py activate/reset
+                # and the legacy-state migration) write event_type 'activated'
+                # / 'reset' — no production row is 'triggered'. Matching
+                # 'triggered' rendered every real activation as neutral "info".
+                "outcomeKind": "fired" if row["event_type"] == "activated" else "info",
                 "reason": row["reason"] or "",
                 "recent": True,
             }

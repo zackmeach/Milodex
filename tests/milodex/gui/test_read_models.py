@@ -472,7 +472,14 @@ def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> 
     conn = sqlite3.connect(str(db))
     conn.execute(
         "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
-        ("triggered", "2026-05-08T13:00:00+00:00", "daily loss cap"),
+        # 'activated' is what execution/state.py actually writes (its reset
+        # counterpart is 'reset'); the ledger must read a real activation as
+        # 'fired', not neutral 'info'.
+        ("activated", "2026-05-08T13:00:00+00:00", "daily loss cap"),
+    )
+    conn.execute(
+        "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
+        ("reset", "2026-05-08T14:00:00+00:00", None),
     )
     conn.commit()
     conn.close()
@@ -480,6 +487,9 @@ def test_ledger_snapshot_combines_promotions_and_kill_events(tmp_path: Path) -> 
     entries = build_ledger_snapshot(db)["entries"]
 
     assert {entry["outcomeKind"] for entry in entries} >= {"promoted", "fired"}
+    # A manual reset is operator bookkeeping, not an alarm — stays 'info'.
+    reset_rows = [e for e in entries if e["subject"] == "kill switch" and e["outcome"] == "RESET"]
+    assert reset_rows and all(e["outcomeKind"] == "info" for e in reset_rows)
     assert any(entry["subject"] == "kill switch" for entry in entries)
     # Task 33: displayTimestamp is now raw ISO — formatting moved to QML.
     # Assert it's present and non-empty; the "T" separator is expected.
@@ -1707,7 +1717,7 @@ def test_ledger_entries_includes_all_six_event_types(tmp_path: Path, event_store
     # 2. Kill-switch row → outcomeKind='fired'
     conn.execute(
         "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
-        ("triggered", "2026-05-02T10:00:00+00:00", "daily loss cap"),
+        ("activated", "2026-05-02T10:00:00+00:00", "daily loss cap"),
     )
 
     # 3. Session start → outcomeKind='started'
@@ -1808,7 +1818,7 @@ def test_kill_switch_does_not_emit_stop_row(tmp_path: Path, event_store_db: Path
     # Kill-switch fired at ts_ks
     conn.execute(
         "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
-        ("triggered", ts_ks, "daily loss cap"),
+        ("activated", ts_ks, "daily loss cap"),
     )
     # Session closed at ts_stop with exit_reason='kill_switch' (should be excluded)
     conn.execute(
@@ -1893,7 +1903,7 @@ def test_kill_switch_orders_above_session_stop_when_simultaneous(
     conn = sqlite3.connect(str(db))
     conn.execute(
         "INSERT INTO kill_switch_events (event_type, recorded_at, reason) VALUES (?, ?, ?)",
-        ("triggered", ts_fire, "max drawdown exceeded"),
+        ("activated", ts_fire, "max drawdown exceeded"),
     )
     conn.execute(
         """INSERT INTO strategy_runs
