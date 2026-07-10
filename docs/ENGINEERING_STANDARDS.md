@@ -266,7 +266,7 @@ Authoritative list of currently-scaffolded surfaces. Each entry mirrors a `# sca
 
 | Surface | Code marker | Status | Closes when |
 |---|---|---|---|
-| `reconcile` deferred dimensions: filled-since-last-sync, canceled-since-last-sync, strategy-linkage | `src/milodex/operations/reconciliation.py` (`DEFERRED_CHECKS`) | Surfaced as warnings only; not enforced. | R-OPS-004 v1.2 follow-up implements all eight `OPERATIONS.md` dimensions. |
+| `reconcile` deferred dimension: strategy-to-order linkage verification | `src/milodex/operations/reconciliation.py` (`DEFERRED_CHECKS`) | Surfaced as a warning only; not enforced. Reconcile-time linkage *verification* (flagging any local order/position with no strategy attribution) is unimplemented; PR #337 closed only linkage *inheritance* on synced rows. | A reconcile-time linkage check is added (R-OPS-004 follow-up). Filled-/canceled-since-last-sync were promoted to enforced in v1.3 (M1 retro item (a)); this is the last deferred dimension. |
 
 **How to add or close a marker:**
 1. Add a `# scaffolded: <one-line purpose>` comment in code at the relevant location.

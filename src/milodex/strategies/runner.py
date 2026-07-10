@@ -30,7 +30,12 @@ from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_f
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
-from milodex.operations.reconciliation import ET_TZ, local_trading_day, run_reconciliation
+from milodex.operations.reconciliation import (
+    ET_TZ,
+    local_trading_day,
+    run_reconciliation,
+    sync_local_only_orders,
+)
 from milodex.risk.attribution import strategy_open_lots, strategy_positions
 from milodex.runner.drain_policy import tradable_drop_decision
 from milodex.strategies.base import DecisionReasoning
@@ -515,6 +520,44 @@ class StrategyRunner:
             )
         except Exception:  # noqa: BLE001 — snapshot is best-effort; see ENGINEERING_STANDARDS.md
             pass
+
+        # Best-effort session-close order-status sync (R-OPS-004 v1.3, M1 retro
+        # item (a)). On a cooperative stop (controlled_stop / interrupted),
+        # record the broker's terminal status for THIS runner's own still-local-
+        # open orders BEFORE the strategy_runs row closes, so an at-close fill
+        # lands in the event store in-session instead of waiting for a later
+        # operator reconcile (closes M1 retro deviations (1)/(2)). Scoped to
+        # session_id, so a concurrent sibling runner's orders are never touched.
+        #
+        # NOT run on kill_switch or crash: a kill-switch halt must stay minimal
+        # (mirror the cancel-best-effort posture above — no extra broker I/O on
+        # the halt path), and a crashed loop must not do additional broker work
+        # on its way down. Only exit_reason values reachable from a cooperative
+        # stop are synced.
+        #
+        # No `milodex.runtime` advisory lock is taken — matching the runner's
+        # existing in-loop reconcile pattern (_ensure_startup_reconciliation /
+        # _maybe_rollover_reconciliation): the sync converges via the fold's
+        # latest-terminal-wins dedup even against a concurrent CLI `reconcile
+        # sync-orders`, so a lock would only add a shutdown-time stall for no
+        # correctness gain. Wrapped best-effort: any broker/store failure logs a
+        # warning and never blocks or delays the strategy_runs close.
+        if exit_reason in ("controlled_stop", "interrupted"):
+            try:
+                sync_local_only_orders(
+                    event_store=self._event_store,
+                    broker=self._broker,
+                    reason="session-close sync (R-OPS-004 v1.3)",
+                    approved_by="strategy_runner",
+                    session_id=self._session_id,
+                )
+            except Exception:  # noqa: BLE001 — session-close sync is best-effort
+                logger.warning(
+                    "Session-close order-status sync failed for session %s; "
+                    "strategy_runs will still close.",
+                    self._session_id,
+                    exc_info=True,
+                )
 
         self._event_store.update_strategy_run_end(
             session_id=self._session_id,

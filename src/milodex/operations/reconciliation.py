@@ -25,23 +25,36 @@ from milodex.risk.attribution import strategy_positions
 from milodex.risk.models import ReconciliationReadiness
 
 ET_TZ = ZoneInfo("America/New_York")
-CHECKED_DIMENSIONS_VERSION = "R-OPS-004.v1.1"
+CHECKED_DIMENSIONS_VERSION = "R-OPS-004.v1.3"
 CHECKED_DIMENSIONS: tuple[str, ...] = (
     "positions",
     "open_orders",
     "account_snapshot",
     "order_ids",
     "halt_incident_status",
-)
-# scaffolded: deferred reconciliation checks (R-OPS-004 v1.2). Three of the
-# eight OPERATIONS.md "State Reconciliation" dimensions are surfaced as
-# warnings only and not yet enforced. See docs/OPERATIONS.md and
-# docs/ENGINEERING_STANDARDS.md "Scaffolded Inventory".
-DEFERRED_CHECKS: tuple[str, ...] = (
+    # Promoted to enforced in v1.3 (founder-approved, M1 retro item (a)). An
+    # order locally-open but no longer open at the broker (the ``local_only``
+    # order kind) *is* the filled-/canceled-since-last-sync detection; it feeds
+    # ``incident_reason_codes`` and arms the readiness veto. The corrective
+    # close is the audited ``sync_local_only_orders`` path, now run at runner
+    # session-close (best-effort) as well as on demand via ``milodex reconcile
+    # sync-orders``. This is NOT a live in-session fill feed — it converges at
+    # session close and on operator demand.
     "filled_since_last_sync",
     "canceled_since_last_sync",
-    "strategy_linkage",
 )
+# scaffolded: deferred reconciliation check (R-OPS-004 v1.3). One of the eight
+# OPERATIONS.md "State Reconciliation" dimensions remains warning-only and not
+# yet enforced: reconcile-time strategy-to-order linkage *verification* (a
+# reconcile pass that flags any local order/position carrying no strategy
+# attribution). PR #337 closed linkage *inheritance* on synced corrective rows
+# (a write-side fix — synced terminal rows now inherit strategy_name/session_id
+# from their 'submitted' row); that is distinct from, and does not implement, a
+# reconcile-time linkage check, so this dimension stays deferred. The
+# filled-/canceled-since-last-sync dimensions were promoted to enforced in v1.3
+# (see CHECKED_DIMENSIONS above). See docs/OPERATIONS.md and
+# docs/ENGINEERING_STANDARDS.md "Scaffolded Inventory".
+DEFERRED_CHECKS: tuple[str, ...] = ("strategy_linkage",)
 LOCAL_ONLY_INCIDENT_WINDOW = timedelta(hours=24)
 
 # POSITION_AFFECTING_STATUSES is imported from core/trade_status.py — the
@@ -389,6 +402,7 @@ def sync_local_only_orders(
     reason: str,
     approved_by: str = "operator",
     broker_order_id: str | None = None,
+    session_id: str | None = None,
     as_of: datetime | None = None,
     now: datetime | None = None,
 ) -> SyncOrdersResult:
@@ -397,8 +411,18 @@ def sync_local_only_orders(
     For each paper order that is locally "open" but not open at the broker,
     query the broker's actual terminal status and append a corrective terminal
     ``TradeEvent`` so the order fold (``local_open_orders_from_trades``) closes
-    it. Implements the R-OPS-004 deferred ``canceled``/``filled``-since-last-sync
-    dimensions as an explicit, audited operator action.
+    it. Implements the R-OPS-004 ``canceled``/``filled``-since-last-sync
+    dimensions (enforced as of v1.3) as an explicit, audited action.
+
+    Scoping (both optional, and independent):
+    - ``broker_order_id`` restricts to a single order and RAISES if that id is
+      not currently a local-only order (the operator single-order CLI path).
+    - ``session_id`` restricts to orders whose original 'submitted' row carries
+      that session id — i.e. the orders a specific runner submitted. Unlike the
+      single-id path it does NOT raise on an empty match: a runner closing a
+      quiet session simply has nothing to sync. This is how the runner scopes a
+      session-close sync to its OWN orders, so a concurrent sibling runner's
+      orders are never touched.
 
     This NEVER goes through the risk evaluator — it records observed broker
     truth, it does not submit a new trade (``append_trade`` sits below
@@ -407,6 +431,7 @@ def sync_local_only_orders(
     if not reason or not reason.strip():
         raise SyncOrdersError("--reason is required for an audited order-status sync")
     target = broker_order_id.strip() if broker_order_id else None
+    session_filter = session_id.strip() if session_id else None
 
     current = run_reconciliation(
         event_store=event_store, broker=broker, as_of=as_of, persist=False, now=now
@@ -433,6 +458,18 @@ def sync_local_only_orders(
         for trade in event_store.iter_trades():
             if trade.status == "submitted" and trade.broker_order_id:
                 submitted_by_order_id[trade.broker_order_id] = trade
+
+    if session_filter is not None:
+        # Scope to the orders whose 'submitted' row carries this session id (the
+        # runner's OWN orders). An order with no matching 'submitted' row cannot
+        # be proven to belong to the session, so it is excluded. Empty result is
+        # a normal quiet-session outcome — no raise (contrast the single-id path).
+        candidates = [
+            r
+            for r in candidates
+            if (sub := submitted_by_order_id.get(r.broker_order_id)) is not None
+            and sub.session_id == session_filter
+        ]
 
     def _net_adjustment(symbol: str) -> float:
         return sum(a.delta_qty for a in event_store.list_reconciliation_adjustments(symbol=symbol))
@@ -883,7 +920,7 @@ def build_warnings(result: ReconciliationResult, event_store: EventStore) -> lis
             f"Broker unreachable: {result.broker.error or 'unknown error'}. "
             "Reconciliation incomplete - no drift can be confirmed while the broker is down."
         )
-    warnings.append("Deferred checks (R-OPS-004 v1.1): " + ", ".join(DEFERRED_CHECKS))
+    warnings.append("Deferred checks (R-OPS-004 v1.3): " + ", ".join(DEFERRED_CHECKS))
     for row in result.order_rows:
         if row.kind == "local_only" and not row.incident:
             warnings.append(
@@ -1062,7 +1099,7 @@ def human_lines(result: ReconciliationResult, event_store: EventStore) -> list[s
                 f"  {marker}  {row.broker_order_id}  symbol: {row.symbol or '-'}   kind: {row.kind}"
             )
     lines.append("")
-    lines.append("Deferred checks (R-OPS-004 v1.1): " + ", ".join(DEFERRED_CHECKS))
+    lines.append("Deferred checks (R-OPS-004 v1.3): " + ", ".join(DEFERRED_CHECKS))
     lines.append("")
     if result.incident_reason_codes:
         if result.incident_recorded:

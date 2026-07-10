@@ -366,7 +366,19 @@ def test_runner_submits_regime_signal_through_execution_service(
     assert len(results) == 1
     assert broker.submit_calls[0]["symbol"] == "SHY"
     assert provider.get_latest_bar_calls == ["SHY"]
-    assert [record.session_id for record in event_store.list_explanations()] == [runner.session_id]
+    # The runner's own DECISION explanations carry the session id. The
+    # controlled_stop session-close sync (R-OPS-004 v1.3) runs a persist=False
+    # reconciliation whose transient reconcile_incident row is system-attributed
+    # (session_id=None) — this stub broker does not report its own just-submitted
+    # PENDING order as open, so reconcile momentarily sees it as local_only. That
+    # incident is not persisted (no reconciliation_run row) and never gates
+    # readiness; exclude reconcile-system rows from the session-attribution check.
+    decision_explanations = [
+        record
+        for record in event_store.list_explanations()
+        if not record.decision_type.startswith("reconcile")
+    ]
+    assert [record.session_id for record in decision_explanations] == [runner.session_id]
     assert [record.session_id for record in event_store.list_trades()] == [runner.session_id]
     assert event_store.list_strategy_runs()[0].exit_reason == "controlled_stop"
 
@@ -3382,3 +3394,233 @@ def test_hr3_reconcile_failure_on_rollover_preserves_startup_posture(
         "a failed rollover reconcile must not advance _last_reconcile_ny_day; "
         "the next cycle must retry"
     )
+
+
+# ---------------------------------------------------------------------------
+# Session-close order-status sync (R-OPS-004 v1.3, M1 retro item (a))
+# ---------------------------------------------------------------------------
+
+
+class _ScriptedGetOrderBroker(StubBroker):
+    """StubBroker whose get_order returns a scripted terminal status per id (or
+    raises) so the session-close sync has broker truth to record. get_orders()
+    stays empty, so a seeded 'submitted' order reconciles as ``local_only``."""
+
+    def __init__(self, *, order_status=None, raise_ids=(), **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._scripted_status = order_status or {}
+        self._get_order_raise_ids = set(raise_ids)
+
+    def get_order(self, order_id: str) -> Order:
+        if order_id in self._get_order_raise_ids:
+            raise RuntimeError("broker unreachable on get_order " + order_id)
+        return Order(
+            id=order_id,
+            symbol="SHY",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=1.0,
+            time_in_force=TimeInForce.DAY,
+            status=self._scripted_status.get(order_id, OrderStatus.PENDING),
+            submitted_at=datetime.now(tz=UTC),
+        )
+
+
+def _account_10k() -> AccountInfo:
+    return AccountInfo(
+        equity=10_000.0,
+        cash=10_000.0,
+        buying_power=10_000.0,
+        portfolio_value=10_000.0,
+        daily_pnl=0.0,
+    )
+
+
+def _seed_local_open_paper_order(
+    event_store: EventStore,
+    *,
+    broker_order_id: str,
+    session_id: str,
+    strategy_name: str = "regime.daily.sma200_rotation.spy_shy.v1",
+    symbol: str = "SHY",
+    side: str = "buy",
+    quantity: float = 1.0,
+) -> None:
+    """Append a 'submitted' paper order (locally open, with no broker open-order
+    twin) tagged with ``session_id`` so the session-close sync can scope to it."""
+    recorded_at = datetime.now(tz=UTC)
+    eid = event_store.append_explanation(
+        ExplanationEvent(
+            recorded_at=recorded_at,
+            decision_type="submit",
+            status="submitted",
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path="configs/regime.yaml",
+            config_hash="abc123",
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            submitted_by="strategy_runner",
+            market_open=True,
+            latest_bar_timestamp=recorded_at,
+            latest_bar_close=10.0,
+            account_equity=10_000.0,
+            account_cash=10_000.0,
+            account_portfolio_value=10_000.0,
+            account_daily_pnl=0.0,
+            risk_allowed=True,
+            risk_summary="OK",
+            reason_codes=[],
+            risk_checks=[],
+            context={},
+            session_id=session_id,
+        )
+    )
+    event_store.append_trade(
+        TradeEvent(
+            explanation_id=eid,
+            recorded_at=recorded_at,
+            status="submitted",
+            source="paper",
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            order_type="market",
+            time_in_force="day",
+            estimated_unit_price=10.0,
+            estimated_order_value=10.0 * quantity,
+            strategy_name=strategy_name,
+            strategy_stage="paper",
+            strategy_config_path="configs/regime.yaml",
+            submitted_by="strategy_runner",
+            broker_order_id=broker_order_id,
+            broker_status="pending",
+            message=None,
+            session_id=session_id,
+        )
+    )
+
+
+def _build_shutdown_runner(tmp_path, strategy_config_dir, risk_defaults_file, broker):
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    service, event_store, kill_switch_store = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+    )
+    return runner, event_store, kill_switch_store
+
+
+def test_controlled_stop_syncs_only_this_runners_own_orders(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A controlled_stop shutdown records the broker's terminal status for THIS
+    runner's own still-open orders (scoped by session_id), and leaves a sibling
+    session's local-only order untouched."""
+    broker = _ScriptedGetOrderBroker(
+        account=_account_10k(),
+        order_status={"mine-1": OrderStatus.FILLED, "other-1": OrderStatus.FILLED},
+    )
+    runner, event_store, _ = _build_shutdown_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file, broker
+    )
+    _seed_local_open_paper_order(
+        event_store, broker_order_id="mine-1", session_id=runner.session_id
+    )
+    _seed_local_open_paper_order(
+        event_store,
+        broker_order_id="other-1",
+        session_id="a-sibling-session",
+        strategy_name="other.strategy.v1",
+    )
+
+    runner.shutdown(mode="controlled")
+
+    filled = [t for t in event_store.list_trades() if t.status == "filled"]
+    assert [t.broker_order_id for t in filled] == ["mine-1"]
+    # The synced terminal row inherits this runner's session and strategy (#337).
+    assert filled[0].session_id == runner.session_id
+    assert filled[0].strategy_name == "regime.daily.sma200_rotation.spy_shy.v1"
+    # The sibling session's order is never touched — no terminal row for it.
+    assert not any(
+        t.broker_order_id == "other-1" and t.status != "submitted"
+        for t in event_store.list_trades()
+    )
+    run = event_store.list_strategy_runs()[0]
+    assert run.exit_reason == "controlled_stop"
+    assert run.ended_at is not None
+
+
+def test_session_close_sync_failure_does_not_block_shutdown(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A broker failure during the session-close sync logs a warning and never
+    blocks the strategy_runs close (best-effort, mirrors the daily-snapshot idiom)."""
+    import logging
+
+    broker = _ScriptedGetOrderBroker(account=_account_10k(), raise_ids={"mine-1"})
+    runner, event_store, _ = _build_shutdown_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file, broker
+    )
+    _seed_local_open_paper_order(
+        event_store, broker_order_id="mine-1", session_id=runner.session_id
+    )
+
+    with caplog.at_level(logging.WARNING, logger="milodex.strategies.runner"):
+        runner.shutdown(mode="controlled")
+
+    run = event_store.list_strategy_runs()[0]
+    assert run.exit_reason == "controlled_stop"
+    assert run.ended_at is not None
+    # The sync raised before appending, so no terminal row was recorded.
+    assert not any(t.status == "filled" for t in event_store.list_trades())
+    assert "Session-close order-status sync failed" in caplog.text
+
+
+def test_kill_switch_shutdown_does_not_sync(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A kill-switch halt stays minimal: it does NOT run the session-close sync,
+    so a still-open order is not force-closed on the halt path."""
+    broker = _ScriptedGetOrderBroker(
+        account=_account_10k(), order_status={"mine-1": OrderStatus.FILLED}
+    )
+    runner, event_store, kill_switch_store = _build_shutdown_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file, broker
+    )
+    _seed_local_open_paper_order(
+        event_store, broker_order_id="mine-1", session_id=runner.session_id
+    )
+
+    runner.shutdown(mode="kill_switch")
+
+    # No session-close sync ran → the FILLED order was not recorded.
+    assert not any(t.status == "filled" for t in event_store.list_trades())
+    run = event_store.list_strategy_runs()[0]
+    assert run.exit_reason == "kill_switch"
+    assert kill_switch_store.get_state().active is True
+    assert broker.cancel_all_orders_calls == 1

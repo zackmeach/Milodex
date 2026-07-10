@@ -28,9 +28,11 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Compare broker state against the event store and flag drift.",
         description=(
             "Compare broker state against the local event store, persist the "
-            "durable reconciliation verdict, and flag drift. Three R-OPS-004 "
-            "v1.2 dimensions remain warnings only: filled-since-last-sync, "
-            "canceled-since-last-sync, and strategy-linkage."
+            "durable reconciliation verdict, and flag drift. As of R-OPS-004 "
+            "v1.3, filled-since-last-sync and canceled-since-last-sync are "
+            "enforced (detected here and closed by the audited sync-orders "
+            "path, run at runner session-close and on demand); one dimension "
+            "remains warning-only: strategy-to-order linkage verification."
         ),
     )
     add_global_flags(parser)
