@@ -139,6 +139,15 @@ class StrategyRunner:
         self._lockin_started_at: datetime | None = None
         self._processed_intent_keys: set[tuple[datetime, str, str]] = set()
         self._processed_intent_bar_at: datetime | None = None
+        # Drain ENTRY-veto dedup (in-memory, this session only): the id of any
+        # queued ENTRY whose drain submit returned BLOCKED (pre-CAS risk veto,
+        # row stays 'queued' by design). Skipped on subsequent open polls this
+        # session so a persistently-vetoed entry does not re-submit + re-write a
+        # blocked explanation every ~60s. In-memory, so a runner restart retries
+        # once (one extra veto explanation per restart — acceptable). EXITs are
+        # never added: a blocked exit guards an open position and its veto can
+        # clear mid-session, so it retries every poll by design.
+        self._drain_vetoed_row_ids: set[int] = set()
         self._requested_shutdown: str | None = None
         self._startup_reconciled = False
         # NY trading day string (ISO date, ET) of the most recent reconciliation
@@ -873,6 +882,36 @@ class StrategyRunner:
                 "Queued intent already persisted (idempotent): %s",
                 idempotency_key,
             )
+        # Supersede any OLDER queued row for the same logical intent
+        # (strategy/symbol/side/class) left over from a prior session — the
+        # session-scoped idempotency key mints a fresh row each lock-in, so a
+        # vetoed/retryable prior row would otherwise co-drain and spam the
+        # duplicate-order veto until TTL. Runs in BOTH the append and the
+        # IntegrityError branch (a same-session re-persist still retires stale
+        # cross-session rows). Fail-soft: a supersede failure must NEVER abort
+        # the lock-in persist path.
+        try:
+            superseded = self._event_store.supersede_queued_intents(
+                self._strategy_id,
+                event.symbol,
+                event.side,
+                event.intent_class,
+                keep_idempotency_key=idempotency_key,
+            )
+            if superseded > 0:
+                logger.info(
+                    "superseded %d stale queued intent(s) for %s %s",
+                    superseded,
+                    event.symbol,
+                    event.side,
+                )
+        except Exception as exc:  # noqa: BLE001 — supersede must not abort persist
+            logger.warning(
+                "Failed to supersede stale queued intents for %s %s: %s",
+                event.symbol,
+                event.side,
+                exc,
+            )
 
     # ------------------------------------------------------------------
     # queue-at-open (Phase-3 drain, ADR 0057)
@@ -1054,6 +1093,18 @@ class StrategyRunner:
         ``mark_queued_intent_consumed`` (the submit CAS owns that); the status
         writes here are ``obsolete`` (stranded/flat exit) and ``dropped`` (decided
         entry).
+
+        ENTRY-veto dedup (same entry/exit asymmetry): a queued ENTRY whose submit
+        returns ``BLOCKED`` (pre-CAS risk veto — the row stays ``queued`` by design)
+        is recorded in ``self._drain_vetoed_row_ids`` and skipped on subsequent open
+        polls this session, so it does not re-submit + re-write a blocked explanation
+        every ~60s. The set is in-memory only, so a runner restart retries the veto
+        once (one extra veto explanation per restart — acceptable). EXITs are
+        DELIBERATELY exempt: a blocked exit guards an open position and its veto
+        (e.g. an opposite-side resting order) can clear mid-session, so it keeps
+        retrying every poll. The vetoed row is retired for good by supersession at
+        the next lock-in of the same logical intent (``supersede_queued_intents``),
+        or by TTL expiry — no terminal-veto status is introduced.
         """
         intents = self._event_store.get_active_queued_intents(
             self._strategy_id,
@@ -1065,6 +1116,14 @@ class StrategyRunner:
             return
         account = self._broker.get_account()
         for queued in intents:
+            # Skip an ENTRY already vetoed (BLOCKED) on an earlier drain pass this
+            # session — the row is still 'queued' by design (it retries next session
+            # or is superseded/expired), but re-submitting every ~60s open poll would
+            # re-write a blocked explanation each time. EXIT rows are never added to
+            # this set, so a blocked exit still retries every poll (its veto can clear
+            # mid-session).
+            if queued.id in self._drain_vetoed_row_ids:
+                continue
             # Per-intent fail-closed isolation (mirrors get_active_queued_intents'
             # per-row guard): a raise in the PRE-SUBMIT body — e.g. strategy.evaluate()
             # on a degenerate truncated BarSet — leaves the row queued by construction
@@ -1250,6 +1309,17 @@ class StrategyRunner:
             # alert is observational; do not mutate status further. ENTRY stays silent.
             if queued.intent_class == "exit" and result.status == ExecutionStatus.REJECTED:
                 self._emit_exit_drop_alert(queued, reason="submit_rejected")
+            # A BLOCKED ENTRY (pre-CAS risk veto that leaves the row 'queued', OR an
+            # idempotency-suppressed race-loss where another process already consumed
+            # the row) must not re-submit every ~60s open poll for the rest of this
+            # session — dedup it in memory. Skipping is correct for BOTH BLOCKED causes:
+            # a race-loss means the row is already consumed elsewhere; a risk veto will
+            # not clear before the row is superseded at the next lock-in or expires. The
+            # row status is NOT touched (it stays 'queued' by design). EXITs are exempt:
+            # a blocked exit guards an open position and its veto can clear mid-session,
+            # so it keeps retrying every poll.
+            if queued.intent_class != "exit" and result.status == ExecutionStatus.BLOCKED:
+                self._drain_vetoed_row_ids.add(queued.id)
 
     def _fresh_pricing_bar(self, symbol: str, locked_bar: Bar) -> Bar | None:
         """Fetch a CONFIRMABLY-CURRENT fresh bar for drain sizing/cap pricing.

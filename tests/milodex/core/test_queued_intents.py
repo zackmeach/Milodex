@@ -479,6 +479,81 @@ def test_expire_stale_never_touches_dropped(tmp_path):
     assert {e.symbol for e in store.list_queued_intents_by_status("dropped")} == {"IWM"}
 
 
+# ─── supersede_queued_intents (drain veto hygiene, 2026-07-10) ───────────────
+#
+# At a new lock-in, older 'queued' rows for the SAME logical intent
+# (strategy_id, symbol, side, intent_class) but a different idempotency_key (the
+# session-scoped key mints a fresh row each session) are retired to 'obsolete',
+# keeping only the just-persisted row. Selective on symbol/side/class/status.
+
+
+def test_supersede_obsoletes_stale_same_logical_intent_keeps_current(tmp_path):
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    # Two prior-session rows for the same logical SPY/buy/entry intent...
+    store.append_queued_intent(_intent("rsi2.v1|2026-06-21|buy|SPY", trading_session="2026-06-21"))
+    store.append_queued_intent(_intent("rsi2.v1|2026-06-22|buy|SPY", trading_session="2026-06-22"))
+    # ...and the current session's row (the one to KEEP).
+    store.append_queued_intent(_intent("rsi2.v1|2026-06-23|buy|SPY"))
+
+    n = store.supersede_queued_intents(
+        "rsi2.v1", "SPY", "buy", "entry", keep_idempotency_key="rsi2.v1|2026-06-23|buy|SPY"
+    )
+
+    assert n == 2
+    assert _status_of(db, "rsi2.v1|2026-06-21|buy|SPY") == "obsolete"
+    assert _status_of(db, "rsi2.v1|2026-06-22|buy|SPY") == "obsolete"
+    assert _status_of(db, "rsi2.v1|2026-06-23|buy|SPY") == "queued"
+
+
+def test_supersede_is_selective_on_symbol_side_and_status(tmp_path):
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    keep = "rsi2.v1|2026-06-23|buy|SPY"
+    store.append_queued_intent(_intent(keep))
+    # Stale same-logical-intent row -> obsoleted.
+    store.append_queued_intent(_intent("rsi2.v1|2026-06-22|buy|SPY", trading_session="2026-06-22"))
+    # Different symbol -> untouched.
+    store.append_queued_intent(
+        _intent("rsi2.v1|2026-06-22|buy|QQQ", symbol="QQQ", trading_session="2026-06-22")
+    )
+    # Different side/class -> untouched.
+    store.append_queued_intent(
+        _intent(
+            "rsi2.v1|2026-06-22|sell|SPY",
+            side="sell",
+            intent_class="exit",
+            trading_session="2026-06-22",
+        )
+    )
+    # Already-consumed same-logical row -> untouched (status != 'queued').
+    consumed_key = "rsi2.v1|2026-06-20|buy|SPY"
+    store.append_queued_intent(_intent(consumed_key, trading_session="2026-06-20"))
+    store.mark_queued_intent_consumed(
+        consumed_key, now=_NOW, running_session_id="sess-A", consumed_by="sess-A", consumed_at=_NOW
+    )
+
+    n = store.supersede_queued_intents("rsi2.v1", "SPY", "buy", "entry", keep_idempotency_key=keep)
+
+    assert n == 1
+    assert _status_of(db, "rsi2.v1|2026-06-22|buy|SPY") == "obsolete"
+    assert _status_of(db, keep) == "queued"
+    assert _status_of(db, "rsi2.v1|2026-06-22|buy|QQQ") == "queued"
+    assert _status_of(db, "rsi2.v1|2026-06-22|sell|SPY") == "queued"
+    assert _status_of(db, consumed_key) == "consumed"
+
+
+def test_supersede_no_stale_rows_returns_zero(tmp_path):
+    db = tmp_path / "milodex.db"
+    store = EventStore(db)
+    store.append_queued_intent(_intent())  # only the current row
+    n = store.supersede_queued_intents(
+        "rsi2.v1", "SPY", "buy", "entry", keep_idempotency_key="rsi2.v1|2026-06-23|buy|SPY"
+    )
+    assert n == 0
+    assert _status_of(db, "rsi2.v1|2026-06-23|buy|SPY") == "queued"
+
+
 # ─── expiry sweep (Phase 7) ──────────────────────────────────────────────────
 #
 # Launch-time bulk flip of stale 'queued' rows to 'expired'. Housekeeping only:

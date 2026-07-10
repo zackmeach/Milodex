@@ -2594,6 +2594,48 @@ class EventStore:
             )
             connection.commit()
 
+    def supersede_queued_intents(
+        self,
+        strategy_id: str,
+        symbol: str,
+        side: str,
+        intent_class: str,
+        *,
+        keep_idempotency_key: str,
+    ) -> int:
+        """Retire older ``queued`` rows for the same logical intent at a new lock-in.
+
+        The newest post-close lock-in is the strategy's current determination for a
+        logical intent identified by ``(strategy_id, symbol, side, intent_class)``.
+        Because the idempotency key embeds the trading session, the next session's
+        lock-in mints a NEW row while an older vetoed/retryable row for the same
+        logical intent can still sit ``queued`` under its 7-day TTL — at the next
+        open BOTH would drain (the second gets the duplicate-order veto and spams
+        until TTL). This single UPDATE flips every such stale row to ``obsolete``,
+        EXCLUDING the just-persisted row (``keep_idempotency_key``), regardless of
+        WHY the stale row survived (risk veto, no-fresh-price retry, pre-open
+        launch). Returns the number of rows superseded.
+
+        Side-flips are NOT superseded here: an opposite-side entry for the same
+        symbol is a different ``side`` and is terminally dropped at the drain's
+        re-eval match (``reeval_no_match``), not here."""
+        with self._connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE queued_intents
+                SET status = 'obsolete'
+                WHERE strategy_id = ?
+                  AND symbol = ?
+                  AND side = ?
+                  AND intent_class = ?
+                  AND status = 'queued'
+                  AND idempotency_key != ?
+                """,
+                (strategy_id, symbol, side, intent_class, keep_idempotency_key),
+            )
+            connection.commit()
+            return cursor.rowcount
+
     def expire_stale_queued_intents(self, *, now: datetime) -> list[QueuedIntentEvent]:
         """Bulk-flip stale ``queued`` rows to ``expired``; return the swept rows.
 
