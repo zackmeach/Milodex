@@ -1,10 +1,15 @@
 # Phase 6 Bench Prep
 
-**Status:** Planning artifact only. Phase 5 is closed; Phase 6 implementation
-may begin only against the ADR decisions below. This document does not authorize
-any backend mutation. v1 ships as a visual prototype only — see
-[ADR 0049](adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md)
-for the full eight-item forbidden-mutation list.
+**Status:** Planning artifact only — **partially superseded (2026-07-10 pointer).**
+Phase 5 is closed; Phase 6 implementation may begin only against the ADR decisions
+below. This document's blanket "no backend mutation" plan is overtaken **only** for
+the six action families [ADR 0051](adr/0051-bench-command-infrastructure-v1.md)
+opened (Bench command infrastructure v1); for every path ADR 0051 did not open,
+[ADR 0049](adr/0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md)'s
+no-mutation perimeter remains binding — see ADR 0049's status line ("Accepted —
+amended in part") and its eight-item forbidden-mutation list. This document is not
+fully dead: its decision register below remains the design record for the Bench
+surface.
 
 **Design context:** [ADR 0036](adr/0036-operator-kanban-surface-for-promotion-pipeline.md)
 accepts the Bench visual spec. The Bench implements the **BENCH** role in the
