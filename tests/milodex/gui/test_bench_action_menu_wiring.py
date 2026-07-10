@@ -46,6 +46,8 @@ class _FakeRow:
     evidence_by_stage: dict = field(default_factory=dict)
     runs_in_flight: dict = field(default_factory=dict)
     job_status: str = ""
+    # Consumed by _action_intent_preview for the D-8 Promote-to-Paper caveat.
+    backtest_run_started_at: str = ""
 
 
 def _menu(row: _FakeRow) -> list[dict]:

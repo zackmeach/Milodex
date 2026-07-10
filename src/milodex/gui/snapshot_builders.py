@@ -247,6 +247,7 @@ def _strategy_rows(
                 evidence_run_id=str(
                     promotion.get("backtest_run_id") or metrics.get("run_id") or ""
                 ),
+                backtest_run_started_at=str(metrics.get("started_at") or ""),
                 promoted_at=str(promotion.get("recorded_at") or ""),
                 promotion_type=str(promotion.get("promotion_type") or ""),
                 gate_failures=failures,

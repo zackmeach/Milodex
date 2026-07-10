@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import UTC
 from pathlib import Path
 
 
@@ -280,6 +281,119 @@ def test_bench_backtest_row_with_passing_evidence_offers_promotion(
     labels = [a["label"] for a in row["actions"]]
 
     assert "Promote to Paper" in labels
+
+
+# ---------------------------------------------------------------------------
+# D-8 amendment: Promote-to-Paper confirmation carries the evidence's age and
+# an explicit not-computed-in-v1 freshness caveat (display-only). See
+# docs/reviews/2026-07-10-D8-evidence-reconstruction-brief.md.
+# ---------------------------------------------------------------------------
+
+_D8_CAVEAT_TAIL = "Freshness is not computed in v1 — verify currency before promoting."
+
+
+def test_d8_evidence_freshness_caveat_known_timestamp() -> None:
+    """A known backtest started_at renders the started date + N days ago + caveat."""
+    from datetime import datetime
+
+    from milodex.gui.bench_actions import _evidence_freshness_caveat
+
+    now = datetime(2026, 7, 10, 0, 0, tzinfo=UTC)
+    line = _evidence_freshness_caveat("2026-06-14T00:00:00+00:00", now)
+
+    assert line == (
+        "Evidence from backtest run started 2026-06-14 (26 days ago). " + _D8_CAVEAT_TAIL
+    )
+
+
+def test_d8_evidence_freshness_caveat_singular_day() -> None:
+    """Age of exactly one day uses the singular 'day', not 'days'."""
+    from datetime import datetime
+
+    from milodex.gui.bench_actions import _evidence_freshness_caveat
+
+    now = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+    line = _evidence_freshness_caveat("2026-06-14T00:00:00+00:00", now)
+
+    assert "(1 day ago)" in line
+    assert _D8_CAVEAT_TAIL in line
+
+
+def test_d8_evidence_freshness_caveat_naive_timestamp_assumed_utc() -> None:
+    """A naive (tz-less) started_at is assumed UTC rather than crashing."""
+    from datetime import datetime
+
+    from milodex.gui.bench_actions import _evidence_freshness_caveat
+
+    now = datetime(2026, 6, 24, 0, 0, tzinfo=UTC)
+    line = _evidence_freshness_caveat("2026-06-14T00:00:00", now)
+
+    assert line == (
+        "Evidence from backtest run started 2026-06-14 (10 days ago). " + _D8_CAVEAT_TAIL
+    )
+
+
+def test_d8_evidence_freshness_caveat_absent_timestamp() -> None:
+    """Absent/unparseable timestamp yields the unknown-age variant, never a crash."""
+    from datetime import datetime
+
+    from milodex.gui.bench_actions import _evidence_freshness_caveat
+
+    now = datetime(2026, 7, 10, tzinfo=UTC)
+    for bad in ("", "not-a-timestamp", "2026-13-99"):
+        line = _evidence_freshness_caveat(bad, now)
+        assert line == (
+            "Evidence age unavailable — backtest run start time not recorded. " + _D8_CAVEAT_TAIL
+        )
+
+
+def test_d8_promote_to_paper_preview_carries_age_and_caveat(tmp_path: Path) -> None:
+    """The Promote-to-Paper action's confirmation payload carries the D-8 caveat."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    # _seed_backtest sets started_at='2026-05-01T00:00:00+00:00'; passing evidence
+    # so the Promote to Paper action is offered.
+    _seed_backtest(db, strategy_id, sharpe=0.8, max_drawdown_pct=6.0, trade_count=45)
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    promote = next(a for a in row["actions"] if a["label"] == "Promote to Paper")
+    safety_copy = promote["actionIntentPreview"]["safetyCopy"]
+
+    assert "Evidence from backtest run started 2026-05-01" in safety_copy
+    assert _D8_CAVEAT_TAIL in safety_copy
+    # The pre-existing safety-boundary copy is preserved, not replaced.
+    assert "before any submit-capable action" in safety_copy
+
+
+def test_d8_caveat_only_on_promote_to_paper(tmp_path: Path) -> None:
+    """Non-promote actions (e.g. Open Evidence) do not carry the freshness caveat."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="backtest")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id, sharpe=0.8, max_drawdown_pct=6.0, trade_count=45)
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(section for section in snapshot["sections"] if section["stage"] == "backtest")
+    row = backtest["strategies"][0]
+    for action in row["actions"]:
+        if action["label"] == "Promote to Paper":
+            continue
+        assert _D8_CAVEAT_TAIL not in action["actionIntentPreview"]["safetyCopy"], (
+            f"{action['label']} must not carry the D-8 freshness caveat"
+        )
 
 
 def test_bench_idle_row_with_passing_backtest_evidence_can_initiate_backtest(

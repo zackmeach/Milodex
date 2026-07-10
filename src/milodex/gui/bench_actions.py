@@ -19,6 +19,7 @@ bridge both consume.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from milodex.gui.bench_v1 import (
@@ -361,6 +362,59 @@ def _safety_copy(label: str, current_stage: str, capital_bearing: bool) -> str:
     return base
 
 
+# D-8 amendment (founder-decided 2026-07-10; record
+# docs/reviews/2026-07-10-D8-evidence-reconstruction-brief.md). The Bench v1
+# Promote-to-Paper affordance is still computed from a hardcoded
+# ``Freshness.FRESH`` (``_bench_evidence_by_stage``) — the system does NOT
+# compute evidence freshness in v1. So the confirmation surface must state the
+# evidence's age (from the backtest run's ``started_at``) and an explicit
+# caveat that freshness is unverified. Display-only: this LABELS the affordance,
+# it does not gate it; the ``Freshness.FRESH`` hardcode is untouched.
+_COPY_FRESHNESS_CAVEAT_TAIL: str = (
+    "Freshness is not computed in v1 — verify currency before promoting."
+)
+
+
+def _parse_utc_timestamp(raw: str) -> datetime | None:
+    """Parse an ISO-8601 timestamp to a UTC-aware datetime, or None on failure.
+
+    Naive timestamps are assumed UTC. Any parse failure (blank, malformed,
+    wrong type) returns None so callers render an honest "unknown" rather than
+    a fabricated value or a raised exception.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _evidence_freshness_caveat(started_at_raw: str, now: datetime) -> str:
+    """Build the D-8 Promote-to-Paper evidence-age + freshness caveat line.
+
+    ``started_at_raw`` is the backtest run's ``started_at`` (the same value
+    assemble_evidence_package derives as ``backtest_run_started_at``). ``now``
+    MUST be a UTC-aware datetime. When the timestamp is absent or unparseable
+    the age renders as unavailable — never a fabricated age, never a crash.
+    """
+    started = _parse_utc_timestamp(started_at_raw)
+    if started is None:
+        return (
+            "Evidence age unavailable — backtest run start time not recorded. "
+            + _COPY_FRESHNESS_CAVEAT_TAIL
+        )
+    age_days = (now - started).days
+    day_word = "day" if age_days == 1 else "days"
+    return (
+        f"Evidence from backtest run started {started.date().isoformat()} "
+        f"({age_days} {day_word} ago). " + _COPY_FRESHNESS_CAVEAT_TAIL
+    )
+
+
 def _is_submit_capable_action(kind: str, target_stage: str, current_stage: str) -> bool:
     """Evaluate the spec's submit-capability rule for *kind* in context."""
     spec = ACTION_KIND_SPECS.get(kind)
@@ -398,6 +452,14 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
     spec = ACTION_KIND_SPECS.get(kind, ACTION_KIND_SPECS["unknown"])
     capital_bearing = _is_capital_bearing(label, target_stage, row.stage)
     submit_capable = _is_submit_capable_action(kind, target_stage, row.stage)
+    safety_copy = _safety_copy(label, row.stage, capital_bearing)
+    # D-8: the Promote-to-Paper confirmation must carry the evidence's age and
+    # an explicit not-computed-in-v1 freshness caveat (display-only). Appended
+    # to the already-rendered safety copy so no new QML field is needed.
+    if kind == "promote" and target_stage == "paper":
+        safety_copy += "\n\n" + _evidence_freshness_caveat(
+            row.backtest_run_started_at, datetime.now(UTC)
+        )
     return {
         "schemaVersion": 1,
         "source": {
@@ -416,7 +478,7 @@ def _action_intent_preview(row: _StrategyRow, item: Any) -> dict[str, Any]:
         "requirements": list(_ACTION_REQUIREMENTS),
         "futureRecord": spec.future_record,
         "capitalBearing": capital_bearing,
-        "safetyCopy": _safety_copy(label, row.stage, capital_bearing),
+        "safetyCopy": safety_copy,
         "executable": submit_capable,
         "wired": submit_capable,
     }

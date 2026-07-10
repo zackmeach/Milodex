@@ -43,6 +43,12 @@ class _StrategyRow:
     max_drawdown_pct: float | None = None
     trade_count: int | None = None
     evidence_run_id: str = ""
+    # Backtest run's ``started_at`` (ISO-8601) for the current evidence — the
+    # same value assemble_evidence_package derives as ``backtest_run_started_at``
+    # (promotion/evidence.py). Read-model display only; consumed by
+    # bench_actions._action_intent_preview to render the D-8 Promote-to-Paper
+    # evidence-age + freshness caveat. Empty string when unavailable.
+    backtest_run_started_at: str = ""
     promoted_at: str = ""
     promotion_type: str = ""
     gate_failures: tuple[str, ...] = ()
