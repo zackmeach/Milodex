@@ -105,7 +105,7 @@ class TestCancelOrder:
 
 class TestCancelAllOrders:
     def test_cancel_all_returns_list(self, client):
-        """cancel_all_orders() returns the cancelled orders (kill-switch enforcement helper)."""
+        """R-BRK-004: cancel_all_orders() returns cancelled orders (kill-switch enforcement)."""
         client._client.cancel_orders.return_value = [
             _mock_alpaca_order(id="o1", status="pending_cancel"),
             _mock_alpaca_order(id="o2", status="pending_cancel"),
@@ -219,13 +219,15 @@ class TestGetAccount:
 
 class TestIsMarketOpen:
     def test_market_open(self, client):
-        """AlpacaBrokerClient exposes a boolean market-clock query (is_market_open)."""
+        """R-BRK-005 (partial: boolean is_market_open only, no next_open/next_close):
+        AlpacaBrokerClient exposes a boolean market-clock query (is_market_open)."""
         clock = MagicMock()
         clock.is_open = True
         client._client.get_clock.return_value = clock
         assert client.is_market_open() is True
 
     def test_market_closed(self, client):
+        """R-BRK-005 (partial: boolean is_market_open only, no next_open/next_close)."""
         clock = MagicMock()
         clock.is_open = False
         client._client.get_clock.return_value = clock

@@ -750,6 +750,7 @@ def test_concurrent_positions_cap_tightened_by_strategy_config():
     ],
 )
 def test_reconciliation_blocks_exposure_increasing_intents(readiness, expected_reason):
+    # R-OPS-005 (partial: reconciliation-gated resume clause)
     decision = RiskEvaluator().evaluate(
         make_context(
             reconciliation_readiness=readiness,
@@ -765,6 +766,7 @@ def test_reconciliation_blocks_exposure_increasing_intents(readiness, expected_r
 
 
 def test_reconciliation_allows_current_clean_readiness():
+    # R-OPS-005 (partial: reconciliation-gated resume clause)
     decision = RiskEvaluator().evaluate(
         make_context(
             reconciliation_readiness=ReconciliationReadiness(
@@ -1431,7 +1433,7 @@ def test_daily_loss_passes_exactly_at_cap():
 
 
 def test_data_staleness_passes_exactly_at_max_age(monkeypatch):
-    """Kills mutation: evaluator.py:254 ``age > max_age``
+    """R-OPS-007. Kills mutation: evaluator.py:254 ``age > max_age``
     -> ``age >= max_age``.
 
     The rule reads ``datetime.now(tz=UTC)`` internally; pin it via
@@ -1481,6 +1483,7 @@ def test_data_staleness_fails_just_over_max_age(monkeypatch):
     ``>=`` mutation.
 
     R-DAT-006: cache freshness is detectable; the bar timestamp is compared against now().
+    R-OPS-007: stale data blocks the exposure-increasing decision (fail-closed).
     """
     from milodex.risk import evaluator as evaluator_module
 
@@ -1569,7 +1572,7 @@ def _freeze_now(monkeypatch, fixed_now: datetime) -> None:
 
 
 def test_data_staleness_1d_matching_session_fresh_18h_old(monkeypatch):
-    """1D bar whose session date == latest completed session, ~18h old
+    """R-OPS-007. 1D bar whose session date == latest completed session, ~18h old
     (Mon submit against Fri's close style), must PASS even though 18h is far
     past the 300s global budget."""
     fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)  # Mon 10:00 ET-ish
@@ -1590,7 +1593,7 @@ def test_data_staleness_1d_matching_session_fresh_18h_old(monkeypatch):
 
 
 def test_data_staleness_1d_none_session_fails_closed(monkeypatch):
-    """Same fresh 1D bar, but the exchange calendar could not resolve the
+    """R-OPS-007. Same fresh 1D bar, but the exchange calendar could not resolve the
     latest session (None) -> BLOCKED (fail-closed)."""
     fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
     _freeze_now(monkeypatch, fixed_now)
@@ -1609,7 +1612,7 @@ def test_data_staleness_1d_none_session_fails_closed(monkeypatch):
 
 
 def test_data_staleness_1d_session_mismatch_dead_feed_blocked(monkeypatch):
-    """Dead-feed case: a 3-day-old 1D bar whose session date != the latest
+    """R-OPS-007. Dead-feed case: a 3-day-old 1D bar whose session date != the latest
     completed session is BLOCKED, even though it is well inside the 7-day
     ceiling. This is the bug the prior attempt missed."""
     fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
@@ -1630,7 +1633,7 @@ def test_data_staleness_1d_session_mismatch_dead_feed_blocked(monkeypatch):
 
 
 def test_data_staleness_1d_beyond_7day_ceiling_blocked(monkeypatch):
-    """Defensive ceiling: a 1D bar whose session date matches the latest
+    """R-OPS-007. Defensive ceiling: a 1D bar whose session date matches the latest
     completed session but whose age exceeds 7 calendar days is BLOCKED. This
     can't arise under a correct calendar; it bounds the blast radius if the
     calendar were wrong and the feed were stale at a matching date."""
@@ -1652,7 +1655,7 @@ def test_data_staleness_1d_beyond_7day_ceiling_blocked(monkeypatch):
 
 
 def test_data_staleness_none_strategy_config_uses_300s_not_crash(monkeypatch):
-    """strategy_config is None (operator manual / legacy) -> 300s wall clock,
+    """R-OPS-007. strategy_config is None (operator manual / legacy) -> 300s wall clock,
     never the 1D path. A bar just past 300s fails; it does not crash on the
     missing bar_size / latest_completed_session."""
     fixed_now = datetime(2026, 5, 6, 18, 0, 0, tzinfo=UTC)
@@ -1673,7 +1676,7 @@ def test_data_staleness_none_strategy_config_uses_300s_not_crash(monkeypatch):
 
 
 def test_data_staleness_1d_both_gates_agree_fresh(monkeypatch):
-    """Pin the non-divergence invariant the prior attempt broke: a 1D/paper
+    """R-OPS-007. Pin the non-divergence invariant the prior attempt broke: a 1D/paper
     config with a latest-session bar must pass BOTH the ``data_staleness``
     veto AND keep the ``data_quality_issue`` disable condition inactive, so
     the overall decision is allowed. (The prior bug widened only the veto, so
@@ -1695,7 +1698,7 @@ def test_data_staleness_1d_both_gates_agree_fresh(monkeypatch):
 
 
 def test_data_staleness_1d_both_gates_agree_session_mismatch_blocked(monkeypatch):
-    """Companion to the agree-fresh test on the BLOCK side: a 1D session
+    """R-OPS-007. Companion to the agree-fresh test on the BLOCK side: a 1D session
     mismatch must fail the veto AND activate the disable condition, so a
     widening that touched only one gate cannot pass here."""
     fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
@@ -2233,7 +2236,7 @@ def test_strategy_concurrent_positions_adding_to_held_ledger_lot_adds_no_slot(tm
 
 
 def test_data_staleness_naive_bar_timestamp_blocks_not_raises():
-    """A naive (tz-unaware) bar timestamp must fail closed, not raise.
+    """R-OPS-007. A naive (tz-unaware) bar timestamp must fail closed, not raise.
 
     Regression: ``datetime.now(tz=UTC) - naive_ts`` raises ``TypeError``
     (can't subtract offset-naive from offset-aware). An uncaught

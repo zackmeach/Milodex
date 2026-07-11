@@ -512,6 +512,7 @@ def test_analytics_compare_strategy_a_and_b(tmp_path: Path) -> None:
 
 
 def test_analytics_export_with_strategy_shortcut(tmp_path: Path) -> None:
+    # R-ANA-004: report export to CSV via the analytics CLI command.
     store = EventStore(tmp_path / "milodex.db")
     _seed_run(store, run_id="bt-export", strategy_id="regime.v1", trade_pairs=2)
 
@@ -533,6 +534,7 @@ def test_analytics_export_with_strategy_shortcut(tmp_path: Path) -> None:
 
 
 def test_analytics_export_json_format(tmp_path: Path) -> None:
+    # R-ANA-004: report export to JSON via the analytics CLI command.
     store = EventStore(tmp_path / "milodex.db")
     _seed_run(store, run_id="bt-json", strategy_id="regime.v1", trade_pairs=2)
 

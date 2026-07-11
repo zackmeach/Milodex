@@ -70,6 +70,7 @@ def test_max_drawdown_no_drawdown():
 
 
 def test_max_drawdown_simple_case():
+    # R-ANA-002: max-drawdown computation over a known equity curve.
     curve = _equity_curve([100.0, 120.0, 80.0, 90.0], start=date(2024, 1, 1))
     dd, duration = _max_drawdown_stats(curve)
     assert dd == pytest.approx((120.0 - 80.0) / 120.0)
@@ -112,6 +113,7 @@ def test_sortino_no_downside_returns_none():
 
 
 def test_sortino_mixed_returns():
+    # R-ANA-002: Sortino computation over mixed positive/negative returns.
     returns = [0.01, -0.005, 0.02, -0.003]
     s = _sortino(returns)
     assert s > 0
@@ -168,6 +170,7 @@ def test_trade_stats_losing_round_trip():
 
 
 def test_trade_stats_multiple_symbols():
+    # R-ANA-002: win rate, average win, average loss across multiple symbols.
     d = date(2024, 1, 2)
     trades = [
         _trade("AAPL", "buy", 5.0, 100.0, d),
@@ -231,6 +234,7 @@ def test_compute_metrics_flat_equity():
 
 
 def test_compute_metrics_positive_return():
+    # R-ANA-002: compute_metrics produces total return, CAGR, and Sharpe together.
     start = date(2024, 1, 1)
     # Upward trend with real day-to-day variance — a perfectly smooth
     # curve has zero return variance and an undefined (None) Sharpe.
