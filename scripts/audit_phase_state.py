@@ -52,10 +52,11 @@ CURRENT_PHASE = 6
 _ADR_PREFIXES = ("docs/adr/",)
 # Point-in-time forensic write-ups: dated review records (docs/reviews/),
 # per-feature assurance-evidence matrices (docs/assurance/, e.g. the D-6
-# clause->test-id ledgers), and dated codebase-audit snapshots (docs/audits/).
+# clause->test-id ledgers), dated codebase-audit snapshots (docs/audits/), and
+# dated fault-injection drill matrices (docs/drills/ — the M4 harness evidence).
 # Like ADRs they preserve the language of the era they record, so their Phase-1
 # references and currency claims are exempt from drift.
-_EVIDENCE_PREFIXES = ("docs/reviews/", "docs/assurance/", "docs/audits/")
+_EVIDENCE_PREFIXES = ("docs/reviews/", "docs/assurance/", "docs/audits/", "docs/drills/")
 _SCRATCH_PREFIXES = ("docs/superpowers/",)
 _CODE_PREFIXES = ("src/", "tests/", "configs/", "scripts/")
 
