@@ -154,6 +154,37 @@ def _write_regime_strategy(config_dir: Path, *, stage: str) -> Path:
     return path
 
 
+def _seed_regime_lifecycle_evidence(event_store: EventStore, config_path: Path) -> None:
+    """Seed the three R-PRM-004 criteria (ADR 0058 M4) as satisfied.
+
+    Enforcement is now ON, so the lifecycle-exempt happy path needs a recent
+    completed zero-signal backtest run (a + b) plus a real synthetic
+    fault-injection veto (c). Timestamps are relative to real now (the facade
+    request carries ``now=None``).
+    """
+    from datetime import timedelta
+
+    from milodex.promotion.fault_injection import run_synthetic_fault_injection
+
+    now = datetime.now(tz=UTC)
+    event_store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="regime-bench-run-1",
+            strategy_id=_REGIME_STRATEGY_ID,
+            config_path=str(config_path),
+            config_hash="fp-regime-bench",
+            start_date=now - timedelta(days=31),
+            end_date=now - timedelta(days=1),
+            started_at=now - timedelta(days=1),
+            status="completed",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"signal_count": 0},
+        )
+    )
+    run_synthetic_fault_injection(_REGIME_STRATEGY_ID, config_path, event_store)
+
+
 def _make_regime_promote_proposal(
     *,
     recommendation: str | None = "Regime strategy; lifecycle-exempt per R-PRM-004.",
@@ -2515,6 +2546,7 @@ def test_submit_promote_to_paper_lifecycle_exempt_success(
     the exemption is scoped to that id). Asserts atomic manifest + promotion
     landing and YAML stage rewrite via the same governance callee the CLI uses."""
     config_path = _write_regime_strategy(config_dir, stage="backtest")
+    _seed_regime_lifecycle_evidence(event_store, config_path)
     facade = make_facade()
     proposal = _make_regime_promote_proposal()
 
@@ -2811,7 +2843,8 @@ def test_submit_promote_to_paper_threads_approved_by_from_inputs(
 
     Uses the lifecycle-proof regime id so the lifecycle-exempt no-run path is
     admissible under the ADR 0058 scoping."""
-    _write_regime_strategy(config_dir, stage="backtest")
+    config_path = _write_regime_strategy(config_dir, stage="backtest")
+    _seed_regime_lifecycle_evidence(event_store, config_path)
     facade = make_facade()
     proposal = _make_regime_promote_proposal(
         approved_by="operator-cli-override",

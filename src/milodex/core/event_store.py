@@ -1212,6 +1212,15 @@ class EventStore:
         it replaced exactly: ``strategy_name = ? AND strategy_stage = 'paper' AND
         risk_allowed = 0`` (``risk_allowed`` is stored as INTEGER 0/1). See
         :meth:`count_paper_trades` for the OOM context.
+
+        Synthetic fault-injection self-test rows (``decision_type =
+        'synthetic_fault_injection'``, written by
+        :mod:`milodex.promotion.fault_injection` for R-PRM-004 criterion (c)) are
+        excluded: they are deliberately-vetoed synthetic trades that never reached
+        a broker, so folding them into the operator-visible real-rejection metric
+        would pollute the trust surface. The literal matches that module's
+        ``SYNTHETIC_FAULT_DECISION_TYPE`` (event_store must not import from
+        ``promotion`` — that would invert the dependency direction).
         """
         with self._connect() as connection:
             row = connection.execute(
@@ -1221,6 +1230,7 @@ class EventStore:
                 WHERE strategy_name = ?
                   AND strategy_stage = 'paper'
                   AND risk_allowed = 0
+                  AND decision_type != 'synthetic_fault_injection'
                 """,
                 (strategy_id,),
             ).fetchone()
@@ -2692,6 +2702,77 @@ class EventStore:
                 (run_id,),
             ).fetchone()
         return None if row is None else _backtest_run_from_row(row)
+
+    def get_latest_successful_backtest_run(self, strategy_id: str) -> BacktestRunEvent | None:
+        """Return the most recent ``status='completed'`` backtest run for ``strategy_id``.
+
+        Used by the R-PRM-004 lifecycle criterion (a) enforcement (ADR 0058 M4):
+        "a successful deterministic backtest run", with a freshness bound applied
+        by the caller against ``started_at``. Ordered by ``started_at DESC`` (when
+        the run executed) with ``id`` as a deterministic tiebreak. Only terminal
+        ``'completed'`` rows qualify — ``'running'``, ``'failed'``,
+        ``'cancelled'``, and ``'orphan_recovered'`` are excluded, so a crashed or
+        still-running backtest can never stand in as the success evidence.
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM backtest_runs
+                WHERE strategy_id = ? AND status = 'completed'
+                ORDER BY started_at DESC, id DESC
+                LIMIT 1
+                """,
+                (strategy_id,),
+            ).fetchone()
+        return None if row is None else _backtest_run_from_row(row)
+
+    def count_explanations_for_backtest_run(self, backtest_run_id: int) -> int:
+        """Count explanation rows linked to a backtest run by its INTEGER id.
+
+        The join is ``explanations.backtest_run_id = backtest_runs.id`` — the
+        integer autoincrement primary key, NOT the UUID ``run_id`` column. ADR
+        0058 names the wrong-column join (matching on the UUID) as a silent
+        false-negative generator: it returns zero rows for every run, so a naive
+        criterion would refuse a perfectly-audited promotion. Callers pass
+        ``BacktestRunEvent.id`` (the integer), never ``.run_id`` (the UUID).
+
+        Used by the R-PRM-004 lifecycle criterion (b) enforcement (ADR 0058 M4).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT COUNT(*) AS n FROM explanations WHERE backtest_run_id = ?",
+                (backtest_run_id,),
+            ).fetchone()
+        return 0 if row is None else int(row["n"])
+
+    def get_latest_synthetic_fault_injection_veto(
+        self, strategy_id: str
+    ) -> ExplanationEvent | None:
+        """Return the most recent synthetic fault-injection VETO for ``strategy_id``.
+
+        Filters to the durable convention written by
+        :mod:`milodex.promotion.fault_injection`: ``decision_type =
+        'synthetic_fault_injection'`` AND ``risk_allowed = 0`` (a genuine veto).
+        An approved synthetic intent is a risk-layer regression and is never
+        recorded as a satisfying row, so the ``risk_allowed = 0`` filter is a
+        second line of defense. Ordered by ``recorded_at DESC`` with ``id`` as a
+        deterministic tiebreak. The caller applies the freshness bound.
+
+        Used by the R-PRM-004 lifecycle criterion (c) enforcement (ADR 0058 M4).
+        """
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT * FROM explanations
+                WHERE strategy_name = ?
+                  AND decision_type = 'synthetic_fault_injection'
+                  AND risk_allowed = 0
+                ORDER BY recorded_at DESC, id DESC
+                LIMIT 1
+                """,
+                (strategy_id,),
+            ).fetchone()
+        return None if row is None else _explanation_from_row(row)
 
     def list_trades_for_backtest_run(self, backtest_run_id: int) -> list[TradeEvent]:
         with self._connect() as connection:

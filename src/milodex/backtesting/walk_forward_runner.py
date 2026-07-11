@@ -320,6 +320,13 @@ def run_walk_forward(
             "test_days": test_days,
             "step_days": step_days,
             "initial_equity": eq_start,
+            # R-PRM-004 criterion (b) enforcement input (ADR 0058 M4). Top-level
+            # (not under oos_aggregate) so the lifecycle criterion reads it
+            # uniformly for single and walk-forward runs. The OOS-aggregate count
+            # of order intents that reached the drain phase across all windows;
+            # each produces one execution-or-skip explanation row linked to this
+            # parent run. See engine.run() for the single-run twin.
+            "signal_count": aggregate.trade_count + aggregate.skipped_count,
             "windows": [_window_to_dict(w) for w in windows],
             "oos_aggregate": {
                 "trade_count": aggregate.trade_count,

@@ -26,6 +26,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from milodex.promotion.evidence import EvidencePackage, assemble_evidence_package
+from milodex.promotion.lifecycle_criteria import (
+    LifecycleCriteriaResult,
+    evaluate_lifecycle_criteria,
+)
 from milodex.promotion.policy import ACTIVE_PROMOTION_POLICY, STAGE_PAPER, PromotionCheckResult
 from milodex.promotion.run_evidence import compute_post_update_hash, metrics_from_run
 from milodex.promotion.state_machine import (
@@ -50,6 +54,10 @@ REASON_LIFECYCLE_EXEMPT_NOT_SCOPED = "lifecycle_exempt_not_scoped"
 REASON_OVERRIDE_FLAGS_CONFLICT = "override_flags_conflict"
 REASON_OVERRIDE_STAGE_NOT_ALLOWED = "operator_override_stage_not_allowed"
 REASON_OVERRIDE_REASON_REQUIRED = "operator_override_reason_required"
+# M4 (ADR 0058 addendum) R-PRM-004 lifecycle-criteria enforcement refusal: a
+# lifecycle-exempt promotion whose operational criteria (a)/(b)/(c) are not all
+# satisfied against the event store is refused (fail-closed).
+REASON_LIFECYCLE_CRITERIA_UNMET = "lifecycle_criteria_unmet"
 
 # Durable ``promotion_type`` value for a general operator override (ADR 0058).
 # Distinct from ``lifecycle_exempt`` so the ledger never misdescribes a general
@@ -221,15 +229,18 @@ def _check_bypass_admissibility(
 def _build_gate_check_outcome(
     request: PromoteRequest,
     gate_result: PromotionCheckResult,
+    lifecycle_criteria_result: LifecycleCriteriaResult | None = None,
 ) -> dict[str, Any]:
     """Serialize the durable gate outcome for the evidence package (ADR 0058).
 
     The statistical shape is preserved verbatim so legacy rows and tests do not
     change shape. The lifecycle and operator-override paths append extra keys:
 
-    - lifecycle: the three R-PRM-004 criteria, marked unenforced with
-      ``deferred='M4'`` — an honest record that the operational gate was defined
-      but not evaluated (enforcement design belongs to roadmap M4).
+    - lifecycle: the enforced R-PRM-004 criteria result (ADR 0058 M4 addendum) —
+      per-criterion pass/fail with the evidence refs (run id, ages, counts,
+      synthetic-explanation id). A lifecycle-exempt promotion only reaches this
+      serialization once the criteria are satisfied, so this records the passing
+      evidence durably. The pre-M4 ``deferred='M4'`` shape is retired.
     - operator_override: the operator's reason (the recommendation text),
       recording that the statistical gate was skipped by an explicit operator act.
     """
@@ -247,11 +258,20 @@ def _build_gate_check_outcome(
 
     if request.lifecycle_exempt:
         lifecycle_gate = ACTIVE_PROMOTION_POLICY.lifecycle_gate
-        outcome["lifecycle_criteria"] = {
-            "criteria": list(lifecycle_gate.criteria),
-            "enforced": lifecycle_gate.enforced,
-            "deferred": "M4",
-        }
+        if lifecycle_criteria_result is not None:
+            outcome["lifecycle_criteria"] = {
+                "criteria_definition": list(lifecycle_gate.criteria),
+                **lifecycle_criteria_result.as_evidence_dict(),
+            }
+        else:
+            # Enforcement disabled (lifecycle_gate.enforced is False) — record the
+            # honest unenforced shape. Retained so toggling the policy flag off
+            # keeps a coherent durable record rather than crashing.
+            outcome["lifecycle_criteria"] = {
+                "criteria": list(lifecycle_gate.criteria),
+                "enforced": False,
+                "deferred": "M4",
+            }
 
     return outcome
 
@@ -362,6 +382,31 @@ def prepare_and_record_promotion(
             promotion_type=gate_result.promotion_type,
         )
 
+    # M4 (ADR 0058 addendum): enforce the three R-PRM-004 operational criteria
+    # for a lifecycle-exempt promotion. This runs ONLY for the scoped regime id
+    # (a non-scoped lifecycle-exempt request was already refused by
+    # _check_bypass_admissibility above) and ONLY when the policy marks the
+    # lifecycle gate enforced. check_gate's lifecycle short-circuit is unchanged
+    # (ADR 0058) — the admit/refuse decision lives here in the orchestrator seam.
+    # Fail-closed: any criterion that cannot be positively verified refuses the
+    # promotion with a per-criterion actionable message.
+    lifecycle_criteria_result: LifecycleCriteriaResult | None = None
+    if request.lifecycle_exempt and ACTIVE_PROMOTION_POLICY.lifecycle_gate.enforced:
+        lifecycle_criteria_result = evaluate_lifecycle_criteria(
+            request.strategy_id, event_store, now=request.now
+        )
+        if not lifecycle_criteria_result.satisfied:
+            failures = lifecycle_criteria_result.failure_messages()
+            return PromoteBlocked(
+                reason_code=REASON_LIFECYCLE_CRITERIA_UNMET,
+                message="; ".join(failures) or "lifecycle criteria unmet",
+                from_stage=from_stage,
+                to_stage=to_stage,
+                metrics_snapshot=metrics_snapshot,
+                gate_failures=failures,
+                promotion_type=gate_result.promotion_type,
+            )
+
     manifest_hash = compute_post_update_hash(config.raw_data, to_stage)
     evidence = assemble_evidence_package(
         strategy_id=request.strategy_id,
@@ -372,7 +417,9 @@ def prepare_and_record_promotion(
         recommendation=request.recommendation,
         known_risks=list(request.known_risks),
         promotion_type=gate_result.promotion_type,
-        gate_check_outcome=_build_gate_check_outcome(request, gate_result),
+        gate_check_outcome=_build_gate_check_outcome(
+            request, gate_result, lifecycle_criteria_result
+        ),
         metrics_snapshot=metrics_snapshot,
         event_store=event_store,
         now=request.now,

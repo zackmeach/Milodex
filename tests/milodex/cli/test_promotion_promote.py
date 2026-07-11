@@ -9,6 +9,7 @@ from pathlib import Path
 
 from milodex.cli.main import main as cli_entrypoint
 from milodex.core.event_store import BacktestRunEvent, EventStore
+from milodex.promotion.fault_injection import run_synthetic_fault_injection
 
 # The policy-listed lifecycle-proof id (ADR 0058) so --lifecycle-exempt stays
 # admissible. The statistical path is identity-agnostic, so the statistical
@@ -88,6 +89,35 @@ def _run(argv: list[str], tmp_path: Path, *, stdout=None, stderr=None):
 
 def _raise(msg: str):
     raise AssertionError(msg)
+
+
+def _seed_regime_lifecycle_evidence(event_store_path: Path, config_path: Path) -> None:
+    """Seed the three R-PRM-004 criteria (ADR 0058 M4) as satisfied.
+
+    A recent completed zero-signal backtest run (a + b) plus a real synthetic
+    fault-injection veto (c). Timestamps are relative to real wall-clock now
+    because the CLI PromoteRequest carries ``now=None`` and the criteria evaluate
+    against the current time.
+    """
+    event_store_path.parent.mkdir(parents=True, exist_ok=True)
+    store = EventStore(event_store_path)
+    now = datetime.now(tz=UTC)
+    store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="regime-cli-run-1",
+            strategy_id=_STRATEGY_ID,
+            config_path=str(config_path),
+            config_hash="fp-regime-lifecycle",
+            start_date=now - timedelta(days=31),
+            end_date=now - timedelta(days=1),
+            started_at=now - timedelta(days=1),
+            status="completed",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"signal_count": 0},
+        )
+    )
+    run_synthetic_fault_injection(_STRATEGY_ID, config_path, store)
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +205,7 @@ def test_promotion_promote_lifecycle_exempt_writes_manifest_and_promotion(tmp_pa
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     config_path = _write_config(config_dir, stage="backtest")
+    _seed_regime_lifecycle_evidence(tmp_path / "data" / "milodex.db", config_path)
 
     exit_code, out, _ = _run(
         [
@@ -257,7 +288,8 @@ def test_promotion_promote_gate_failure_writes_nothing(tmp_path):
 def test_promotion_promote_json_output(tmp_path):
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
-    _write_config(config_dir, stage="backtest")
+    config_path = _write_config(config_dir, stage="backtest")
+    _seed_regime_lifecycle_evidence(tmp_path / "data" / "milodex.db", config_path)
     out = StringIO()
 
     _run(
@@ -647,3 +679,94 @@ def test_promotion_promote_operator_override_refused_beyond_paper(tmp_path):
     store = EventStore(tmp_path / "data" / "milodex.db")
     assert store.list_promotions() == []
     assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# ADR 0058 M4: R-PRM-004 lifecycle-criteria enforcement CLI surface
+# ---------------------------------------------------------------------------
+
+
+def test_promotion_fault_check_records_veto(tmp_path):
+    """`milodex promotion fault-check` records a synthetic fault-injection veto."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    _write_config(config_dir, stage="backtest")
+
+    exit_code, out, err = _run(
+        ["promotion", "fault-check", _STRATEGY_ID],
+        tmp_path,
+    )
+
+    assert exit_code == 0, err.getvalue()
+    assert "VETOED" in out.getvalue()
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    record = store.get_latest_synthetic_fault_injection_veto(_STRATEGY_ID)
+    assert record is not None
+    assert record.risk_allowed is False
+
+
+def test_promotion_promote_lifecycle_exempt_refused_when_criteria_unmet(tmp_path):
+    """ADR 0058 M4: a lifecycle-exempt promotion with no criteria evidence is
+    refused with per-criterion actionable messages and no durable write."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest")
+
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "regime strategy ready for paper",
+            "--risk",
+            "criteria not yet established",
+            "--lifecycle-exempt",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    stderr = err.getvalue()
+    assert "backtest run" in stderr
+    assert "fault-check" in stderr
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert store.list_promotions() == []
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
+
+
+def test_promotion_promote_lifecycle_exempt_succeeds_after_fault_check(tmp_path):
+    """End-to-end: fault-check + a completed run then satisfy enforcement and the
+    lifecycle-exempt promotion lands."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_config(config_dir, stage="backtest")
+    _seed_regime_lifecycle_evidence(tmp_path / "data" / "milodex.db", config_path)
+
+    exit_code, out, err = _run(
+        [
+            "promotion",
+            "promote",
+            _STRATEGY_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "regime strategy ready for paper",
+            "--risk",
+            "criteria established via fault-check + completed run",
+            "--lifecycle-exempt",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code == 0, err.getvalue()
+    assert "paper" in out.getvalue()
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    promotions = store.list_promotions()
+    assert len(promotions) == 1
+    assert promotions[0].promotion_type == "lifecycle_exempt"
+    criteria = promotions[0].evidence_json["gate_check_outcome"]["lifecycle_criteria"]
+    assert criteria["enforced"] is True
+    assert criteria["satisfied"] is True

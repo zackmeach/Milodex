@@ -10,14 +10,16 @@ behavior suites cover the call-site integrations.
 from __future__ import annotations
 
 import textwrap
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
 from milodex.core.event_store import BacktestRunEvent, EventStore
+from milodex.promotion.fault_injection import run_synthetic_fault_injection
 from milodex.promotion.orchestrator import (
     REASON_GATE_FAILED,
     REASON_INVALID_STAGE_TRANSITION,
+    REASON_LIFECYCLE_CRITERIA_UNMET,
     REASON_LIFECYCLE_EXEMPT_NOT_SCOPED,
     REASON_MISSING_BACKTEST_RUN,
     REASON_OVERRIDE_FLAGS_CONFLICT,
@@ -150,6 +152,33 @@ def _statistical_request(cfg_path: Path, *, run_id: str = "wf-run-1") -> Promote
         notes="rm-010 test",
         now=_NOW,
     )
+
+
+def _seed_lifecycle_criteria_evidence(
+    store: EventStore, cfg_path: Path, *, signal_count: int = 0
+) -> None:
+    """Seed the three R-PRM-004 criteria as satisfied (ADR 0058 M4 enforcement).
+
+    (a)+(b): a recent completed backtest run carrying ``signal_count``.
+    (c): a real synthetic fault-injection veto recorded through the fault-check.
+    All timestamps sit within the freshness bound relative to ``_NOW``.
+    """
+    store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="regime-run-1",
+            strategy_id=_STRATEGY_ID,
+            config_path=str(cfg_path),
+            config_hash="a" * 64,
+            start_date=_NOW - timedelta(days=31),
+            end_date=_NOW - timedelta(days=1),
+            started_at=_NOW - timedelta(days=1),
+            status="completed",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"signal_count": signal_count},
+        )
+    )
+    run_synthetic_fault_injection(_STRATEGY_ID, cfg_path, store, now=_NOW)
 
 
 def _lifecycle_exempt_request(cfg_path: Path) -> PromoteRequest:
@@ -322,7 +351,9 @@ def test_invalid_stage_transition_returns_blocked(tmp_path):
 def test_lifecycle_exempt_promotion_bypasses_statistical_gate(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     cfg_path = _write_config(tmp_path)
-    # No backtest run seeded; lifecycle-exempt passes run_id=None.
+    # ADR 0058 M4: enforcement is ON, so the three operational criteria must be
+    # satisfied for the lifecycle-exempt promotion to be admitted. Seed them.
+    _seed_lifecycle_criteria_evidence(store, cfg_path)
 
     result = prepare_and_record_promotion(_lifecycle_exempt_request(cfg_path), store)
 
@@ -336,13 +367,15 @@ def test_lifecycle_exempt_promotion_bypasses_statistical_gate(tmp_path):
     assert result.backtest_run_id is None
     assert 'stage: "paper"' in cfg_path.read_text(encoding="utf-8")
 
-    # D-4 (ADR 0058): the lifecycle path durably records the three R-PRM-004
-    # criteria as unenforced + deferred to M4 — an honest ledger, not a silent
-    # bypass.
+    # ADR 0058 M4: the lifecycle path durably records the ENFORCED criteria
+    # result — per-criterion pass with the evidence refs. The pre-M4
+    # ``deferred='M4'`` shape is retired.
     criteria = result.evidence.gate_check_outcome["lifecycle_criteria"]
-    assert criteria["enforced"] is False
-    assert criteria["deferred"] == "M4"
+    assert criteria["enforced"] is True
+    assert criteria["satisfied"] is True
+    assert "deferred" not in criteria
     assert len(criteria["criteria"]) == 3
+    assert all(c["satisfied"] for c in criteria["criteria"])
 
 
 def test_lifecycle_exempt_promotion_with_null_min_trades_does_not_crash(tmp_path):
@@ -354,12 +387,63 @@ def test_lifecycle_exempt_promotion_with_null_min_trades_does_not_crash(tmp_path
     the exemption exists for. Present-but-None must resolve to the floor."""
     store = EventStore(tmp_path / "milodex.db")
     cfg_path = _write_config(tmp_path, min_trades_required=None)
+    _seed_lifecycle_criteria_evidence(store, cfg_path)
 
     result = prepare_and_record_promotion(_lifecycle_exempt_request(cfg_path), store)
 
     assert isinstance(result, PromoteSuccess)
     assert result.promotion_type == "lifecycle_exempt"
     assert 'stage: "paper"' in cfg_path.read_text(encoding="utf-8")
+
+
+def test_lifecycle_exempt_refused_when_criteria_unmet(tmp_path):
+    """ADR 0058 M4: a lifecycle-exempt promotion with no criteria evidence is
+    refused (fail-closed) with per-criterion actionable messages and NO durable
+    writes."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path)
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    result = prepare_and_record_promotion(_lifecycle_exempt_request(cfg_path), store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_LIFECYCLE_CRITERIA_UNMET
+    # All three criteria are unmet with nothing seeded.
+    assert len(result.gate_failures) == 3
+    assert any("backtest run" in f for f in result.gate_failures)
+    assert any("fault-check" in f for f in result.gate_failures)
+    # No durable writes: YAML unchanged, no promotion recorded.
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+    assert store.list_promotions_for_strategy(_STRATEGY_ID) == []
+
+
+def test_lifecycle_exempt_refused_when_only_criterion_c_missing(tmp_path):
+    """Partial evidence still fails closed: (a)+(b) satisfied but no fault-check."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path)
+    store.append_backtest_run(
+        BacktestRunEvent(
+            run_id="regime-run-1",
+            strategy_id=_STRATEGY_ID,
+            config_path=str(cfg_path),
+            config_hash="a" * 64,
+            start_date=_NOW - timedelta(days=31),
+            end_date=_NOW - timedelta(days=1),
+            started_at=_NOW - timedelta(days=1),
+            status="completed",
+            slippage_pct=0.001,
+            commission_per_trade=0.0,
+            metadata={"signal_count": 0},
+        )
+    )
+    # No fault-injection veto seeded.
+
+    result = prepare_and_record_promotion(_lifecycle_exempt_request(cfg_path), store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_LIFECYCLE_CRITERIA_UNMET
+    assert len(result.gate_failures) == 1
+    assert "fault-check" in result.gate_failures[0]
 
 
 # ---------------------------------------------------------------------------
