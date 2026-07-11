@@ -11,6 +11,10 @@ Aggregates operator-actionable signals from the event store:
 - ``underperforming``  — paper strategies whose live Sharpe trails their
                          promotion-evidence Sharpe (and evidence ≥ floor).
 - ``driftList``        — top-N annotated items for the operator attention rail.
+- ``operatorAlerts``   — recent rows from the ``operator_alerts`` anomaly
+                         channel (migration 017), severity/cap-ruled per the
+                         CLI ``strategy status`` contract (above-info never
+                         hidden behind the info cap).
 
 Threading model
 ---------------
@@ -66,7 +70,9 @@ from typing import Any
 from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
 
 from milodex.gui import _event_queries
+from milodex.gui._db_logging import log_db_read_error
 from milodex.gui.polling_lifecycle import PollingReadModel
+from milodex.gui.row_formatters import _short_strategy_name
 from milodex.gui.strategy_bank_state import _compute_gate_failures, _query_bank
 from milodex.promotion.state_machine import MIN_TRADES
 
@@ -78,6 +84,25 @@ logger = logging.getLogger(__name__)
 
 DRIFT_NO_FILLS_DAYS: int = 7  # flag if no paper fills seen in this many days
 DRIFT_LIST_CAP: int = 20  # maximum entries in driftList
+
+# operator_alerts rail (migration 017 anomaly channel).
+# Cap rule mirrors CLI `strategy status` fix ff534ba: the lowest `info` tier is
+# capped to the most-recent entries; every ABOVE-info alert (warning/critical/…)
+# surfaces in full and is NEVER hidden behind the cap.
+OPERATOR_ALERT_INFO_TIER: str = "info"
+OPERATOR_ALERT_INFO_CAP: int = 10
+
+# Display-ordering rank for the alert rail (higher = surfaced first). The cap
+# rule itself keys off the exact `severity != "info"` test above, NOT this map —
+# any unknown non-info severity still ranks above info (default 1) so it is
+# never treated as capped.
+_SEVERITY_RANK: dict[str, int] = {
+    "critical": 3,
+    "blocker": 3,
+    "error": 3,
+    "warning": 2,
+    "info": 0,
+}
 
 # ---------------------------------------------------------------------------
 # Pure helpers
@@ -107,6 +132,123 @@ def _compute_underperforming(
     if paper_sharpe is None or baseline_sharpe is None:
         return False
     return paper_sharpe < baseline_sharpe
+
+
+def _severity_rank(severity: str) -> int:
+    """Display-ordering rank for the operator-alert rail (higher = first).
+
+    Unknown non-info severities rank above ``info`` (default 1) so a novel
+    above-info alert type is never sorted below routine info noise.
+    """
+    return _SEVERITY_RANK.get(str(severity).lower(), 1)
+
+
+def _operator_alert_tone(severity: str) -> str:
+    """Map an alert severity to a presentation tone token consumed by QML.
+
+    ``critical`` (rendered negative), ``warn`` (rendered warning), or ``info``
+    (rendered muted). Python owns the token; QML owns the token→color mapping —
+    consistent with the drift-list ``tone`` field.
+    """
+    sev = str(severity).lower()
+    if sev == OPERATOR_ALERT_INFO_TIER:
+        return "info"
+    if sev in ("critical", "blocker", "error"):
+        return "critical"
+    return "warn"
+
+
+def _relative_age(recorded_at: str | None, now: datetime) -> str:
+    """Compact relative age ("5m ago" / "3h ago" / "2d ago") for an alert row.
+
+    Returns ``""`` for a missing/unparseable timestamp and "just now" for
+    anything under a minute (or a clock-skewed future timestamp). Naive
+    timestamps are treated as UTC (event-store rows are UTC ISO strings).
+    """
+    if not recorded_at:
+        return ""
+    try:
+        ts = datetime.fromisoformat(str(recorded_at))
+    except (ValueError, TypeError):
+        return ""
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    secs = int((now - ts).total_seconds())
+    if secs < 60:
+        return "just now"
+    mins = secs // 60
+    if mins < 60:
+        return f"{mins}m ago"
+    hours = mins // 60
+    if hours < 24:
+        return f"{hours}h ago"
+    return f"{hours // 24}d ago"
+
+
+def _build_operator_alerts(
+    conn: sqlite3.Connection, *, now: datetime | None = None
+) -> tuple[list[dict[str, Any]], str]:
+    """Build the operator-alert rail from the ``operator_alerts`` channel.
+
+    Reads the append-only anomaly ledger (migration 017: ``exit_intent_dropped``,
+    ``queued_intent_persist_failed``, and future M4 alert types) that until now
+    was surfaced only by CLI ``strategy status``.
+
+    Fail-soft: a read error is swallowed via :func:`log_db_read_error` and an
+    empty rail is returned, so a locked/corrupt/schema-drifted DB renders as
+    "no alerts" rather than crashing the polling read model or blanking the
+    sibling rollups — the established GUI read-helper contract.
+
+    Cap rule (mirrors CLI fix ff534ba): only the lowest ``info`` tier is capped
+    to the ``OPERATOR_ALERT_INFO_CAP`` most-recent entries; every above-info
+    alert surfaces in full and is NEVER hidden behind the cap. When info entries
+    are dropped, the returned note names the omission.
+
+    Returns ``(items, note)`` where ``items`` is ordered above-info-first then
+    most-recent-first, and ``note`` is a non-empty omission string only when
+    info alerts were capped out.
+    """
+    if now is None:
+        now = datetime.now(tz=UTC)
+    try:
+        rows = conn.execute(_SQL_OPERATOR_ALERTS).fetchall()
+    except sqlite3.Error as exc:
+        log_db_read_error("attention_state._build_operator_alerts", exc)
+        return [], ""
+
+    # rows are ordered by id ASC (chronological); the exact `severity != info`
+    # test is the locked cap boundary (not the display rank map).
+    above_info = [r for r in rows if r["severity"] != OPERATOR_ALERT_INFO_TIER]
+    info_only = [r for r in rows if r["severity"] == OPERATOR_ALERT_INFO_TIER]
+    capped_info = info_only[-OPERATOR_ALERT_INFO_CAP:]
+    omitted_info = len(info_only) - len(capped_info)
+
+    selected = above_info + capped_info
+    # Above-info first, then most-recent first within a tier.
+    selected.sort(
+        key=lambda r: (_severity_rank(r["severity"]), str(r["recorded_at"] or "")),
+        reverse=True,
+    )
+
+    items = [
+        {
+            "alertType": str(r["alert_type"]),
+            "severity": str(r["severity"]),
+            "summary": str(r["summary"]),
+            "strategy": _short_strategy_name(r["strategy_id"]) if r["strategy_id"] else "",
+            "symbol": r["symbol"] or "",
+            "age": _relative_age(r["recorded_at"], now),
+            "recordedAt": str(r["recorded_at"] or ""),
+            "tone": _operator_alert_tone(str(r["severity"])),
+        }
+        for r in selected
+    ]
+
+    note = ""
+    if omitted_info:
+        plural = "s" if omitted_info != 1 else ""
+        note = f"{omitted_info} older info alert{plural} hidden"
+    return items, note
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +310,12 @@ WHERE status = 'filled'
 GROUP BY strategy_name
 """
 
+_SQL_OPERATOR_ALERTS = """
+SELECT id, recorded_at, alert_type, severity, summary, strategy_id, symbol
+FROM operator_alerts
+ORDER BY id ASC
+"""
+
 # Compute per-strategy rolling Sharpe from paper trades using a simple
 # ratio proxy: mean daily pnl / std of pnl.  We don't have individual trade
 # PnL in the trades table directly; instead we use the promotions.sharpe_ratio
@@ -208,6 +356,8 @@ def _query_attention(db_path: Path, locks_dir: Path | None = None) -> dict[str, 
     - ``needs_review``: int
     - ``underperforming``: int
     - ``drift_list``: list[dict]
+    - ``operator_alerts``: list[dict]  (from _build_operator_alerts)
+    - ``operator_alerts_note``: str    (info-omission indicator, "" if none)
     - ``lastRefreshedAt``: str (filled by ``_build_attention_snapshot`` caller
       per the ``PollingReadModel`` contract)
     """
@@ -256,6 +406,11 @@ def _query_attention(db_path: Path, locks_dir: Path | None = None) -> dict[str, 
         # --- last fill timestamps for drift list ---
         fill_rows = conn.execute(_SQL_LAST_FILL_PER_STRATEGY).fetchall()
         last_fill: dict[str, str] = {r["strategy_id"]: r["last_fill_at"] for r in fill_rows}
+
+        # --- operator-alert rail (migration 017 anomaly channel) ---
+        # Fail-soft inside _build_operator_alerts: a failing read here yields an
+        # empty rail without blanking the rollups computed above.
+        operator_alerts, operator_alerts_note = _build_operator_alerts(conn)
 
     finally:
         conn.close()
@@ -342,6 +497,8 @@ def _query_attention(db_path: Path, locks_dir: Path | None = None) -> dict[str, 
         "needs_review": needs_review,
         "underperforming": underperforming,
         "drift_list": drift_list,
+        "operator_alerts": operator_alerts,
+        "operator_alerts_note": operator_alerts_note,
     }
 
 
@@ -423,6 +580,7 @@ class AttentionState(PollingReadModel):
 
     rollupsChanged = Signal()  # noqa: N815
     driftListChanged = Signal()  # noqa: N815
+    operatorAlertsChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -444,6 +602,8 @@ class AttentionState(PollingReadModel):
         self._locks_dir = locks_dir
         self._rollups: dict[str, Any] = {}
         self._drift_list: list[dict[str, Any]] = []
+        self._operator_alerts: list[dict[str, Any]] = []
+        self._operator_alerts_note: str = ""
         super().__init__(
             builder=lambda: _build_attention_snapshot(db_path, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
@@ -458,14 +618,23 @@ class AttentionState(PollingReadModel):
             "needsReview": result["needs_review"],
             "underperforming": result["underperforming"],
         }
+        new_alerts = result.get("operator_alerts", [])
+        new_alerts_note = result.get("operator_alerts_note", "")
         rollups_changed = new_rollups != self._rollups
         drift_changed = result["drift_list"] != self._drift_list
+        alerts_changed = (
+            new_alerts != self._operator_alerts or new_alerts_note != self._operator_alerts_note
+        )
         self._rollups = new_rollups
         self._drift_list = result["drift_list"]
+        self._operator_alerts = new_alerts
+        self._operator_alerts_note = new_alerts_note
         if rollups_changed:
             self.rollupsChanged.emit()
         if drift_changed:
             self.driftListChanged.emit()
+        if alerts_changed:
+            self.operatorAlertsChanged.emit()
 
     def _get_rollups(self) -> dict:
         return self._rollups
@@ -473,9 +642,21 @@ class AttentionState(PollingReadModel):
     def _get_drift_list(self) -> list:
         return self._drift_list
 
+    def _get_operator_alerts(self) -> list:
+        return self._operator_alerts
+
+    def _get_operator_alerts_note(self) -> str:
+        return self._operator_alerts_note
+
     rollups = Property("QVariantMap", _get_rollups, notify=rollupsChanged)
     driftList = Property(  # noqa: N815
         "QVariantList", _get_drift_list, notify=driftListChanged
+    )
+    operatorAlerts = Property(  # noqa: N815
+        "QVariantList", _get_operator_alerts, notify=operatorAlertsChanged
+    )
+    operatorAlertsNote = Property(  # noqa: N815
+        str, _get_operator_alerts_note, notify=operatorAlertsChanged
     )
 
     # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel
