@@ -21,7 +21,7 @@ import os
 import re
 import sys
 import textwrap
-from dataclasses import FrozenInstanceError, is_dataclass
+from dataclasses import FrozenInstanceError, is_dataclass, replace
 from datetime import UTC, date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -2050,6 +2050,153 @@ def test_submit_backtest_revalidates_stale_deleted_config(make_facade, config_di
 
     assert result.status == "blocked"
     assert any(blocker.reason_code == "strategy_not_found" for blocker in result.blockers)
+
+
+# --------------------------------------------------------------------------- #
+# submit_backtest error branches (test-gap coverage)
+# --------------------------------------------------------------------------- #
+
+
+def test_submit_backtest_without_engine_factory_returns_construction_error(
+    make_facade, config_dir: Path
+) -> None:
+    """backtest_engine_factory=None -> a construction-error CommandResult,
+    not an exception across the facade boundary."""
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade()  # no backtest_engine_factory
+    proposal = _make_backtest_proposal(walk_forward=False)
+
+    result = facade.submit_backtest(proposal)
+
+    assert result.status == "error"
+    assert len(result.blockers) == 1
+    assert result.blockers[0].reason_code == "backtest_engine_unavailable"
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("start", "not-a-date"),
+        ("end", "not-a-date"),
+        ("initial_equity", "not-a-number"),
+        ("slippage", "not-a-number"),
+    ],
+)
+def test_submit_backtest_invalid_inputs_returns_blocked_result(
+    make_facade, config_dir: Path, field: str, bad_value: str
+) -> None:
+    """Malformed proposal.inputs (bad dates / non-numeric floats) trip the
+    TypeError/ValueError catch and surface as a structured 'blocked' result
+    with reason_code='invalid_backtest_input' — never an uncaught exception."""
+    _write_strategy(config_dir, stage="backtest")
+    facade = make_facade(backtest_engine_factory=lambda *_a, **_k: _FakeSingleBacktestEngine())
+    proposal = _make_backtest_proposal(walk_forward=False)
+    proposal = replace(proposal, inputs={**proposal.inputs, field: bad_value})
+
+    result = facade.submit_backtest(proposal)
+
+    assert result.status == "blocked"
+    assert result.blockers[0].reason_code == "invalid_backtest_input"
+
+
+def test_submit_backtest_idle_stage_update_failure_returns_error_result(
+    make_facade, config_dir: Path, event_store: EventStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ValueError from the governance idle->backtest stage write (ADR 0050
+    Decision 6) surfaces as a structured 'error' result with
+    reason_code='idle_to_backtest_stage_update_failed' — no promotion event
+    is recorded since the governance write never completed."""
+    _write_strategy(config_dir, stage="idle")
+    facade = make_facade(backtest_engine_factory=lambda *_a, **_k: _FakeSingleBacktestEngine())
+
+    def _boom(*_args, **_kwargs):
+        raise ValueError("stage write refused")
+
+    monkeypatch.setattr(facade_module, "_governance_update_stage", _boom)
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert result.status == "error"
+    assert result.blockers[0].reason_code == "idle_to_backtest_stage_update_failed"
+    assert "stage write refused" in result.blockers[0].message
+    assert event_store.list_promotions_for_strategy(STRATEGY_ID) == []
+
+
+class _CountingEventStoreFactory:
+    """An event_store_factory that raises on a chosen call number.
+
+    Lets a test isolate exactly which internal ``self._event_store_factory()``
+    call site (submit_backtest's own ``_require_event_store``,
+    ``_create_orchestration_job``, or ``_finish_orchestration_job``) fails,
+    without needing to touch the real EventStore.
+    """
+
+    def __init__(self, event_store: EventStore, *, fail_on_call: int) -> None:
+        self._event_store = event_store
+        self._fail_on_call = fail_on_call
+        self.calls = 0
+
+    def __call__(self) -> EventStore:
+        self.calls += 1
+        if self.calls == self._fail_on_call:
+            raise RuntimeError("factory unavailable")
+        return self._event_store
+
+
+def test_submit_backtest_swallows_orchestration_job_creation_failure(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """The 2nd event_store_factory() call happens inside
+    _create_orchestration_job; if it raises, the exception is caught and
+    logged (not re-raised) — the backtest submit still completes with no
+    orchestration refs attached."""
+    _write_strategy(config_dir, stage="backtest")
+    factory = _CountingEventStoreFactory(event_store, fail_on_call=2)
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=factory,
+        backtest_engine_factory=lambda *_a, **_k: _FakeSingleBacktestEngine(),
+        workflow_readiness=_healthy_readiness(),
+    )
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert factory.calls == 2
+    assert result.status == "submitted", result.blockers
+    assert "orchestration_job_id" not in result.durable_refs
+    assert "orchestration_batch_id" not in result.durable_refs
+
+
+def test_submit_backtest_swallows_orchestration_job_finish_failure(
+    config_dir: Path, locks_dir: Path, event_store: EventStore
+) -> None:
+    """The 3rd event_store_factory() call happens inside
+    _finish_orchestration_job; if it raises, the exception is caught and
+    logged (not re-raised) — the submit result is still returned, carrying
+    the job/batch refs merged before the failing call, but the job's
+    terminal status update never lands (stuck 'running')."""
+    _write_strategy(config_dir, stage="backtest")
+    factory = _CountingEventStoreFactory(event_store, fail_on_call=3)
+    facade = BenchCommandFacade(
+        config_dir=config_dir,
+        locks_dir=locks_dir,
+        get_trading_mode=lambda: "paper",
+        event_store_factory=factory,
+        backtest_engine_factory=lambda *_a, **_k: _FakeSingleBacktestEngine(),
+        workflow_readiness=_healthy_readiness(),
+    )
+
+    result = facade.submit_backtest(_make_backtest_proposal(walk_forward=False))
+
+    assert factory.calls == 3
+    assert result.status == "submitted", result.blockers
+    job_id = result.durable_refs["orchestration_job_id"]
+    assert job_id
+    job = event_store.get_orchestration_job(job_id)
+    assert job is not None
+    assert job.status == "running"
 
 
 def _make_demote_proposal(
