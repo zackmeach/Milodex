@@ -29,6 +29,7 @@ Safety invariants enforced here so no individual cell can violate them:
 
 from __future__ import annotations
 
+import gc
 import os
 import shutil
 import subprocess
@@ -68,7 +69,25 @@ class ScratchEnv:
         return self.data_dir / "milodex.db"
 
     def cleanup(self) -> None:
+        """Best-effort teardown of the scratch tree.
+
+        In-process cells that construct an ``EventStore`` (e.g. ``clean_room``)
+        hold ``milodex.db`` open: ``EventStore`` has no explicit ``close()`` —
+        each method opens a short-lived ``sqlite3.Connection`` via
+        ``_connect()`` and relies on refcounting/GC to release it. On Windows
+        an unreleased file handle blocks deletion, so a bare
+        ``rmtree(ignore_errors=True)`` can silently no-op and leak the scratch
+        dir. Force a GC pass to drop lingering connection references and
+        retry once; if the directory still won't go, log (never raise) so the
+        leak is visible instead of silent.
+        """
         shutil.rmtree(self.root, ignore_errors=True)
+        if not self.root.exists():
+            return
+        gc.collect()
+        shutil.rmtree(self.root, ignore_errors=True)
+        if self.root.exists():
+            print(f"[drill] WARNING: scratch dir leaked after cleanup retry: {self.root}")
 
 
 def provision_scratch(prefix: str = "milodex-drill-") -> ScratchEnv:

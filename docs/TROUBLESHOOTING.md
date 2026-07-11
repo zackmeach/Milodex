@@ -76,6 +76,50 @@ These make a future recurrence loud and self-healing rather than silent:
 
 ---
 
+## Controlled-stop request unconsumed (runner wedged)
+
+**Date documented:** 2026-07-11 (PR #354 surfaced the wedged state on `milodex strategy status`).
+
+### Symptom
+
+- You issue a controlled stop ("Stop Trading" in the GUI, or the equivalent CLI request) and it never
+  completes — the runner keeps polling/evaluating as if nothing was requested.
+- `milodex strategy status` reports the strategy's `stop_request_state` as `wedged`, with a note like:
+  `controlled-stop request UNCONSUMED for <age> — the runner lock is live but the process is not
+  draining the request (wedged; a healthy runner consumes it within one poll). Controlled stop will
+  not complete: hard-kill the PID and clear data/locks/*.lock (see docs/TROUBLESHOOTING.md).`
+
+### Root cause
+
+A controlled-stop request is a file the runner is expected to notice and consume at the top of its
+next poll cycle. `wedged` means the runner's advisory lock is still held by a **live** process (so the
+runner is not dead) but that process has gone three poll cycles without consuming the request — it is
+alive yet unresponsive (e.g. stuck in a long-running call, deadlocked, or otherwise not returning to
+its poll loop). See `_STOP_UNCONSUMED_CADENCE_MULTIPLE` and `classify_stop_request` in
+`src/milodex/strategies/runner_status.py` for the exact threshold and classification logic.
+
+This is distinct from `moot`: `moot` means the stop request is present but **no live runner holds the
+lock** — the process is already gone (phantom/dead), so the request was never going to be consumed but
+is harmless. `wedged` is the state that needs operator intervention; `moot` just needs the leftover
+lock file cleared.
+
+### Fix
+
+- **`wedged`** (process alive, not draining): hard-kill the PID reported by `milodex strategy status`
+  (`holder_pid`), then clear the stale lock:
+  ```powershell
+  Stop-Process -Id <holder_pid> -Force
+  Remove-Item data\locks\*.lock -Force
+  ```
+  Re-run `milodex strategy status` to confirm the strategy no longer shows a live lock holder, then
+  relaunch the runner if desired.
+- **`moot`** (process already dead): no PID to kill — just clear the leftover lock file:
+  ```powershell
+  Remove-Item data\locks\*.lock -Force
+  ```
+
+---
+
 ## SQLite event store is corrupt or locked ("file is not a database" / "database is locked")
 
 **Date documented:** 2026-06-21 (F3 failure/recovery drill).
@@ -139,11 +183,13 @@ Get-ChildItem data\milodex.db*
 ### Root cause
 
 - Missing keys are detected pre-flight and reported cleanly (actionable).
-- Bad/expired keys: Alpaca returns HTTP 401. The `APIError`→`BrokerAuthError` translation currently
-  lives only in `alpaca_client.py:submit_order`; the read paths (`get_account`, `get_orders`,
-  `get_positions`) pass the raw `APIError` through, so it lands in the generic `unexpected_error` net
-  and reads as cryptic. **All broker commands fail closed (exit 1) — the system never proceeds as if
-  live on a broker error.** (A follow-up to add the translation to the read paths is filed.)
+- Bad/expired keys: Alpaca returns HTTP 401. The `APIError`→`BrokerAuthError` translation lives in
+  `alpaca_client.py:submit_order` **and**, as of PR #284, the read paths (`get_account`, `get_orders`,
+  `get_positions`) via the shared `_read_call` guard — a 401/forbidden/auth `APIError` on any of those
+  calls now raises `BrokerAuthError` with an actionable message (check `ALPACA_API_KEY` /
+  `ALPACA_SECRET_KEY` in `.env`, confirm `TRADING_MODE` matches the key type) instead of surfacing a
+  raw `APIError` through the generic `unexpected_error` net. **All broker commands fail closed
+  (exit 1) — the system never proceeds as if live on a broker error.**
 
 ### Diagnostic
 
@@ -186,6 +232,10 @@ Get-ChildItem logs\milodex-*.log | Sort LastWriteTime | Select -Last 1 | Get-Con
   runner tail) is **invisible to the report**: it collapses the 200-DMA rolling mean to all-NaN, the
   runner idles without recording, and there is no fresh row to flag. Only a per-year bar count can
   see this class. (See the CLAUDE.md daily-cache gotcha.)
+- As of PR #352, this no longer idles silently even without checking per-year bar counts: the daily
+  runner's stale-bar idle decline now also emits a durable `stale_market_data_idle` operator alert
+  (deduplicated once per staleness episode), surfaced through the generic `operator_alerts` channel by
+  both `milodex strategy status` and the GUI attention rail.
 
 ### Diagnostic
 
