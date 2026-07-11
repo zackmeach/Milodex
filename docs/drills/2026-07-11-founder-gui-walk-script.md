@@ -213,12 +213,30 @@ valid target for the rest of this section.
 There is no bare "trip only" CLI path — the only manual-trip affordance is
 `milodex halt`, which trips the kill switch AND issues a controlled-stop
 request to every live runner in the same call (ADR 0005 Addendum / D-9,
-option A2). In a second terminal (scratch env vars set):
+option A2).
+
+**Credential fence — do this first.** `halt` also runs a best-effort
+`cancel_all_orders` against the broker, and broker credentials come from
+`.env` — they are NOT scoped by the `MILODEX_*` overrides. With real
+credentials this step would cancel any resting orders on the **real paper
+account**. Shadow the credentials with bogus values in this terminal so the
+cancel step fails soft (the M4 drill matrix proved `halt` still trips
+durably and reports honestly when the cancel fails — `docs/drills/2026-07-11-m4-drill-matrix.md`,
+`kill_switch_trip_reset` cell):
+
+```powershell
+$env:ALPACA_API_KEY = "PKWALKBOGUSKEY000000"
+$env:ALPACA_SECRET_KEY = "walkBogusSecret00000000000000000000000AAA"
+```
+
+Then, in that same second terminal (scratch env vars + bogus creds set):
 
 ```powershell
 .venv\Scripts\python.exe -m milodex.cli.main halt --confirm --reason "HR-4/HR-5 founder GUI walk"
 ```
 
+- [ ] Command reports the cancel step FAILED (expected — bogus creds; the
+      trip must land anyway).
 - [ ] Command reports `Kill switch: active`.
 - [ ] Command reports a controlled-stop request issued to the regime runner.
 
