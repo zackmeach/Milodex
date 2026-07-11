@@ -404,7 +404,14 @@ def cell_wedged_stop() -> DrillResult:
         # Fault (wedged): a genuinely-live process holds the runner lock, and a
         # controlled-stop request has sat unconsumed past 3x the 60s cadence.
         live_proc = spawn_live_process(600)
-        write_lock_file(scratch.locks_dir, _WEDGED_SID, pid=live_proc.pid, started_at=now)
+        # started_at must be captured AFTER the spawn: the identity check
+        # accepts the holder only if proc_start <= started_at + 1s grace
+        # (advisory_lock._PID_REUSE_GRACE), and on a slow CI runner the store
+        # setup above can push the spawn >1s past an earlier `now`.
+        lock_started_at = datetime.now(tz=UTC)
+        write_lock_file(
+            scratch.locks_dir, _WEDGED_SID, pid=live_proc.pid, started_at=lock_started_at
+        )
         stop_path = controlled_stop_request_path(scratch.locks_dir, _WEDGED_SID)
         stop_path.write_text('{"requested_by": "drill"}', encoding="utf-8")
         backdated = (now - timedelta(seconds=300)).timestamp()
