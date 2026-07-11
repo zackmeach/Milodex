@@ -41,6 +41,7 @@ def _frame(closes: list[float], dates: list[str]) -> pd.DataFrame:
 
 
 def test_compute_benchmark_flat_price_produces_zero_return() -> None:
+    # R-ANA-003: SPY benchmark comparison computed over a given period.
     df = _frame([100.0, 100.0, 100.0], ["2024-01-02", "2024-01-03", "2024-01-04"])
     metrics = compute_benchmark(
         start_date=date(2024, 1, 2),
@@ -56,6 +57,7 @@ def test_compute_benchmark_flat_price_produces_zero_return() -> None:
 
 
 def test_compute_benchmark_rising_price_positive_return() -> None:
+    # R-ANA-003: SPY benchmark comparison over the same period as a strategy report.
     df = _frame([100.0, 110.0, 120.0], ["2024-01-02", "2024-01-03", "2024-01-04"])
     metrics = compute_benchmark(
         start_date=date(2024, 1, 2),

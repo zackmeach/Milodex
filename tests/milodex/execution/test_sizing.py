@@ -59,7 +59,7 @@ def test_raises_on_non_positive_price() -> None:
 
 
 def test_fifty_dollar_notional_on_five_hundred_dollar_stock() -> None:
-    """A $50 notional intent on a $500 stock produces a 0.1-share order.
+    """R-BRK-008: A $50 notional intent on a $500 stock produces a 0.1-share order.
 
     Sizing is expressed in notional dollars (fractional shares), not share count.
     The fractional helper must return 0.1; the whole-share helper floors it to 0,

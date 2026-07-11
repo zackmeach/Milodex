@@ -128,6 +128,7 @@ def test_orchestration_ledger_schema_has_adr_0040_tables_and_indexes(tmp_path):
 
 
 def test_event_store_round_trips_records(tmp_path):
+    # R-ANA-001: submitted trades persist to the SQLite event store and round-trip.
     store = EventStore(tmp_path / "milodex.db")
     recorded_at = datetime(2026, 4, 21, 20, 0, tzinfo=UTC)
 

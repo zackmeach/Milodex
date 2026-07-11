@@ -917,6 +917,7 @@ def test_halt_trading_records_reason_and_counts_as_activation(
 def test_preview_and_submit_record_explanations_and_trades(
     tmp_path, risk_defaults_file, latest_bar, sample_account, submitted_order
 ):
+    # R-ANA-001: preview and submit both persist trade rows to the event store.
     broker = StubBroker(
         account=sample_account,
         submit_order=submitted_order,
