@@ -22,6 +22,7 @@ from milodex.strategies.paper_runner_control import (
     runner_lock_name,
 )
 from milodex.strategies.runner_status import (
+    classify_stop_request,
     collect_runner_statuses,
     heartbeat_label,
     resolve_runner_liveness,
@@ -363,6 +364,138 @@ def test_unknown_strategy_raises(store, config_dir, locks_dir):
             locks_dir=locks_dir,
             strategy_id="nope.daily.missing.x.v1",
         )
+
+
+# ---------------------------------------------------------------------------
+# Unconsumed controlled-stop request — wedged-runner observable
+# ---------------------------------------------------------------------------
+
+
+def _write_stop_request(locks_dir: Path, *, age_seconds: float = 0.0) -> Path:
+    """Write a controlled-stop request sentinel, optionally backdating its mtime."""
+    path = controlled_stop_request_path(locks_dir, STRATEGY_ID)
+    path.write_text(json.dumps({"mode": "controlled"}), encoding="utf-8")
+    if age_seconds > 0:
+        past = path.stat().st_mtime - age_seconds
+        os.utime(path, (past, past))
+    return path
+
+
+def _hold_lock(locks_dir: Path) -> AdvisoryLock:
+    lock = AdvisoryLock(
+        runner_lock_name(STRATEGY_ID),
+        locks_dir=locks_dir,
+        holder_name=f"milodex strategy run {STRATEGY_ID}",
+    )
+    lock.acquire()
+    return lock
+
+
+def test_classify_stop_request_pure():
+    # No request -> None.
+    assert (
+        classify_stop_request(
+            stop_requested=False, age_seconds=None, lock_live=True, cadence_seconds=60.0
+        )
+        is None
+    )
+    # Fresh request, live runner -> pending (not yet wedged).
+    assert (
+        classify_stop_request(
+            stop_requested=True, age_seconds=10.0, lock_live=True, cadence_seconds=60.0
+        )
+        == "pending"
+    )
+    # Old request (>= 3x cadence), live runner -> wedged.
+    assert (
+        classify_stop_request(
+            stop_requested=True, age_seconds=200.0, lock_live=True, cadence_seconds=60.0
+        )
+        == "wedged"
+    )
+    # Old request, dead lock -> moot (phantom semantics win, never "wedged").
+    assert (
+        classify_stop_request(
+            stop_requested=True, age_seconds=200.0, lock_live=False, cadence_seconds=60.0
+        )
+        == "moot"
+    )
+    # Present but unknown age with a live lock -> pending, never fabricate wedged.
+    assert (
+        classify_stop_request(
+            stop_requested=True, age_seconds=None, lock_live=True, cadence_seconds=60.0
+        )
+        == "pending"
+    )
+
+
+def test_fresh_stop_request_with_live_lock_is_pending(store, config_dir, locks_dir):
+    """(a) fresh request + live lock -> requested but not yet wedged."""
+    _append_run(store)
+    _write_stop_request(locks_dir, age_seconds=0.0)
+    lock = _hold_lock(locks_dir)
+    try:
+        statuses = collect_runner_statuses(store, config_dir=config_dir, locks_dir=locks_dir)
+    finally:
+        lock.release()
+
+    entry = _status_for(statuses)
+    assert entry["state"] == "running"
+    assert entry["stop_requested"] is True
+    assert entry["stop_request_state"] == "pending"
+    assert entry["stop_request_note"] is None
+    assert entry["stop_requested_age_seconds"] is not None
+
+
+def test_old_stop_request_with_live_lock_is_wedged(store, config_dir, locks_dir):
+    """(b) old request + live lock -> wedged, with age and remediation pointer."""
+    _append_run(store)
+    _write_stop_request(locks_dir, age_seconds=600.0)  # 1D cadence 60s -> threshold 180s
+    lock = _hold_lock(locks_dir)
+    try:
+        statuses = collect_runner_statuses(store, config_dir=config_dir, locks_dir=locks_dir)
+    finally:
+        lock.release()
+
+    entry = _status_for(statuses)
+    assert entry["state"] == "running"  # a wedged runner is ALIVE, not phantom
+    assert entry["stop_request_state"] == "wedged"
+    assert entry["stop_requested_age_seconds"] >= 180.0
+    note = entry["stop_request_note"] or ""
+    assert "wedged" in note
+    assert "hard-kill" in note.lower()
+    assert "data/locks" in note
+
+
+def test_old_stop_request_with_dead_lock_is_moot_not_wedged(store, config_dir, locks_dir):
+    """(c) old request + dead lock -> phantom semantics win; moot, never wedged."""
+    _append_run(store)  # open row, no live lock held -> phantom
+    _write_stop_request(locks_dir, age_seconds=600.0)
+
+    statuses = collect_runner_statuses(store, config_dir=config_dir, locks_dir=locks_dir)
+
+    entry = _status_for(statuses)
+    assert entry["state"] == "phantom"
+    assert entry["stop_request_state"] == "moot"
+    note = entry["stop_request_note"] or ""
+    assert "moot" in note
+    assert "wedged" not in note
+
+
+def test_no_stop_request_has_absent_state(store, config_dir, locks_dir):
+    """(d) no request -> absent/None state and age."""
+    _append_run(store)
+    lock = _hold_lock(locks_dir)
+    try:
+        statuses = collect_runner_statuses(store, config_dir=config_dir, locks_dir=locks_dir)
+    finally:
+        lock.release()
+
+    entry = _status_for(statuses)
+    assert entry["stop_requested"] is False
+    assert entry["stop_request_state"] is None
+    assert entry["stop_requested_age_seconds"] is None
+    assert entry["stop_request_note"] is None
 
 
 # ---------------------------------------------------------------------------

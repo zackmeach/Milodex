@@ -1058,6 +1058,54 @@ def test_strategy_status_reports_running_runner_with_live_lock(tmp_path):
     assert "by design" in output  # 1D idle-by-design note
 
 
+def test_strategy_status_renders_wedged_unconsumed_stop(tmp_path):
+    """An old, unconsumed controlled-stop request against a live runner renders
+    as UNCONSUMED (wedged) with the hard-kill remediation pointer."""
+    import os
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.strategies.paper_runner_control import controlled_stop_request_path
+
+    config_dir = tmp_path / "configs"
+    _write_status_test_config(config_dir)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+    store = _status_test_store(tmp_path)
+
+    # Backdate the request well past the wedged threshold (1D cadence 60s -> 180s).
+    stop_path = controlled_stop_request_path(locks_dir, _STATUS_STRATEGY_ID)
+    stop_path.write_text('{"mode": "controlled"}', encoding="utf-8")
+    past = stop_path.stat().st_mtime - 600
+    os.utime(stop_path, (past, past))
+
+    holder = AdvisoryLock(
+        f"milodex.runtime.strategy.{_STATUS_STRATEGY_ID}",
+        locks_dir=locks_dir,
+        holder_name=f"milodex strategy run {_STATUS_STRATEGY_ID}",
+    )
+    holder.acquire()
+    stdout = StringIO()
+    try:
+        exit_code = cli_entrypoint(
+            ["strategy", "status", _STATUS_STRATEGY_ID],
+            event_store_factory=lambda: store,
+            config_dir=config_dir,
+            locks_dir=locks_dir,
+            stdout=stdout,
+            stderr=StringIO(),
+        )
+    finally:
+        holder.release()
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "state: running" in output  # wedged runner is alive, not phantom
+    assert "UNCONSUMED" in output
+    assert "wedged" in output
+    assert "hard-kill" in output.lower()
+    assert "data/locks" in output
+
+
 def test_strategy_status_json_payload(tmp_path):
     config_dir = tmp_path / "configs"
     _write_status_test_config(config_dir)

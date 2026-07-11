@@ -119,9 +119,30 @@ def _format_status_block(entry: dict) -> list[str]:
             f"heartbeat: {entry['heartbeat']}"
         )
     lines.append(f"  last evaluation: {entry['last_eval_at'] or 'none this session'}")
-    lines.append(f"  stop requested: {'yes' if entry['stop_requested'] else 'no'}")
+    lines.extend(_stop_request_lines(entry))
     if entry["note"]:
         lines.append(f"  note: {entry['note']}")
+    return lines
+
+
+_STOP_REQUEST_LABELS = {
+    "pending": "yes (awaiting runner consumption)",
+    "wedged": "YES — UNCONSUMED (runner wedged)",
+    "moot": "yes (moot — runner not live)",
+}
+
+
+def _stop_request_lines(entry: dict) -> list[str]:
+    """Render the controlled-stop request status, making an unconsumed (wedged)
+    request unmistakable with its remediation pointer."""
+    state = entry.get("stop_request_state")
+    if state is None:
+        # No request; preserve the historical yes/no shape for the absent case.
+        return [f"  stop requested: {'yes' if entry.get('stop_requested') else 'no'}"]
+    lines = [f"  stop requested: {_STOP_REQUEST_LABELS.get(state, 'yes')}"]
+    note = entry.get("stop_request_note")
+    if note:
+        lines.append(f"  stop request: {note}")
     return lines
 
 
