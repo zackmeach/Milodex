@@ -179,9 +179,7 @@ def controlled_stop_request_age(
     except FileNotFoundError:
         return None
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "controlled_stop_request_age: stat failed for %s: %s", strategy_id, exc
-        )
+        logger.warning("controlled_stop_request_age: stat failed for %s: %s", strategy_id, exc)
         return None
 
 
