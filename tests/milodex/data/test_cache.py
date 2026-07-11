@@ -452,6 +452,20 @@ def test_read_with_retry_succeeds_after_transient_permission_error(cache, sample
     assert len(result) == len(sample_df)
 
 
+def test_write_raises_on_slash_symbol(cache, sample_df):
+    """A symbol containing '/' (e.g. 'BTC/USD') has no filesystem-safe cache
+    key today — writing must fail loudly instead of nesting a stray
+    directory and dying inside pyarrow with an unhelpful OSError."""
+    with pytest.raises(ValueError, match="path separator"):
+        cache.write("BTC/USD", Timeframe.DAY_1, sample_df)
+
+
+def test_read_raises_on_slash_symbol(cache):
+    """Same guard on the read path — ``_path`` backs every cache method."""
+    with pytest.raises(ValueError, match="path separator"):
+        cache.read("BTC/USD", Timeframe.DAY_1)
+
+
 def test_read_with_retry_gives_up_after_max_attempts(cache, sample_df):
     """When the parquet read always raises PermissionError, the read retry
     exhausts max_attempts (default 4) then re-raises rather than crashing the
