@@ -812,6 +812,85 @@ SurfaceBase {
                             }
                         }
                     }
+
+                    // ---- operator-alert rail (operator_alerts channel) ----
+                    Rectangle {
+                        width: parent.width
+                        height: 1
+                        color: Theme.color.border.subtle
+                        visible: AttentionState.operatorAlerts.length > 0
+                    }
+
+                    Column {
+                        objectName: "deskAttentionOperatorAlerts"
+                        width: parent.width
+                        spacing: Theme.space[2]
+                        visible: AttentionState.operatorAlerts.length > 0
+
+                        Text {
+                            text: "Operator Alerts"
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.body.sm.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.weight:    Font.Medium
+                        }
+
+                        Repeater {
+                            model: AttentionState.operatorAlerts
+                            delegate: RowLayout {
+                                width: parent.width
+                                spacing: Theme.space[3]
+                                Text {
+                                    Layout.preferredWidth: 68
+                                    Layout.alignment: Qt.AlignTop
+                                    text: String(modelData.severity).toUpperCase()
+                                    color: modelData.tone === "critical"
+                                           ? Theme.status.negative
+                                           : modelData.tone === "warn"
+                                             ? Theme.status.warning
+                                             : Theme.color.text.secondary
+                                    font.family:    Theme.typography.body.sm.family
+                                    font.pixelSize: Theme.typography.body.sm.size
+                                    font.weight:    Font.Medium
+                                    elide: Text.ElideRight
+                                }
+                                Column {
+                                    Layout.fillWidth: true
+                                    spacing: 1
+                                    Text {
+                                        width: parent.width
+                                        text: modelData.summary
+                                        color: Theme.color.text.primary
+                                        font.family:    Theme.typography.body.sm.family
+                                        font.pixelSize: Theme.typography.body.sm.size
+                                        elide: Text.ElideRight
+                                    }
+                                    Text {
+                                        width: parent.width
+                                        text: [modelData.alertType, modelData.strategy, modelData.age]
+                                              .filter(function (p) { return p !== "" && p !== undefined; })
+                                              .join(" · ")
+                                        color: Theme.color.text.muted
+                                        font.family:    Theme.typography.body.sm.family
+                                        font.pixelSize: Theme.typography.body.sm.size
+                                        font.italic:    true
+                                        elide: Text.ElideRight
+                                    }
+                                }
+                            }
+                        }
+
+                        Text {
+                            width: parent.width
+                            visible: AttentionState.operatorAlertsNote !== ""
+                            text: AttentionState.operatorAlertsNote
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.body.sm.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.italic:    true
+                            elide: Text.ElideRight
+                        }
+                    }
                 }
 
                 Rectangle {

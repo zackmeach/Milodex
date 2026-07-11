@@ -217,6 +217,36 @@ def _seed_frozen_manifest(db: Path, *, strategy_id: str) -> None:
     conn.close()
 
 
+def _seed_operator_alert(
+    db: Path,
+    *,
+    alert_type: str,
+    severity: str,
+    summary: str,
+    strategy_id: str | None = None,
+    symbol: str | None = None,
+    recorded_at: datetime | None = None,
+) -> None:
+    """Insert an operator-alert row via the real EventStore writer."""
+    from milodex.core.event_store import EventStore, OperatorAlertEvent
+
+    if recorded_at is None:
+        recorded_at = datetime.now(tz=UTC)
+    EventStore(db).append_operator_alert(
+        OperatorAlertEvent(
+            alert_type=alert_type,
+            severity=severity,
+            summary=summary,
+            strategy_id=strategy_id,
+            session_id="sess-alert",
+            symbol=symbol,
+            side="sell",
+            context_json={},
+            recorded_at=recorded_at,
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Pure-logic: _compute_underperforming
 # ---------------------------------------------------------------------------
@@ -793,6 +823,147 @@ def test_query_attention_multi_strategy_scenario(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# operator_alerts rail (migration 017 anomaly channel)
+# ---------------------------------------------------------------------------
+
+
+def test_operator_alerts_pure_helpers() -> None:
+    """Tone mapping and relative-age formatting are stable."""
+    from milodex.gui.attention_state import _operator_alert_tone, _relative_age
+
+    assert _operator_alert_tone("info") == "info"
+    assert _operator_alert_tone("warning") == "warn"
+    assert _operator_alert_tone("critical") == "critical"
+    assert _operator_alert_tone("blocker") == "critical"
+    # unknown non-info severity is treated as a warn-tone (never info)
+    assert _operator_alert_tone("notice") == "warn"
+
+    now = datetime(2026, 7, 10, 12, 0, tzinfo=UTC)
+    assert _relative_age(None, now) == ""
+    assert _relative_age("not-a-timestamp", now) == ""
+    just_now_ts = datetime(2026, 7, 10, 11, 59, 40, tzinfo=UTC).isoformat()
+    assert _relative_age(just_now_ts, now) == "just now"
+    assert _relative_age(datetime(2026, 7, 10, 11, 30, tzinfo=UTC).isoformat(), now) == "30m ago"
+    assert _relative_age(datetime(2026, 7, 10, 9, 0, tzinfo=UTC).isoformat(), now) == "3h ago"
+    assert _relative_age(datetime(2026, 7, 8, 12, 0, tzinfo=UTC).isoformat(), now) == "2d ago"
+
+
+def test_operator_alerts_surface_in_query(tmp_path) -> None:
+    """A seeded warning alert appears in the snapshot with its display fields."""
+    from milodex.gui.attention_state import _query_attention
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+    _seed_operator_alert(
+        db,
+        alert_type="exit_intent_dropped",
+        severity="warning",
+        summary="EXIT intent for SPY dropped: ambiguous match.",
+        strategy_id="rsi.rsi2.v1",
+        symbol="SPY",
+    )
+
+    result = _query_attention(db)
+    alerts = result["operator_alerts"]
+    assert len(alerts) == 1
+    alert = alerts[0]
+    assert alert["alertType"] == "exit_intent_dropped"
+    assert alert["severity"] == "warning"
+    assert alert["summary"] == "EXIT intent for SPY dropped: ambiguous match."
+    assert alert["symbol"] == "SPY"
+    assert alert["tone"] == "warn"
+    assert alert["strategy"] != ""  # short name derived from strategy_id
+    assert result["operator_alerts_note"] == ""
+
+
+def test_operator_alerts_above_info_ordered_first(tmp_path) -> None:
+    """Above-info alerts sort ahead of info alerts regardless of insertion order."""
+    from milodex.gui.attention_state import _query_attention
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+    # info first (older id), warning second (newer id)
+    _seed_operator_alert(
+        db, alert_type="queued_intent_persist_failed", severity="info", summary="routine info."
+    )
+    _seed_operator_alert(
+        db, alert_type="exit_intent_dropped", severity="warning", summary="stranded exit."
+    )
+
+    result = _query_attention(db)
+    alerts = result["operator_alerts"]
+    assert len(alerts) == 2
+    assert alerts[0]["severity"] == "warning"
+    assert alerts[1]["severity"] == "info"
+
+
+def test_operator_alerts_info_capped_above_info_never_hidden(tmp_path) -> None:
+    """LOCKED (ff534ba): info tier is capped to the 10 most-recent, but an older
+    above-info (warning) alert must NEVER be hidden behind the cap, and the note
+    reports the omitted info count."""
+    from milodex.gui.attention_state import OPERATOR_ALERT_INFO_CAP, _query_attention
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+    # One OLD warning first (lowest id), then 15 newer info alerts.
+    _seed_operator_alert(
+        db,
+        alert_type="exit_intent_dropped",
+        severity="warning",
+        summary="OLD STRANDED EXIT must remain visible.",
+        symbol="SPY",
+    )
+    for i in range(15):
+        _seed_operator_alert(
+            db,
+            alert_type="queued_intent_persist_failed",
+            severity="info",
+            summary=f"routine info {i}.",
+        )
+
+    result = _query_attention(db)
+    alerts = result["operator_alerts"]
+    summaries = [a["summary"] for a in alerts]
+
+    # The old warning survives despite 15 newer info alerts.
+    assert "OLD STRANDED EXIT must remain visible." in summaries
+    # Only the info cap's worth of info alerts is shown (+ the 1 warning).
+    info_shown = [a for a in alerts if a["severity"] == "info"]
+    assert len(info_shown) == OPERATOR_ALERT_INFO_CAP
+    assert len(alerts) == OPERATOR_ALERT_INFO_CAP + 1
+    # 15 info - 10 shown = 5 omitted.
+    assert result["operator_alerts_note"] == "5 older info alerts hidden"
+
+
+def test_operator_alerts_empty_db(tmp_path) -> None:
+    """No alerts → empty rail and empty note."""
+    from milodex.gui.attention_state import _query_attention
+
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+
+    result = _query_attention(db)
+    assert result["operator_alerts"] == []
+    assert result["operator_alerts_note"] == ""
+
+
+def test_operator_alerts_fail_soft_on_read_error(tmp_path) -> None:
+    """A read error (missing table) is swallowed: empty rail, no exception."""
+    from milodex.gui.attention_state import _build_operator_alerts
+
+    bare = tmp_path / "bare.db"  # fresh DB with NO operator_alerts table
+    conn = sqlite3.connect(str(bare))
+    conn.row_factory = sqlite3.Row
+    try:
+        items, note = _build_operator_alerts(conn)
+    finally:
+        conn.close()
+
+    assert items == []
+    assert note == ""
+
+
+# ---------------------------------------------------------------------------
 # Qt-aware fixtures
 # ---------------------------------------------------------------------------
 
@@ -886,6 +1057,33 @@ def test_refresh_populates_rollups(qapp, tmp_path) -> None:
     assert "needsReview" in rollups
     assert "underperforming" in rollups
     assert rollups["runningNow"] == 1
+
+    state.stop()
+
+
+@_skip_no_qt
+def test_operator_alerts_property_populates(qapp, tmp_path) -> None:
+    """The operatorAlerts Q_PROPERTY reflects seeded alerts after a refresh."""
+    _ = qapp
+    db = tmp_path / "att.db"
+    _create_fixture_db(db)
+    _seed_operator_alert(
+        db,
+        alert_type="exit_intent_dropped",
+        severity="warning",
+        summary="EXIT intent for SPY dropped.",
+        symbol="SPY",
+    )
+
+    state = _make_state(db)
+    state._kick_refresh()  # noqa: SLF001
+    _wait_for_pool(state)
+
+    assert state.dataStatus == "ready"
+    alerts = state.operatorAlerts
+    assert len(alerts) == 1
+    assert alerts[0]["severity"] == "warning"
+    assert state.operatorAlertsNote == ""
 
     state.stop()
 
