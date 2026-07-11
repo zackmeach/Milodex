@@ -39,6 +39,7 @@ from milodex.core.event_store import (
     TradeEvent,
 )
 from milodex.operations.freshness import DATA_FRESHNESS_STALE_HOURS
+from milodex.promotion.fault_injection import SYNTHETIC_FAULT_DECISION_TYPE
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -158,9 +159,17 @@ def _collect_strategy_snapshots(event_store: EventStore) -> list[_StrategySnapsh
 
     explanations_by_strategy: dict[str, ExplanationEvent] = {}
     for exp in event_store.list_explanations():
-        if exp.strategy_name:
-            strategy_ids.add(exp.strategy_name)
-            explanations_by_strategy[exp.strategy_name] = exp  # last one wins (ORDER BY id ASC)
+        if not exp.strategy_name:
+            continue
+        strategy_ids.add(exp.strategy_name)
+        # Synthetic fault-injection self-tests (R-PRM-004 criterion c) are
+        # deliberately-vetoed synthetic trades, not real strategy decisions.
+        # They must never surface as a strategy's "last action" on the trust
+        # dashboard — that would show the regime strategy's latest activity as a
+        # blocked oversized SYNTHETIC buy right after a pre-promotion fault-check.
+        if exp.decision_type == SYNTHETIC_FAULT_DECISION_TYPE:
+            continue
+        explanations_by_strategy[exp.strategy_name] = exp  # last one wins (ORDER BY id ASC)
 
     for strategy_id in sorted(strategy_ids):
         # Source-of-truth: prefer the active manifest's stage so the trust

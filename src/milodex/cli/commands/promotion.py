@@ -13,14 +13,18 @@ from milodex.cli.rich_views import (
 from milodex.promotion import (
     REASON_GATE_FAILED,
     REASON_INVALID_STAGE_TRANSITION,
+    REASON_LIFECYCLE_CRITERIA_UNMET,
     REASON_MISSING_BACKTEST_RUN,
     PromoteBlocked,
     PromoteError,
     PromoteRequest,
     PromoteSuccess,
+    SyntheticFaultApprovedError,
+    SyntheticFaultGuardrailError,
     freeze_manifest,
     prepare_and_record_promotion,
     resolve_strategy_config_path,
+    run_synthetic_fault_injection,
 )
 from milodex.promotion.state_machine import demote
 from milodex.strategies.loader import load_strategy_config
@@ -118,6 +122,20 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help="Optional free-form notes recorded with the promotion.",
     )
 
+    fault_check_parser = promotion_subparsers.add_parser(
+        "fault-check",
+        help=(
+            "Run the synthetic fault-injection self-test (R-PRM-004 criterion c). "
+            "Evaluates a deliberately guardrail-violating synthetic trade through "
+            "the real risk layer and records the veto as evidence."
+        ),
+    )
+    add_global_flags(fault_check_parser)
+    fault_check_parser.add_argument(
+        "strategy_id",
+        help="Strategy identifier the fault-injection evidence is recorded for.",
+    )
+
     demote_parser = promotion_subparsers.add_parser(
         "demote",
         help="Demote a strategy to backtest or disabled (always allowed).",
@@ -168,6 +186,8 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _manifest_show(args, ctx)
     if args.promotion_command == "promote":
         return _promote(args, ctx)
+    if args.promotion_command == "fault-check":
+        return _fault_check(args, ctx)
     if args.promotion_command == "demote":
         return _demote(args, ctx)
     if args.promotion_command == "history":
@@ -241,13 +261,14 @@ def _promote(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         # to stderr. Re-raise to preserve that exit path. Gate failures
         # have always been rendered as an error CommandResult; preserve
         # that too.
-        if result.reason_code == REASON_GATE_FAILED:
+        if result.reason_code in (REASON_GATE_FAILED, REASON_LIFECYCLE_CRITERIA_UNMET):
             return _promote_blocked_result(
                 args.strategy_id,
                 result.from_stage or "backtest",
                 to_stage,
                 result.gate_failures,
                 result.promotion_type or "statistical",
+                reason_code=result.reason_code,
             )
         if result.reason_code in (
             REASON_INVALID_STAGE_TRANSITION,
@@ -341,20 +362,26 @@ def _promote_blocked_result(
     to_stage: str,
     gate_failures: list[str],
     promotion_type: str,
+    *,
+    reason_code: str = REASON_GATE_FAILED,
 ) -> CommandResult:
+    lifecycle = reason_code == REASON_LIFECYCLE_CRITERIA_UNMET
     data = {
         "strategy_id": strategy_id,
         "from_stage": from_stage,
         "to_stage": to_stage,
         "promoted": False,
         "promotion_type": promotion_type,
+        "reason_code": reason_code,
         "gate_failures": list(gate_failures),
     }
+    heading = "Lifecycle criteria not met" if lifecycle else "Gate check failures"
+    error_code = "lifecycle_criteria_unmet" if lifecycle else "gate_check_failed"
     lines = [
         "Strategy Promotion — BLOCKED",
         f"Strategy:   {strategy_id}",
         f"Stage:      {from_stage} -> {to_stage}",
-        "Gate check failures:",
+        f"{heading}:",
     ]
     for failure in gate_failures:
         lines.append(f"  - {failure}")
@@ -363,8 +390,52 @@ def _promote_blocked_result(
         status="error",
         data=data,
         human_lines=lines,
-        errors=[{"code": "gate_check_failed", "message": f} for f in gate_failures],
+        errors=[{"code": error_code, "message": f} for f in gate_failures],
     )
+
+
+def _fault_check(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    config_path = resolve_strategy_config_path(args.strategy_id, ctx.config_dir)
+    event_store = ctx.get_event_store()
+    try:
+        result = run_synthetic_fault_injection(args.strategy_id, config_path, event_store)
+    except (SyntheticFaultApprovedError, SyntheticFaultGuardrailError) as exc:
+        # The risk layer failed to veto (or veto correctly) the synthetic
+        # oversized trade — a risk-layer regression. Scream: no satisfying
+        # evidence was recorded and the command exits nonzero.
+        data = {
+            "strategy_id": args.strategy_id,
+            "recorded": False,
+            "regression": True,
+        }
+        lines = [
+            "Synthetic Fault Injection — RISK-LAYER REGRESSION",
+            f"Strategy: {args.strategy_id}",
+            str(exc),
+        ]
+        return CommandResult(
+            command="promotion.fault-check",
+            status="error",
+            data=data,
+            human_lines=lines,
+            errors=[{"code": "synthetic_fault_regression", "message": str(exc)}],
+        )
+    data = {
+        "strategy_id": result.strategy_id,
+        "recorded": True,
+        "explanation_id": result.explanation_id,
+        "reason_codes": list(result.reason_codes),
+        "recorded_at": None if result.recorded_at is None else result.recorded_at.isoformat(),
+    }
+    lines = [
+        "Synthetic Fault Injection — VETOED (evidence recorded)",
+        f"Strategy:        {result.strategy_id}",
+        f"Explanation id:  {result.explanation_id}",
+        f"Reason codes:    {', '.join(result.reason_codes)}",
+        "Result:          risk layer rejected the synthetic oversized trade "
+        "(R-PRM-004 criterion c satisfied).",
+    ]
+    return CommandResult(command="promotion.fault-check", data=data, human_lines=lines)
 
 
 def _history(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:

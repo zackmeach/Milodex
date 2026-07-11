@@ -24,11 +24,14 @@ def test_phase1_values_match_legacy_constants() -> None:
     assert p.default_trade_floor == 30
 
 
-def test_lifecycle_gate_is_defined_but_not_enforced() -> None:
+def test_lifecycle_gate_is_defined_and_enforced() -> None:
+    # ADR 0058 M4 addendum: the lifecycle gate is now enforced against the event
+    # store (fail-closed) — the criteria are no longer define-only.
     gate = PHASE1_GOVERNANCE_V1.lifecycle_gate
     assert isinstance(gate, LifecycleGateDefinition)
-    assert gate.enforced is False
+    assert gate.enforced is True
     assert len(gate.criteria) == 3
+    assert gate.evidence_max_age_days == 90
 
 
 def test_lifecycle_gate_applies_to_is_the_scoped_identity_source_of_truth() -> None:

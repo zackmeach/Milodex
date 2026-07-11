@@ -585,6 +585,15 @@ class BacktestEngine:
             "total_return_pct": result.total_return_pct,
             "trade_count": result.trade_count,
             "skipped_count": result.skipped_count,
+            # R-PRM-004 criterion (b) enforcement input (ADR 0058 M4). The count
+            # of order intents the strategy emitted that reached the execution/
+            # drain phase — each produces exactly one execution-or-skip
+            # explanation row. The lifecycle criterion compares this against the
+            # FK-joined explanation-row count to distinguish "zero signals"
+            # (regime strategy, vacuously satisfied) from "signals happened but
+            # no explanation rows" (a broken audit trail). Additive metadata:
+            # runs written before this field cannot be evaluated and fail closed.
+            "signal_count": result.trade_count + result.skipped_count,
             "trading_days": result.trading_days,
             "equity_curve": [[d.isoformat(), v] for d, v in result.equity_curve],
             "risk_policy": self._risk_policy.value,

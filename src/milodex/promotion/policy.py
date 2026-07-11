@@ -51,9 +51,24 @@ class GateThresholds:
     max_drawdown_pct: float
 
 
+# Freshness bound for the operational lifecycle criteria (ADR 0058 M4
+# enforcement addendum). Criteria (a) "a successful deterministic backtest run"
+# and (c) "the risk layer having rejected at least one synthetic fault-injection
+# trade" are only admissible as evidence when they are recent: the most recent
+# successful backtest run, and the most recent synthetic fault-injection veto,
+# must each fall within this many days of the promotion attempt. The regime
+# strategy trades on a slow (200-DMA) cadence and is re-promoted rarely, so a
+# generous-but-bounded window keeps a years-old artifact from silently standing
+# in as fresh evidence (the "unbounded staleness" trap ADR 0058 named for
+# criterion (a)) without forcing a re-run on every routine re-promotion.
+# FOUNDER-REVIEW: 90 days is a first-pass value chosen for a low-cadence regime
+# strategy; revisit once real re-promotion frequency is observed.
+LIFECYCLE_EVIDENCE_MAX_AGE_DAYS = 90
+
+
 @dataclass(frozen=True)
 class LifecycleGateDefinition:
-    """Definition-only model of the SRS R-PRM-004 lifecycle-proof gate.
+    """Typed model of the SRS R-PRM-004 lifecycle-proof gate.
 
     ``applies_to`` is the typed identity source-of-truth for "which strategy
     ids are lifecycle-proof" (ADR 0058). The orchestrator scopes the
@@ -61,18 +76,23 @@ class LifecycleGateDefinition:
     request for any other id is refused (fail closed), and a general operator
     override is offered as a separate, loudly-recorded mechanism.
 
-    ``enforced`` is False by deliberate decision: the criteria are modeled
-    so the policy is complete and inspectable, but ``check_gate`` still
-    short-circuits lifecycle-exempt promotions to ``allowed=True``. Enforcement
-    of criteria (a)/(b)/(c) is deferred to roadmap M4 (ADR 0058) — the design
-    and tooling (fault-injection harness, signal-count metadata, integer-join
-    freshness bound) belong to that milestone.
+    ``enforced`` is True as of the ADR 0058 M4 enforcement addendum: a
+    lifecycle-exempt promotion is admitted only when all three operational
+    criteria (a)/(b)/(c) pass, evaluated against the event store and fail-closed
+    (see :mod:`milodex.promotion.lifecycle_criteria`). ``check_gate`` is
+    UNCHANGED — its ``lifecycle_exempt`` short-circuit still returns
+    ``allowed=True``; the criteria enforcement lives entirely in the orchestrator
+    seam (ADR 0058: state_machine and the risk layer are not touched).
+
+    ``evidence_max_age_days`` is the freshness bound applied to criteria (a) and
+    (c) (see :data:`LIFECYCLE_EVIDENCE_MAX_AGE_DAYS`).
     """
 
     criteria: tuple[str, ...]
     description: str
     applies_to: tuple[str, ...] = ()
     enforced: bool = False
+    evidence_max_age_days: int = LIFECYCLE_EVIDENCE_MAX_AGE_DAYS
 
 
 @dataclass(frozen=True)
@@ -157,12 +177,14 @@ PHASE1_GOVERNANCE_V1 = PromotionPolicy(
         ),
         description=(
             "SRS R-PRM-004 lifecycle-proof paper gate for the regime strategy. "
-            "Defined for completeness; NOT enforced in code (check_gate still "
-            "returns allowed=True for lifecycle-exempt promotions). Criteria "
-            "enforcement deferred to roadmap M4 (ADR 0058)."
+            "Enforced (ADR 0058 M4 addendum): a lifecycle-exempt promotion is "
+            "admitted only when all three criteria pass against the event store "
+            "(fail-closed). check_gate is unchanged — enforcement lives in the "
+            "orchestrator seam (milodex.promotion.lifecycle_criteria)."
         ),
         applies_to=("regime.daily.sma200_rotation.spy_shy.v1",),
-        enforced=False,
+        enforced=True,
+        evidence_max_age_days=LIFECYCLE_EVIDENCE_MAX_AGE_DAYS,
     ),
 )
 

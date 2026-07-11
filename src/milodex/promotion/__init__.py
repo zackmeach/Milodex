@@ -16,6 +16,16 @@ Public submodules:
 """
 
 from milodex.promotion.evidence import EvidencePackage, assemble_evidence_package
+from milodex.promotion.fault_injection import (
+    FaultInjectionResult,
+    SyntheticFaultApprovedError,
+    SyntheticFaultGuardrailError,
+    run_synthetic_fault_injection,
+)
+from milodex.promotion.lifecycle_criteria import (
+    LifecycleCriteriaResult,
+    evaluate_lifecycle_criteria,
+)
 from milodex.promotion.manifest import (
     FROZEN_STAGES,
     freeze_manifest,
@@ -26,6 +36,7 @@ from milodex.promotion.orchestrator import (
     PROMOTION_TYPE_OPERATOR_OVERRIDE,
     REASON_GATE_FAILED,
     REASON_INVALID_STAGE_TRANSITION,
+    REASON_LIFECYCLE_CRITERIA_UNMET,
     REASON_LIFECYCLE_EXEMPT_NOT_SCOPED,
     REASON_MISSING_BACKTEST_RUN,
     REASON_OVERRIDE_FLAGS_CONFLICT,
@@ -62,6 +73,7 @@ __all__ = [
     "PROMOTION_TYPE_OPERATOR_OVERRIDE",
     "REASON_GATE_FAILED",
     "REASON_INVALID_STAGE_TRANSITION",
+    "REASON_LIFECYCLE_CRITERIA_UNMET",
     "REASON_LIFECYCLE_EXEMPT_NOT_SCOPED",
     "REASON_MISSING_BACKTEST_RUN",
     "REASON_OVERRIDE_FLAGS_CONFLICT",
@@ -71,19 +83,25 @@ __all__ = [
     "STAGE_ORDER",
     "FROZEN_STAGES",
     "EvidencePackage",
+    "FaultInjectionResult",
+    "LifecycleCriteriaResult",
     "PromoteBlocked",
     "PromoteError",
     "PromoteRequest",
     "PromoteResult",
     "PromoteSuccess",
     "PromotionCheckResult",
+    "SyntheticFaultApprovedError",
+    "SyntheticFaultGuardrailError",
     "assemble_evidence_package",
     "check_gate",
     "compute_post_update_hash",
+    "evaluate_lifecycle_criteria",
     "freeze_manifest",
     "get_active_manifest_hash",
     "metrics_from_run",
     "prepare_and_record_promotion",
     "resolve_strategy_config_path",
+    "run_synthetic_fault_injection",
     "validate_stage_transition",
 ]
