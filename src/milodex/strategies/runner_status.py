@@ -54,6 +54,19 @@ handled separately by :func:`resolve_runner_liveness`.
 
 _DEFAULT_CADENCE_SECONDS = 60.0
 
+_STOP_UNCONSUMED_CADENCE_MULTIPLE = 3.0
+"""Poll cycles a controlled-stop request may sit unconsumed before a *live*
+runner is judged **wedged**.
+
+A healthy runner consumes the request at the top of its next poll (within one
+``cadence_seconds`` cycle). Three cycles is comfortable margin against a single
+slow ``run_cycle()`` (e.g. a 1D runner mid-fetch) so a healthy runner never
+flaps into the wedged state, while a truly stuck process is surfaced within a
+few minutes. Derived from the per-strategy poll interval
+(``runner._resolve_poll_interval``), not a hard-coded number, so intraday
+cadences scale down proportionally.
+"""
+
 _IDLE_BY_DESIGN_NOTE = (
     "daily (1D) tempo — evaluates once after market close; "
     "idle while the market is open is by design"
@@ -61,6 +74,17 @@ _IDLE_BY_DESIGN_NOTE = (
 _PHANTOM_NOTE = (
     "open session row with no live process — close it with "
     "`milodex maintenance reap-orphans` (the GUI bootstrap reaper also closes it)"
+)
+_STOP_WEDGED_NOTE = (
+    "controlled-stop request UNCONSUMED for {age} — the runner lock is live but "
+    "the process is not draining the request (wedged; a healthy runner consumes "
+    "it within one poll). Controlled stop will not complete: hard-kill the PID "
+    "and clear data/locks/*.lock (see docs/TROUBLESHOOTING.md)."
+)
+_STOP_MOOT_NOTE = (
+    "controlled-stop request present but no live runner holds the lock — the "
+    "process is already gone, so the stop request is moot; clear the leftover "
+    "data/locks/*.lock file if it lingers."
 )
 
 
@@ -133,6 +157,69 @@ def runner_lock_mtime_age(strategy_id: str, locks_dir: Path | None, now: datetim
     except Exception as exc:  # noqa: BLE001
         logger.warning("runner_lock_mtime_age: stat failed for %s: %s", strategy_id, exc)
         return None
+
+
+def controlled_stop_request_age(
+    strategy_id: str, locks_dir: Path | None, now: datetime
+) -> float | None:
+    """Seconds since the controlled-stop request file was written, or ``None``.
+
+    Mtime-based, mirroring :func:`runner_lock_mtime_age`. The request file is
+    written once (atomic ``tmp.replace``) and never rewritten, so its mtime is
+    the request timestamp — the age is how long the request has gone
+    un-consumed. Returns ``None`` when ``locks_dir`` is ``None``, the request
+    file is absent, or the stat fails (fail-safe: an unknown age never proves a
+    wedged runner).
+    """
+    if locks_dir is None:
+        return None
+    try:
+        path = controlled_stop_request_path(locks_dir, strategy_id)
+        return now.timestamp() - path.stat().st_mtime
+    except FileNotFoundError:
+        return None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "controlled_stop_request_age: stat failed for %s: %s", strategy_id, exc
+        )
+        return None
+
+
+def classify_stop_request(
+    *,
+    stop_requested: bool,
+    age_seconds: float | None,
+    lock_live: bool,
+    cadence_seconds: float,
+) -> str | None:
+    """Classify an in-flight controlled-stop request against runner liveness.
+
+    This is the wedged-vs-phantom distinction, made explicit:
+
+    - ``None``      — no request file present.
+    - ``"pending"`` — request present, a live runner holds the lock, and the
+      request is younger than the wedged threshold (a healthy runner is
+      expected to consume it imminently).
+    - ``"wedged"``  — request present, a live runner holds the lock, but the
+      request has sat un-consumed past ``cadence_seconds *
+      _STOP_UNCONSUMED_CADENCE_MULTIPLE``. The process is ALIVE but not
+      draining the request: the controlled stop will not complete without
+      operator intervention.
+    - ``"moot"``    — request present but no live runner holds the lock. The
+      process is already gone (phantom/dead), so the request can never be
+      consumed but is harmless — phantom semantics win, this is not "wedged".
+
+    ``age_seconds`` of ``None`` (file present but stat failed) is treated as
+    *not* wedged — an unknown age must never fabricate the alarm.
+    """
+    if not stop_requested:
+        return None
+    if not lock_live:
+        return "moot"
+    threshold = cadence_seconds * _STOP_UNCONSUMED_CADENCE_MULTIPLE
+    if age_seconds is not None and age_seconds >= threshold:
+        return "wedged"
+    return "pending"
 
 
 def heartbeat_label(lock_age_seconds: float | None, cadence_seconds: float) -> str:
@@ -233,11 +320,12 @@ def _status_entry(
     config = _config_for(strategy_id, config_dir)
     bar_size = config.tempo.get("bar_size") if config is not None else None
 
+    cadence = _cadence_seconds(config)
     # Gate the mtime read on identity-verified liveness: a hard-killed
     # runner's lock file has a fresh mtime from moments before death, but its
     # PID is gone — reading it would claim "on schedule" for a phantom.
     lock_age = runner_lock_mtime_age(strategy_id, locks_dir, now) if lock_live else None
-    heartbeat = heartbeat_label(lock_age, _cadence_seconds(config))
+    heartbeat = heartbeat_label(lock_age, cadence)
 
     last_eval = (
         event_store.latest_explanation_recorded_at(run.session_id) if run is not None else None
@@ -250,6 +338,18 @@ def _status_entry(
         logger.warning(
             "collect_runner_statuses: sentinel check failed for %s: %s", strategy_id, exc
         )
+
+    # An unconsumed controlled-stop request is operator-observable: derive its
+    # age and classify against liveness so a wedged runner (lock live, request
+    # not draining) is distinguishable from a moot one (process already gone).
+    stop_age = controlled_stop_request_age(strategy_id, locks_dir, now) if stop_requested else None
+    stop_request_state = classify_stop_request(
+        stop_requested=stop_requested,
+        age_seconds=stop_age,
+        lock_live=lock_live,
+        cadence_seconds=cadence,
+    )
+    stop_request_note = _stop_request_note_for(stop_request_state, stop_age)
 
     return {
         "strategy_id": strategy_id,
@@ -267,6 +367,9 @@ def _status_entry(
         "heartbeat": heartbeat,
         "last_eval_at": last_eval,
         "stop_requested": stop_requested,
+        "stop_requested_age_seconds": stop_age,
+        "stop_request_state": stop_request_state,
+        "stop_request_note": stop_request_note,
         "bar_size": bar_size,
         "note": _note_for(state, bar_size),
     }
@@ -277,6 +380,22 @@ def _note_for(state: str, bar_size: str | None) -> str | None:
         return _PHANTOM_NOTE
     if state == "running" and bar_size == "1D":
         return _IDLE_BY_DESIGN_NOTE
+    return None
+
+
+def _format_stop_age(age_seconds: float | None) -> str:
+    """Human age for a stop-request note ("Nm" / "Ns"), matching heartbeat style."""
+    if age_seconds is None:
+        return "an unknown interval"
+    mins = int(age_seconds // 60)
+    return f"{mins}m" if mins >= 1 else f"{int(age_seconds)}s"
+
+
+def _stop_request_note_for(state: str | None, age_seconds: float | None) -> str | None:
+    if state == "wedged":
+        return _STOP_WEDGED_NOTE.format(age=_format_stop_age(age_seconds))
+    if state == "moot":
+        return _STOP_MOOT_NOTE
     return None
 
 

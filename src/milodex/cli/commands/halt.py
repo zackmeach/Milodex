@@ -151,7 +151,10 @@ def _build_result(
         for runner in runners:
             pid = runner["pid"]
             if runner["stop_requested"]:
-                lines.append(f"  [OK] {runner['strategy_id']} (pid {pid}): stop requested")
+                lines.append(
+                    f"  [OK] {runner['strategy_id']} (pid {pid}): "
+                    "stop requested (delivery not confirmed)"
+                )
             else:
                 lines.append(f"  [FAIL] {runner['strategy_id']} (pid {pid}): {runner['error']}")
 
