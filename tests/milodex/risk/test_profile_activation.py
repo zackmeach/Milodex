@@ -19,8 +19,11 @@ from pathlib import Path
 import pytest
 
 from milodex.config import get_data_dir
-from milodex.core.event_store import EventStore
-from milodex.risk.profile_activation import reconcile_profile_against_audit
+from milodex.core.event_store import EventStore, KillSwitchEvent, StrategyRunEvent
+from milodex.risk.profile_activation import (
+    RiskProfileActivationService,
+    reconcile_profile_against_audit,
+)
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -136,3 +139,162 @@ def test_refused_audit_rows_are_ignored(db_path: Path) -> None:
     _write_profile_file("standard")
 
     assert reconcile_profile_against_audit(db_path) is None
+
+
+# ── RiskProfileActivationService.attempt_switch (direct, no Qt) ────────────────
+#
+# Mirrors tests/milodex/gui/test_risk_profile_bridge.py and
+# test_risk_office_drawer.py:225 one level down: those exercise attempt_switch
+# only through the Qt bridge/QML surface. These tests hit the service directly
+# so core risk-policy branch coverage does not require PySide6.
+
+
+def _audit_rows(db_path: Path) -> list[sqlite3.Row]:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM risk_profile_changes ORDER BY id").fetchall()
+    conn.close()
+    return rows
+
+
+def test_attempt_switch_refuses_unknown_target_profile(db_path: Path) -> None:
+    """Line 53-59: a non-shipped target profile name is refused, with an audit row."""
+    service = RiskProfileActivationService(db_path)
+
+    result = service.attempt_switch("yolo", "yolo")
+
+    assert result.applied is False
+    assert result.reason_code == "unknown_profile"
+    assert result.from_profile == "conservative"
+    assert result.to_profile == "yolo"
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["success"] == 0
+    assert rows[0]["failure_reason"] == "unknown_profile"
+    assert rows[0]["to_profile"] == "yolo"
+
+
+def test_attempt_switch_refuses_invalid_current_profile(db_path: Path) -> None:
+    """Line 61-70: an unrecognized selector on disk refuses the switch cleanly."""
+    _write_profile_file("mystery")
+    service = RiskProfileActivationService(db_path)
+
+    result = service.attempt_switch("standard", "standard")
+
+    assert result.applied is False
+    assert result.reason_code == "invalid_current_profile"
+    assert result.from_profile == "mystery"
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "invalid_current_profile"
+    assert rows[0]["from_profile"] == "mystery"
+    assert rows[0]["to_profile"] == "standard"
+
+
+def test_attempt_switch_refuses_when_runners_active(db_path: Path) -> None:
+    """Line 72-80: a mid-flight switch is refused per ADR 0054 Section 5."""
+    store = EventStore(db_path)
+    store.append_strategy_run(
+        StrategyRunEvent(
+            session_id="runner-open-1",
+            strategy_id="test_strategy.v1",
+            started_at=datetime(2026, 5, 1, 9, 0, tzinfo=UTC),
+            ended_at=None,
+            exit_reason=None,
+            metadata={},
+        )
+    )
+    service = RiskProfileActivationService(db_path)
+
+    result = service.attempt_switch("standard", "standard")
+
+    assert result.applied is False
+    assert result.reason_code == "active_runners"
+    assert result.runners_active_count == 1
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "active_runners"
+    assert rows[0]["runners_active_count"] == 1
+
+
+def test_attempt_switch_refuses_when_kill_switch_open(db_path: Path) -> None:
+    """Line 82-91: a triggered, unresolved kill switch blocks the switch per Section 6."""
+    store = EventStore(db_path)
+    store.append_kill_switch_event(
+        KillSwitchEvent(
+            event_type="activated",
+            recorded_at=datetime(2026, 5, 1, 10, 0, tzinfo=UTC),
+            reason="Test trigger",
+        )
+    )
+    service = RiskProfileActivationService(db_path)
+
+    result = service.attempt_switch("standard", "standard")
+
+    assert result.applied is False
+    assert result.reason_code == "kill_switch_open"
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "kill_switch_open"
+
+
+def test_attempt_switch_refuses_elevation_confirmation_mismatch(db_path: Path) -> None:
+    """Line 93-101: elevation (conservative -> aggressive) requires a typed token
+    equal to the target profile name; anything else is refused."""
+    service = RiskProfileActivationService(db_path)
+
+    result = service.attempt_switch("aggressive", "wrong_token")
+
+    assert result.applied is False
+    assert result.reason_code == "typed_confirmation_mismatch"
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["failure_reason"] == "typed_confirmation_mismatch"
+
+
+def test_attempt_switch_refuses_reduction_confirmation_missing(db_path: Path) -> None:
+    """Line 103-110: reduction (aggressive -> conservative) requires the fixed
+    'confirm_reduction' token; anything else is refused."""
+    service = RiskProfileActivationService(db_path)
+    # Elevate to aggressive first so the next switch is a reduction.
+    elevated = service.attempt_switch("aggressive", "aggressive")
+    assert elevated.applied is True
+
+    result = service.attempt_switch("conservative", "wrong_token")
+
+    assert result.applied is False
+    assert result.reason_code == "reduction_confirmation_missing"
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 2
+    assert rows[1]["failure_reason"] == "reduction_confirmation_missing"
+
+
+def test_attempt_switch_success_writes_file_and_audit(db_path: Path) -> None:
+    """Line 113-128: a successful switch applies, rewrites risk_profile.txt, and
+    writes a success=1 audit row."""
+    service = RiskProfileActivationService(db_path)
+
+    result = service.attempt_switch("standard", "standard")
+
+    assert result.applied is True
+    assert result.from_profile == "conservative"
+    assert result.to_profile == "standard"
+    assert result.confirmation_method == "typed"
+
+    profile_file = get_data_dir() / "risk_profile.txt"
+    assert profile_file.read_text(encoding="utf-8").strip() == "standard"
+
+    rows = _audit_rows(db_path)
+    assert len(rows) == 1
+    assert rows[0]["success"] == 1
+    assert rows[0]["failure_reason"] is None
+    assert rows[0]["from_profile"] == "conservative"
+    assert rows[0]["to_profile"] == "standard"
+    assert rows[0]["actor"] == "gui"
+    assert rows[0]["confirmation_method"] == "typed"

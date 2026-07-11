@@ -428,6 +428,75 @@ def test_config_validate_accepts_sample_strategy():
     assert "Detected kind: strategy" in output
 
 
+def test_config_validate_kind_override_respected(tmp_path: Path):
+    """A --kind override forces the validator down that kind's path even when
+    filename-based inference would otherwise report 'unsupported kind'."""
+    path = tmp_path / "custom_risk_config.yaml"
+    path.write_text(
+        """
+kill_switch:
+  enabled: true
+  max_drawdown_pct: 0.10
+  require_manual_reset: true
+portfolio:
+  max_single_position_pct: 0.10
+  max_concurrent_positions: 10
+  max_total_exposure_pct: 0.50
+daily_limits:
+  max_daily_loss_pct: 0.03
+  max_trades_per_day: 20
+order_safety:
+  max_order_value_pct: 0.15
+  duplicate_order_window_seconds: 60
+  max_data_staleness_seconds: 300
+""".strip(),
+        encoding="utf-8",
+    )
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["config", "validate", str(path), "--kind", "risk"],
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    output = stdout.getvalue()
+    assert exit_code == 0
+    assert "Detected kind: risk" in output
+
+
+def test_config_validate_refuses_malformed_yaml(tmp_path: Path):
+    """Malformed YAML is refused with a non-zero exit and a surfaced error message."""
+    bad = tmp_path / "broken.yaml"
+    bad.write_text("key: [unclosed\n", encoding="utf-8")
+    stderr = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["config", "validate", str(bad)],
+        stdout=StringIO(),
+        stderr=stderr,
+    )
+
+    assert exit_code == 1
+    assert "not valid YAML" in stderr.getvalue()
+
+
+def test_config_validate_json_round_trip_reports_detected_kind():
+    """--json output parses cleanly and data['kind'] carries the detected kind
+    string extracted from the 'Detected kind:' human line (config.py lines 33-44)."""
+    stdout = StringIO()
+
+    exit_code = cli_entrypoint(
+        ["config", "validate", str(Path("configs/sample_strategy.yaml")), "--json"],
+        stdout=stdout,
+        stderr=StringIO(),
+    )
+
+    assert exit_code == 0
+    payload = json.loads(stdout.getvalue())
+    assert payload["data"]["kind"] == "strategy"
+
+
 def test_trade_preview_renders_execution_result():
     service = StubExecutionService(preview_result=_sample_execution_result())
     stdout = StringIO()
