@@ -65,8 +65,8 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 | **Commit examined** | `d3722cb` on `master` (= `origin/master` at examination; this gate closure lands as the next PR) |
 | **master vs origin** | in sync at `d3722cb`. |
 | **Second worktree** | none active for this roadmap surface. |
-| **Last verified gate (this roadmap)** | **M1 CLOSED 2026-07-09** (retrospective §11). Prior: M0 closed 2026-06-22. Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
-| **Active milestone** | **M2 — Operator-visible execution truth** — **ACTIVE (opened 2026-07-09).** M3 (research verdicts) is parallel-eligible and unstarted (`experiment_registry` = 0 rows). M1 evidence: 2026-07-06 full session — pre-open launch, queue-at-open drain submitted 5 real paper orders at 13:30–13:31 UTC, morning re-validation vetoed 3, clean `controlled_stop`; fills durably recorded via the deferred order-status sync (explanation `1034415`, run 2026-07-09) and reconciliation CLEAN diff=0 (run `93d749c5`, 2026-07-09 — a post-hoc open-market reconcile with the fleet down, not a session-scoped close reconcile; disclosed in the §11 deviations). |
+| **Last verified gate (this roadmap)** | **M2 CLOSED 2026-07-10** (retrospective §11; #336–#350 + a full guarded live session with session-scoped post-close reconcile `clean` on R-OPS-004 v1.3, run 159). Prior: M1 closed 2026-07-09, M0 closed 2026-06-22. Most recent *product-phase* closure: Phase 5 ([ADR 0038](adr/0038-phase-5-is-closed-and-phase-6-may-open.md)); Phase 6 (Bench/operator surfaces) open. |
+| **Active milestone** | **M4 — Recovery & failure-mode proof** — next critical-path milestone (opens at this close). **M3 (research verdicts) is parallel and in flight**: the 103-cell scratch screen is running through the weekend (~18/103 done 2026-07-10 midday; verdicts reviewable ~Monday 2026-07-13). M2 live evidence: 2026-07-10 session — guarded mid-session launch, 3 stale 7/6 intents re-validated and vetoed fail-closed with exactly one blocked explanation each (#346 dedup + supersede both live-proven), post-close lock-ins, 6× `controlled_stop`, session-scoped reconcile CLEAN (run 159, v1.3). |
 
 **Current blockers (code-confirmed at HEAD):**
 
@@ -426,7 +426,7 @@ proof is the remaining M1 gate event (§2).
 - **Conditions that would invalidate.** "Clean soak, zero fills" being offered as the
   gate; an inline `market_closed` carve-out shipped without the D-1 ADR.
 
-### M2 — Operator-visible execution truth  *(coarse)*
+### M2 — Operator-visible execution truth  · **CLOSED 2026-07-10** *(opened 2026-07-09; retrospective: §11)*
 
 - **Outcome.** On a fleet that now transacts: veto-reason visible; aggregate liveness
   counts only PID-verified runners; evidence authority/freshness shown truthfully
@@ -786,6 +786,83 @@ At each gate completion, append one block. Never edit a prior block.
   parallel with M2.
 - **Must any prior gate be invalidated/reopened?** No. M0's baseline held; the
   M1 evidence contradicts nothing recorded at M0.
+
+### [M2] — Operator-visible execution truth — RETROSPECTIVE (closed 2026-07-10)
+
+- **Planned outcome:** on a fleet that now transacts: veto-reason visible;
+  aggregate liveness counts only PID-verified runners; evidence
+  authority/freshness shown truthfully (honest *labeling*); canaries/baselines/
+  research/blocked/paper visibly distinct; D-8 and D-9 decided in-milestone;
+  GUI-wiring P1-2/P2-1/P2-2 re-confirmed on entry.
+- **What actually shipped:** veto-reason surfacing (#336); synced-fill strategy
+  linkage (#337); D-9 decided A2 + ADR 0005 addendum (#338) and `milodex halt`
+  built (#341, double risk-review); PID-verified liveness on both rollups (#339);
+  honest provenance labels on all metric surfaces (#340); session-close fill sync
+  + R-OPS-004 v1.3 (#342); `count_paper_trades` semantic fix (#343, evidence
+  metadata was ~340× inflated); entry re-confirmation recorded (#344); archetype
+  classifier + BENCH chip/filter with promotion-derived `effective_stage` (#345);
+  drain veto hygiene — per-session ENTRY-veto dedup + supersede-at-lock-in, ADR
+  0057 addendum (#346); D-8 decided A-amended + record (#347) and the promote-
+  affordance evidence-age/freshness caveat (#348); kill-switch ledger
+  fired-vs-info truth fix (#349); PHASE6_BENCH_PREP supersession pointer (#350).
+- **PRs / commits merged:** #336–#350 (fifteen PRs, 2026-07-09 evening →
+  2026-07-10), each with a stated risk tier; #341/#346/#337 carried
+  `risk-invariant-reviewer` APPROVE; #345 carried an adversarial review that
+  found a real pre-merge blocker (see Deviations).
+- **Verification performed (observed):** full suite green at each merge (final:
+  3714 passed, 0 skipped, 3 xfailed, 1 xpassed — the xpass is the documented
+  order-dependent Qt type-cache xfail, not a regression); `ruff check` + `format
+  --check` clean throughout; CI green on every PR before merge.
+- **Live evidence (2026-07-10 session):** guarded launch at 15:05 UTC (kill
+  switch inactive, reconcile CLEAN run 158, zero prior runners); 6 runners
+  PID-verified live; drain fired on the first open poll — all three 7/6 queued
+  intents re-validated and vetoed `stale_market_data` (fail-closed, correct: the
+  locked bars were three sessions old) with **exactly one blocked explanation
+  each** (#346 dedup live-proven; pre-#346 this would have been one per ~60s
+  poll); post-close evaluations on fresh bars (no_signal ×4, lock-ins SPY/BAC/JPM
+  rows 19–21); **supersede-at-lock-in live-proven** (stale 7/6 SPY row 16 →
+  `obsolete` at tonight's SPY lock-in); all 6 runs ended `controlled_stop` at
+  20:32 UTC via the scheduled task; **session-scoped post-close reconcile run 159
+  `clean` on R-OPS-004 v1.3** — the session-scoped close reconcile the M1
+  retrospective disclosed as missing.
+- **Cleanup absorbed (touch-it):** PHASE6_BENCH_PREP status pointer (#350);
+  kill-switch ledger predicate (#349 — display truth in-scope for M2);
+  STRATEGY_BANK/ADR 0055 checks confirmed already-corrected (no edit).
+- **Decisions made:** D-9 → ADR 0005 addendum +
+  [D-9 record](reviews/2026-07-09-D9-manual-halt-brief.md); D-8 →
+  [D-8 record](reviews/2026-07-10-D8-evidence-reconstruction-brief.md)
+  (A-amended; ADR 0050 v2 deferred with the hardcoded-FRESH menu gap as the
+  named standing motivator, revisit at the M4/M5 boundary).
+- **Deviations from the plan:** (1) The 08:57 scheduled launch **failed closed**
+  on a permission profile that denied the venv interpreter; the fleet launched
+  at 15:05 UTC from the interactive session after all guards passed — mid-session
+  launch is by-design safe for daily runners, and the morning's only loss was
+  exit coverage 13:30–15:05 UTC. Founder approved scoped permission rules
+  (milodex CLI + fleet.py only) and the 20:22 UTC scheduled stop then worked.
+  (2) #342's session-close fill sync was **vacuously exercised** — zero orders
+  submitted today (all drains vetoed), so the fills case remains proven only by
+  the 2026-07-09 manual sync (explanation 1034415). (3) The independent
+  adversarial pass on #345 caught 16 never-promoted YAML-`stage: paper` replicas
+  classifying as PAPER pre-merge — fixed by making `effective_stage`
+  promotion-derived (promotion records, not YAML, are the binding stage source).
+- **Newly discovered work (→ milestone or §10):** (a) tsmom's 7/6 HD/V queued
+  rows were not superseded tonight (tsmom locked in different symbols — BAC/JPM);
+  they will re-drain Monday, take one blocked explanation each, and TTL-expire
+  2026-07-13 evening — the accepted no-terminal-taxonomy trade-off, self-cleaning,
+  no action. (b) Session-close fill sync still needs a non-vacuous live exercise
+  (a session with real submits) — fold into M5's multi-session evidence. (c)
+  Scheduled-task permission profile documented: one-shot fleet tasks need the
+  scoped allow rules added 2026-07-10 to `.claude/settings.local.json`. (d)
+  Fleet-down weekend position management remains the known M5 item (positions
+  JNJ/XLF/XLV/SPY held over the weekend by strategy choice tonight).
+- **May the next gate open?** **Yes** — M4 is the next critical-path milestone
+  (M3 runs parallel, sweep in flight). M2's operator-trust surfaces are shipped,
+  risk-reviewed, and backed by a full live session's event-store evidence;
+  the founder's operator walk of the GUI against today's session is the final
+  acceptance act recorded with this close.
+- **Must any prior gate be invalidated/reopened?** No. Today's session
+  re-confirmed M1's mechanics live (drain, re-validation, controlled stop,
+  clean reconcile) on a fresh fleet.
 
 ---
 
