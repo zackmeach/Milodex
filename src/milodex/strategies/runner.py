@@ -9,7 +9,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -148,6 +148,14 @@ class StrategyRunner:
         # never added: a blocked exit guards an open position and its veto can
         # clear mid-session, so it retries every poll by design.
         self._drain_vetoed_row_ids: set[int] = set()
+        # Stale-daily-bar idle alert dedup (in-memory, this session only): the
+        # session date of the stale bar for which a `stale_market_data_idle`
+        # alert has already been emitted. The daily stale-decline branch fires
+        # on every ~60s poll while the bar cache is stale, so the alert is
+        # emitted ONCE per staleness episode (keyed by the stale bar's date) and
+        # reset to None the moment a current-session bar is observed — a fresh
+        # episode (even on the same date after a recovery) then re-alerts.
+        self._stale_bar_alerted_for: date | None = None
         self._requested_shutdown: str | None = None
         self._startup_reconciled = False
         # NY trading day string (ISO date, ET) of the most recent reconciliation
@@ -352,7 +360,18 @@ class StrategyRunner:
             # PRIOR session's close (date < today). Locking it in would poison
             # the watermark and suppress today's real post-close evaluation.
             # Decline until a bar for the current session is available.
+            #
+            # Observability only (M4 PR-1): the decline itself is unchanged. An
+            # operator seeing "runner alive, 0 explanations after close" gets no
+            # signal about WHY without this — the branch is otherwise silent and
+            # fires every ~60s poll while the cache is stale. Emit a warning +
+            # durable operator alert ONCE per staleness episode.
+            self._emit_stale_bar_idle_alert(latest_bar)
             return []
+        # A current-session daily bar was observed -> a prior staleness episode
+        # (if any) has resolved. Reset the dedup guard so a fresh episode re-alerts.
+        if is_daily_bar:
+            self._stale_bar_alerted_for = None
 
         account = self._broker.get_account()
         context = replace(
@@ -1045,6 +1064,68 @@ class StrategyRunner:
                 recorded_at=self._now(),
             )
         )
+
+    def _emit_stale_bar_idle_alert(self, latest_bar) -> None:
+        """Warn + durably record that a daily strategy is idling on a stale bar.
+
+        Fires from the daily stale-decline branch: the latest available daily
+        bar is a PRIOR session's close, so the runner correctly declines to
+        evaluate (locking a stale bar would poison the watermark). Without this,
+        the operator sees only "runner alive, 0 explanations after close" and
+        must reverse-engineer the stale-cache cause (a documented diagnosis
+        burden). Deduplicated to ONCE per staleness episode (keyed by the stale
+        bar's session date) so the ~60s poll loop does not write a row per cycle.
+
+        Observability only: it does NOT change the decline, submit, retry, or
+        mutate any state beyond the in-memory dedup guard. The alert write is
+        fail-soft — any failure is swallowed so a broken ledger can never break
+        the poll loop.
+        """
+        stale_date = latest_bar.timestamp.date()
+        if self._stale_bar_alerted_for == stale_date:
+            return
+        self._stale_bar_alerted_for = stale_date
+        expected_date = self._now().astimezone(ET_TZ).date()
+        try:
+            symbol = self._evaluation_symbol()
+        except ValueError:
+            symbol = None
+        logger.warning(
+            "Daily strategy %s idling on STALE market data: latest bar is for "
+            "session %s but the current session is %s. No evaluation until the "
+            "cache is refreshed. Heal with `milodex data fetch-universe "
+            "--universe-ref <ref> --start <before-gap> --end <today> --force` "
+            "(see docs/TROUBLESHOOTING.md, Data: stale).",
+            self._strategy_id,
+            stale_date.isoformat(),
+            expected_date.isoformat(),
+        )
+        try:
+            self._event_store.append_operator_alert(
+                OperatorAlertEvent(
+                    alert_type="stale_market_data_idle",
+                    severity="warning",
+                    summary=(
+                        f"Daily strategy {self._strategy_id} idling on stale market "
+                        f"data: latest bar session {stale_date.isoformat()} < current "
+                        f"session {expected_date.isoformat()}."
+                    ),
+                    strategy_id=self._strategy_id,
+                    session_id=self._session_id,
+                    symbol=symbol,
+                    context_json={
+                        "stale_bar_session_date": stale_date.isoformat(),
+                        "expected_session_date": expected_date.isoformat(),
+                        "stale_bar_timestamp": latest_bar.timestamp.isoformat(),
+                    },
+                    recorded_at=self._now(),
+                )
+            )
+        except Exception:  # noqa: BLE001 — alert write must never break the poll loop
+            logger.exception(
+                "Failed to persist stale_market_data_idle alert for %s (non-fatal).",
+                self._strategy_id,
+            )
 
     def _alert_stranded_exit_intents(self, drainable: list[QueuedIntentEvent]) -> None:
         """Alert + retire any still-queued EXIT for THIS strategy that the drain

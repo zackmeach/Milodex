@@ -1681,6 +1681,137 @@ def test_daily_pre_open_stale_bar_does_not_lock_in(
     assert runner._last_processed_bar_at is None
 
 
+# ---------------------------------------------------------------------------
+# M4 PR-1: the daily stale-bar decline must be operator-observable
+# ---------------------------------------------------------------------------
+
+
+def _make_stale_daily_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A post-close daily runner whose clock is +2 days past the latest bar, so
+    the latest available bar is a PRIOR session's close (the stale-decline case).
+    Returns (runner, event_store, fake_now) where fake_now is a 1-element list
+    holding the mutable clock."""
+    runner, _, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        market_open=False,
+    )
+    latest_ts = provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now = [latest_ts.to_pydatetime() + timedelta(days=2)]
+    runner._now = lambda: fake_now[0]
+    return runner, event_store, fake_now
+
+
+def test_daily_stale_decline_emits_exactly_one_alert_and_warning_across_polls(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """The stale-decline branch fires every ~60s poll while data is stale, but
+    the operator alert + warning must be emitted ONCE per staleness episode."""
+    import logging
+
+    runner, event_store, _ = _make_stale_daily_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    with caplog.at_level(logging.WARNING, logger="milodex.strategies.runner"):
+        for _ in range(3):
+            assert runner.run_cycle() == []
+
+    alerts = event_store.list_operator_alerts(alert_type="stale_market_data_idle")
+    assert len(alerts) == 1, "one alert per staleness episode, not one per poll"
+    alert = alerts[0]
+    assert alert.severity == "warning"
+    assert alert.strategy_id == runner._strategy_id
+    assert alert.context_json["stale_bar_session_date"]
+    assert alert.context_json["expected_session_date"]
+
+    idle_warnings = [r for r in caplog.records if "idling on STALE market data" in r.getMessage()]
+    assert len(idle_warnings) == 1, "one warning per staleness episode, not one per poll"
+    # The warning must point at the fix.
+    assert "fetch-universe" in idle_warnings[0].getMessage()
+
+
+def test_daily_stale_recovery_then_restaleness_emits_second_alert(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """After the data becomes current again (guard reset), a fresh staleness
+    episode must re-alert -- even on the same bar date."""
+    runner, event_store, fake_now = _make_stale_daily_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+    stale_clock = fake_now[0]
+
+    # Episode 1: stale.
+    assert runner.run_cycle() == []
+    assert len(event_store.list_operator_alerts(alert_type="stale_market_data_idle")) == 1
+
+    # Recovery: move the clock onto the bar's own session date so the latest bar
+    # is current -> the runner proceeds past the decline and resets the guard.
+    latest_ts = runner._data_provider._bars_by_symbol["SPY"].latest().timestamp
+    fake_now[0] = latest_ts.to_pydatetime().replace(hour=20, minute=5)
+    runner.run_cycle()
+    assert runner._stale_bar_alerted_for is None, "current bar must reset the dedup guard"
+
+    # Episode 2: stale again on the SAME bar date -> must alert a second time.
+    fake_now[0] = stale_clock
+    assert runner.run_cycle() == []
+    assert len(event_store.list_operator_alerts(alert_type="stale_market_data_idle")) == 2
+
+
+def test_daily_stale_decline_alert_write_failure_does_not_break_poll(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """A failed alert write must be swallowed -- the decline still returns []
+    and the poll loop is never broken by a broken ledger."""
+    runner, event_store, _ = _make_stale_daily_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    def _boom(_event):
+        raise RuntimeError("ledger unavailable")
+
+    event_store.append_operator_alert = _boom
+
+    # Must NOT raise, and the decline return value is unchanged.
+    assert runner.run_cycle() == []
+    assert runner._last_processed_bar_at is None
+
+
+def test_daily_stale_decline_return_value_unchanged(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """Observability-only: the decline still returns [] and never advances the
+    watermark (identical to the pre-observability behavior)."""
+    runner, _, _ = _make_stale_daily_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+    assert runner.run_cycle() == []
+    assert runner._last_processed_bar_at is None
+
+
 def test_daily_post_close_current_bar_locks_in(
     tmp_path: Path,
     strategy_config_dir: Path,
