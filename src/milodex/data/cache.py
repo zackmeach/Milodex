@@ -91,6 +91,11 @@ class ParquetCache:
 
     def _path(self, symbol: str, timeframe: Timeframe) -> Path:
         """Return the Parquet file path for a symbol/timeframe pair."""
+        if "/" in symbol or "\\" in symbol:
+            raise ValueError(
+                f"symbol {symbol!r} contains a path separator; ParquetCache has no "
+                f"filesystem-safe key for such symbols (crypto cache-key support is deferred)"
+            )
         dir_path = self._cache_dir / self._version / timeframe.value
         dir_path.mkdir(parents=True, exist_ok=True)
         return dir_path / f"{symbol.upper()}.parquet"
