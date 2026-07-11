@@ -199,6 +199,19 @@ def test_criterion_b_unevaluatable_without_signal_count_metadata(tmp_path):
     assert "signal-count metadata" in b.detail
 
 
+def test_criterion_b_unevaluatable_with_malformed_signal_count(tmp_path):
+    """Malformed signal_count metadata refuses cleanly — never a traceback."""
+    store = EventStore(tmp_path / "m.db")
+    _seed_completed_run(
+        store, started_at=_NOW - timedelta(days=1), metadata={"signal_count": "not-a-number"}
+    )
+    result = evaluate_lifecycle_criteria(_STRATEGY_ID, store, now=_NOW)
+    b = _outcome(result, "b")
+    assert b.satisfied is False
+    assert "malformed signal-count metadata" in b.detail
+    assert result.satisfied is False
+
+
 def test_criterion_b_unmet_when_signals_but_no_explanations(tmp_path):
     store = EventStore(tmp_path / "m.db")
     _seed_completed_run(store, started_at=_NOW - timedelta(days=1), metadata={"signal_count": 3})

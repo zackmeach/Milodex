@@ -168,7 +168,19 @@ def _evaluate_a_and_b(
         outcome_b = CriterionOutcome(CRITERION_B, label_b, False, detail_b, run_evidence)
         return outcome_a, outcome_b
 
-    signal_count = int(signal_count)
+    try:
+        signal_count = int(signal_count)
+    except (TypeError, ValueError):
+        # Malformed metadata refuses cleanly (fail-closed), never crashes the
+        # promotion attempt with a traceback.
+        detail_b = (
+            f"Backtest run {run.run_id} has malformed signal-count metadata "
+            f"({signal_count!r}) and cannot be evaluated for explanation coverage. "
+            "Re-run the backtest to regenerate it."
+        )
+        outcome_b = CriterionOutcome(CRITERION_B, label_b, False, detail_b, run_evidence)
+        return outcome_a, outcome_b
+
     # INTEGER FK join (explanations.backtest_run_id = backtest_runs.id). The db
     # id, NOT the UUID run_id — the wrong-column join silently returns zero.
     explanation_count = event_store.count_explanations_for_backtest_run(run.id)
