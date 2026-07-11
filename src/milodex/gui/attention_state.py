@@ -623,8 +623,7 @@ class AttentionState(PollingReadModel):
         rollups_changed = new_rollups != self._rollups
         drift_changed = result["drift_list"] != self._drift_list
         alerts_changed = (
-            new_alerts != self._operator_alerts
-            or new_alerts_note != self._operator_alerts_note
+            new_alerts != self._operator_alerts or new_alerts_note != self._operator_alerts_note
         )
         self._rollups = new_rollups
         self._drift_list = result["drift_list"]
