@@ -27,8 +27,12 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-# Load .env from project root (if it exists)
-load_dotenv()
+# Load .env from project root (if it exists). MILODEX_SKIP_DOTENV suppresses the
+# load for hermetic subprocesses (drill harness scratch envs): dotenv walks up
+# from this file's location, so a scrubbed subprocess env alone cannot prevent
+# the repo's real .env from refilling credentials.
+if not os.environ.get("MILODEX_SKIP_DOTENV", "").strip():
+    load_dotenv()
 
 
 def _localappdata_root() -> Path:

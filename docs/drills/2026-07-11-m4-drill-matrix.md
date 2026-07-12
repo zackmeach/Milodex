@@ -17,7 +17,32 @@ Each cell injects a real fault into a throwaway scratch environment (tempfile-ba
 | `dead_runner` | **PASS** | — |
 | `wedged_stop` | **PASS** | — |
 | `kill_switch_trip_reset` | **PASS** | outbound bogus-cred call |
-| `clean_room` | **PASS** | — |
+| `clean_room` | **PASS** | see addendum: original PASS was from a `.env`-less checkout |
+
+### Addendum 2026-07-11 — `clean_room` hermeticity caveat and re-verification
+
+The original `clean_room` PASS above was produced in a checkout **without** a repo
+`.env`. On a machine where the repo root has a real `.env` (the founder's), the
+cell as originally shipped FAILed: the harness scrubbed `ALPACA_*` from the
+subprocess environment, but `milodex.config`'s import-time `load_dotenv()` walks
+up from the src tree and refilled the scrubbed keys from the repo `.env` — the
+`creds="none"` posture then reached the live paper account and `milodex status`
+exited 0 instead of failing closed. So the original PASS evidenced only the
+credential-less-machine posture, not the founder-machine posture.
+
+Fixed by suppressing the dotenv load in drill subprocesses
+(`MILODEX_SKIP_DOTENV=1`, set unconditionally by `_build_subprocess_env`;
+honored in `src/milodex/config.py` before `load_dotenv()`). Re-run on the
+founder machine **with the real `.env` present** (2026-07-11, post-fix):
+
+```
+[drill] clean_room: PASS
+=== 1/1 cells PASS ===
+```
+
+`creds="bogus"` / `"blank"` cells were never affected (`load_dotenv` does not
+override variables already set), but all scratch subprocesses now skip dotenv
+for defense in depth.
 
 ## `stale_market_data` — PASS
 
