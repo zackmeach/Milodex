@@ -149,6 +149,10 @@ def _build_subprocess_env(
         "MILODEX_CACHE_DIR",
     ):
         env.pop(key, None)
+    # Popping is not enough: milodex.config's import-time load_dotenv() walks up
+    # from the src tree and would refill ALPACA_* from the repo's real .env on a
+    # developer machine. Suppress the dotenv load entirely for scratch runs.
+    env["MILODEX_SKIP_DOTENV"] = "1"
 
     existing_pythonpath = os.environ.get("PYTHONPATH", "")
     env["PYTHONPATH"] = (

@@ -45,6 +45,32 @@ def test_fast_offline_cells_cover_the_expected_set() -> None:
     ]
 
 
+def test_subprocess_env_is_hermetic_against_repo_dotenv(monkeypatch, tmp_path: Path) -> None:
+    """The scratch env must both strip real credentials AND suppress the
+    import-time ``load_dotenv()`` in ``milodex.config`` — dotenv walks up from
+    the src tree, so on a machine with a repo ``.env`` the popped keys would
+    otherwise be silently refilled with real credentials (clean_room part a
+    then reaches the live paper account instead of failing closed)."""
+    from scripts.drills.harness import ScratchEnv, _build_subprocess_env
+
+    monkeypatch.setenv("ALPACA_API_KEY", "real-key-leak-canary")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "real-secret-leak-canary")
+    scratch = ScratchEnv(
+        root=tmp_path,
+        data_dir=tmp_path / "data",
+        logs_dir=tmp_path / "logs",
+        locks_dir=tmp_path / "locks",
+        cache_dir=tmp_path / "cache",
+        cwd=tmp_path / "cwd",
+    )
+
+    env = _build_subprocess_env(scratch, creds="none", trading_mode=None)
+
+    assert "ALPACA_API_KEY" not in env
+    assert "ALPACA_SECRET_KEY" not in env
+    assert env["MILODEX_SKIP_DOTENV"] == "1"
+
+
 @pytest.mark.parametrize("cell_name", _FAST_OFFLINE_CELLS)
 def test_drill_cell_passes(cell_name: str) -> None:
     """Each fast offline drill cell injects its fault and asserts green."""
