@@ -86,3 +86,56 @@ class TestGetDataDir:
     def test_default_is_data(self):
         result = get_data_dir()
         assert result.name == "data"
+
+
+class TestSkipDotenvGuard:
+    """The import-time ``load_dotenv()`` bootstrap honors MILODEX_SKIP_DOTENV.
+
+    Drives ``milodex.config`` in a subprocess with a stub ``dotenv`` module
+    earlier on PYTHONPATH that records the call in an env canary — so the
+    guard is pinned in CI (no repo ``.env`` required) and a revert of the
+    guard in config.py fails here, not only on machines that have a real
+    ``.env`` (where the clean_room drill cell would catch the credential
+    leak end-to-end).
+    """
+
+    @staticmethod
+    def _bootstrap_calls_dotenv(tmp_path: Path, *, skip_flag: str | None) -> bool:
+        import os
+        import subprocess
+        import sys
+
+        import milodex
+
+        (tmp_path / "dotenv.py").write_text(
+            "import os\n"
+            "def load_dotenv(*args, **kwargs):\n"
+            "    os.environ['DOTENV_LOADED_CANARY'] = '1'\n",
+            encoding="utf-8",
+        )
+        src_dir = Path(milodex.__file__).resolve().parents[1]
+        env = dict(os.environ)
+        env.pop("DOTENV_LOADED_CANARY", None)
+        env.pop("MILODEX_SKIP_DOTENV", None)
+        if skip_flag is not None:
+            env["MILODEX_SKIP_DOTENV"] = skip_flag
+        env["PYTHONPATH"] = f"{tmp_path}{os.pathsep}{src_dir}"
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, milodex.config; "
+                "print(os.environ.get('DOTENV_LOADED_CANARY', '0'), end='')",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return completed.stdout == "1"
+
+    def test_bootstrap_loads_dotenv_by_default(self, tmp_path: Path):
+        assert self._bootstrap_calls_dotenv(tmp_path, skip_flag=None) is True
+
+    def test_bootstrap_skips_dotenv_when_flag_set(self, tmp_path: Path):
+        assert self._bootstrap_calls_dotenv(tmp_path, skip_flag="1") is False

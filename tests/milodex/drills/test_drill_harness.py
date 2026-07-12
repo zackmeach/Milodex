@@ -46,11 +46,12 @@ def test_fast_offline_cells_cover_the_expected_set() -> None:
 
 
 def test_subprocess_env_is_hermetic_against_repo_dotenv(monkeypatch, tmp_path: Path) -> None:
-    """The scratch env must both strip real credentials AND suppress the
-    import-time ``load_dotenv()`` in ``milodex.config`` — dotenv walks up from
-    the src tree, so on a machine with a repo ``.env`` the popped keys would
-    otherwise be silently refilled with real credentials (clean_room part a
-    then reaches the live paper account instead of failing closed)."""
+    """The scratch env dict strips real credentials and carries the
+    MILODEX_SKIP_DOTENV flag. This pins only the harness side; the config.py
+    side (the flag actually suppressing the import-time ``load_dotenv()``) is
+    pinned by ``tests/milodex/test_config.py::TestSkipDotenvGuard``. Without
+    both, a machine with a repo ``.env`` refills the popped keys with real
+    credentials and clean_room part a reaches the live paper account."""
     from scripts.drills.harness import ScratchEnv, _build_subprocess_env
 
     monkeypatch.setenv("ALPACA_API_KEY", "real-key-leak-canary")
