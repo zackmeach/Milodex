@@ -721,7 +721,17 @@ class RiskEvaluator:
             if context.intent.quantity >= position.quantity:
                 projected_count -= 1
 
-        max_positions = self._effective_max_positions(context)
+        # Account-scoped cap (ADR 0024): ``projected_count`` above counts EVERY
+        # broker position + in-flight BUY regardless of which strategy opened it,
+        # so it is bounded by the GLOBAL account cap alone — never clamped by the
+        # proposing strategy's own ``risk.max_positions``. That per-strategy bound
+        # is a separate, additive ceiling enforced in
+        # ``_check_strategy_concurrent_positions`` (reason code
+        # ``max_strategy_positions_exceeded``, ADR 0029). Clamping the account cap
+        # down to one strategy's ``max_positions`` deadlocked the whole paper fleet
+        # on 2026-07-13/14: 3 unrelated broker positions + regime's
+        # ``max_positions=1`` vetoed every fleet BUY with "4 exceeds limit 1".
+        max_positions = context.risk_defaults.max_concurrent_positions
         if projected_count > max_positions:
             return RiskCheckResult(
                 name="concurrent_positions",
@@ -754,10 +764,10 @@ class RiskEvaluator:
         :func:`milodex.risk.attribution.attribute_position` reconstruction.
 
         Reads ``context.expected_max_positions`` directly per ADR 0029
-        Decision 6 — the per-strategy cap is an independent ceiling and
-        MUST NOT be clamped by the global default via
-        :meth:`_effective_max_positions`. That clamp is for the
-        account-scoped check.
+        Decision 6 — the per-strategy cap is an independent ceiling that
+        neither clamps nor is clamped by the global account cap. The
+        account-scoped check (:meth:`_check_concurrent_positions`) enforces
+        ``risk_defaults.max_concurrent_positions`` on its own (ADR 0024).
 
         Skipped (returns a passing :class:`RiskCheckResult`) when:
           - ``context.expected_max_positions`` is None (operator manual
@@ -992,16 +1002,6 @@ class RiskEvaluator:
             else context.strategy_config.max_position_pct
         )
         return min(context.risk_defaults.max_single_position_pct, per_strategy)
-
-    def _effective_max_positions(self, context: EvaluationContext) -> int:
-        if context.strategy_config is None:
-            return context.risk_defaults.max_concurrent_positions
-        per_strategy = (
-            context.expected_max_positions
-            if context.expected_max_positions is not None
-            else context.strategy_config.max_positions
-        )
-        return min(context.risk_defaults.max_concurrent_positions, per_strategy)
 
     def _projected_position_value(self, context: EvaluationContext) -> float:
         current = next(
