@@ -594,6 +594,33 @@ class RiskEvaluator:
         return RiskCheckResult("order_value", True, "Estimated order value is within limits.")
 
     def _check_single_position_limit(self, context: EvaluationContext) -> RiskCheckResult:
+        # DC-1 (mirrors _check_order_value, 2026-06-10): the single-position cap
+        # targets position GROWTH — an entry (or add) opening/enlarging exposure
+        # past the per-symbol envelope. Exposure-REDUCING orders are exempt: a
+        # held position must ALWAYS be exitable in full, even when its market
+        # value has already grown past the cap. Without this exemption the cap
+        # projects the *remaining* value after the sell and blocks the exit
+        # whenever the remainder still exceeds the cap — deadlocking an over-cap
+        # position out of existence (observed in production 2026-07-14: an XLF
+        # long of 364sh / ~$20.6k sat over a 10% / ~$10.1k cap; each strategy's
+        # covering exit SELL of 182sh projected a ~$10.1k remainder > cap and was
+        # vetoed max_single_position_exceeded, retried every 60s for 26min — the
+        # position was UNEXITABLE). Classification reuses is_exposure_increasing
+        # (the same plumbing as _check_order_value and the reconciliation gate),
+        # so a naked short or a sell BEYOND the held quantity counts as
+        # increasing and stays capped — this is why the exemption keys on
+        # is_exposure_increasing rather than a projected<=current comparison: an
+        # over-held short whose residual short leg is smaller than the netted-off
+        # long would read as non-growing under projected<=current yet still open
+        # a fresh short that must face the cap.
+        if not is_exposure_increasing(context.intent, context.positions):
+            return RiskCheckResult(
+                "single_position",
+                True,
+                "Exposure-reducing order is exempt from the single-position cap; "
+                "the cap targets position growth and a held position must "
+                "always be exitable.",
+            )
         projected_value = self._projected_position_value(context)
         max_pct = self._effective_position_pct(context)
         max_value = context.account.portfolio_value * max_pct
