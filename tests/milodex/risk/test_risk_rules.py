@@ -689,7 +689,14 @@ def test_concurrent_positions_allows_sell_that_closes_slot():
     assert check_result(decision, "concurrent_positions").passed is True
 
 
-def test_concurrent_positions_cap_tightened_by_strategy_config():
+def test_concurrent_positions_not_tightened_by_strategy_config():
+    """ADR 0024: the account-scoped cap is the GLOBAL value alone — a
+    strategy's own ``risk.max_positions`` never clamps it down (that per-
+    strategy bound is enforced separately in
+    ``_check_strategy_concurrent_positions``). One held + one new BUY = 2,
+    under the global cap of 3, so the account-scoped check passes even
+    though the strategy declares ``max_positions=1``. (Pre-fix the account
+    check clamped to ``min(3, 1)=1`` and wrongly refused — spec≠code.)"""
     strategy_config = StrategyExecutionConfig(
         name="single_slot",
         enabled=True,
@@ -705,6 +712,71 @@ def test_concurrent_positions_cap_tightened_by_strategy_config():
             positions=held,
             estimated_order_value=500.0,
             strategy_config=strategy_config,
+        )
+    )
+
+    assert check_result(decision, "concurrent_positions").passed is True
+
+
+def test_concurrent_positions_regression_fleet_deadlock_2026_07_13(tmp_path):
+    """Regression for the 2026-07-13/14 paper-fleet deadlock (spec≠code vs
+    ADR 0024/0029).
+
+    The broker held 3 positions opened by an unrelated strategy ('meanrev');
+    the regime strategy (``max_positions=1``) proposed a BUY of a 4th symbol.
+    Pre-fix, the account-scoped check clamped its limit to
+    ``min(global, regime.max_positions) = min(10, 1) = 1`` and vetoed the BUY
+    with "Projected open positions 4 exceeds limit 1" — every fleet strategy
+    was deadlocked from buying while any positions were open.
+
+    Post-fix the account-scoped check uses the GLOBAL cap (10) alone: 3 held +
+    1 new = 4 <= 10 → PASS. The per-strategy check is unaffected — none of the
+    3 broker positions are attributed to regime, so regime owns 0 and its
+    projected count is 1 == its cap of 1 → PASS. The trade is allowed.
+
+    ``strategy_config`` is set (non-None) deliberately: the pre-fix clamp only
+    engaged when a full ``StrategyExecutionConfig`` was present, which is the
+    production runner wiring that actually deadlocked.
+    """
+    store = _attrib_store(
+        tmp_path,
+        attributions={"AVGO": "meanrev", "GLD": "meanrev", "SLV": "meanrev"},
+    )
+    held = [_position("AVGO", 5.0), _position("GLD", 5.0), _position("SLV", 5.0)]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
+            strategy_config=_strategy_config(stage="paper", max_positions=1),
+            expected_max_positions=1,
+            estimated_order_value=500.0,
+            # Operator sized the global cap for multi-strategy operation.
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
+        )
+    )
+
+    assert check_result(decision, "concurrent_positions").passed is True
+    assert check_result(decision, "strategy_concurrent_positions").passed is True
+    assert decision.allowed is True
+    assert "max_concurrent_positions_exceeded" not in decision.reason_codes
+    assert "max_strategy_positions_exceeded" not in decision.reason_codes
+
+
+def test_concurrent_positions_blocks_at_global_cap():
+    """The account-scoped check still blocks at the GLOBAL cap. Ten occupied
+    slots at ``max_concurrent_positions=10``; a BUY of an 11th symbol projects
+    11 > 10 → refused with ``max_concurrent_positions_exceeded`` (ADR 0024)."""
+    held = [_position(sym, 5.0) for sym in ("A", "B", "C", "D", "E", "F", "G", "H", "I", "J")]
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="SPY",
+            side=OrderSide.BUY,
+            positions=held,
+            estimated_order_value=500.0,
+            risk_defaults=_with_overrides(max_concurrent_positions=10),
         )
     )
 
@@ -1220,28 +1292,29 @@ def test_strategy_stage_allows_paper_stage_for_paper_submission():
     assert result.passed is True
 
 
-def test_concurrent_positions_uses_runner_bound_max_positions():
+def test_runner_bound_max_positions_enforced_by_per_strategy_cap(tmp_path):
     """A parallel writer raising ``max_positions`` from 1 to 10 mid-session
     must not let the runner take a second position. The runner's bound cap
-    wins over the per-cycle YAML value."""
-    from milodex.broker.models import Position
+    (``expected_max_positions``) wins over the per-cycle YAML value.
 
-    existing_position = Position(
-        symbol="AAPL",
-        quantity=10,
-        avg_entry_price=100.0,
-        current_price=100.0,
-        market_value=1000.0,
-        unrealized_pnl=0.0,
-        unrealized_pnl_pct=0.0,
-    )
+    Post ADR 0024/0029 this binding is enforced by the per-strategy check
+    (``_check_strategy_concurrent_positions``), which reads
+    ``expected_max_positions`` raw — NOT by the account-scoped check, which
+    now uses the global cap alone. The strategy already owns one attributed
+    lot (AAPL); BUY MSFT projects 2 > the bound cap of 1, so the per-strategy
+    check refuses with ``max_strategy_positions_exceeded`` even though YAML
+    reads 10. The account-scoped check is comfortable (2 <= global 3)."""
+    store = _attrib_store(tmp_path, attributions={"AAPL": "regime"})
+    held = [_position("AAPL", 10.0)]
     decision = RiskEvaluator().evaluate(
         make_context(
             symbol="MSFT",
             side=OrderSide.BUY,
             quantity=10,
             estimated_unit_price=100.0,
-            positions=[existing_position],
+            positions=held,
+            request_strategy_name="regime",
+            event_store=store,
             # YAML on disk currently reads max_positions=10 (parallel writer
             # raised it mid-session). Runner is bound to max_positions=1.
             strategy_config=_strategy_config(stage="paper", max_positions=10),
@@ -1251,11 +1324,13 @@ def test_concurrent_positions_uses_runner_bound_max_positions():
         )
     )
 
-    result = check_result(decision, "concurrent_positions")
+    result = check_result(decision, "strategy_concurrent_positions")
     assert result.passed is False, (
         "runner bound to max_positions=1 must refuse even when YAML reads 10"
     )
-    assert result.reason_code == "max_concurrent_positions_exceeded"
+    assert result.reason_code == "max_strategy_positions_exceeded"
+    # The account-scoped check does NOT tighten to the strategy bound.
+    assert check_result(decision, "concurrent_positions").passed is True
 
 
 def test_single_position_uses_runner_bound_max_position_pct():
@@ -1317,14 +1392,17 @@ def test_daily_loss_uses_runner_bound_daily_loss_cap_pct():
     assert result.reason_code == "daily_loss_cap_exceeded"
 
 
-def test_toctou_followups_fall_back_to_yaml_when_no_binding():
-    """Backward-compat: callers without runner-bound bindings (operator manual
-    trades, legacy entry points) get unchanged behavior — the existing YAML
-    read with ``min(global, per_strategy)`` applies."""
+def test_account_cap_ignores_yaml_max_positions_when_no_binding():
+    """The account-scoped check uses the GLOBAL cap alone (ADR 0024),
+    regardless of the strategy YAML's ``max_positions`` and regardless of
+    whether a runner binding is present. Here an operator/legacy caller has
+    no per-strategy binding (``expected_max_positions=None``, no event store)
+    so the per-strategy check is skipped; the account check applies the
+    global cap of 3 directly."""
     from milodex.broker.models import Position
 
-    # Without expected_max_positions, max_positions=10 from YAML applies
-    # (capped by global default of 3). One existing position, one new.
+    # One existing position, one new BUY -> projected 2, under global cap 3.
+    # The YAML ``max_positions=10`` is irrelevant to the account-scoped check.
     existing_position = Position(
         symbol="AAPL",
         quantity=10,
@@ -1348,8 +1426,7 @@ def test_toctou_followups_fall_back_to_yaml_when_no_binding():
         )
     )
 
-    # Should pass — global default=3, YAML=10, min=3, current=1, projected=2,
-    # 2 < 3 OK. (Confirms fallback path uses YAML, not the bound value.)
+    # Global default=3, projected=2, 2 < 3 -> OK.
     assert check_result(decision, "concurrent_positions").passed is True
 
 
@@ -1725,8 +1802,9 @@ def test_data_staleness_1d_both_gates_agree_session_mismatch_blocked(monkeypatch
 # 0024) — both must pass. The new check uses
 # ``milodex.risk.attribution.attribute_position`` to reconstruct
 # attribution from the durable trades history, and reads the per-strategy
-# cap from ``EvaluationContext.expected_max_positions`` directly (not via
-# ``_effective_max_positions()``, which clamps).
+# cap from ``EvaluationContext.expected_max_positions`` directly — an
+# independent ceiling that neither clamps nor is clamped by the global
+# account cap.
 
 
 def _attrib_store(tmp_path, *, attributions: dict[str, str]):
@@ -2027,33 +2105,27 @@ def test_only_per_strategy_fails_when_account_scoped_below(tmp_path):
     assert "max_concurrent_positions_exceeded" not in decision.reason_codes
 
 
-def test_strategy_concurrent_positions_uses_expected_max_positions_directly_not_effective(
+def test_strategy_concurrent_positions_uses_expected_max_positions_not_clamped_to_global(
     tmp_path,
 ):
     """Per-strategy check reads ``expected_max_positions`` raw; no clamp.
 
-    Pins ADR 0029 Decision 6 by forcing the two implementations to
-    diverge. Construct a scenario where ``expected_max_positions`` is
+    Pins ADR 0029 Decision 6: the per-strategy cap is an independent
+    ceiling. Construct a scenario where ``expected_max_positions`` is
     LOOSER than the global account-scoped cap — the per-strategy check
-    must use the raw per-strategy bound, not anything routed through
-    :meth:`_effective_max_positions`.
+    must use the raw per-strategy bound, never a value clamped down to
+    the global ``max_concurrent_positions``.
 
     Scenario:
       - ``risk_defaults.max_concurrent_positions = 2`` (global tight)
       - ``expected_max_positions = 10`` (per-strategy loose)
-      - ``strategy_config = None`` (the unbound case — operator runner
-        wiring or callers that pass ``expected_max_positions`` without
-        a full ``StrategyExecutionConfig``).
       - Strategy 'regime' currently holds 2 attributed positions
         (AAPL, MSFT). It proposes BUY GOOG (a new symbol).
       - Projected per-strategy count = 3.
 
-    Two implementations, two outcomes:
+    Two behaviors, two outcomes:
       - Correct (raw read): cap = 10 → 3 <= 10 → PASS.
-      - Naive (calls ``_effective_max_positions(context)`` which, with
-        ``strategy_config=None``, returns
-        ``risk_defaults.max_concurrent_positions = 2``):
-        cap = 2 → 3 > 2 → FAIL.
+      - Buggy (clamp to global): cap = min(10, 2) = 2 → 3 > 2 → FAIL.
 
     The account-scoped check
     (:meth:`RiskEvaluator._check_concurrent_positions`) WILL fail in
@@ -2072,24 +2144,21 @@ def test_strategy_concurrent_positions_uses_expected_max_positions_directly_not_
             positions=held,
             request_strategy_name="regime",
             event_store=store,
-            # Per-strategy raw cap is 10 (loose). A naive implementation
-            # that piped this through _effective_max_positions() would,
-            # with strategy_config=None, return
-            # risk_defaults.max_concurrent_positions = 2 — and refuse.
+            # Per-strategy raw cap is 10 (loose). A buggy clamp to the
+            # global cap would see 2 and refuse.
             expected_max_positions=10,
             estimated_order_value=500.0,
             # Global default is intentionally tight at 2. This is what
-            # makes the two implementations diverge: raw read sees 10,
-            # any path through _effective_max_positions() sees 2.
+            # makes the two behaviors diverge: raw read sees 10, a clamp
+            # to the global cap sees 2.
             risk_defaults=_with_overrides(max_concurrent_positions=2),
         )
     )
     strategy_check = check_result(decision, "strategy_concurrent_positions")
     assert strategy_check.passed is True, (
-        "Per-strategy check must use raw expected_max_positions=10, not "
-        "_effective_max_positions() (which would return "
-        "risk_defaults.max_concurrent_positions=2 with strategy_config=None "
-        "and refuse at projected=3 > cap=2)."
+        "Per-strategy check must use raw expected_max_positions=10, not a "
+        "value clamped down to risk_defaults.max_concurrent_positions=2 "
+        "(which would refuse at projected=3 > cap=2)."
     )
     # The account-scoped check legitimately fails here (3 > 2). That is
     # the global cap doing its job and is unrelated to the per-strategy
