@@ -433,6 +433,92 @@ def test_single_position_allows_sell_that_reduces_position():
     assert check_result(decision, "single_position").passed is True
 
 
+def test_single_position_allows_exit_when_remainder_still_over_cap():
+    # DC-1 (2026-07-14 XLF deadlock): a covered exit must PASS even when the
+    # remaining position after the sell is STILL over the cap — otherwise an
+    # over-cap position is unexitable. Reproduces the production case: 364sh XLF
+    # @ ~$55.64 = ~$20.6k held, 10% cap on a ~$100k portfolio = ~$10.08k, SELL
+    # 182sh leaves ~$10.13k > cap. Pre-fix this was vetoed
+    # max_single_position_exceeded and retried every 60s for 26 minutes.
+    held = _position("XLF", 364.0, 55.64)  # current value ~$20,253 (over cap)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="XLF",
+            side=OrderSide.SELL,
+            quantity=182.0,
+            estimated_unit_price=55.64,
+            positions=[held],
+            account_portfolio_value=100_820.0,  # 10% cap = $10,082
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+
+    # Remainder after exit = 182 * 55.64 = $10,126.48 > $10,082 cap, yet the
+    # covered exit is exposure-reducing and exempt.
+    result = check_result(decision, "single_position")
+    assert result.passed is True
+    assert "exempt" in result.message
+
+
+def test_single_position_oversized_sell_beyond_held_is_still_capped():
+    # A sell EXCEEDING the held quantity opens a fresh short leg and must remain
+    # capped (is_exposure_increasing: quantity > held). Held 10sh; SELL 500sh at
+    # a price whose 490sh short leg blows the cap. The projected<=current
+    # predicate would wrongly exempt this (the residual short leg is smaller than
+    # the netted-off long); keying the exemption on is_exposure_increasing keeps
+    # it capped.
+    held = _position("SPY", 10.0, 100.0)  # current value $1,000
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=500.0,
+            estimated_unit_price=100.0,
+            estimated_order_value=50_000.0,
+            positions=[held],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    # excess 490sh * $100 = $49,000 short leg; projected $49,000 > $2,000 cap.
+    result = check_result(decision, "single_position")
+    assert result.passed is False
+    assert result.reason_code == "max_single_position_exceeded"
+
+
+def test_single_position_naked_short_exceeding_cap_is_still_capped():
+    # A sell with NO covering position is short-opening (is_exposure_increasing:
+    # held 0, qty > 0) — the exemption is unreachable and the cap binds.
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.SELL,
+            quantity=30.0,
+            estimated_unit_price=100.0,
+            estimated_order_value=3_000.0,  # > $2,000 single-position cap
+            positions=[],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    result = check_result(decision, "single_position")
+    assert result.passed is False
+    assert result.reason_code == "max_single_position_exceeded"
+
+
+def test_single_position_buy_growing_at_cap_position_is_still_capped():
+    # A BUY is always exposure-increasing — a buy that grows an at/over-cap
+    # position stays capped (the exemption never applies to entries).
+    existing = _position("SPY", 20.0, 100.0)  # current value $2,000 (at cap)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            side=OrderSide.BUY,
+            estimated_order_value=500.0,  # projected $2,500 > $2,000 cap
+            positions=[existing],
+            risk_defaults=_with_overrides(max_order_value_pct=1.0),
+        )
+    )
+    result = check_result(decision, "single_position")
+    assert result.passed is False
+    assert result.reason_code == "max_single_position_exceeded"
+
+
 # --- _check_total_exposure -------------------------------------------------
 
 
