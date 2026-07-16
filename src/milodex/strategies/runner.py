@@ -15,7 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from milodex.analytics.snapshots import record_daily_snapshot
-from milodex.broker import BrokerClient
+from milodex.broker import BrokerClient, BrokerConnectionError
 from milodex.broker.models import OrderSide
 from milodex.core.event_store import (
     EventStore,
@@ -54,6 +54,23 @@ _POLL_INTERVAL_BY_BAR_SIZE: dict[str, float] = {
     "5Min": 10.0,
     "1Min": 5.0,
 }
+
+# Consecutive-connectivity-outage budget for the poll loop (R-OPS-005
+# "retry per a conservative policy"). A BrokerConnectionError raised by a
+# poll cycle is treated as a failed poll and retried on the next cycle (the
+# poll interval is the backoff) rather than crashing the runner: a transient
+# network/broker blip killed all six paper runners at once on 2026-07-15
+# 23:24 UTC, and an unclean death also voids the queued-intent clean-handoff
+# fence (I-4) — so a crash costs both the session AND the next open's drain.
+# The budget is bounded: once an outage episode exceeds this window the next
+# connectivity failure re-raises and the runner crashes exactly as before
+# (fail-closed; RISK_POLICY.md lists sustained connectivity loss as a
+# kill-switch trigger — wiring that trigger is the kill-switch-triggers
+# workstream, not this constant). Only BrokerConnectionError is retried:
+# every other exception still crashes on first raise. Module constant, not
+# config: promote to configs/risk_defaults.yaml when an operator actually
+# needs to tune it.
+_CONNECTIVITY_RETRY_BUDGET_SECONDS: float = 30.0 * 60.0
 
 
 class StrategyRunner:
@@ -157,6 +174,11 @@ class StrategyRunner:
         # episode (even on the same date after a recovery) then re-alerts.
         self._stale_bar_alerted_for: date | None = None
         self._requested_shutdown: str | None = None
+        # Monotonic timestamp of the first BrokerConnectionError of the current
+        # outage episode; None when connectivity is healthy. Used by run() to
+        # bound connectivity retries (_CONNECTIVITY_RETRY_BUDGET_SECONDS) and to
+        # emit the degraded-connectivity operator alert once per episode.
+        self._connectivity_outage_started: float | None = None
         self._startup_reconciled = False
         # NY trading day string (ISO date, ET) of the most recent reconciliation
         # run this session completed. Set by _ensure_startup_reconciliation on
@@ -250,7 +272,16 @@ class StrategyRunner:
                 if self._requested_shutdown is not None:
                     _exit_mode = self._requested_shutdown
                     break
-                self.run_cycle()
+                try:
+                    self.run_cycle()
+                except BrokerConnectionError as exc:
+                    # Connectivity-classified only: treat as a failed poll and
+                    # retry next cycle, bounded by the outage budget (which
+                    # re-raises). Stop requests stay responsive below — they
+                    # are local-filesystem reads, not broker calls.
+                    self._register_connectivity_failure(exc)
+                else:
+                    self._clear_connectivity_outage()
                 self._check_controlled_stop_request()
                 if self._requested_shutdown is not None:
                     _exit_mode = self._requested_shutdown
@@ -267,6 +298,81 @@ class StrategyRunner:
         finally:
             signal.signal(signal.SIGINT, previous_handler)
             self.shutdown(mode=_exit_mode)
+
+    def _register_connectivity_failure(self, exc: BrokerConnectionError) -> None:
+        """Bound connectivity retries; re-raise ``exc`` once the budget is spent.
+
+        First failure of an episode records the episode start and emits a
+        single ``broker_connectivity_degraded`` operator alert (the event
+        store is local SQLite — a broker outage does not affect it). Later
+        failures only log. When the episode has lasted longer than
+        ``_CONNECTIVITY_RETRY_BUDGET_SECONDS`` the original exception is
+        re-raised, so the runner crashes with the exact pre-existing
+        ``crashed:BrokerConnectionError(...)`` exit_reason. Observational
+        only otherwise — no submit, no risk-state mutation.
+        """
+        now = time.monotonic()
+        if self._connectivity_outage_started is None:
+            self._connectivity_outage_started = now
+            logger.warning(
+                "Broker connectivity lost (%s); retrying each poll for up to %.0f s "
+                "before crashing.",
+                exc,
+                _CONNECTIVITY_RETRY_BUDGET_SECONDS,
+            )
+            try:
+                self._event_store.append_operator_alert(
+                    OperatorAlertEvent(
+                        alert_type="broker_connectivity_degraded",
+                        severity="warning",
+                        summary=(
+                            f"Broker unreachable for {self._strategy_id}; retrying each poll "
+                            f"for up to {_CONNECTIVITY_RETRY_BUDGET_SECONDS:.0f}s before crashing."
+                        ),
+                        strategy_id=self._strategy_id,
+                        session_id=self._session_id,
+                        symbol=None,
+                        side=None,
+                        context_json={
+                            "error": str(exc),
+                            "retry_budget_seconds": _CONNECTIVITY_RETRY_BUDGET_SECONDS,
+                        },
+                        recorded_at=self._now(),
+                    )
+                )
+            except Exception:  # noqa: BLE001 — alert write must never break the poll loop
+                # A concurrent-writer SQLite lock here would otherwise escape the
+                # BrokerConnectionError handler into run()'s crash path — killing
+                # the runner on exactly the fleet-wide-outage scenario this retry
+                # exists for (6 runners + GUI share data/milodex.db). The episode
+                # start is already recorded above, so a swallowed failure cannot
+                # cause per-cycle alert spam. Mirrors _emit_stale_bar_idle_alert.
+                logger.exception("Failed to record broker_connectivity_degraded alert; continuing.")
+            return
+        elapsed = now - self._connectivity_outage_started
+        if elapsed > _CONNECTIVITY_RETRY_BUDGET_SECONDS:
+            logger.error(
+                "Broker connectivity outage exceeded the %.0f s retry budget "
+                "(%.0f s elapsed); crashing.",
+                _CONNECTIVITY_RETRY_BUDGET_SECONDS,
+                elapsed,
+            )
+            raise exc
+        logger.warning(
+            "Broker still unreachable (%s); %.0f s of %.0f s retry budget elapsed.",
+            exc,
+            elapsed,
+            _CONNECTIVITY_RETRY_BUDGET_SECONDS,
+        )
+
+    def _clear_connectivity_outage(self) -> None:
+        """Reset the outage episode after a successful poll cycle."""
+        if self._connectivity_outage_started is not None:
+            logger.info(
+                "Broker connectivity restored after %.0f s.",
+                time.monotonic() - self._connectivity_outage_started,
+            )
+            self._connectivity_outage_started = None
 
     def run_cycle(self) -> list[ExecutionResult]:
         """Process one new completed bar when available.
