@@ -9,7 +9,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from milodex.broker.exceptions import OrderRejectedError
+from milodex.broker.exceptions import BrokerConnectionError, OrderRejectedError
 from milodex.broker.models import (
     AccountInfo,
     Order,
@@ -1445,6 +1445,192 @@ def test_runner_heartbeats_its_lock_each_poll_cycle(
 
     # At least one heartbeat per completed poll cycle.
     assert heartbeats["count"] >= fired["count"] >= 3
+
+
+class FlakyConnectivityBroker(StubBroker):
+    """StubBroker whose ``is_market_open`` raises BrokerConnectionError.
+
+    ``fail_times=N`` fails the first N calls then recovers; ``fail_times=None``
+    fails every call (a sustained outage).
+    """
+
+    def __init__(self, *, fail_times: int | None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._fail_times = fail_times
+
+    def is_market_open(self) -> bool:
+        if self._fail_times is None:
+            raise BrokerConnectionError("is_market_open could not reach the broker: test outage")
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise BrokerConnectionError("is_market_open could not reach the broker: test outage")
+        return super().is_market_open()
+
+
+def _build_connectivity_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    fail_times: int | None,
+):
+    """Wire a runner over a FlakyConnectivityBroker for outage-path tests."""
+    provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = FlakyConnectivityBroker(
+        fail_times=fail_times,
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+    )
+    service, event_store, kill_switch_store = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        poll_interval_seconds=0.0,
+        prompt_fn=lambda: "c",
+    )
+    return runner, broker, event_store, kill_switch_store
+
+
+def test_runner_survives_transient_broker_connectivity_blip(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A connectivity-classified failure is a failed poll, not a crash.
+
+    Regression for 2026-07-15 23:24 UTC: a transient BrokerConnectionError
+    from ``is_market_open`` crashed all six paper runners at once, and the
+    unclean exits also voided the queued-intent clean-handoff fence (I-4)
+    at the next open. Two failing cycles followed by recovery must leave
+    the runner running (controlled stop still exits cleanly afterwards)
+    and emit exactly one degraded-connectivity operator alert.
+    """
+    runner, _broker, event_store, kill_switch_store = _build_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=2,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        # Let the two failing cycles + at least one recovered cycle run,
+        # then ask for a controlled stop so the unbounded loop terminates.
+        fired["count"] += 1
+        if fired["count"] >= 4:
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason == "controlled_stop"
+    assert kill_switch_store.get_state().active is False
+    alerts = event_store.list_operator_alerts(alert_type="broker_connectivity_degraded")
+    assert len(alerts) == 1
+    # Recovery cleared the episode.
+    assert runner._connectivity_outage_started is None
+
+
+def test_runner_connectivity_budget_exhaustion_crashes_as_before(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Once the outage outlives the budget the runner crashes exactly as pre-fix.
+
+    Budget forced negative so the second failing cycle exceeds it: the
+    original BrokerConnectionError propagates and the strategy_runs row is
+    closed with the unchanged ``crashed:BrokerConnectionError(...)`` format.
+    """
+    runner, _broker, event_store, _kill = _build_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=None,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_CONNECTIVITY_RETRY_BUDGET_SECONDS", -1.0)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _s: None)
+
+    with pytest.raises(BrokerConnectionError):
+        runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason is not None
+    assert runs[0].exit_reason.startswith("crashed:BrokerConnectionError")
+
+
+def test_runner_controlled_stop_honored_during_connectivity_outage(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Stop requests are local-filesystem reads and must work mid-outage.
+
+    A sustained outage inside the retry budget must not block the operator:
+    the controlled stop lands between failing cycles and the runner exits
+    ``controlled_stop`` (clean handoff preserved), never ``crashed:``. The
+    degraded-connectivity alert is emitted once for the whole episode, not
+    once per failing cycle.
+    """
+    runner, _broker, event_store, _kill = _build_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=None,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        # Several failing cycles inside the (default, generous) budget, then
+        # a controlled stop.
+        fired["count"] += 1
+        if fired["count"] >= 3:
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason == "controlled_stop"
+    alerts = event_store.list_operator_alerts(alert_type="broker_connectivity_degraded")
+    assert len(alerts) == 1
 
 
 # ---------------------------------------------------------------------------
