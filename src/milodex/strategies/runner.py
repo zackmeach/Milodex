@@ -320,25 +320,34 @@ class StrategyRunner:
                 exc,
                 _CONNECTIVITY_RETRY_BUDGET_SECONDS,
             )
-            self._event_store.append_operator_alert(
-                OperatorAlertEvent(
-                    alert_type="broker_connectivity_degraded",
-                    severity="warning",
-                    summary=(
-                        f"Broker unreachable for {self._strategy_id}; retrying each poll "
-                        f"for up to {_CONNECTIVITY_RETRY_BUDGET_SECONDS:.0f}s before crashing."
-                    ),
-                    strategy_id=self._strategy_id,
-                    session_id=self._session_id,
-                    symbol=None,
-                    side=None,
-                    context_json={
-                        "error": str(exc),
-                        "retry_budget_seconds": _CONNECTIVITY_RETRY_BUDGET_SECONDS,
-                    },
-                    recorded_at=self._now(),
+            try:
+                self._event_store.append_operator_alert(
+                    OperatorAlertEvent(
+                        alert_type="broker_connectivity_degraded",
+                        severity="warning",
+                        summary=(
+                            f"Broker unreachable for {self._strategy_id}; retrying each poll "
+                            f"for up to {_CONNECTIVITY_RETRY_BUDGET_SECONDS:.0f}s before crashing."
+                        ),
+                        strategy_id=self._strategy_id,
+                        session_id=self._session_id,
+                        symbol=None,
+                        side=None,
+                        context_json={
+                            "error": str(exc),
+                            "retry_budget_seconds": _CONNECTIVITY_RETRY_BUDGET_SECONDS,
+                        },
+                        recorded_at=self._now(),
+                    )
                 )
-            )
+            except Exception:  # noqa: BLE001 — alert write must never break the poll loop
+                # A concurrent-writer SQLite lock here would otherwise escape the
+                # BrokerConnectionError handler into run()'s crash path — killing
+                # the runner on exactly the fleet-wide-outage scenario this retry
+                # exists for (6 runners + GUI share data/milodex.db). The episode
+                # start is already recorded above, so a swallowed failure cannot
+                # cause per-cycle alert spam. Mirrors _emit_stale_bar_idle_alert.
+                logger.exception("Failed to record broker_connectivity_degraded alert; continuing.")
             return
         elapsed = now - self._connectivity_outage_started
         if elapsed > _CONNECTIVITY_RETRY_BUDGET_SECONDS:

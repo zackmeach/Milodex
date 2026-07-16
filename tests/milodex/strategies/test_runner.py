@@ -1633,6 +1633,47 @@ def test_runner_controlled_stop_honored_during_connectivity_outage(
     assert len(alerts) == 1
 
 
+def test_runner_non_connectivity_broker_error_still_crashes_on_first_raise(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Only connectivity-classified errors retry — BrokerAuthError crashes at once.
+
+    Kills the mutant that widens ``except BrokerConnectionError`` to
+    ``except BrokerError``: an auth failure is not transient, and retrying it
+    for the whole budget would just delay the crash by 30 minutes.
+    """
+    from milodex.broker.exceptions import BrokerAuthError
+
+    runner, broker, event_store, _kill = _build_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=0,
+    )
+
+    def raise_auth() -> bool:
+        raise BrokerAuthError("credentials rejected")
+
+    monkeypatch.setattr(broker, "is_market_open", raise_auth)
+
+    from milodex.strategies import runner as runner_module
+
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _s: None)
+
+    with pytest.raises(BrokerAuthError):
+        runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason is not None
+    assert runs[0].exit_reason.startswith("crashed:BrokerAuthError")
+    # No retry episode was opened and no degraded alert emitted.
+    assert event_store.list_operator_alerts(alert_type="broker_connectivity_degraded") == []
+
+
 # ---------------------------------------------------------------------------
 # CI-1 (PHASE2_PLANNING.md): post-close watermark advance is gated on bar
 # finalization stability — two consecutive identical OHLCV fetches separated
