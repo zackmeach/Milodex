@@ -143,11 +143,6 @@ class ThemeManager(QObject):
         self.themeChanged.emit(name)
         return True
 
-    @Slot(result=list)
-    def list_themes(self) -> list[str]:
-        """Return the list of known theme names."""
-        return list(KNOWN_THEMES)
-
     # ------------------------------------------------------------------
     # Persistence (private)
     # ------------------------------------------------------------------

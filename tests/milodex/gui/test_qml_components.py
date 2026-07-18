@@ -541,65 +541,6 @@ def test_button_token_binding_survives_theme_swap(engine):
 
 
 @_skip_no_qt
-@pytest.mark.xfail(
-    reason=(
-        "Component instantiation may fail if the Milodex module type-cache is not "
-        "in a state that supports composing registered components inline. "
-        "If this test passes, remove the xfail marker."
-    ),
-    strict=False,
-)
-def test_status_pill_paper_instantiates(engine):
-    """StatusPill paper: component instantiates and exposes variant + text properties."""
-    qml_engine, manager = engine
-    manager.set_theme("editorial-dark")
-
-    qml = """
-    import QtQuick
-    import Milodex 1.0
-
-    StatusPill {
-        variant: "paper"
-        text: "paper"
-    }
-    """
-    component, obj = _load_qml(qml_engine, qml)
-    _ = component
-
-    assert obj.property("variant") == "paper"
-    assert obj.property("text") == "paper"
-
-
-@_skip_no_qt
-@pytest.mark.xfail(
-    reason=(
-        "Component instantiation may fail if the Milodex module type-cache is not "
-        "in a state that supports composing registered components inline. "
-        "If this test passes, remove the xfail marker."
-    ),
-    strict=False,
-)
-def test_status_pill_killed_instantiates(engine):
-    """StatusPill killed: component instantiates and exposes variant property."""
-    qml_engine, manager = engine
-    manager.set_theme("editorial-dark")
-
-    qml = """
-    import QtQuick
-    import Milodex 1.0
-
-    StatusPill {
-        variant: "killed"
-        text: "killed"
-    }
-    """
-    component, obj = _load_qml(qml_engine, qml)
-    _ = component
-
-    assert obj.property("variant") == "killed"
-
-
-@_skip_no_qt
 def test_status_pill_paper_token_resolves_to_status_positive(engine):
     """StatusPill paper/backtest/blocked base color tokens resolve correctly.
 
@@ -662,50 +603,6 @@ def test_status_pill_killed_token_and_theme_tinting(engine):
 # These tests verify the Theme token values that StrategyRow binds its
 # visual properties to.  They do NOT instantiate StrategyRow directly.
 # ---------------------------------------------------------------------------
-
-
-@_skip_no_qt
-@pytest.mark.xfail(
-    reason=(
-        "StrategyRow's transitive QtQuick.Layouts dependency interacts with the "
-        "process-global Qt type cache the same way PR C's Button danger / "
-        "StatusPill instantiation tests do — passes in isolation, fails when "
-        "the cache has already compiled the Milodex module from a prior test "
-        "without Layouts resolved.  If this passes, remove the xfail marker."
-    ),
-    strict=False,
-)
-def test_strategy_row_instantiates_and_exposes_properties(engine):
-    """StrategyRow Tier 1: component instantiates, RowLayout import resolves.
-
-    Surfaces breakage if QtQuick.Layouts ever fails to resolve under the
-    project's Qt configuration (the only component that imports Layouts;
-    the other Tier 1 tests don't exercise it).  Reads the four properties
-    StrategyRow exposes (strategyId, stage, metricValue, tradeCount)
-    through QML — confirms the public API is intact and the layout
-    composition (RowLayout + StatusPill in an Item wrapper) loads cleanly.
-    """
-    qml_engine, manager = engine
-    manager.set_theme("editorial-dark")
-
-    qml = """
-    import QtQuick
-    import Milodex 1.0
-
-    StrategyRow {
-        strategyId:  "regime.daily.sma200_rotation.spy_shy.v1"
-        stage:       "paper"
-        metricValue: "+1.19"
-        tradeCount:  27
-    }
-    """
-    component, obj = _load_qml(qml_engine, qml)
-    _ = component
-
-    assert obj.property("strategyId") == "regime.daily.sma200_rotation.spy_shy.v1"
-    assert obj.property("stage") == "paper"
-    assert obj.property("metricValue") == "+1.19"
-    assert obj.property("tradeCount") == 27
 
 
 @_skip_no_qt

@@ -5,10 +5,7 @@ EditorialDark 1.0 themes/EditorialDark.qml
 EditorialLight 1.0 themes/EditorialLight.qml
 Bronze 1.0 themes/Bronze.qml
 Button 1.0 components/Button.qml
-StatusPill 1.0 components/StatusPill.qml
-StrategyRow 1.0 components/StrategyRow.qml
 Surface 1.0 components/Surface.qml
-GateTable 1.0 components/GateTable.qml
 Sparkline 1.0 components/Sparkline.qml
 QuietAction 1.0 components/QuietAction.qml
 RiskStrip 1.0 components/RiskStrip.qml

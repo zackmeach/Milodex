@@ -66,14 +66,11 @@ NUMERIC_QML_FILES: tuple[str, ...] = (
     "components/RequirementRow.qml",
     "components/SectionLabel.qml",
     "components/FunnelRow.qml",
-    "components/GateTable.qml",
     "components/SectionHeader.qml",
-    "components/StrategyRow.qml",
     "components/TapeRow.qml",
     # Surfaces
     "surfaces/BenchSurface.qml",
     "surfaces/DeskSurface.qml",
-    "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
     "surfaces/LedgerSurface.qml",
 )

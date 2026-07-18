@@ -130,19 +130,6 @@ QtObject {
         readonly property int deliberate: 400
     }
 
-    // Easing curves — DESIGN_SYSTEM.md section 5.2.  Bezier control
-    // points expressed as four-element arrays so consumers can spread
-    // them onto `easing.bezierCurve` (which expects an 8-element
-    // array — two control points plus the implicit (0,0) and (1,1)
-    // endpoints duplicated for Qt's 8-point form).  Components that
-    // need an 8-element form should compose locally via
-    // `easing.bezierCurve: [...Theme.ease.standard, 1, 1]` or use
-    // `easing.type: Easing.BezierSpline`.
-    readonly property var ease: QtObject {
-        readonly property var standard: [0.4, 0, 0.2, 1]
-        readonly property var editorial: [0.32, 0.72, 0, 1]
-    }
-
     // Type roles — DESIGN_SYSTEM.md section 2.  Each role is a
     // QtObject carrying family / size / lineHeight / weight /
     // letterSpacing / uppercase / italic so components can read the
@@ -211,26 +198,12 @@ QtObject {
                 readonly property int weight: Font.Medium
                 readonly property bool italic: false
             }
-            readonly property var md: QtObject {
-                readonly property string family: "Newsreader"
-                readonly property int size: 24
-                readonly property real lineHeight: 1.20
-                readonly property int weight: Font.Medium
-                readonly property bool italic: false
-            }
             readonly property var sm: QtObject {
                 readonly property string family: "Newsreader"
                 readonly property int size: 18
                 readonly property real lineHeight: 1.30
                 readonly property int weight: Font.Medium
                 readonly property bool italic: false
-            }
-            readonly property var smItalic: QtObject {
-                readonly property string family: "Newsreader"
-                readonly property int size: 18
-                readonly property real lineHeight: 1.30
-                readonly property int weight: Font.Normal
-                readonly property bool italic: true
             }
         }
 
@@ -346,15 +319,7 @@ QtObject {
     // dimensions for tabular surfaces (Strategy Bank, attribution tables,
     // anywhere a multi-cell row appears).  Theme-invariant: declared inline.
     readonly property var column: ({
-        pill: 96,         // accommodates "blocked" pill + padding
-        metric: 64,       // "+1.19" or "-0.27" right-aligned
-        chips: 200,       // gate chips + optional "— flagged, not retired" marginalia
-                          //   (max case: 2 chips + flagged marginalia ~185px; 200 leaves headroom)
-        tradeCount: 88,   // "433 trades" or "27 trades" right-aligned
         benchMetric: 64,
-        benchConfigKey: 380,
-        benchStage: 90,
-        benchEvidence: 260,
         benchAction: 152,
         // Bench status column — fixed width so neither header nor row
         // RowLayout solvers can negotiate it differently after a row reorder.
@@ -368,9 +333,5 @@ QtObject {
         deskTs: 80,           // desk activity timestamp column
         deskKind: 80,         // desk activity kind column
         deskSubject: 180,     // desk activity subject column (ts + kind + space[2] gap)
-        kanbanLane: 320,
-        kanbanCard: 288,
-        kanbanCardMinHeight: 132,
-        kanbanMetric: 68
     })
 }

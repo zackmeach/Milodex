@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import milodex.gui.bench_state as bench_state
 import milodex.gui.front_page_state as front_page_state
-import milodex.gui.kanban_state as kanban_state
 import milodex.gui.ledger_state as ledger_state
 import milodex.gui.read_models as read_models
 import milodex.gui.snapshot_builders as snapshot_builders
@@ -29,17 +28,15 @@ import milodex.gui.snapshot_builders as snapshot_builders
 _REEXPORTS = [
     ("FrontPageState", front_page_state, "FrontPageState"),
     ("BenchState", bench_state, "BenchState"),
-    ("KanbanState", kanban_state, "KanbanState"),
     ("LedgerState", ledger_state, "LedgerState"),
     ("build_front_page_snapshot", snapshot_builders, "build_front_page_snapshot"),
     ("build_bench_snapshot", snapshot_builders, "build_bench_snapshot"),
-    ("build_kanban_snapshot", snapshot_builders, "build_kanban_snapshot"),
     ("build_ledger_snapshot", snapshot_builders, "build_ledger_snapshot"),
 ]
 
 
 def test_shim_reexports_every_contract_symbol() -> None:
-    """All 8 contract symbols are importable from the shim AND are the
+    """All 6 contract symbols are importable from the shim AND are the
     identical object exported by their new home module. The State-class
     ``is``-identity assertions protect the QML registry: app.py and
     qml_setup.py must register the very same class objects."""
@@ -93,9 +90,7 @@ def test_shim_symbols_are_callable_or_class() -> None:
 
     assert inspect.isclass(read_models.FrontPageState)
     assert inspect.isclass(read_models.BenchState)
-    assert inspect.isclass(read_models.KanbanState)
     assert inspect.isclass(read_models.LedgerState)
     assert callable(read_models.build_front_page_snapshot)
     assert callable(read_models.build_bench_snapshot)
-    assert callable(read_models.build_kanban_snapshot)
     assert callable(read_models.build_ledger_snapshot)

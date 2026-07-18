@@ -67,14 +67,10 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Property, QObject, Signal  # pragma: no cover
-
 from milodex.gui import _event_queries
-from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.promotion.state_machine import MAX_DRAWDOWN_PCT, MIN_SHARPE, MIN_TRADES
 
 logger = logging.getLogger(__name__)
@@ -255,33 +251,6 @@ def _compute_gate_failures(
     return failures
 
 
-# ---------------------------------------------------------------------------
-# Builder
-# ---------------------------------------------------------------------------
-
-
-def _build_bank_snapshot(db_path: Path) -> dict[str, Any]:
-    """Adapter for ``PollingReadModel`` — wraps ``_query_bank``'s tuple return.
-
-    ``_query_bank`` retains its ``tuple[list, list]`` signature for external
-    callers (``milodex.gui.attention_state`` consumes it directly). This
-    shim packs the tuple into the ``dict`` payload the polling lifecycle
-    expects, including the ``lastRefreshedAt`` ISO timestamp.
-
-    The GUI Strategy Bank surface uses the demotion-aware "current stage"
-    membership (``demotion_aware=True``): a demoted strategy leaves the paper
-    card and resurfaces in blocked.  attention_state deliberately keeps the
-    default ("ever-promoted-to-paper") membership for underperformance
-    monitoring — see ``_query_bank``.
-    """
-    paper, blocked = _query_bank(db_path, demotion_aware=True)
-    return {
-        "paper": paper,
-        "blocked": blocked,
-        "lastRefreshedAt": datetime.now(tz=UTC).isoformat(),
-    }
-
-
 def _query_bank(
     db_path: Path, *, demotion_aware: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -390,76 +359,3 @@ def _fetch_blocked(
     # Replicate ORDER BY br.strategy_id from the former _SQL_BLOCKED.
     result.sort(key=lambda r: r["strategyId"])
     return result
-
-
-# ---------------------------------------------------------------------------
-# StrategyBankState
-# ---------------------------------------------------------------------------
-
-
-class StrategyBankState(PollingReadModel):
-    """Strategy bank state exposed to QML as Q_PROPERTYs.
-
-    Inherits the canonical polling lifecycle from
-    :class:`milodex.gui.polling_lifecycle.PollingReadModel` — see module
-    docstring for tolerance behaviour and SQL query sourcing. Lifecycle
-    concerns (timer, thread pool, in-flight drop, error preservation,
-    ``waitForDone(2000)`` shutdown) live on the base. Per-strategy
-    state (paper / blocked lists) and their Q_PROPERTYs / change signals
-    live here.
-    """
-
-    paperStrategiesChanged = Signal()  # noqa: N815
-    blockedStrategiesChanged = Signal()  # noqa: N815
-
-    def __init__(
-        self,
-        db_path: Path | None = None,
-        refresh_interval_ms: int = 30_000,
-        parent: QObject | None = None,
-    ) -> None:
-        if db_path is None:
-            from milodex.config import get_data_dir
-
-            db_path = get_data_dir() / "milodex.db"
-        self._db_path = db_path
-        self._paper_strategies: list[dict[str, Any]] = []
-        self._blocked_strategies: list[dict[str, Any]] = []
-        super().__init__(
-            builder=lambda: _build_bank_snapshot(db_path),
-            refresh_interval_ms=refresh_interval_ms,
-            parent=parent,
-        )
-
-    def _apply_result(self, result: dict[str, Any]) -> None:
-        """Update paper/blocked lists and emit change signals when shapes change.
-
-        Last-known data preservation on error is handled by the base — when
-        a refresh fails after a previous success, this method is not invoked
-        and the lists stay as they were. The base also manages
-        ``lastRefreshedAt`` (from the builder's ``lastRefreshedAt`` key) and
-        ``dataStatus`` transitions.
-        """
-        paper_changed = result["paper"] != self._paper_strategies
-        blocked_changed = result["blocked"] != self._blocked_strategies
-        self._paper_strategies = result["paper"]
-        self._blocked_strategies = result["blocked"]
-        if paper_changed:
-            self.paperStrategiesChanged.emit()
-        if blocked_changed:
-            self.blockedStrategiesChanged.emit()
-
-    def _get_paper_strategies(self) -> list:
-        return self._paper_strategies
-
-    def _get_blocked_strategies(self) -> list:
-        return self._blocked_strategies
-
-    paperStrategies = Property(  # noqa: N815
-        "QVariantList", _get_paper_strategies, notify=paperStrategiesChanged
-    )
-    blockedStrategies = Property(  # noqa: N815
-        "QVariantList", _get_blocked_strategies, notify=blockedStrategiesChanged
-    )
-
-    # dataStatus, dataErrorMessage, lastRefreshedAt — inherited from PollingReadModel

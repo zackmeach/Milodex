@@ -2,18 +2,18 @@
 
 Tests:
 - test_run_app_returns_int: run_app is callable; with Qt mocked it returns int.
-- test_main_qml_exists: Main.qml and DesignSystemShowcase.qml exist on disk.
+- test_main_qml_exists: Main.qml exists on disk.
 - test_qml_import_path_points_to_qml_dir: QML_IMPORT_PATH resolves correctly.
 - test_run_app_returns_1_when_no_root_objects: coverage for the empty-rootObjects
   early-exit path.
 - test_main_qml_loads_without_errors_via_subprocess: Main.qml loads in a fresh
   process (subprocess-isolated to avoid polluting the test-runner's Qt type cache).
-- test_design_system_showcase_loads_without_errors_via_subprocess: showcase loads
-  cleanly, verifying all components compose correctly.
+- test_bench_surface_loads_without_errors_via_subprocess: BenchSurface loads in a
+  fresh process (ADR 0035 integration smoke; retargeted from the retired showcase).
 
 These tests avoid creating any QQmlApplicationEngine with the Milodex import path
 because doing so would pre-compile the Milodex module into the process-global Qt
-type cache. That compilation puts registered types (Button, StrategyRow, StatusPill)
+type cache. That compilation puts registered types (e.g. Button)
 into a "module-cached" state that breaks the inline-QML composition technique used
 by test_button_primary_instantiates_with_correct_variant in test_qml_components.py
 (which depends on being the FIRST entity to compile the Milodex module into the
@@ -21,7 +21,7 @@ process cache).
 
 QML loading integration coverage lives in test_qml_theme_loads.py and
 test_qml_components.py (PR A-C tests).  Full QML integration (Main.qml and
-DesignSystemShowcase.qml) is covered by the subprocess-isolated tests below.
+BenchSurface.qml) is covered by the subprocess-isolated tests below.
 """
 
 from __future__ import annotations
@@ -174,17 +174,15 @@ def test_make_app_controller_single_positional_arg_still_works():
 
 
 def test_main_qml_exists():
-    """Main.qml and DesignSystemShowcase.qml exist at the expected paths.
+    """Main.qml exists at the expected path.
 
     File-system check only -- no Qt initialization.
     """
     from milodex.gui.app import QML_IMPORT_PATH
 
     main_qml = QML_IMPORT_PATH / "Milodex" / "Main.qml"
-    showcase_qml = QML_IMPORT_PATH / "Milodex" / "surfaces" / "DesignSystemShowcase.qml"
 
     assert main_qml.exists(), f"Main.qml missing at {main_qml}"
-    assert showcase_qml.exists(), f"DesignSystemShowcase.qml missing at {showcase_qml}"
 
 
 def test_qml_import_path_points_to_qml_dir():
@@ -345,11 +343,13 @@ sys.exit(0)
 
 
 # ---------------------------------------------------------------------------
-# QUARANTINED — pre-existing flaky tests (2026-05-17)
+# HISTORICAL FLAKE SENTINEL (2026-05-17)
 #
-# This test (test_design_system_showcase_loads_without_errors_via_subprocess) is
-# FLAKY in full-suite runs due to pre-existing process-global Qt/QML state
-# pollution in the test-runner process.  It passes reliably in isolation.
+# This subprocess test (test_bench_surface_loads_without_errors_via_subprocess,
+# retargeted 2026-07-17 from the retired DesignSystemShowcase smoke) guards the
+# missing-fonts flake fixed by bundled fonts.  It was historically FLAKY in
+# full-suite runs due to pre-existing process-global Qt/QML state pollution in
+# the test-runner process, and passes reliably in isolation.
 # (test_anchor_surface_loads_without_errors_via_subprocess was removed with
 # AnchorSurface in HR-4.)
 #
@@ -364,42 +364,46 @@ sys.exit(0)
 # ---------------------------------------------------------------------------
 
 
-def test_design_system_showcase_loads_without_errors_via_subprocess():
-    """DesignSystemShowcase.qml loads successfully in a fresh process.
+def test_bench_surface_loads_without_errors_via_subprocess():
+    """BenchSurface.qml loads successfully in a fresh process.
 
-    Same pattern as test_main_qml_loads_without_errors_via_subprocess but
-    loads the showcase directly to verify that ALL components (Button,
-    StatusPill, StrategyRow, Surface) compose correctly when rendered
-    together in the showcase surface.
+    ADR 0035 integration smoke and the historical missing-fonts flake sentinel
+    (see docs/KNOWN_FLAKY_TESTS.md).  Retargeted 2026-07-17 from the retired
+    DesignSystemShowcase smoke: the showcase and its showcase-only components
+    (StrategyRow/StatusPill/GateTable) were deleted as dead code, so the smoke
+    now pins a live surface.  BenchSurface is the richest live surface not
+    otherwise subprocess-covered (Main.qml defaults to FrontSurface), so it
+    exercises a distinct load path with bundled fonts and registered singletons.
 
     Success: returncode == 0 and stderr is empty.
-    Xfail: non-zero return or non-empty stderr indicates environment-specific
-    Qt setup issues rather than a code bug.
     """
     from milodex.gui.app import QML_IMPORT_PATH
 
-    # as_posix(): showcase_path is repr'd INTO the QML wrapper string below —
+    # as_posix(): surface_path is repr'd INTO the QML wrapper string below —
     # a raw Windows path there parses `\<digit>` as a rejected legacy octal
     # escape (breaks under any worktree/tmp path like `...\1df...`).
     import_path = QML_IMPORT_PATH.as_posix()
-    showcase_path = (
-        QML_IMPORT_PATH / "Milodex" / "surfaces" / "DesignSystemShowcase.qml"
-    ).as_posix()
+    surface_path = (QML_IMPORT_PATH / "Milodex" / "surfaces" / "BenchSurface.qml").as_posix()
 
-    # DesignSystemShowcase is not a registered qmldir type -- it is a plain QML
-    # file.  We use a Loader with an explicit file URL so the engine loads it by
-    # path, not by type name.  The outer Window gives the engine a root object.
-    # The base URL for loadData is set to the qml/ root so that the Milodex
-    # module import inside DesignSystemShowcase.qml resolves correctly.
+    # BenchSurface reads BenchState / BenchCommandBridge / Theme / Formatters.
+    # Register the singletons it needs (BenchCommandBridge over a mock facade —
+    # the surface only reads its Qt properties at load, never invokes a command).
+    # A Loader with an explicit file URL loads the surface by path; the outer
+    # Window gives the engine a root object and the base URL at the qml/ root
+    # resolves the `import Milodex 1.0` inside the surface.
     script = f"""\
 import os
 import sys
+from unittest.mock import MagicMock
+from pathlib import Path
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 from milodex.gui.fonts import load_fonts
 from milodex.gui.qml_setup import register_qml_types
 from milodex.gui.theme_manager import ThemeManager
+from milodex.gui.read_models import BenchState, LedgerState
+from milodex.gui.bench_command_bridge import BenchCommandBridge
 
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
@@ -408,33 +412,43 @@ from PySide6.QtCore import QUrl
 app = QGuiApplication(sys.argv)
 load_fonts()
 tm = ThemeManager()
-register_qml_types(tm)
+
+db_path = Path('/__nonexistent_app_test__')
+configs_dir = Path('configs')
+bench_state = BenchState(db_path=db_path, configs_dir=configs_dir)
+ledger_state = LedgerState(db_path=db_path)
+bench_command_bridge = BenchCommandBridge(
+    MagicMock(), bench_state=bench_state, ledger_state=ledger_state
+)
+register_qml_types(
+    theme_manager=tm,
+    bench_state=bench_state,
+    ledger_state=ledger_state,
+    bench_command_bridge=bench_command_bridge,
+)
 
 warnings_seen = []
-load_errors = []
 
 engine = QQmlApplicationEngine()
 engine.warnings.connect(lambda msgs: warnings_seen.extend(msgs))
 engine.addImportPath({import_path!r})
 
-showcase_url = QUrl.fromLocalFile({showcase_path!r})
-
-# Wrap the showcase Item in a minimal Window so the engine records a root
-# object.  Loader by source URL avoids the need for a qmldir registration.
+# Wrap the surface in a minimal Window so the engine records a root object.
+# Loader by source URL avoids depending on qmldir registration ordering.
 wrapper = (
     "import QtQuick 2.15\\n"
     "import QtQuick.Window 2.15\\n"
     "Window {{\\n"
     "    width: 1280; height: 800; visible: false\\n"
-    "    Loader {{ anchors.fill: parent; source: {showcase_path!r} }}\\n"
+    "    Loader {{ anchors.fill: parent; source: {surface_path!r} }}\\n"
     "}}\\n"
 ).encode()
 
-# Base URL points to qml/ root so relative imports inside the showcase resolve.
+# Base URL points to qml/ root so relative imports inside the surface resolve.
 engine.loadData(wrapper, QUrl.fromLocalFile({import_path!r} + "/wrapper.qml"))
 
 if not engine.rootObjects():
-    print("ERROR: no root objects -- showcase wrapper failed to load", file=sys.stderr)
+    print("ERROR: no root objects -- BenchSurface wrapper failed to load", file=sys.stderr)
     sys.exit(1)
 
 if warnings_seen:
@@ -453,12 +467,12 @@ sys.exit(0)
     )
 
     assert result.returncode == 0, (
-        f"DesignSystemShowcase subprocess exited {result.returncode}.\n"
+        f"BenchSurface subprocess exited {result.returncode}.\n"
         f"stdout: {result.stdout!r}\n"
         f"stderr: {result.stderr!r}"
     )
     assert result.stderr == "", (
-        f"DesignSystemShowcase subprocess produced stderr output (QML warnings):\n{result.stderr}"
+        f"BenchSurface subprocess produced stderr output (QML warnings):\n{result.stderr}"
     )
 
 
