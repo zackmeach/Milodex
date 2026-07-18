@@ -3113,44 +3113,6 @@ def _strategy_run_from_row(row: sqlite3.Row) -> StrategyRunEvent:
     )
 
 
-def _orchestration_batch_from_row(row: sqlite3.Row) -> OrchestrationBatchEvent:
-    return OrchestrationBatchEvent(
-        id=int(row["id"]),
-        batch_id=str(row["batch_id"]),
-        action_type=str(row["action_type"]),
-        requested_by=str(row["requested_by"]),
-        requested_at=_parse_datetime(row["requested_at"]),
-        status=str(row["status"]),
-        metadata=dict(_load_json(row["metadata_json"])),
-    )
-
-
-def _orchestration_job_from_row(row: sqlite3.Row) -> OrchestrationJobEvent:
-    return OrchestrationJobEvent(
-        id=int(row["id"]),
-        job_id=str(row["job_id"]),
-        batch_id=str(row["batch_id"]),
-        strategy_id=str(row["strategy_id"]),
-        action_type=str(row["action_type"]),
-        requested_stage=str(row["requested_stage"]),
-        status=str(row["status"]),
-        queued_at=_parse_datetime(row["queued_at"]),
-        started_at=_parse_datetime(row["started_at"]),
-        ended_at=_parse_datetime(row["ended_at"]),
-        cancel_requested_at=_parse_datetime(row["cancel_requested_at"]),
-        execution_ref_type=row["execution_ref_type"],
-        execution_ref=row["execution_ref"],
-        progress_current=(
-            None if row["progress_current"] is None else int(row["progress_current"])
-        ),
-        progress_total=None if row["progress_total"] is None else int(row["progress_total"]),
-        progress_label=row["progress_label"],
-        error_code=row["error_code"],
-        error_message=row["error_message"],
-        metadata=dict(_load_json(row["metadata_json"])),
-    )
-
-
 def _reconciliation_run_from_row(row: sqlite3.Row) -> ReconciliationRunEvent:
     return ReconciliationRunEvent(
         id=int(row["id"]),
