@@ -11,7 +11,8 @@ It replaces *signal* with *chance*, holding to the session close:
   decides:
   1. ``enter_this_session = rng.random() < session_entry_rate`` — matches the
      candidate's round-trip COUNT in expectation (the per-symbol rate is
-     measured and injected into config; see ``research/candidate_rates.py``).
+     measured and injected into config; the measurement tool has since been
+     retired).
   2. if entering, ``target_offset_min`` = a uniformly random integer minute in
      ``[opening_range_minutes, opening_range_minutes + entry_window_minutes)``.
 - **Streaming entry:** emit BUY at the *first PRESENT in-window bar* whose
