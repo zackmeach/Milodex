@@ -227,15 +227,6 @@ def test_missing_settings_file_uses_default(qapp, tmp_path):
 
 
 @_skip_no_qt
-def test_list_themes(qapp, tmp_path):
-    """list_themes returns the canonical three-name list."""
-    from milodex.gui.theme_manager import ThemeManager
-
-    manager = ThemeManager(settings_path=tmp_path / "gui_settings.json")
-    assert manager.list_themes() == ["editorial-dark", "editorial-light", "bronze"]
-
-
-@_skip_no_qt
 def test_set_theme_with_unchanged_value_does_not_rewrite_disk(qapp, tmp_path):
     """A no-op set_theme (same value) must not touch the settings file on disk.
 

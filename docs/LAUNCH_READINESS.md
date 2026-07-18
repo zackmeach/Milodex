@@ -1,6 +1,6 @@
 # Editorial Dark Launch Readiness
 
-> **Frozen snapshot — Editorial Dark pre-launch verification, captured 2026-05-14 (commit fee27fe).** Historical evidence, not current system state. Surfaces and verdicts below reflect that date (e.g. AnchorSurface.qml has since been removed).
+> **Frozen snapshot — Editorial Dark pre-launch verification, captured 2026-05-14 (commit fee27fe).** Historical evidence, not current system state. Surfaces and verdicts below reflect that date (e.g. AnchorSurface.qml and, on 2026-07-17, DesignSystemShowcase.qml — with its StrategyRow / StatusPill / GateTable components — have since been removed).
 
 **Scope:** Final pre-launch verification pass for the Editorial Dark initial release. Editorial Light + Bronze are deferred post-launch (see [DESIGN.md §7](DESIGN.md), [DESIGN_SYSTEM.md §1.2](DESIGN_SYSTEM.md), commit `fee27fe`).
 

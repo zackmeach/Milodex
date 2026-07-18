@@ -91,14 +91,22 @@ lagged only because nobody re-verified it.
 every run (`847 passed`). If it ever shows a lone failure in a full-suite run, re-run it by node ID in
 isolation to confirm before calling it a regression.
 
-> **The inline-instantiation xfails are a DIFFERENT, still-open residual — do NOT remove them.** Four
-> tests in `test_qml_components.py` (`test_button_danger_instantiates_with_correct_variant`,
+**Retargeted 2026-07-17:** the `DesignSystemShowcase` surface and its showcase-only components
+(`StrategyRow` / `StatusPill` / `GateTable`) were deleted as dead code, so this subprocess smoke was
+retargeted at a live surface and renamed `test_bench_surface_loads_without_errors_via_subprocess`
+(same bundled-fonts + registered-singletons bootstrap; still the ADR 0035 integration smoke and this
+flake sentinel). The historical `test_design_system_showcase_...` name is retained above for provenance.
+
+> **The inline-instantiation xfail is a DIFFERENT, still-open residual — do NOT remove it.**
+> `test_button_danger_instantiates_with_correct_variant` in `test_qml_components.py` stays
+> `@pytest.mark.xfail(strict=False)`. (Its three sibling xfails —
 > `test_status_pill_paper_instantiates`, `test_status_pill_killed_instantiates`,
-> `test_strategy_row_instantiates_and_exposes_properties`) stay `@pytest.mark.xfail(strict=False)`.
-> Verified 2026-06-21 under `--runxfail`: they still genuinely FAIL in full-suite xdist
+> `test_strategy_row_instantiates_and_exposes_properties` — were deleted 2026-07-17 with the dead
+> `StatusPill` / `StrategyRow` components.)
+> Verified 2026-06-21 under `--runxfail`: it still genuinely FAILS in full-suite xdist
 > (`QQmlComponent.Error` — the process-global QML *type-cache* compiles the Milodex module before
-> QtQuick.Layouts resolves). They pass in isolation (the occasional xpass). That type-cache root cause
-> is NOT fixed, so these correctly remain xfail.
+> QtQuick.Layouts resolves). It passes in isolation (the occasional xpass). That type-cache root cause
+> is NOT fixed, so it correctly remains xfail.
 
 ---
 

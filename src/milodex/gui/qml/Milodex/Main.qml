@@ -51,7 +51,7 @@ Window {
     // ------------------------------------------------------------------
     // Active surface state
     //
-    // String enum: "front" | "bench" | "ledger" | "desk" | "design-system".
+    // String enum: "front" | "bench" | "ledger" | "desk".
     // Unknown ids render the "(coming soon)" placeholder.
     // ------------------------------------------------------------------
 
@@ -84,27 +84,6 @@ Window {
         // Bench archetype filter (roadmap M2). "all" | "paper" | "canary" |
         // "baseline" | "research" | "blocked". Session-only, like the slices.
         property string benchArchetypeFilter: "all"
-    }
-
-    // ------------------------------------------------------------------
-    // Time-format helper — converts raw ISO 8601 strings to HH:MM (24h)
-    // or H:MM AM/PM (12h) based on sessionBag.timeFormat.
-    // Returns "" for empty input; returns raw input on unparseable input.
-    // Used by every surface that renders a stored timestamp.
-    // ------------------------------------------------------------------
-    function formatTimestamp(isoString, format) {
-        if (!isoString) return "";
-        var d = new Date(isoString);
-        if (isNaN(d)) return isoString;  // unparseable; return raw
-        var hh = d.getHours();
-        var mm = d.getMinutes();
-        if (format === "12h") {
-            var ampm = hh >= 12 ? "PM" : "AM";
-            var h12 = hh % 12; if (h12 === 0) h12 = 12;
-            return h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm;
-        }
-        // default 24h
-        return (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm);
     }
 
     MouseArea {
@@ -384,9 +363,6 @@ Window {
             if (root.activeSurface === "bench")          return "surfaces/BenchSurface.qml"
             if (root.activeSurface === "ledger")         return "surfaces/LedgerSurface.qml"
             if (root.activeSurface === "desk")           return "surfaces/DeskSurface.qml"
-            // Hidden surface (reachable only by programmatic activeSurface assignment):
-            //   "design-system"  — token/theme preview (developer-internal; ADR 0035 integration smoke)
-            if (root.activeSurface === "design-system")  return "surfaces/DesignSystemShowcase.qml"
             return ""  // unknown id renders the placeholder
         }
 

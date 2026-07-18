@@ -358,41 +358,6 @@ def test_brand_primary_is_distinct_from_text_primary(engine):
 
 
 @_skip_no_qt
-def test_theme_column_widths_exist_and_are_invariant(engine):
-    """Theme.column.* tokens exist, have the correct values, and are theme-invariant."""
-    qml_engine, manager = engine
-    manager.set_theme("editorial-dark")
-
-    qml = """
-    import QtQuick
-    import Milodex 1.0
-
-    Item {
-        property int pill:       Theme.column.pill
-        property int metric:     Theme.column.metric
-        property int tradeCount: Theme.column.tradeCount
-    }
-    """
-    component, obj = _load_qml(qml_engine, qml)
-    _ = component  # keep alive for the test's lifetime
-
-    assert obj.property("pill") == 96
-    assert obj.property("metric") == 64
-    assert obj.property("tradeCount") == 88
-
-    # Invariant — values must not change across theme switches
-    manager.set_theme("editorial-light")
-    assert obj.property("pill") == 96
-    assert obj.property("metric") == 64
-    assert obj.property("tradeCount") == 88
-
-    manager.set_theme("bronze")
-    assert obj.property("pill") == 96
-    assert obj.property("metric") == 64
-    assert obj.property("tradeCount") == 88
-
-
-@_skip_no_qt
 def test_theme_stage_tokens_exist_and_are_invariant(engine):
     """Theme.stage.* tokens expose the five promotion-ladder hues across themes."""
     qml_engine, manager = engine
@@ -430,41 +395,3 @@ def test_theme_stage_tokens_exist_and_are_invariant(engine):
     manager.set_theme("bronze")
     for prop, value in expected.items():
         assert obj.property(prop).lower() == value
-
-
-@_skip_no_qt
-def test_theme_kanban_column_dimensions_exist_and_are_invariant(engine):
-    """Kanban column dimensions are stable tokens, not content-driven widths."""
-    qml_engine, manager = engine
-    manager.set_theme("editorial-dark")
-
-    qml = """
-    import QtQuick
-    import Milodex 1.0
-
-    Item {
-        property int laneWidth:  Theme.column.kanbanLane
-        property int cardWidth:  Theme.column.kanbanCard
-        property int cardMinH:   Theme.column.kanbanCardMinHeight
-        property int metricSlot: Theme.column.kanbanMetric
-    }
-    """
-    component, obj = _load_qml(qml_engine, qml)
-    _ = component
-
-    assert obj.property("laneWidth") == 320
-    assert obj.property("cardWidth") == 288
-    assert obj.property("cardMinH") == 132
-    assert obj.property("metricSlot") == 68
-
-    manager.set_theme("editorial-light")
-    assert obj.property("laneWidth") == 320
-    assert obj.property("cardWidth") == 288
-    assert obj.property("cardMinH") == 132
-    assert obj.property("metricSlot") == 68
-
-    manager.set_theme("bronze")
-    assert obj.property("laneWidth") == 320
-    assert obj.property("cardWidth") == 288
-    assert obj.property("cardMinH") == 132
-    assert obj.property("metricSlot") == 68

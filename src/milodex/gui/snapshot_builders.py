@@ -127,60 +127,6 @@ def build_bench_snapshot(
     return {"sections": sections, "lastRefreshedAt": _now_iso()}
 
 
-def build_kanban_snapshot(
-    db_path: Path, configs_dir: Path, locks_dir: Path | None = None
-) -> dict[str, Any]:
-    labels = {
-        "idle": ("i.", "Idle", "configured, no action queued"),
-        "backtest": ("ii.", "Backtest", "historical evidence review"),
-        "paper": ("iii.", "Paper", "live feed, no capital"),
-        "micro_live": ("iv.", "Micro live", "locked by ADR 0004"),
-        "live": ("v.", "Live", "locked by ADR 0004"),
-    }
-    conn: sqlite3.Connection | None = _open_ro_conn(db_path) if db_path.exists() else None
-    try:
-        rows = _strategy_rows(conn, configs_dir, locks_dir)
-        lanes: list[dict[str, Any]] = []
-        for lane in _VISIBLE_STAGES:
-            roman, name, caption = labels[lane]
-            cards = []
-            for row in rows:
-                kanban_lane = _kanban_lane(row)
-                if kanban_lane != lane:
-                    continue
-                card = row.as_qml()
-                card.update(
-                    {
-                        "promotionStage": row.stage,
-                        "kanbanLane": kanban_lane,
-                        "eligibilityVerdict": _eligibility_verdict(row),
-                        "eligibilityCopy": _eligibility_copy(row),
-                    }
-                )
-                cards.append(card)
-            lanes.append(
-                {
-                    "lane": lane,
-                    "laneRoman": roman,
-                    "laneName": name,
-                    "laneCaption": caption,
-                    "cards": cards,
-                }
-            )
-    finally:
-        if conn is not None:
-            conn.close()
-    return {
-        "lanes": lanes,
-        "summary": {
-            "totalConfigs": len(rows),
-            "lockedStages": ["micro_live", "live"],
-            "lastRefreshedAt": _now_iso(),
-        },
-        "lastRefreshedAt": _now_iso(),
-    }
-
-
 def build_ledger_snapshot(db_path: Path, configs_dir: Path | None = None) -> dict[str, Any]:
     # When configs_dir is None, pass a non-existent sentinel so _new_strategy_entries
     # produces only event-store-backed rows (no YAML mtime fallback).
@@ -321,38 +267,3 @@ def _queue_rank(row: _StrategyRow) -> tuple[int, float]:
 
 def _stage_counts(rows: list[_StrategyRow]) -> dict[str, int]:
     return {stage: sum(1 for row in rows if row.stage == stage) for stage in _VISIBLE_STAGES}
-
-
-def _kanban_lane(row: _StrategyRow) -> str:
-    if row.job_status in {"queued", "starting", "running"}:
-        if row.job_action_type == "backtest_walk_forward":
-            return "backtest"
-        if row.job_action_type in {"paper_session_start", "micro_live_session_start"}:
-            return row.stage
-    if row.stage == "backtest" and not row.evidence_run_id:
-        return "idle"
-    return row.stage if row.stage in _VISIBLE_STAGES else "idle"
-
-
-def _eligibility_verdict(row: _StrategyRow) -> str:
-    if row.stage in {"micro_live", "live"}:
-        return "locked"
-    if row.sharpe is None and row.max_drawdown_pct is None and row.trade_count is None:
-        return "not_evaluated"
-    if row.gate_failures:
-        return "blocked"
-    return "gate_passing"
-
-
-def _eligibility_copy(row: _StrategyRow) -> str:
-    if row.stage in {"micro_live", "live"}:
-        return "Capital-bearing stages remain locked by ADR 0004; evidence is review-only."
-    if row.sharpe is None and row.max_drawdown_pct is None and row.trade_count is None:
-        return "Awaiting walk-forward evidence; no promotion action is available here."
-    if row.gate_failures:
-        labels = {"S": "Sharpe", "D": "max drawdown", "N": "trade count"}
-        failed = ", ".join(labels[code] for code in row.gate_failures)
-        return f"{failed} gate failing; review evidence before any move."
-    if row.stage == "paper":
-        return "Paper evidence passing; micro-live and live remain locked by ADR 0004."
-    return "Backtest gates passing; promotion remains an explicit CLI/governance action."

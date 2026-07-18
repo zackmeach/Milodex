@@ -39,7 +39,6 @@ import pytest
 # Top-level surfaces and main window. Components are exercised transitively
 # when a surface that imports them loads successfully.
 _QML_TARGETS = [
-    "surfaces/DesignSystemShowcase.qml",
     "surfaces/FrontSurface.qml",
     "surfaces/BenchSurface.qml",
     "surfaces/LedgerSurface.qml",
@@ -1846,24 +1845,6 @@ def test_front_surface_dead_strategy_detail_link_removed() -> None:
 # ---------------------------------------------------------------------------
 # M2 item c: metrics-provenance labeling (founder-approved, D-8 deferral)
 # ---------------------------------------------------------------------------
-
-
-def test_strategy_row_renders_metrics_provenance_caption() -> None:
-    """StrategyRow.qml must expose metricsProvenance and render it as a quiet
-    inline caption — the same italic-serif marginalia treatment already used
-    for `note` / flagFailingNotRetired, not a warning badge."""
-    src = (_MILODEX_QML_DIR / "components" / "StrategyRow.qml").read_text(encoding="utf-8")
-    assert "property string metricsProvenance" in src, (
-        "StrategyRow.qml must declare property string metricsProvenance"
-    )
-    assert 'root.metricsProvenance !== ""' in src, (
-        "StrategyRow.qml must gate the provenance caption on a non-empty metricsProvenance"
-    )
-    assert "read-model snapshot" in src, (
-        "StrategyRow.qml must render a 'read-model snapshot' caption near the metrics"
-    )
-    # Must reuse the existing muted/italic-deck idiom, not invent a new warning style.
-    assert "Theme.typography.deck.family" in src and "Theme.color.text.muted" in src
 
 
 def test_bench_surface_renders_metrics_provenance_caption() -> None:

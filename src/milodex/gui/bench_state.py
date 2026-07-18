@@ -13,7 +13,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Property, Signal, Slot
+from PySide6.QtCore import Property, Signal
 
 from milodex.gui.polling_lifecycle import PollingReadModel
 from milodex.gui.snapshot_builders import build_bench_snapshot
@@ -23,7 +23,6 @@ class BenchState(PollingReadModel):
     """Read model for the Phase 5 view-only strategy bench."""
 
     sectionsChanged = Signal()  # noqa: N815
-    selectedStrategyChanged = Signal()  # noqa: N815
 
     def __init__(
         self,
@@ -37,7 +36,6 @@ class BenchState(PollingReadModel):
 
             locks_dir = get_locks_dir()
         self._sections: list[dict[str, Any]] = []
-        self._selected_strategy_id = ""
         super().__init__(
             builder=lambda: build_bench_snapshot(db_path, configs_dir, locks_dir),
             refresh_interval_ms=refresh_interval_ms,
@@ -49,17 +47,7 @@ class BenchState(PollingReadModel):
             self._sections = sections
             self.sectionsChanged.emit()
 
-    @Slot(str)
-    def selectStrategy(self, strategy_id: str) -> None:  # noqa: N802
-        if strategy_id != self._selected_strategy_id:
-            self._selected_strategy_id = strategy_id
-            self.selectedStrategyChanged.emit()
-
     def _get_sections(self) -> list:
         return self._sections
 
-    def _get_selected_strategy_id(self) -> str:
-        return self._selected_strategy_id
-
     sections = Property("QVariantList", _get_sections, notify=sectionsChanged)
-    selectedStrategyId = Property(str, _get_selected_strategy_id, notify=selectedStrategyChanged)  # noqa: N815

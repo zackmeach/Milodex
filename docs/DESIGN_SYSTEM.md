@@ -234,9 +234,11 @@ tables, anywhere a multi-cell row appears). Theme-invariant: constant across all
 | `column.benchAction` | `152px` | Bench-row action column. |
 | `column.benchStatus` | `280px` | Bench-row status prose + meta column (fixed width; longer strings elide). |
 
-Accessed via `Theme.column.pill` etc. Surfaces that need different proportions
-may compose `StrategyRow` with their own column widths via property overrides
-(future enhancement; not in Phase 5 scope).
+> **Retired 2026-07-17 (dead-code purge):** `column.pill`, `column.metric`, `column.chips`, `column.tradeCount`, `column.kanbanCard`, `column.kanbanCardMinHeight`, `column.kanbanMetric`, `column.benchConfigKey`, `column.benchStage`, and `column.benchEvidence` were removed with the dead `StrategyRow` / `DesignSystemShowcase` / kanban code. Only `benchMetric`, `benchAction`, and `benchStatus` remain live.
+
+Accessed via `Theme.column.benchStatus` etc. (Surfaces once composed the now-retired
+`StrategyRow` with their own column widths via property overrides; `StrategyRow` was
+retired 2026-07-17 with the dead showcase code.)
 
 #### Column-reservation contract
 
@@ -366,13 +368,13 @@ Inline commentary text &mdash; "lifecycle exempt", "flagged, not retired", or ot
 
 Typical placement: inside the strategy-ID column on `StrategyRow`, anchored after the strategy ID (and the audit asterisk, if present), elides if the remaining column space is short. Long strategy IDs always get the most space; the note takes whatever is left and elides gracefully.
 
-The em-dash prefix gives the marginalia a deliberate-aside feel and visually separates it from the strategyId. The pattern was introduced in the PR E polish pass on the since-removed `StrategyBankSurface.qml` and now lives in `StrategyRow.qml`; the same token and em-dash convention should be used wherever similar commentary is needed on tabular rows in future surfaces.
+The em-dash prefix gives the marginalia a deliberate-aside feel and visually separates it from the strategyId. The pattern was introduced in the PR E polish pass on the since-removed `StrategyBankSurface.qml` and later lived in `StrategyRow.qml` (retired 2026-07-17 as dead code); the same token and em-dash convention should be used wherever similar commentary is needed on tabular rows in future surfaces.
 
 ---
 
 ## 7. Components (initial set)
 
-These four foundational components ship in the first design-system PR. Subsequent observability surfaces compose against them.
+These four foundational components shipped in the first design-system PR. Subsequent observability surfaces compose against them. **`StatusPill` (§7.2) and `StrategyRow` (§7.3) — together with the `GateTable` component and the `DesignSystemShowcase` surface — were retired 2026-07-17 as dead code (unreachable in the shipped app); the subsections below are retained as historical design record. `Button` and `Surface` remain live.**
 
 ### 7.1 Buttons
 
