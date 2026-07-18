@@ -62,8 +62,8 @@ Write-Host "python   : $pythonPath"
 # PyInstaller check.
 $pyinstallerPath = (Get-Command pyinstaller -ErrorAction SilentlyContinue).Source
 if (-not $pyinstallerPath) {
-    Write-Error ("pyinstaller not found. Install dev dependencies with:" +
-                 "`n  pip install -e `".[dev]`"")
+    Write-Error ("pyinstaller not found. Install the installer extra with:" +
+                 "`n  pip install -e `".[installer]`"")
     exit 1
 }
 Write-Host "pyinstaller: $pyinstallerPath"

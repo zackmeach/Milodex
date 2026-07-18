@@ -480,22 +480,26 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "mutmut" },
-    { name = "pyinstaller" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
     { name = "ruff" },
 ]
+installer = [
+    { name = "pyinstaller" },
+]
+mutation = [
+    { name = "mutmut" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "alpaca-py", specifier = ">=0.43.2,<1" },
-    { name = "mutmut", marker = "extra == 'dev'", specifier = ">=2.4,<3" },
+    { name = "mutmut", marker = "extra == 'mutation'", specifier = ">=2.4,<3" },
     { name = "numpy", specifier = ">=2.0,<3" },
     { name = "pandas", specifier = ">=2.2,<4" },
     { name = "pyarrow", specifier = ">=15.0,<25" },
-    { name = "pyinstaller", marker = "extra == 'dev'", specifier = ">=6.6,<7" },
+    { name = "pyinstaller", marker = "extra == 'installer'", specifier = ">=6.6,<7" },
     { name = "pyside6", specifier = ">=6.6,<7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "<10" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = "<8" },
@@ -506,7 +510,7 @@ requires-dist = [
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.11" },
     { name = "yfinance", specifier = ">=0.2,<2" },
 ]
-provides-extras = ["dev"]
+provides-extras = ["dev", "mutation", "installer"]
 
 [[package]]
 name = "msgpack"

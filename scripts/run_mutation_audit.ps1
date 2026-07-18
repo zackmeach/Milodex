@@ -9,7 +9,7 @@
 #
 # Notes:
 #   - mutmut 2.x is required because 3.x refuses to run on native Windows
-#     (boxed/mutmut#397). pyproject.toml dev deps pin this.
+#     (boxed/mutmut#397). pyproject.toml's `mutation` extra pins this.
 #   - Python 3.13 is required because mutmut 2.5.x's pony ORM dependency
 #     fails to deepcopy translator state under Python 3.14
 #     (TypeError on itertools.count). 3.13 works as of this writing.

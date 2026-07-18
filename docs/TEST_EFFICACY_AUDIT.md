@@ -350,10 +350,10 @@ Wall-clock, end-to-end: ~50 minutes across all four files. Per-file:
 ### Setup
 
 ```
-pip install -e ".[dev]"
+pip install -e ".[dev,mutation]"
 ```
 
-`mutmut>=2.4,<3` is in the dev dep group. Install verifies via:
+`mutmut>=2.4,<3` is in the `mutation` extra. Install verifies via:
 
 ```
 python -m mutmut --version

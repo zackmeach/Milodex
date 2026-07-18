@@ -43,12 +43,16 @@ dev = [
     # so parallelism — not deleting slow tests — is the speed lever. Worker cap
     # rationale lives in [tool.pytest.ini_options] addopts below.
     "pytest-xdist<4",
+]
+mutation = [
     # Mutation testing (test-efficacy audit). Pinned to the 2.x line because 3.x
     # refuses to run on native Windows (boxed/mutmut#397) and the operator's
     # primary dev environment is Windows. See docs/TEST_EFFICACY_AUDIT.md.
     "mutmut>=2.4,<3",
+]
+installer = [
     # Frozen-bundle packaging (ADR 0037). Used by installer/build_installer.ps1;
-    # not invoked by pytest. Install with: pip install -e ".[dev]"
+    # not invoked by pytest. Install with: pip install -e ".[installer]"
     "pyinstaller>=6.6,<7",
 ]
 
