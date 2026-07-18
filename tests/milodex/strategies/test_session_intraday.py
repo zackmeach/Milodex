@@ -11,12 +11,9 @@ from milodex.strategies._session_intraday import (
     MARKET_CLOSE_ET_HALF,
     MARKET_OPEN_ET,
     in_entry_window,
-    in_opening_range,
     is_entry_signal_bar,
     is_half_day,
-    is_session_start_bar,
     is_time_stop_bar,
-    latest_session_date_et,
     opening_range_bars,
     session_bars_et,
     session_close_offset_minutes,
@@ -65,15 +62,6 @@ def test_session_date_et_uses_eastern_date() -> None:
     assert session_date_et(ts) == date(2024, 1, 15)
 
 
-def test_is_session_start_bar_true_at_9_30_et() -> None:
-    """The 9:30 ET bar (= 14:30 UTC in winter) is the session start."""
-    assert is_session_start_bar(datetime(2024, 1, 15, 14, 30, tzinfo=UTC))
-
-
-def test_is_session_start_bar_false_at_9_35_et() -> None:
-    assert not is_session_start_bar(datetime(2024, 1, 15, 14, 35, tzinfo=UTC))
-
-
 def test_is_half_day_known_dates() -> None:
     """Known US half-days return True."""
     assert is_half_day(date(2024, 11, 29))  # Day after Thanksgiving
@@ -85,20 +73,6 @@ def test_is_half_day_normal_dates() -> None:
     """Normal trading days return False."""
     assert not is_half_day(date(2024, 1, 15))
     assert not is_half_day(date(2024, 7, 15))
-
-
-def test_in_opening_range_winter() -> None:
-    """A 9:55 ET bar is inside a 30-min opening range; 10:00 ET is not."""
-    # 9:55 EST = 14:55 UTC
-    assert in_opening_range(datetime(2024, 1, 15, 14, 55, tzinfo=UTC), opening_range_minutes=30)
-    # 10:00 EST = 15:00 UTC
-    assert not in_opening_range(datetime(2024, 1, 15, 15, 0, tzinfo=UTC), opening_range_minutes=30)
-
-
-def test_in_opening_range_summer() -> None:
-    """DST: 9:55 EDT = 13:55 UTC; verify the helper handles summer correctly."""
-    assert in_opening_range(datetime(2024, 7, 15, 13, 55, tzinfo=UTC), opening_range_minutes=30)
-    assert not in_opening_range(datetime(2024, 7, 15, 14, 0, tzinfo=UTC), opening_range_minutes=30)
 
 
 def test_in_entry_window_open_closed_semantics() -> None:
@@ -156,26 +130,6 @@ def test_is_time_stop_bar_half_day() -> None:
     assert is_time_stop_bar(datetime(2024, 11, 29, 17, 55, tzinfo=UTC), minutes_before_close=5)
     # 15:55 EST on a half-day is NOT the time-stop bar (market already closed)
     assert not is_time_stop_bar(datetime(2024, 11, 29, 20, 55, tzinfo=UTC), minutes_before_close=5)
-
-
-def test_latest_session_date_et_empty_df() -> None:
-    df = pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "vwap"])
-    assert latest_session_date_et(df) is None
-
-
-def test_latest_session_date_et_returns_et_date_of_last_bar() -> None:
-    df = pd.DataFrame(
-        {
-            "timestamp": pd.to_datetime(["2024-01-15 14:30:00+00:00", "2024-01-15 15:00:00+00:00"]),
-            "open": [500.0, 501.0],
-            "high": [501.0, 502.0],
-            "low": [499.0, 500.0],
-            "close": [500.5, 501.5],
-            "volume": [1_000_000, 1_100_000],
-            "vwap": [500.25, 501.25],
-        }
-    )
-    assert latest_session_date_et(df) == date(2024, 1, 15)
 
 
 def test_session_bars_et_filters_to_one_day() -> None:

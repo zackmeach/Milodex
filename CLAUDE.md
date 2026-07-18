@@ -24,7 +24,7 @@ src-layout Python package (`src/milodex/`). Fourteen modules:
 - **execution/** — Trade orchestration service. Single chokepoint from intent → trade: invokes the risk layer, records explanations, submits to broker. No code path reaches the broker without passing through here.
 - **promotion/** — Promotion lifecycle surface (ADR 0015): frozen strategy manifests, evidence, and stage-transition governance. The risk layer reads back the active manifest hash from here.
 - **backtesting/** — Backtest engine with walk-forward validation. Minimum 30 trades before statistical conclusions. Intentionally below the risk layer — risk is enforced at promotion, not simulation.
-- **research/** — Research-evidence lane: candidate fan-out (`fanout.py`), candidate-rate screens (`candidate_rates.py`), and evidence assembly (`evidence_assembler.py`) that joins a walk-forward candidate against null baselines and writes append-only experiment-registry rows. IEX-fed verdicts are exploratory / non-durable (ADR 0017).
+- **research/** — Research-evidence lane: candidate fan-out (`fanout.py`), and evidence assembly (`evidence_assembler.py`) that joins a walk-forward candidate against null baselines and writes append-only experiment-registry rows. IEX-fed verdicts are exploratory / non-durable (ADR 0017).
 - **data/** — Market data acquisition. Start with free sources (Alpaca, Yahoo Finance). Premium only if testing justifies cost.
 - **analytics/** — Performance metrics, trade logging, benchmark comparison (vs SPY).
 - **core/** — Shared infrastructure: SQLite event store (ADR 0011), advisory locks, schema migrations. Source of truth for trade, explanation, kill-switch, strategy-run, and backtest-run history. Durable state lives under `data/` per ADR 0018.

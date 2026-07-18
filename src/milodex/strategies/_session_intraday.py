@@ -78,23 +78,6 @@ def session_date_et(ts: datetime | pd.Timestamp) -> date:
     return to_eastern(ts).date()
 
 
-def is_session_start_bar(ts: datetime | pd.Timestamp) -> bool:
-    """Return True if ``ts`` is exactly 9:30 ET (the first regular-session bar)."""
-    return to_eastern(ts).time() == MARKET_OPEN_ET
-
-
-def in_opening_range(ts: datetime | pd.Timestamp, opening_range_minutes: int) -> bool:
-    """Return True if ``ts`` falls within ``[9:30, 9:30 + opening_range_minutes)`` ET.
-
-    Uses start-of-bar timestamping (Alpaca convention) — a bar timestamped
-    9:55 ET with ``opening_range_minutes=30`` falls *inside* the opening
-    range (covers 9:55-10:00); a bar timestamped 10:00 ET falls *outside*
-    (covers 10:00-10:05).
-    """
-    et = to_eastern(ts)
-    return _et_time_offset_minutes(et) < opening_range_minutes
-
-
 def in_entry_window(
     ts: datetime | pd.Timestamp,
     opening_range_minutes: int,
@@ -138,13 +121,6 @@ def is_time_stop_bar(
     close_dt = datetime.combine(d, close_t)
     target = (close_dt - timedelta(minutes=minutes_before_close)).time()
     return et.time() == target
-
-
-def latest_session_date_et(df: pd.DataFrame) -> date | None:
-    """Return the ET-local date of the most recent timestamp in ``df``, or None if empty."""
-    if df.empty:
-        return None
-    return session_date_et(df["timestamp"].iloc[-1])
 
 
 def session_bars_et(df: pd.DataFrame, session_date: date) -> pd.DataFrame:
