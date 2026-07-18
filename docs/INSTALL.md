@@ -85,7 +85,7 @@ If you are building the installer from source:
 
 1. **Install Python dependencies** (includes PyInstaller):
    ```powershell
-   pip install -e ".[dev]"
+   pip install -e ".[dev,installer]"
    ```
 
 2. **Install Inno Setup 6** from [https://jrsoftware.org/isdl.php](https://jrsoftware.org/isdl.php). The free version is sufficient; no registration required.
