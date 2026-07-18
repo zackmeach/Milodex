@@ -26,7 +26,6 @@ _ABSTRACT_METHODS = (
     "cancel_all_orders",
     "get_orders",
     "get_positions",
-    "get_position",
     "get_account",
     "is_market_open",
 )
@@ -61,9 +60,6 @@ class _FullBroker(BrokerClient):
         raise NotImplementedError  # pragma: no cover
 
     def get_positions(self) -> list[Position]:
-        raise NotImplementedError  # pragma: no cover
-
-    def get_position(self, symbol: str) -> Position | None:
         raise NotImplementedError  # pragma: no cover
 
     def get_account(self) -> AccountInfo:

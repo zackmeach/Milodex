@@ -18,9 +18,7 @@ from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.risk.attribution import (
     OPERATOR_ATTRIBUTION,
     attribute_position,
-    count_positions_by_strategy,
     strategy_open_lots,
-    strategy_position_quantity,
     strategy_positions,
 )
 
@@ -368,59 +366,6 @@ def test_attribute_position_normalizes_symbol_case(store):
     assert attribute_position(symbol="spy", event_store=store) == "regime"
 
 
-# ---------------------------------------------------------------------------
-# count_positions_by_strategy
-# ---------------------------------------------------------------------------
-
-
-def test_count_positions_by_strategy_aggregates_across_multiple_symbols(store):
-    """Multiple symbols owned by multiple strategies aggregate correctly."""
-    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
-    _record_trade(store, symbol="QQQ", side="buy", quantity=1, strategy_name="meanrev")
-    _record_trade(store, symbol="IWM", side="buy", quantity=1, strategy_name="meanrev")
-    _record_trade(store, symbol="DIA", side="buy", quantity=1, strategy_name="meanrev")
-
-    counts = count_positions_by_strategy(
-        positions={"SPY": 1.0, "QQQ": 1.0, "IWM": 1.0, "DIA": 1.0},
-        event_store=store,
-    )
-
-    assert counts == {"regime": 1, "meanrev": 3}
-
-
-def test_count_positions_by_strategy_includes_operator_key(store):
-    """Operator-attributed positions appear under the 'operator' key."""
-    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
-    _record_trade(
-        store,
-        symbol="GLD",
-        side="buy",
-        quantity=1,
-        strategy_name=None,
-        submitted_by="operator",
-    )
-
-    counts = count_positions_by_strategy(
-        positions={"SPY": 1.0, "GLD": 1.0},
-        event_store=store,
-    )
-
-    assert counts == {"regime": 1, OPERATOR_ATTRIBUTION: 1}
-
-
-def test_count_positions_by_strategy_skips_zero_quantity(store):
-    """Symbols with zero or negative quantity are not counted."""
-    _record_trade(store, symbol="SPY", side="buy", quantity=1, strategy_name="regime")
-
-    counts = count_positions_by_strategy(
-        positions={"SPY": 1.0, "QQQ": 0.0},
-        event_store=store,
-    )
-
-    assert "QQQ" not in counts
-    assert counts.get("regime") == 1
-
-
 def test_attribute_position_over_sell_does_not_drive_running_balance_negative(store):
     """An over-sell (SELL exceeding prior BUYs) must not under-count the owner.
 
@@ -517,8 +462,6 @@ def test_strategy_positions_excludes_other_strategies_and_non_submitted(store):
     )
 
     assert strategy_positions("strategy_a", store) == {"SPY": 10.0}
-    assert strategy_position_quantity("strategy_a", "SPY", store) == 10.0
-    assert strategy_position_quantity("strategy_a", "QQQ", store) == 0.0
 
 
 def test_strategy_positions_over_sell_clamps_to_zero(store):

@@ -25,14 +25,13 @@ Lifecycle-exempt strategies (promotion_type='lifecycle_exempt')
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from milodex.core.event_store import PromotionEvent, StrategyManifestEvent
+from milodex.promotion.manifest import hash_canonical
 from milodex.promotion.policy import (
     ACTIVE_PROMOTION_POLICY,
     PromotionCheckResult,
@@ -184,7 +183,7 @@ def transition(
     recorded_at = now or datetime.now(tz=UTC)
 
     canonical = canonicalize_config_data(_raw_data_with_stage(config.raw_data, to_stage))
-    config_hash = _hash_canonical(canonical)
+    config_hash = hash_canonical(canonical)
 
     if config_hash != evidence.manifest_hash:
         msg = (
@@ -348,11 +347,6 @@ def _raw_data_with_stage(raw_data: dict, to_stage: str) -> dict:
     strategy = dict(raw_data["strategy"])
     strategy["stage"] = to_stage
     return {**raw_data, "strategy": strategy}
-
-
-def _hash_canonical(canonical: dict) -> str:
-    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _prepare_stage_yaml_update(path: Path, from_stage: str, to_stage: str) -> str:

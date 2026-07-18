@@ -112,8 +112,6 @@ def test_get_positions_reflects_engine_injected_state():
     positions = broker.get_positions()
     assert len(positions) == 1
     assert positions[0].symbol == "SPY"
-    assert broker.get_position("SPY") is not None
-    assert broker.get_position("AAPL") is None
 
 
 def test_get_orders_returns_submitted_orders_in_order():

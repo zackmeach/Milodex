@@ -198,13 +198,6 @@ class SimulatedBroker(BrokerClient):
     def get_positions(self) -> list[Position]:
         return list(self._positions)
 
-    def get_position(self, symbol: str) -> Position | None:
-        normalized = symbol.strip().upper()
-        for position in self._positions:
-            if position.symbol.upper() == normalized:
-                return position
-        return None
-
     def get_account(self) -> AccountInfo:
         return self._account
 

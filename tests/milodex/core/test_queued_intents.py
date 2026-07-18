@@ -237,8 +237,9 @@ def test_cross_session_no_run_row_is_dropped(tmp_path):
 def test_consumed_intent_is_not_active(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent())
-    store.mark_queued_intent_consumed(
+    store.consume_queued_intent_and_append_attempt(
         "rsi2.v1|2026-06-23|buy|SPY",
+        _attempt(),
         now=_NOW,
         running_session_id="sess-A",
         consumed_by="sess-A",
@@ -263,13 +264,23 @@ def test_consume_cas_returns_one_then_zero(tmp_path):
     store.append_queued_intent(_intent())
     key = "rsi2.v1|2026-06-23|buy|SPY"
 
-    first = store.mark_queued_intent_consumed(
-        key, now=_NOW, running_session_id="sess-A", consumed_by="sess-A", consumed_at=_NOW
+    first = store.consume_queued_intent_and_append_attempt(
+        key,
+        _attempt("cid-1"),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
     )
     assert first == 1
     # Second CAS on the same (now non-'queued') row loses: rowcount 0.
-    second = store.mark_queued_intent_consumed(
-        key, now=_NOW, running_session_id="sess-A", consumed_by="sess-B", consumed_at=_NOW
+    second = store.consume_queued_intent_and_append_attempt(
+        key,
+        _attempt("cid-2"),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-B",
+        consumed_at=_NOW,
     )
     assert second == 0
 
@@ -279,8 +290,9 @@ def test_consume_sets_audit_columns(tmp_path):
 
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent())
-    store.mark_queued_intent_consumed(
+    store.consume_queued_intent_and_append_attempt(
         "rsi2.v1|2026-06-23|buy|SPY",
+        _attempt(),
         now=_NOW,
         running_session_id="sess-A",
         consumed_by="sess-A",
@@ -297,8 +309,13 @@ def test_consume_sets_audit_columns(tmp_path):
 def test_consume_unknown_key_returns_zero(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     assert (
-        store.mark_queued_intent_consumed(
-            "nope", now=_NOW, running_session_id="sess-A", consumed_by="x", consumed_at=_NOW
+        store.consume_queued_intent_and_append_attempt(
+            "nope",
+            _attempt(),
+            now=_NOW,
+            running_session_id="sess-A",
+            consumed_by="x",
+            consumed_at=_NOW,
         )
         == 0
     )
@@ -322,8 +339,9 @@ def test_consume_drops_expired_but_still_queued_row(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent(expires_at=datetime(2026, 6, 23, 13, 0, tzinfo=UTC)))
     assert (
-        store.mark_queued_intent_consumed(
+        store.consume_queued_intent_and_append_attempt(
             "rsi2.v1|2026-06-23|buy|SPY",
+            _attempt(),
             now=_NOW,  # 14:00 > 13:00 expiry
             running_session_id="sess-A",
             consumed_by="sess-A",
@@ -350,8 +368,9 @@ def test_consume_drops_unclean_handoff_row(tmp_path, exit_reason):
     store.append_queued_intent(_intent(session_id="sess-OLD"))
     _seed_run(db, "sess-OLD", exit_reason)
     assert (
-        store.mark_queued_intent_consumed(
+        store.consume_queued_intent_and_append_attempt(
             "rsi2.v1|2026-06-23|buy|SPY",
+            _attempt(),
             now=_NOW,
             running_session_id="sess-NEW",
             consumed_by="sess-NEW",
@@ -368,8 +387,9 @@ def test_consume_allows_cross_session_controlled_stop_row(tmp_path):
     store.append_queued_intent(_intent(session_id="sess-OLD"))
     _seed_run(db, "sess-OLD", "controlled_stop")
     assert (
-        store.mark_queued_intent_consumed(
+        store.consume_queued_intent_and_append_attempt(
             "rsi2.v1|2026-06-23|buy|SPY",
+            _attempt(),
             now=_NOW,
             running_session_id="sess-NEW",
             consumed_by="sess-NEW",
@@ -389,8 +409,9 @@ def test_consume_drops_config_drifted_row(tmp_path):
     # Stored hash deliberately does NOT match the on-disk config's real hash.
     store.append_queued_intent(_intent(config_hash="d" * 64))
     assert (
-        store.mark_queued_intent_consumed(
+        store.consume_queued_intent_and_append_attempt(
             "rsi2.v1|2026-06-23|buy|SPY",
+            _attempt(),
             now=_NOW,
             running_session_id="sess-A",
             consumed_by="sess-A",
@@ -405,8 +426,9 @@ def test_consume_drops_when_config_path_unhashable(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent(strategy_config_path=str(tmp_path / "does_not_exist.yaml")))
     assert (
-        store.mark_queued_intent_consumed(
+        store.consume_queued_intent_and_append_attempt(
             "rsi2.v1|2026-06-23|buy|SPY",
+            _attempt(),
             now=_NOW,
             running_session_id="sess-A",
             consumed_by="sess-A",
@@ -421,8 +443,9 @@ def test_consume_happy_path_active_clean_matching_config(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     store.append_queued_intent(_intent())
     assert (
-        store.mark_queued_intent_consumed(
+        store.consume_queued_intent_and_append_attempt(
             "rsi2.v1|2026-06-23|buy|SPY",
+            _attempt(),
             now=_NOW,
             running_session_id="sess-A",
             consumed_by="sess-A",
@@ -529,8 +552,13 @@ def test_supersede_is_selective_on_symbol_side_and_status(tmp_path):
     # Already-consumed same-logical row -> untouched (status != 'queued').
     consumed_key = "rsi2.v1|2026-06-20|buy|SPY"
     store.append_queued_intent(_intent(consumed_key, trading_session="2026-06-20"))
-    store.mark_queued_intent_consumed(
-        consumed_key, now=_NOW, running_session_id="sess-A", consumed_by="sess-A", consumed_at=_NOW
+    store.consume_queued_intent_and_append_attempt(
+        consumed_key,
+        _attempt(),
+        now=_NOW,
+        running_session_id="sess-A",
+        consumed_by="sess-A",
+        consumed_at=_NOW,
     )
 
     n = store.supersede_queued_intents("rsi2.v1", "SPY", "buy", "entry", keep_idempotency_key=keep)
@@ -690,8 +718,8 @@ def test_list_operator_alerts_tolerates_null_context_json(tmp_path):
 #
 # consume_queued_intent_and_append_attempt folds the consume CAS and the
 # 'pending' outbox insert into ONE transaction (one commit). It must:
-#   * re-assert the SAME drain predicates as mark_queued_intent_consumed
-#     (shared _consume_queued_intent_cas — they cannot drift);
+#   * re-assert the FULL drain predicates enforced by the shared
+#     _consume_queued_intent_cas;
 #   * insert the attempt IFF rowcount == 1 (both committed together);
 #   * on any CAS loss (rowcount 0) insert NOTHING and leave the row untouched.
 # This closes the crash window where a 'consumed' row could exist with no order

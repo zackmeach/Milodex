@@ -45,12 +45,3 @@ class DataProvider(ABC):
         Callers should check is_market_open() if they need to
         distinguish "latest" from "live."
         """
-
-    @abstractmethod
-    def get_tradeable_assets(self) -> list[str]:
-        """Return ticker symbols available for trading.
-
-        Returns the full broker-eligible universe with no filtering.
-        Strategy-level universe filtering is the strategy layer's
-        responsibility.
-        """

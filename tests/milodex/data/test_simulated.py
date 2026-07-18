@@ -89,16 +89,6 @@ def test_get_bars_missing_symbol_absent_from_result():
     assert "SPY" in result
 
 
-def test_get_tradeable_assets_returns_known_symbols():
-    provider = SimulatedDataProvider(
-        {
-            "SPY": build_barset("2024-01-01", [100.0]),
-            "SHY": build_barset("2024-01-01", [80.0]),
-        }
-    )
-    assert set(provider.get_tradeable_assets()) == {"SPY", "SHY"}
-
-
 def test_frozen_snapshot_unaffected_by_later_source_mutation() -> None:
     """BarSet defensively copies its source frame, so later source mutation can't alter output.
 

@@ -1,7 +1,7 @@
 """Tests for the DataProvider abstract base class.
 
-R-DAT-001: DataProvider is an ABC declaring exactly get_bars, get_latest_bar, and
-get_tradeable_assets. A subclass omitting any one cannot be instantiated.
+R-DAT-001: DataProvider is an ABC declaring exactly get_bars and get_latest_bar.
+A subclass omitting any one cannot be instantiated.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ import pytest
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.data.provider import DataProvider
 
-_ABSTRACT_METHODS = ("get_bars", "get_latest_bar", "get_tradeable_assets")
+_ABSTRACT_METHODS = ("get_bars", "get_latest_bar")
 
 
 class _FullProvider(DataProvider):
@@ -32,12 +32,9 @@ class _FullProvider(DataProvider):
     def get_latest_bar(self, symbol: str) -> Bar:
         raise NotImplementedError  # pragma: no cover
 
-    def get_tradeable_assets(self) -> list[str]:
-        raise NotImplementedError  # pragma: no cover
-
 
 def test_abstract_method_set() -> None:
-    """R-DAT-001: the ABC declares exactly the three required abstract methods."""
+    """R-DAT-001: the ABC declares exactly the two required abstract methods."""
     abstract = {
         name
         for name, member in inspect.getmembers(DataProvider)
@@ -47,7 +44,7 @@ def test_abstract_method_set() -> None:
 
 
 def test_full_concrete_subclass_instantiates() -> None:
-    """R-DAT-001 (positive): a subclass implementing all three methods instantiates."""
+    """R-DAT-001 (positive): a subclass implementing both methods instantiates."""
     provider = _FullProvider()
     assert isinstance(provider, DataProvider)
 

@@ -141,18 +141,6 @@ def test_known_order_type_does_not_warn(client, caplog):
     assert not any(record.levelno == logging.WARNING for record in caplog.records)
 
 
-def test_get_position_swallow_logs_warning_but_still_returns_none(client, caplog):
-    client._client.get_open_position.side_effect = APIError(
-        '{"message": "position does not exist"}'
-    )
-
-    with caplog.at_level(logging.WARNING, logger="milodex.broker.alpaca_client"):
-        result = client.get_position("SPY")
-
-    assert result is None
-    assert any(record.levelno == logging.WARNING for record in caplog.records)
-
-
 def test_cancel_order_swallow_logs_warning_but_still_returns_false(client, caplog):
     client._client.cancel_order_by_id.side_effect = APIError('{"message": "order not found"}')
 

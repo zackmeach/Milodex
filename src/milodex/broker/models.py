@@ -79,23 +79,6 @@ class Order:
         return self.status in _OPEN_ORDER_STATUSES
 
     @property
-    def notional(self) -> float | None:
-        """Best-effort economic value of the (full) order, or None if unpriced.
-
-        Price preference: the broker's ``filled_avg_price`` once any fill has
-        priced the order, else the ``limit_price``. A pending *market* order has
-        neither until it fills, so its notional is unknowable here and returns
-        None — the risk layer skips it for exposure while still counting it as a
-        concurrent-position slot (Phase 1 is market-only, ADR 0013). Uses the
-        full order ``quantity`` (the committed exposure), the conservative
-        direction for a risk cap.
-        """
-        price = self.filled_avg_price if self.filled_avg_price is not None else self.limit_price
-        if price is None:
-            return None
-        return self.quantity * price
-
-    @property
     def remaining_notional(self) -> float | None:
         """Economic value of the still-unfilled portion, or None if unpriced.
 
