@@ -143,27 +143,6 @@ class TestGetPositions:
         assert isinstance(result[0], Position)
         assert result[0].symbol == "AAPL"
 
-    def test_get_position_found(self, client):
-        pos = MagicMock()
-        pos.symbol = "AAPL"
-        pos.qty = "10"
-        pos.avg_entry_price = "150.0"
-        pos.current_price = "155.0"
-        pos.market_value = "1550.0"
-        pos.unrealized_pl = "50.0"
-        pos.unrealized_plpc = "0.0333"
-
-        client._client.get_open_position.return_value = pos
-        result = client.get_position("AAPL")
-        assert isinstance(result, Position)
-
-    def test_get_position_not_found(self, client):
-        # Simulate Alpaca raising when position not found.
-        # We use a generic Exception subclass here to avoid importing alpaca in test code.
-        client._client.get_open_position.side_effect = Exception("position does not exist")
-        result = client.get_position("ZZZZZ")
-        assert result is None
-
 
 class TestGetAccount:
     def test_get_account(self, client):

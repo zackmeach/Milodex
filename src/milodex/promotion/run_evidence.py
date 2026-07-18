@@ -11,11 +11,10 @@ of depending on an interface adapter.
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import TYPE_CHECKING, Any
 
 from milodex.analytics.metrics import metrics_for_run
+from milodex.promotion.manifest import hash_canonical
 from milodex.strategies.loader import canonicalize_config_data
 
 if TYPE_CHECKING:
@@ -83,5 +82,4 @@ def compute_post_update_hash(raw_data: dict, to_stage: str) -> str:
     strategy = dict(raw_data["strategy"])
     strategy["stage"] = to_stage
     canonical = canonicalize_config_data({**raw_data, "strategy": strategy})
-    payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    return hash_canonical(canonical)

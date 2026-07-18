@@ -91,6 +91,3 @@ class SimulatedDataProvider(DataProvider):
             volume=int(row["volume"]),
             vwap=float(row["vwap"]) if pd.notna(row.get("vwap")) else None,
         )
-
-    def get_tradeable_assets(self) -> list[str]:
-        return list(self._all_bars.keys())

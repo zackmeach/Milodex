@@ -65,10 +65,8 @@ def provider(tmp_path):
         mock_creds.return_value = ("test-key", "test-secret")
         with patch("milodex.data.alpaca_provider.get_cache_dir") as mock_cache:
             mock_cache.return_value = tmp_path / "market_cache"
-            with patch("milodex.data.alpaca_provider.get_trading_mode", return_value="paper"):
-                with patch("milodex.data.alpaca_provider.StockHistoricalDataClient"):
-                    with patch("milodex.data.alpaca_provider.TradingClient"):
-                        yield AlpacaDataProvider()
+            with patch("milodex.data.alpaca_provider.StockHistoricalDataClient"):
+                yield AlpacaDataProvider()
 
 
 class TestGetBars:
@@ -764,33 +762,6 @@ class TestGetBarsCaching:
         assert request.end.date() == today
         # Corroborating: the cache heals -- latest bar is now today.
         assert result["AAPL"].latest().timestamp.date() == today
-
-
-class TestGetTradeableAssets:
-    def test_returns_list_of_symbols(self, provider):
-        asset1 = MagicMock()
-        asset1.symbol = "AAPL"
-        asset1.tradable = True
-        asset1.status = "active"
-
-        asset2 = MagicMock()
-        asset2.symbol = "GOOG"
-        asset2.tradable = True
-        asset2.status = "active"
-
-        # Untradeable asset should be filtered out
-        asset3 = MagicMock()
-        asset3.symbol = "DELISTED"
-        asset3.tradable = False
-        asset3.status = "inactive"
-
-        provider._trading_client = MagicMock()
-        provider._trading_client.get_all_assets.return_value = [asset1, asset2, asset3]
-
-        result = provider.get_tradeable_assets()
-        assert "AAPL" in result
-        assert "GOOG" in result
-        assert "DELISTED" not in result
 
 
 class TestRetryOn429:

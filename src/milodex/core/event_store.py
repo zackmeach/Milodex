@@ -1594,28 +1594,6 @@ class EventStore:
         finally:
             connection.close()
 
-    def get_last_paper_buy_date_by_symbol(self) -> dict[str, str]:
-        """Return the most-recent ``recorded_at`` ISO string per symbol for paper BUY trades.
-
-        Performs a targeted indexed query (filter source+side, aggregate per symbol)
-        instead of a full-table scan followed by a Python reduction loop.
-        Used by :class:`milodex.strategies.runner.StrategyRunner` to build
-        ``entry_state`` without loading every trade row.
-
-        Returns a dict mapping ``SYMBOL.upper()`` → ISO-format ``recorded_at`` string
-        (the raw TEXT stored in the DB so the caller can parse to ``date``).
-        """
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT symbol, MAX(recorded_at) AS last_at
-                FROM trades
-                WHERE source = 'paper' AND side = 'buy'
-                GROUP BY symbol
-                """,
-            ).fetchall()
-        return {row[0].upper(): row[1] for row in rows}
-
     def list_kill_switch_events(self) -> list[KillSwitchEvent]:
         with self._connect() as connection:
             rows = connection.execute("SELECT * FROM kill_switch_events ORDER BY id ASC").fetchall()
@@ -1680,21 +1658,6 @@ class EventStore:
             )
             connection.commit()
             return int(cursor.lastrowid)
-
-    def list_orchestration_batches(self) -> list[OrchestrationBatchEvent]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                "SELECT * FROM orchestration_batches ORDER BY id ASC"
-            ).fetchall()
-        return [_orchestration_batch_from_row(row) for row in rows]
-
-    def get_orchestration_batch(self, batch_id: str) -> OrchestrationBatchEvent | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM orchestration_batches WHERE batch_id = ? LIMIT 1",
-                (batch_id,),
-            ).fetchone()
-        return None if row is None else _orchestration_batch_from_row(row)
 
     def update_orchestration_batch_status(
         self,
@@ -1767,29 +1730,6 @@ class EventStore:
             connection.commit()
             return int(cursor.lastrowid)
 
-    def list_orchestration_jobs(
-        self,
-        *,
-        batch_id: str | None = None,
-    ) -> list[OrchestrationJobEvent]:
-        query = "SELECT * FROM orchestration_jobs"
-        params: tuple[Any, ...] = ()
-        if batch_id is not None:
-            query += " WHERE batch_id = ?"
-            params = (batch_id,)
-        query += " ORDER BY id ASC"
-        with self._connect() as connection:
-            rows = connection.execute(query, params).fetchall()
-        return [_orchestration_job_from_row(row) for row in rows]
-
-    def get_orchestration_job(self, job_id: str) -> OrchestrationJobEvent | None:
-        with self._connect() as connection:
-            row = connection.execute(
-                "SELECT * FROM orchestration_jobs WHERE job_id = ? LIMIT 1",
-                (job_id,),
-            ).fetchone()
-        return None if row is None else _orchestration_job_from_row(row)
-
     def update_orchestration_job_status(
         self,
         job_id: str,
@@ -1840,40 +1780,6 @@ class EventStore:
                 ),
             )
             connection.commit()
-
-    def request_orchestration_job_cancellation(
-        self,
-        job_id: str,
-        *,
-        cancel_requested_at: datetime,
-    ) -> None:
-        with self._connect() as connection:
-            connection.execute(
-                """
-                UPDATE orchestration_jobs
-                SET cancel_requested_at = ?
-                WHERE job_id = ?
-                """,
-                (_dt(cancel_requested_at), job_id),
-            )
-            connection.commit()
-
-    def list_non_terminal_orchestration_jobs(self) -> list[OrchestrationJobEvent]:
-        with self._connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT * FROM orchestration_jobs
-                WHERE status NOT IN (
-                    'completed',
-                    'failed',
-                    'cancelled',
-                    'blocked',
-                    'orphan_recovered'
-                )
-                ORDER BY id ASC
-                """
-            ).fetchall()
-        return [_orchestration_job_from_row(row) for row in rows]
 
     def append_backtest_run(self, event: BacktestRunEvent) -> int:
         """Insert a new backtest run row and return its autoincrement id."""
@@ -2395,8 +2301,9 @@ class EventStore:
             active.append(intent)
         return active
 
-    def mark_queued_intent_consumed(
-        self,
+    @staticmethod
+    def _consume_queued_intent_cas(
+        connection: sqlite3.Connection,
         idempotency_key: str,
         *,
         now: datetime,
@@ -2404,17 +2311,22 @@ class EventStore:
         consumed_by: str,
         consumed_at: datetime,
     ) -> int:
-        """Atomically claim a queued intent for submit. Returns rows updated (0 or 1).
+        """Run THE drain consume CAS on ``connection`` (no commit). Returns rowcount.
 
-        THE drain gate — it authorizes the broker submit, so it re-asserts the FULL
-        drain predicates that :meth:`get_active_queued_intents` enumerates on, not
-        merely ``status = 'queued'``. Without this, an expired-but-still-``queued``
-        row (the expiry sweep has not run yet), an unclean-handoff row, or a row
-        whose config drifted *after* enumeration could still be consumed and
-        submitted — a TOCTOU between enumerate and consume, or a direct caller that
-        bypassed ``get_active``. The caller proceeds to the broker submit ONLY when
-        this returns 1; a return of 0 means another process already consumed the row
-        OR it no longer satisfies a drain predicate, so this caller must NOT submit.
+        Invoked by :meth:`consume_queued_intent_and_append_attempt` (which folds
+        the outbox insert into the same transaction). Isolating the config-hash
+        re-verification + the CAS ``UPDATE`` in this single helper keeps every
+        drain predicate in one place (I-5). The caller owns the commit.
+
+        THE drain gate — it authorizes the broker submit, so it re-asserts the
+        FULL drain predicates that :meth:`get_active_queued_intents` enumerates
+        on, not merely ``status = 'queued'``. Without this, an
+        expired-but-still-``queued`` row (the expiry sweep has not run yet), an
+        unclean-handoff row, or a row whose config drifted *after* enumeration
+        could still be consumed and submitted — a TOCTOU between enumerate and
+        consume. The caller proceeds to the broker submit ONLY when this returns
+        1; a return of 0 means another process already consumed the row OR it no
+        longer satisfies a drain predicate, so the caller must NOT submit.
 
         Predicates re-asserted (must stay identical to ``get_active``):
 
@@ -2431,36 +2343,6 @@ class EventStore:
           (wrapped so a poison config drops, never crashes). A ``None`` recompute
           or a mismatch returns 0 (drop). This shrinks the config TOCTOU to a
           microsecond, lock-held window.
-        """
-        with self._connect() as connection:
-            rowcount = self._consume_queued_intent_cas(
-                connection,
-                idempotency_key,
-                now=now,
-                running_session_id=running_session_id,
-                consumed_by=consumed_by,
-                consumed_at=consumed_at,
-            )
-            connection.commit()
-            return rowcount
-
-    @staticmethod
-    def _consume_queued_intent_cas(
-        connection: sqlite3.Connection,
-        idempotency_key: str,
-        *,
-        now: datetime,
-        running_session_id: str | None,
-        consumed_by: str,
-        consumed_at: datetime,
-    ) -> int:
-        """Run THE drain consume CAS on ``connection`` (no commit). Returns rowcount.
-
-        Shared verbatim by :meth:`mark_queued_intent_consumed` (its own
-        transaction) and :meth:`consume_queued_intent_and_append_attempt` (folds
-        the outbox insert into the same transaction). Factoring the config-hash
-        re-verification + the CAS ``UPDATE`` here guarantees the two callers
-        cannot drift on any drain predicate (I-5). The caller owns the commit.
         """
         # Lazy import: same core<->strategies cycle avoidance as
         # get_active_queued_intents (the strategies package imports event_store
@@ -2541,8 +2423,7 @@ class EventStore:
         reconciliation to recover — a silent loss (a silent strand for an EXIT).
 
         Here both writes share ONE transaction with a single ``commit()``: the
-        consume CAS (identical drain predicates to
-        :meth:`mark_queued_intent_consumed`, via the shared
+        consume CAS (the drain predicates enforced by the shared
         :meth:`_consume_queued_intent_cas`) runs first, and the ``attempt`` is
         inserted IFF ``rowcount == 1``. A CAS loss (rowcount 0 — duplicate /
         expired / unclean-handoff / config-drift) writes NO attempt and the caller

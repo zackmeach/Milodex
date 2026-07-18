@@ -1829,11 +1829,15 @@ def test_submit_backtest_runs_single_period_engine_and_returns_payload(
     )
     assert result.durable_refs["orchestration_job_id"]
     assert result.durable_refs["orchestration_batch_id"]
-    job = event_store.get_orchestration_job(result.durable_refs["orchestration_job_id"])
+    with event_store._connect() as con:
+        job = con.execute(
+            "SELECT * FROM orchestration_jobs WHERE job_id = ?",
+            (result.durable_refs["orchestration_job_id"],),
+        ).fetchone()
     assert job is not None
-    assert job.status == "completed"
-    assert job.action_type == "backtest_single"
-    assert job.execution_ref == "bench-run"
+    assert job["status"] == "completed"
+    assert job["action_type"] == "backtest_single"
+    assert job["execution_ref"] == "bench-run"
     assert result.data["metrics"]["trade_count"] == 4
     assert result.data["skipped_count"] == 1
     assert result.data["data_quality_status"] == "pass"
@@ -2194,9 +2198,13 @@ def test_submit_backtest_swallows_orchestration_job_finish_failure(
     assert result.status == "submitted", result.blockers
     job_id = result.durable_refs["orchestration_job_id"]
     assert job_id
-    job = event_store.get_orchestration_job(job_id)
+    with event_store._connect() as con:
+        job = con.execute(
+            "SELECT * FROM orchestration_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
     assert job is not None
-    assert job.status == "running"
+    assert job["status"] == "running"
 
 
 def _make_demote_proposal(

@@ -247,18 +247,22 @@ def test_orchestration_batch_round_trips_metadata_and_status_update(tmp_path):
         metadata={"source": "kanban", "started_by": "worker-1"},
     )
 
-    fetched = store.get_orchestration_batch("batch-1")
-    listed = store.list_orchestration_batches()
+    import json
+    import sqlite3
 
-    assert fetched is not None
-    assert fetched.id == db_id
-    assert fetched.batch_id == "batch-1"
-    assert fetched.action_type == "backtest_walk_forward"
-    assert fetched.requested_by == "operator"
-    assert fetched.requested_at == requested_at
-    assert fetched.status == "running"
-    assert fetched.metadata == {"source": "kanban", "started_by": "worker-1"}
-    assert listed == [fetched]
+    with sqlite3.connect(tmp_path / "milodex.db") as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM orchestration_batches ORDER BY id ASC").fetchall()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == db_id
+    assert row["batch_id"] == "batch-1"
+    assert row["action_type"] == "backtest_walk_forward"
+    assert row["requested_by"] == "operator"
+    assert datetime.fromisoformat(row["requested_at"]) == requested_at
+    assert row["status"] == "running"
+    assert json.loads(row["metadata_json"]) == {"source": "kanban", "started_by": "worker-1"}
 
 
 def test_orchestration_job_round_trips_metadata_progress_and_execution_ref(tmp_path):
@@ -311,126 +315,30 @@ def test_orchestration_job_round_trips_metadata_progress_and_execution_ref(tmp_p
         metadata={"symbols": ["SPY", "QQQ"], "worker": "worker-1"},
     )
 
-    fetched = store.get_orchestration_job("job-1")
-    jobs_for_batch = store.list_orchestration_jobs(batch_id="batch-1")
+    import json
+    import sqlite3
 
-    assert fetched is not None
-    assert fetched.id == job_db_id
-    assert fetched.job_id == "job-1"
-    assert fetched.batch_id == "batch-1"
-    assert fetched.strategy_id == "momentum.daily.tsmom.curated_largecap.v1"
-    assert fetched.status == "running"
-    assert fetched.started_at == started_at
-    assert fetched.execution_ref_type == "backtest_run"
-    assert fetched.execution_ref == "run-abc"
-    assert fetched.progress_current == 1
-    assert fetched.progress_total == 4
-    assert fetched.progress_label == "walk-forward 1/4"
-    assert fetched.metadata == {"symbols": ["SPY", "QQQ"], "worker": "worker-1"}
-    assert jobs_for_batch == [fetched]
+    with sqlite3.connect(tmp_path / "milodex.db") as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute(
+            "SELECT * FROM orchestration_jobs WHERE batch_id = ? ORDER BY id ASC",
+            ("batch-1",),
+        ).fetchall()
 
-
-def test_request_orchestration_job_cancellation_sets_timestamp(tmp_path):
-    store = EventStore(tmp_path / "milodex.db")
-    queued_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
-    cancel_requested_at = datetime(2026, 5, 10, 14, 5, tzinfo=UTC)
-
-    store.create_orchestration_batch(
-        OrchestrationBatchEvent(
-            batch_id="batch-1",
-            action_type="paper_session_start",
-            requested_by="operator",
-            requested_at=queued_at,
-            status="queued",
-            metadata={},
-        )
-    )
-    store.create_orchestration_job(
-        OrchestrationJobEvent(
-            job_id="job-1",
-            batch_id="batch-1",
-            strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
-            action_type="paper_session_start",
-            requested_stage="paper",
-            status="queued",
-            queued_at=queued_at,
-            started_at=None,
-            ended_at=None,
-            cancel_requested_at=None,
-            execution_ref_type=None,
-            execution_ref=None,
-            progress_current=0,
-            progress_total=None,
-            progress_label="queued",
-            error_code=None,
-            error_message=None,
-            metadata={},
-        )
-    )
-
-    store.request_orchestration_job_cancellation(
-        "job-1",
-        cancel_requested_at=cancel_requested_at,
-    )
-
-    job = store.get_orchestration_job("job-1")
-    assert job is not None
-    assert job.status == "queued"
-    assert job.cancel_requested_at == cancel_requested_at
-
-
-def test_list_non_terminal_orchestration_jobs_filters_completed_failed_cancelled(tmp_path):
-    store = EventStore(tmp_path / "milodex.db")
-    queued_at = datetime(2026, 5, 10, 14, 0, tzinfo=UTC)
-    store.create_orchestration_batch(
-        OrchestrationBatchEvent(
-            batch_id="batch-1",
-            action_type="backtest_walk_forward",
-            requested_by="operator",
-            requested_at=queued_at,
-            status="running",
-            metadata={},
-        )
-    )
-
-    for job_id, status in [
-        ("queued-job", "queued"),
-        ("running-job", "running"),
-        ("blocked-job", "blocked"),
-        ("orphan-recovered-job", "orphan_recovered"),
-        ("completed-job", "completed"),
-        ("failed-job", "failed"),
-        ("cancelled-job", "cancelled"),
-    ]:
-        store.create_orchestration_job(
-            OrchestrationJobEvent(
-                job_id=job_id,
-                batch_id="batch-1",
-                strategy_id=f"strategy.{job_id}",
-                action_type="backtest_walk_forward",
-                requested_stage="backtest",
-                status=status,
-                queued_at=queued_at,
-                started_at=None,
-                ended_at=queued_at if status in {"completed", "failed", "cancelled"} else None,
-                cancel_requested_at=None,
-                execution_ref_type=None,
-                execution_ref=None,
-                progress_current=0,
-                progress_total=4,
-                progress_label=status,
-                error_code="boom" if status == "failed" else None,
-                error_message="failed" if status == "failed" else None,
-                metadata={},
-            )
-        )
-
-    active = store.list_non_terminal_orchestration_jobs()
-
-    assert [job.job_id for job in active] == [
-        "queued-job",
-        "running-job",
-    ]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == job_db_id
+    assert row["job_id"] == "job-1"
+    assert row["batch_id"] == "batch-1"
+    assert row["strategy_id"] == "momentum.daily.tsmom.curated_largecap.v1"
+    assert row["status"] == "running"
+    assert datetime.fromisoformat(row["started_at"]) == started_at
+    assert row["execution_ref_type"] == "backtest_run"
+    assert row["execution_ref"] == "run-abc"
+    assert row["progress_current"] == 1
+    assert row["progress_total"] == 4
+    assert row["progress_label"] == "walk-forward 1/4"
+    assert json.loads(row["metadata_json"]) == {"symbols": ["SPY", "QQQ"], "worker": "worker-1"}
 
 
 def test_orchestration_ledger_writes_do_not_create_execution_rows(tmp_path):

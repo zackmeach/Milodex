@@ -1277,7 +1277,7 @@ class StrategyRunner:
         and is retried at the next open — critical for a pre-open launch, which has
         no fresh price yet. EXITs are unchanged: they alert + retire (``obsolete``).
         The drain NEVER touches ``_last_processed_bar_at`` (I-3) and NEVER calls
-        ``mark_queued_intent_consumed`` (the submit CAS owns that); the status
+        ``consume_queued_intent_and_append_attempt`` (the submit CAS owns that); the status
         writes here are ``obsolete`` (stranded/flat exit) and ``dropped`` (decided
         entry).
 

@@ -23,7 +23,6 @@ class ExecutionStatus(Enum):
     BLOCKED = "blocked"
     SUBMITTED = "submitted"
     REJECTED = "rejected"
-    CANCELLED = "cancelled"
 
 
 class UnsupportedOrderTypeError(ValueError):

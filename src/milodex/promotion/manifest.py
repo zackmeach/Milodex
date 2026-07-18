@@ -25,8 +25,15 @@ if TYPE_CHECKING:
 FROZEN_STAGES = frozenset({"paper", "micro_live", "live"})
 
 
-def _hash_canonical(canonical: dict) -> str:
-    """SHA-256 over the canonical dict, identical to ``state_machine._hash_canonical``."""
+def hash_canonical(canonical: dict) -> str:
+    """SHA-256 hex digest over the canonical config dict.
+
+    The single recipe shared by every promotion hash path (``freeze_manifest``
+    here, ``state_machine.transition``, and ``run_evidence.compute_post_update_hash``)
+    so the frozen-manifest hash, the transition re-derivation, and the CLI/facade
+    pre-hash cannot drift. Byte-for-byte stable: compact-separator, key-sorted
+    JSON then SHA-256 — the recorded hashes depend on it, so it MUST NOT change.
+    """
     payload = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -58,7 +65,7 @@ def freeze_manifest(
     # (compute_config_hash) is a separate canonicalization path over a
     # separate input and can silently diverge from the stored JSON.
     canonical = canonicalize_config_data(config.raw_data)
-    config_hash = _hash_canonical(canonical)
+    config_hash = hash_canonical(canonical)
 
     event = StrategyManifestEvent(
         strategy_id=config.strategy_id,

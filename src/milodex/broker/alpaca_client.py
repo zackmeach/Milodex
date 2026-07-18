@@ -342,17 +342,6 @@ class AlpacaBrokerClient(BrokerClient):
         )
         return [self._translate_position(p) for p in alpaca_positions]
 
-    def get_position(self, symbol: str) -> Position | None:
-        """Get position for a symbol, or None if not held."""
-        try:
-            alpaca_pos = call_with_retry_on_transient(
-                lambda: self._client.get_open_position(symbol)
-            )
-            return self._translate_position(alpaca_pos)
-        except Exception as exc:
-            logger.warning("get_position(%s) failed: %s", symbol, exc)
-            return None
-
     def get_account(self) -> AccountInfo:
         """Get account summary from Alpaca."""
         acct = self._read_call(

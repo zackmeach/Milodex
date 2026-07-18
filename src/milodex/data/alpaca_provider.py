@@ -16,9 +16,8 @@ from alpaca.data.enums import DataFeed
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import Adjustment, StockBarsRequest, StockLatestBarRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
-from alpaca.trading.client import TradingClient
 
-from milodex.config import get_alpaca_credentials, get_cache_dir, get_trading_mode
+from milodex.config import get_alpaca_credentials, get_cache_dir
 from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
 from milodex.data.cache import ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
@@ -62,15 +61,13 @@ _TIMEFRAME_MAP: dict[Timeframe, TimeFrame] = {
 class AlpacaDataProvider(DataProvider):
     """Market data provider backed by Alpaca's API.
 
-    Uses StockHistoricalDataClient for bar data and TradingClient
-    for asset discovery. Caches fetched data locally as Parquet files.
+    Uses StockHistoricalDataClient for bar data. Caches fetched data
+    locally as Parquet files.
     """
 
     def __init__(self) -> None:
         api_key, secret_key = get_alpaca_credentials()
         self._client = StockHistoricalDataClient(api_key, secret_key)
-        paper = get_trading_mode() == "paper"
-        self._trading_client = TradingClient(api_key, secret_key, paper=paper)
         self._cache = ParquetCache(get_cache_dir(), version=CACHE_VERSION)
 
     def get_bars(
@@ -513,16 +510,6 @@ class AlpacaDataProvider(DataProvider):
             volume=int(alpaca_bar.volume),
             vwap=float(alpaca_bar.vwap) if alpaca_bar.vwap else None,
         )
-
-    def get_tradeable_assets(self) -> list[str]:
-        """Return all tradeable symbols from Alpaca."""
-        assets = self._trading_client.get_all_assets()
-        return [
-            a.symbol
-            for a in assets
-            if a.tradable
-            and str(a.status.value if hasattr(a.status, "value") else a.status) == "active"
-        ]
 
 
 def _range_has_weekday(start: date, end: date) -> bool:

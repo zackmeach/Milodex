@@ -155,54 +155,10 @@ def attribute_position(
     return str(opening_strategy_name)
 
 
-def count_positions_by_strategy(
-    *,
-    positions: dict[str, float],
-    event_store: EventStore,
-) -> dict[str, int]:
-    """Return ``{strategy_id: count}`` for the given current positions.
-
-    Uses :func:`attribute_position` per symbol. Only symbols with
-    non-zero quantity are counted; the broker is the position arbiter
-    per [ADR 0010](../../docs/adr/0010-hybrid-source-of-truth.md), so
-    a symbol absent from ``positions`` is absent from the result.
-
-    The ``"operator"`` pseudo-strategy is included as a key when any
-    symbol resolves to operator attribution (per Decision 3).
-
-    Args:
-        positions: Mapping of symbol to current quantity (broker truth).
-            Symbols with zero or negative quantity are ignored.
-        event_store: Source of truth for trade history.
-
-    Returns:
-        Dict mapping each attributed ``strategy_id`` (or
-        :data:`OPERATOR_ATTRIBUTION`) to the number of held symbols
-        attributed to it.
-    """
-    counts: dict[str, int] = {}
-    for symbol, qty in positions.items():
-        if qty <= 0:
-            continue
-        owner = attribute_position(symbol=symbol, event_store=event_store)
-        counts[owner] = counts.get(owner, 0) + 1
-    return counts
-
-
 def strategy_positions(strategy_id: str, event_store: EventStore) -> dict[str, float]:
     """Per-strategy submitted-fill ledger: symbol -> quantity (buys minus sells, clamped)."""
     balances = _fold_strategy_balances(strategy_id, event_store)
     return {symbol: qty for symbol, qty in balances.items() if qty > 0}
-
-
-def strategy_position_quantity(
-    strategy_id: str,
-    symbol: str,
-    event_store: EventStore,
-) -> float:
-    """Quantity for one symbol from :func:`strategy_positions`, or ``0.0``."""
-    normalized = symbol.strip().upper()
-    return strategy_positions(strategy_id, event_store).get(normalized, 0.0)
 
 
 def strategy_open_lots(strategy_id: str, event_store: EventStore) -> dict[str, dict[str, Any]]:

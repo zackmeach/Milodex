@@ -64,10 +64,6 @@ class BrokerClient(ABC):
         """Get all open positions."""
 
     @abstractmethod
-    def get_position(self, symbol: str) -> Position | None:
-        """Get position for a specific symbol, or None if not held."""
-
-    @abstractmethod
     def get_account(self) -> AccountInfo:
         """Get account summary."""
 
