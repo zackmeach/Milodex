@@ -354,8 +354,9 @@ def _sortino(daily_returns: list[float], risk_free_daily: float = 0.0) -> float 
     if len(daily_returns) < 2:
         return None
     n = len(daily_returns)
-    mean = sum(daily_returns) / n - risk_free_daily
-    downside = [r for r in daily_returns if r < 0]
+    excess = [r - risk_free_daily for r in daily_returns]
+    mean = sum(excess) / n
+    downside = [r for r in excess if r < 0]
     if not downside:
         return None
     downside_var = sum(r**2 for r in downside) / len(downside)

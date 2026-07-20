@@ -153,6 +153,43 @@ def test_sortino_mixed_returns():
     assert s > 0
 
 
+def test_sortino_nonzero_risk_free_matches_textbook_excess_return_sortino():
+    # Downside deviation must be computed on excess returns (r - rf): both
+    # the downside-membership test (excess < 0, i.e. below the rf target)
+    # and the squared terms. The raw-return version misses returns between
+    # 0 and rf and squares un-shifted values (ponytail audit 2026-07-17,
+    # decision 1 follow-through). rf here flips 0.001 into the downside set.
+    import math
+
+    returns = [0.012, -0.004, 0.008, 0.001, -0.006, 0.015, 0.003, -0.002]
+    rf = 0.002
+    excess = [r - rf for r in returns]
+    n = len(excess)
+    mean = sum(excess) / n
+    downside = [e for e in excess if e < 0]
+    downside_var = sum(e**2 for e in downside) / len(downside)  # same convention as _sortino
+    expected = (mean / math.sqrt(downside_var)) * math.sqrt(252)
+    assert _sortino(returns, risk_free_daily=rf) == pytest.approx(expected, rel=1e-12)
+
+
+def test_sortino_nonzero_risk_free_equals_zero_rf_sortino_of_excess_series():
+    # Equivalent invariant: Sortino(returns, rf) == Sortino(returns - rf, 0).
+    returns = [0.012, -0.004, 0.008, 0.001, -0.006, 0.015, 0.003, -0.002]
+    rf = 0.002
+    shifted = [r - rf for r in returns]
+    assert _sortino(returns, risk_free_daily=rf) == pytest.approx(_sortino(shifted), rel=1e-12)
+
+
+def test_sortino_rf_zero_golden_values_unchanged():
+    # Pins rf=0 numerics (the only production call site passes rf=0). Golden
+    # values captured from the pre-fix implementation — the excess-return
+    # downside fix must be a numeric no-op at rf=0.
+    assert _sortino([0.01, -0.005, 0.02, -0.003]) == pytest.approx(21.17573528135168, rel=1e-12)
+    assert _sortino([0.012, -0.004, 0.008, 0.001, -0.006, 0.015, 0.003, -0.002]) == pytest.approx(
+        12.40054182283984, rel=1e-12
+    )
+
+
 # ---------------------------------------------------------------------------
 # _trade_stats
 # ---------------------------------------------------------------------------
