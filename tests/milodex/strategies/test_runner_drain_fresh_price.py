@@ -23,6 +23,7 @@ from pathlib import Path
 
 from milodex.broker.models import OrderSide
 from milodex.data.models import Bar
+from milodex.strategies.runner import _DRAIN_EXIT_NO_FRESH_PRICE_RETRY_WINDOW_SECONDS
 from tests.milodex.strategies.test_runner_queued_intent_drain import (
     _build_open_runner,
     _force_decision,
@@ -246,15 +247,49 @@ def test_drain_entry_fresh_price_raises_drops_and_stays_queued(
     assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
 
 
-def test_drain_exit_fresh_price_raises_alerts_and_obsoletes(
+def test_drain_exit_no_fresh_price_first_attempt_stays_queued_no_alert(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    caplog,
+):
+    """An EXIT with no confirmable fresh price on the FIRST drain attempt is NOT
+    retired: the row stays ``queued`` (the next ~60s open poll retries it), no
+    ``exit_intent_dropped`` alert is emitted, and the miss is logged. IEX-thin
+    symbols (observed 2026-07-20: XLF/XLV/JNJ ~17s post-bell) have no
+    current-session minute bar in the open's first minute — retiring on the
+    first miss stranded live positions with zero risk evaluations."""
+    runner, broker, _provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    intent_id = _seed_queued_entry(
+        event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
+    )
+    runner._current_positions = lambda: {"SPY": 5.0}
+    _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=5.0)])
+    # Fresh ts == locked ts -> not strictly newer -> fail closed.
+    locked = _locked_bar(runner)
+    _patch_fresh_latest_bar(runner, close=20.0, timestamp=locked.timestamp.to_pydatetime())
+
+    with caplog.at_level(logging.WARNING):
+        result = runner.run_cycle()
+
+    assert result == []
+    assert broker.submit_calls == []
+    assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
+    assert event_store.get_queued_intent(intent_id).status == "queued"
+    assert "leaving queued" in caplog.text
+
+
+def test_drain_exit_fresh_price_raises_first_attempt_stays_queued(
     tmp_path: Path,
     strategy_config_dir: Path,
     risk_defaults_file: Path,
 ):
-    """If ``get_latest_bar`` RAISES for an EXIT, the "can't be obtained" case must
-    fail closed identically to an unconfirmable bar: alert (reason
-    ``no_fresh_price``) + retire — NOT be swallowed silently by the drain's
-    generic pre-submit handler."""
+    """If ``get_latest_bar`` RAISES for an EXIT, the "can't be obtained" case
+    routes through the SAME bounded-retry branch as an unconfirmable bar
+    (``_fresh_pricing_bar`` catches the raise and returns ``None``): first
+    attempt -> row stays queued, no alert, no submit."""
     runner, broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -273,21 +308,18 @@ def test_drain_exit_fresh_price_raises_alerts_and_obsoletes(
 
     assert result == []
     assert broker.submit_calls == []
-    alerts = event_store.list_operator_alerts(alert_type="exit_intent_dropped")
-    assert len(alerts) == 1
-    assert alerts[0].context_json["reason"] == "no_fresh_price"
-    assert event_store.get_queued_intent(intent_id).status == "obsolete"
+    assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
+    assert event_store.get_queued_intent(intent_id).status == "queued"
 
 
-def test_drain_exit_no_fresh_price_alerts_and_obsoletes(
+def test_drain_exit_no_fresh_price_recovers_within_window_submits(
     tmp_path: Path,
     strategy_config_dir: Path,
     risk_defaults_file: Path,
-    caplog,
 ):
-    """An EXIT with no confirmable fresh price fails closed: drop + emit
-    ``exit_intent_dropped`` (reason ``no_fresh_price``) + retire the row
-    (asymmetry guard + de-spam, mirroring the not-tradable EXIT path)."""
+    """A fresh price appearing on a LATER drain attempt within the retry window
+    proceeds through the normal re-validation path: risk evaluation + submit
+    through the chokepoint, row consumed, no alert ever emitted."""
     runner, broker, _provider, event_store = _build_open_runner(
         tmp_path, strategy_config_dir, risk_defaults_file
     )
@@ -296,20 +328,69 @@ def test_drain_exit_no_fresh_price_alerts_and_obsoletes(
     )
     runner._current_positions = lambda: {"SPY": 5.0}
     _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=5.0)])
-    # Fresh ts == locked ts -> not strictly newer -> fail closed.
+    # Attempt 1: fresh ts == locked ts -> not confirmably current -> stays queued.
     locked = _locked_bar(runner)
     _patch_fresh_latest_bar(runner, close=20.0, timestamp=locked.timestamp.to_pydatetime())
+    runner.run_cycle()
+    assert broker.submit_calls == []
+    assert event_store.get_queued_intent(intent_id).status == "queued"
 
-    with caplog.at_level(logging.WARNING):
-        result = runner.run_cycle()
+    # Attempt 2 (~next open poll, well inside the window): fresh price appears.
+    _patch_fresh_latest_bar(runner, close=20.0)
+    result = runner.run_cycle()
 
     assert result == []
-    assert broker.submit_calls == []
+    assert len(broker.submit_calls) == 1
+    # Exit quantity unchanged — the held lot is sold in full, NOT rescaled.
+    assert float(broker.submit_calls[0]["quantity"]) == 5.0
+    assert event_store.get_queued_intent(intent_id).status == "consumed"
+    assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
+
+
+def test_drain_exit_no_fresh_price_window_expired_alerts_and_obsoletes(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """When the retry window closes with STILL no fresh price, the EXIT is
+    retired exactly as before the retry window existed: exactly ONE
+    ``exit_intent_dropped`` alert (reason ``no_fresh_price``) + row
+    ``obsolete``. A further drain pass does not re-alert (the retired row is
+    no longer served)."""
+    runner, broker, _provider, event_store = _build_open_runner(
+        tmp_path, strategy_config_dir, risk_defaults_file
+    )
+    intent_id = _seed_queued_entry(
+        event_store, runner, symbol="SPY", side=OrderSide.SELL, intent_class="exit"
+    )
+    runner._current_positions = lambda: {"SPY": 5.0}
+    _force_decision(runner, [_intent("SPY", OrderSide.SELL, quantity=5.0)])
+    # Fresh price never becomes confirmable.
+    locked = _locked_bar(runner)
+    _patch_fresh_latest_bar(runner, close=20.0, timestamp=locked.timestamp.to_pydatetime())
+    fake_now = [runner._now()]
+    runner._now = lambda: fake_now[0]
+
+    runner.run_cycle()  # first attempt -> stays queued, no alert
+    assert event_store.list_operator_alerts(alert_type="exit_intent_dropped") == []
+    assert event_store.get_queued_intent(intent_id).status == "queued"
+
+    # Advance past the retry window and drain again -> final drop.
+    fake_now[0] = fake_now[0] + timedelta(
+        seconds=_DRAIN_EXIT_NO_FRESH_PRICE_RETRY_WINDOW_SECONDS + 60.0
+    )
+    runner.run_cycle()
+
     alerts = event_store.list_operator_alerts(alert_type="exit_intent_dropped")
     assert len(alerts) == 1
     assert alerts[0].symbol == "SPY"
     assert alerts[0].context_json["reason"] == "no_fresh_price"
     assert event_store.get_queued_intent(intent_id).status == "obsolete"
+    assert broker.submit_calls == []
+
+    # A third drain pass never re-alerts: one alert per intent, on the final drop.
+    runner.run_cycle()
+    assert len(event_store.list_operator_alerts(alert_type="exit_intent_dropped")) == 1
 
 
 # ---------------------------------------------------------------------------

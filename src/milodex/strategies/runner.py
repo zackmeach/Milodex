@@ -72,6 +72,15 @@ _POLL_INTERVAL_BY_BAR_SIZE: dict[str, float] = {
 # needs to tune it.
 _CONNECTIVITY_RETRY_BUDGET_SECONDS: float = 30.0 * 60.0
 
+# Bounded retry window for an EXIT whose drain finds no confirmable fresh price.
+# Why 30 minutes: IEX-thin symbols (observed 2026-07-20: XLF/XLV/JNJ ~17s after
+# the 09:30 bell) can lack a current-session minute bar in the open's first
+# minutes — the feed's thin-open coverage, not an outage. 30 minutes comfortably
+# covers that thin-open span while still bounding how long an undrained EXIT
+# stays operator-invisible before the exit_intent_dropped alert fires. Module
+# constant, not config (same rationale as the connectivity budget above).
+_DRAIN_EXIT_NO_FRESH_PRICE_RETRY_WINDOW_SECONDS: float = 30.0 * 60.0
+
 
 class StrategyRunner:
     """Manually-invoked foreground runtime for a single strategy."""
@@ -165,6 +174,15 @@ class StrategyRunner:
         # never added: a blocked exit guards an open position and its veto can
         # clear mid-session, so it retries every poll by design.
         self._drain_vetoed_row_ids: set[int] = set()
+        # EXIT no-fresh-price retry tracking (in-memory, this session only):
+        # queued-row id -> the first drain attempt that found no confirmable
+        # fresh price for that EXIT. The row stays 'queued' and retries every
+        # ~60s open poll until _DRAIN_EXIT_NO_FRESH_PRICE_RETRY_WINDOW_SECONDS
+        # elapses, then alerts + retires exactly once. In-memory by design (no
+        # schema change): a runner restart mid-window restarts the window,
+        # which is acceptable — the window bounds alert latency, not risk
+        # (nothing ever submits without a confirmed fresh price).
+        self._drain_exit_no_fresh_price_first_attempt: dict[int, datetime] = {}
         # Stale-daily-bar idle alert dedup (in-memory, this session only): the
         # session date of the stale bar for which a `stale_market_data_idle`
         # alert has already been emitted. The daily stale-decline branch fires
@@ -1275,7 +1293,9 @@ class StrategyRunner:
         ``'dropped'`` (+ an audit no-action explanation) and never re-drained. A
         COULDN'T-EVALUATE drop (no fresh price, no sizing price) stays ``'queued'``
         and is retried at the next open — critical for a pre-open launch, which has
-        no fresh price yet. EXITs are unchanged: they alert + retire (``obsolete``).
+        no fresh price yet. EXITs alert + retire (``obsolete``) — except the
+        no-fresh-price case, which retries every open poll within a bounded
+        in-memory window (IEX thin-open coverage) before alerting + retiring once.
         The drain NEVER touches ``_last_processed_bar_at`` (I-3) and NEVER calls
         ``consume_queued_intent_and_append_attempt`` (the submit CAS owns that); the status
         writes here are ``obsolete`` (stranded/flat exit) and ``dropped`` (decided
@@ -1420,9 +1440,35 @@ class StrategyRunner:
                 fresh = self._fresh_pricing_bar(queued.symbol, decision_bar)
                 if fresh is None:
                     if queued.intent_class == "exit":
-                        # Asymmetry guard: an undrained exit can strand a live
-                        # position. Alert + retire (de-spam the ~60s open poll);
-                        # the strategy re-emits a fresh exit next post-close.
+                        # IEX-thin symbols (observed 2026-07-20: XLF/XLV/JNJ
+                        # ~17s post-bell) have no current-session minute bar in
+                        # the open's first minutes; retiring an EXIT on the
+                        # first miss stranded live positions with zero risk
+                        # evaluations. Leave the row 'queued' (untouched) so
+                        # the next ~60s open poll retries it, bounded by the
+                        # retry window below. Fail-closed is preserved: nothing
+                        # submits without a confirmed fresh price — the window
+                        # only extends the attempt horizon.
+                        now = self._now()
+                        first = self._drain_exit_no_fresh_price_first_attempt.setdefault(
+                            queued.id, now
+                        )
+                        elapsed = (now - first).total_seconds()
+                        if elapsed < _DRAIN_EXIT_NO_FRESH_PRICE_RETRY_WINDOW_SECONDS:
+                            logger.warning(
+                                "drain: no fresh price for EXIT %s; leaving queued to "
+                                "retry (%.0fs into %.0fs window)",
+                                queued.symbol,
+                                elapsed,
+                                _DRAIN_EXIT_NO_FRESH_PRICE_RETRY_WINDOW_SECONDS,
+                            )
+                            continue
+                        # Window closed with still no fresh price. Asymmetry
+                        # guard: an undrained exit can strand a live position.
+                        # Alert + retire, exactly as pre-window (ONE alert per
+                        # intent, on the final drop only — de-spam the ~60s
+                        # open poll); the strategy re-emits a fresh exit next
+                        # post-close.
                         self._emit_exit_drop_alert(queued, reason="no_fresh_price")
                         self._event_store.mark_queued_intent_obsolete(queued.id)
                     logger.warning(
@@ -1520,8 +1566,9 @@ class StrategyRunner:
 
         * ``get_latest_bar`` raised (provider outage) — caught HERE so the
           "can't be obtained" case routes through the same fail-closed branch as
-          an unconfirmable bar (an EXIT must alert + retire, not be swallowed by
-          the drain's generic pre-submit handler with no alert);
+          an unconfirmable bar (an EXIT must route through the bounded
+          retry-then-alert branch, not be swallowed by the drain's generic
+          pre-submit handler with no alert);
         * the fresh bar is not from the current session
           (``_is_current_session_bar`` — a stale provider returning a prior
           close is rejected);
