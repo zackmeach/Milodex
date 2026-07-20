@@ -3,10 +3,6 @@
 # The risk layer enforces these limits with veto power over all trade execution.
 # Human-readable rationale: docs/RISK_POLICY.md
 
-sizing:
-  # Simple fixed-percent sizing on current equity. Not volatility-aware in Phase 1.
-  per_position_target_pct: 0.10
-
 kill_switch:
   enabled: true
   # Halt all trading if portfolio drawdown exceeds this threshold
@@ -17,7 +13,8 @@ kill_switch:
 
 portfolio:
   # Maximum percentage of portfolio in any single position (hard ceiling).
-  # Matches per_position_target_pct to prevent one name from dominating.
+  # Matches the conventional per-strategy per_position_notional_pct (0.10)
+  # so one name cannot dominate the book.
   max_single_position_pct: 0.10
   # Maximum percentage of portfolio deployed at any time.
   # Phase 1 deliberately keeps at least half in cash.

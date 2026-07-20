@@ -72,7 +72,7 @@ When Milodex ships to another person (Phase 2+), the defaults must be the **most
 - **paper trading by default**
 - **no live trading enabled by default**
 - **fixed curated universe** (see `configs/universe_phase1_v1.yaml` as the Phase 1 reference)
-- **conservative position sizing** — per `sizing.per_position_target_pct` in `configs/risk_defaults.yaml`
+- **conservative position sizing** — per-strategy `per_position_notional_pct` (conventionally 0.10), capped by `portfolio.max_single_position_pct` in `configs/risk_defaults.yaml`
 - **capped portfolio exposure** — per `portfolio.max_total_exposure_pct` in `configs/risk_defaults.yaml`
 - **explicit kill switches enabled** — both strategy-level and account-level per R-EXE-014
 - **preview-before-commit workflow** — every consequential command per R-CLI-018
