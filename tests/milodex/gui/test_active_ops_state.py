@@ -680,6 +680,133 @@ def test_query_active_ops_cadence_from_yaml(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Runner ordering + startedAt/endedAt payload (DESK Active Operations default)
+#
+# DeskSurface's runner panel defaults its selection to runners[0], so the
+# result order IS the default selection: live sessions first, then most
+# recently started.  These tests pin that contract and the payload fields the
+# QML "Ended <when>" label reads.
+# ---------------------------------------------------------------------------
+
+
+def test_query_active_ops_payload_includes_started_and_ended_at(tmp_path) -> None:
+    """Each runner row carries startedAt/endedAt; endedAt is '' for open runs."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    started_open = (now - timedelta(hours=1)).isoformat()
+    started_closed = (now - timedelta(hours=3)).isoformat()
+    ended_closed = (now - timedelta(hours=2)).isoformat()
+
+    _seed_run(db, "strat.open.v1", "sess-open", started_open)
+    _seed_run(
+        db,
+        "strat.closed.v1",
+        "sess-closed",
+        started_closed,
+        ended_at=ended_closed,
+        exit_reason="controlled_stop",
+    )
+
+    result = _query_active_ops(db, now)
+
+    open_row = next(r for r in result if r["strategyId"] == "strat.open.v1")
+    closed_row = next(r for r in result if r["strategyId"] == "strat.closed.v1")
+    assert open_row["startedAt"] == started_open
+    assert open_row["endedAt"] == ""
+    assert closed_row["startedAt"] == started_closed
+    assert closed_row["endedAt"] == ended_closed
+
+
+def test_query_active_ops_orders_most_recently_started_first(tmp_path) -> None:
+    """With no live runner, the most recently STARTED session sorts first.
+
+    This is the 'ancient stopped session' default-selection fix: a 6/22
+    stopped session must not sit at runners[0] when a newer one exists.
+    """
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    ancient_start = (now - timedelta(days=27)).isoformat()
+    ancient_end = (now - timedelta(days=27, hours=-7)).isoformat()
+    recent_start = (now - timedelta(hours=3)).isoformat()
+    recent_end = (now - timedelta(hours=1)).isoformat()
+
+    _seed_run(
+        db,
+        "strat.ancient.v1",
+        "sess-ancient",
+        ancient_start,
+        ended_at=ancient_end,
+        exit_reason="controlled_stop",
+    )
+    _seed_run(
+        db,
+        "strat.recent.v1",
+        "sess-recent",
+        recent_start,
+        ended_at=recent_end,
+        exit_reason="controlled_stop",
+    )
+
+    result = _query_active_ops(db, now)
+
+    assert [r["strategyId"] for r in result] == ["strat.recent.v1", "strat.ancient.v1"]
+
+
+def test_query_active_ops_orders_live_runner_first_even_when_older(tmp_path) -> None:
+    """A PID-verified live runner outranks BOTH a newer ended session and a
+    newer phantom (open row, dead PID) — live preferred over everything."""
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    live_start = (now - timedelta(hours=5)).isoformat()
+    ended_start = (now - timedelta(hours=1)).isoformat()
+    ended_end = (now - timedelta(minutes=30)).isoformat()
+    phantom_start = (now - timedelta(minutes=10)).isoformat()
+
+    _seed_run(db, "strat.live.v1", "sess-live", live_start)
+    _seed_run(
+        db,
+        "strat.ended.v1",
+        "sess-ended",
+        ended_start,
+        ended_at=ended_end,
+        exit_reason="controlled_stop",
+    )
+    _seed_run(db, "strat.phantom.v1", "sess-phantom", phantom_start)
+
+    lock = AdvisoryLock(runner_lock_name("strat.live.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        result = _query_active_ops(db, now, locks_dir=locks_dir)
+    finally:
+        lock.release()
+
+    assert result[0]["strategyId"] == "strat.live.v1"
+    assert result[0]["sessionState"] == "running"
+    # Non-live rows keep the started-desc order among themselves.
+    assert [r["strategyId"] for r in result] == [
+        "strat.live.v1",
+        "strat.phantom.v1",
+        "strat.ended.v1",
+    ]
+
+
+# ---------------------------------------------------------------------------
 # runner_lock_mtime_age tests (new helper in _event_queries)
 # ---------------------------------------------------------------------------
 

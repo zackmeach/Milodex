@@ -44,7 +44,11 @@ SurfaceBase {
     readonly property var asOf: summary.asOf || ""
     readonly property var pnl: summary.pnl || ({ today: 0, todayPct: 0, sparkline: [0] })
     readonly property int totalConfigs: summary.totalConfigs || 0
-    readonly property int runningCount: summary.runningCount || 0
+    // Live-runner count: PID-verified running sessions from ActiveOpsState —
+    // the same source DESK's "N runners" headline uses. The summary's own
+    // runningCount is a stage tally (paper/micro_live/live configs), which
+    // read "11 working right now" while zero runners were alive.
+    readonly property int runningCount: ActiveOpsState.liveCount
     readonly property int liveCount: summary.liveCount || 0
     readonly property var stageTally: summary.stageTally || ({ backtest: 0, paper: 0, micro_live: 0, live: 0 })
     readonly property var feature: summary.feature || ({})
@@ -350,10 +354,11 @@ SurfaceBase {
             // ====================================================
             // YOUR STRATEGIES — prose + tally
             //
-            // Gated on FrontPageState (feeds totalConfigs / runningCount /
-            // liveCount / stageTally): on error the zero defaults would render
-            // a fabricated "00 on the bench / 0 of your 0 strategies / all-zero
-            // tally". Hide on error rather than assert a false calm.
+            // Gated on FrontPageState (feeds totalConfigs / liveCount /
+            // stageTally; runningCount reads ActiveOpsState): on error the
+            // zero defaults would render a fabricated "00 on the bench /
+            // None of your 0 strategies / all-zero tally". Hide on error
+            // rather than assert a false calm.
             // ====================================================
             Column {
                 width: parent.width
@@ -394,12 +399,28 @@ SurfaceBase {
                     width: parent.width
                     spacing: 0
 
-                    // Line 1: "<N> of your <N> strategies are working right now."
+                    // Line 1: "<N> of your <M> strategies are running right now."
+                    // N is the live-runner count; when nothing runs the number
+                    // gives way to prose "None" (a word, so body italic — not
+                    // the data mono the numerals wear). Flow skips invisible
+                    // items, so the two leads swap cleanly.
                     Flow {
                         width: parent.width
                         spacing: 0
 
                         Text {
+                            objectName: "frontRunnersNone"
+                            visible: root.runningCount === 0
+                            text: "None"
+                            color: Theme.color.text.secondary
+                            font.family:   Theme.typography.body.lgPlus.family
+                            font.pixelSize: Theme.typography.body.lgPlus.size
+                            font.italic:   true
+                            lineHeight:    Theme.typography.body.lgPlus.lineHeight
+                        }
+                        Text {
+                            objectName: "frontRunnersCount"
+                            visible: root.runningCount > 0
                             text: root.runningCount
                             color: Theme.color.text.primary
                             font.family:   Theme.typography.data.md.family
@@ -424,7 +445,7 @@ SurfaceBase {
                             font.weight:   Font.Medium
                         }
                         Text {
-                            text: " strategies are working right now."
+                            text: " strategies are running right now."
                             color: Theme.color.text.secondary
                             font.family:   Theme.typography.body.lgPlus.family
                             font.pixelSize: Theme.typography.body.lgPlus.size

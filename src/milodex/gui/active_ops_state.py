@@ -242,8 +242,17 @@ def _query_active_ops(
                 "runnerLock": runner_lock,
                 "stopRequested": stop_requested,
                 "sessionAge": _session_age(run["started_at"], now),
+                "startedAt": str(run["started_at"] or ""),
+                "endedAt": str(run["ended_at"] or ""),
             }
         )
+
+    # Operator-facing order: live (PID-verified "running") sessions first,
+    # then most recently started.  DeskSurface's Active Operations panel
+    # defaults its selection to the first row, so an ancient stopped session
+    # must never outrank a live — or newer — one.  ISO-8601 UTC strings
+    # compare lexically, the same assumption _SQL_LATEST_RUNS makes.
+    result.sort(key=lambda r: (r["sessionState"] == "running", r["startedAt"]), reverse=True)
 
     return result
 
