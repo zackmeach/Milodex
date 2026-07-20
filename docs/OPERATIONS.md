@@ -26,6 +26,8 @@ Trading, paper-evidence inspection, and demotion/walk-back.
 | **Post-close analysis window** | Ingest finalized daily data, evaluate signals, run previews, prepare the next cycle. |
 | **End-of-day reporting window** | Persist summaries, update audit records, surface incidents or review items. |
 
+For the end-of-day window, `python scripts/eod_review.py` prints a cross-session INTERACTION / MONEY / BROKER / ANOMALIES review of the day's concurrent runners (wedge-loop, tight-poll, kill-switch, and reconcile detectors) from the event store.
+
 These windows are workflow concepts, not fixed clock times — their exact offsets from market open/close are configurable. The important invariant is that Milodex evaluates, previews, and prepares on a daily cadence, and that every window produces durable artifacts rather than only transient in-memory state.
 
 ---
@@ -332,6 +334,8 @@ print('missing:', missing[:10], '...' if len(missing) > 10 else '')
 ```
 
 Expected output for a clean fill: `missing: []`.
+
+For intraday universes, `milodex data readiness --universe-ref <ref> --timeframe 5m --cross-check-reference` flags IEX inward price bias against consolidated reference data before you trust price-action evidence (live Yahoo call; advisory WARNING only — ADR 0017).
 
 ---
 
