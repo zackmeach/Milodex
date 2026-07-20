@@ -36,9 +36,23 @@
 //   - Rows rendered in an explicit-Y Item (rowsContainer) instead of a Column so
 //     each BenchRow can be positioned by index during drag.
 //   - Drag lives in BenchRow.qml (handle MouseArea); BenchSurface owns reorder math.
-//   - Order is session-local only (sectionRoot.rowOrder); not persisted (ADR 0049).
+//   - Order is session-local only (groupBlock.rowOrder); not persisted (ADR 0049).
 //   - Cross-stage drag is structurally impossible: drag bounds are clamped to the
-//     section's rowsContainer; clip:true prevents visual escape.
+//     roster's rowsContainer; clip:true prevents visual escape.
+//
+// Group rollup (read side, founder IA decision): a bench row is a TEMPLATE
+// GROUP — every instance sharing {family}.{template} rolls up into one
+// BenchGroupRow, placed in the section of its GROUP stage (highest stage
+// holding a promoted instance, computed in Python — bench_grouping.py).
+// Clicking a group expands its instance roster: standard BenchRow delegates
+// with the existing per-instance actions, evidence, and status strings.
+//   - Depth on demand: default collapsed; expansion is per-session UI state
+//     (root.expandedGroups), never persisted.
+//   - The archetype filter now selects GROUPS via the Python-owned
+//     `filterTags` field; benchmark.* harness groups carry ["baseline"] only,
+//     so they are excluded from ALL and visible only under BASELINE.
+//   - The PR H drag machinery is preserved unchanged but scoped to each
+//     expanded roster (visual, session-local reorder of instances).
 
 import QtQuick
 import QtQuick.Layouts
@@ -48,13 +62,18 @@ Item {
     id: root
 
     // Sections from the BenchState read model.
-    // Each section: { stage, stageRoman, stageName, stageCaption, strategies[] }
-    // Each strategy: as_qml() output from _StrategyRow (read_models.py)
+    // Each section: { stage, stageRoman, stageName, stageCaption,
+    //                 strategies[], groups[] }
+    // Each strategy: as_qml() output from _StrategyRow (read_models.py).
+    // Each group: template-group rollup dict from bench_grouping.py; its
+    // `instances` list carries the same as_qml() row dicts.
     property var benchData: BenchState.sections
     property bool benchHasData: BenchState.lastRefreshedAt !== ""
 
     // Archetype filter (roadmap M2). Client-side predicate over each section's
-    // rows, keyed on the Python-owned `archetype` field. "all" shows every row.
+    // template groups, keyed on the Python-owned `filterTags` field
+    // (bench_grouping.py). "all" shows every non-benchmark group; benchmark.*
+    // harness groups are visible only under "baseline".
     // Seeded from / written back to Main.qml sessionBag (session persistence),
     // matching the DeskSurface perfSlice/throughputSlice pattern.
     property string archetypeFilter: "all"
@@ -68,11 +87,24 @@ Item {
         { label: "Blocked",  value: "blocked" }
     ]
 
-    // True when a row survives the active archetype filter. Pure display
-    // predicate — no archetype logic is re-derived here (Python owns it).
-    function matchesArchetypeFilter(row) {
-        if (root.archetypeFilter === "all") return true
-        return (row.archetype || "") === root.archetypeFilter
+    // True when a template group survives the active filter. Pure display
+    // predicate — visibility tags are Python-owned (bench_grouping.py
+    // filterTags); no archetype or benchmark logic is re-derived here.
+    function matchesGroupFilter(group) {
+        var tags = group.filterTags || []
+        return tags.indexOf(root.archetypeFilter) !== -1
+    }
+
+    // Template-group roster expansion — per-session UI state only, keyed by
+    // groupKey. Never persisted; a fresh surface load starts default-collapsed
+    // (depth on demand). Reassigned wholesale so bindings re-evaluate.
+    property var expandedGroups: ({})
+    function isGroupExpanded(key) { return root.expandedGroups[key] === true }
+    function toggleGroup(key) {
+        var next = {}
+        for (var k in root.expandedGroups) next[k] = root.expandedGroups[k]
+        next[key] = !root.isGroupExpanded(key)
+        root.expandedGroups = next
     }
 
     // True while any section has a row drag in progress.
@@ -463,55 +495,34 @@ Item {
 
                     property var sectionData: modelData
 
-                    // Session-only row order (within-section reorder; non-persisting per ADR 0049).
-                    property var rowOrder: []
+                    // Template groups surviving the active filter. The group
+                    // is the unit of visibility — a group moves together; its
+                    // full roster renders when expanded (honesty lives in the
+                    // roster, not in hiding members).
+                    property var visibleGroups: []
 
-                    // ---- PR H drag state ----------------------------------------
-                    // rowHeight must match BenchRow.implicitHeight (78px).
-                    readonly property int rowHeight: 78
-                    // Index of the row currently being dragged (-1 = none).
-                    property int draggingIndex: -1
-                    // Target landing index as the drag moves (clamped to valid range).
-                    property int targetIndex: -1
-                    // Y offset of the dragged row relative to its resting slot.
-                    property real dragYOffset: 0
-
-                    // shiftFor(index): how many px a non-dragged row should shift
-                    // to open the landing slot for the dragged row.
-                    // Returns +rowHeight (shift down) or -rowHeight (shift up) or 0.
-                    function shiftFor(idx) {
-                        if (draggingIndex < 0 || idx === draggingIndex) return 0
-                        var lo = Math.min(draggingIndex, targetIndex)
-                        var hi = Math.max(draggingIndex, targetIndex)
-                        if (idx < lo || idx > hi) return 0
-                        // Dragging downward: rows between source and target shift up
-                        // Dragging upward: rows between target and source shift down
-                        return draggingIndex < targetIndex ? -rowHeight : rowHeight
-                    }
-
-                    function syncRows() {
-                        // Guard: never rebuild row order while a drag is in progress —
-                        // doing so would destroy the delegate under the cursor.
-                        if (draggingIndex >= 0) return
-                        var all = (sectionData && sectionData.strategies)
-                                  ? sectionData.strategies : []
+                    function syncGroups() {
+                        // Guard: never rebuild while any roster drag is in
+                        // progress — doing so would destroy the delegate
+                        // under the cursor.
+                        if (root.anyDragging) return
+                        var all = (sectionData && sectionData.groups)
+                                  ? sectionData.groups : []
                         var filtered = []
                         for (var i = 0; i < all.length; ++i) {
-                            if (root.matchesArchetypeFilter(all[i])) filtered.push(all[i])
+                            if (root.matchesGroupFilter(all[i])) filtered.push(all[i])
                         }
-                        rowOrder = filtered
+                        visibleGroups = filtered
                     }
 
-                    Component.onCompleted: syncRows()
-                    onSectionDataChanged: { if (draggingIndex < 0) syncRows() }
+                    Component.onCompleted: syncGroups()
+                    onSectionDataChanged: syncGroups()
 
                     // Re-filter when the operator changes the archetype filter.
-                    // Same drag guard as syncRows — never rebuild mid-drag.
+                    // Same drag guard as syncGroups — never rebuild mid-drag.
                     Connections {
                         target: root
-                        function onArchetypeFilterChanged() {
-                            if (sectionRoot.draggingIndex < 0) sectionRoot.syncRows()
-                        }
+                        function onArchetypeFilterChanged() { sectionRoot.syncGroups() }
                     }
 
                     Column {
@@ -568,10 +579,12 @@ Item {
                                     font.pixelSize: Theme.typography.label.xs.size
                                 }
 
-                                // Strategy count — JetBrains Mono, 2-digit zero-padded
+                                // Group count — JetBrains Mono, 2-digit zero-padded.
+                                // Counts what is visible: template groups
+                                // surviving the active filter.
                                 Text {
                                     text: {
-                                        var n = sectionRoot.rowOrder.length
+                                        var n = sectionRoot.visibleGroups.length
                                         return n < 10 ? "0" + n : "" + n
                                     }
                                     color: Theme.color.text.muted
@@ -604,7 +617,7 @@ Item {
 
                         // ---- Empty-state (bench-brief §3 empty-state treatment) -----
                         Item {
-                            visible: sectionRoot.rowOrder.length === 0
+                            visible: sectionRoot.visibleGroups.length === 0
                             width: parent.width
                             height: 64
 
@@ -628,7 +641,7 @@ Item {
                         // tokens guarantee header and every row resolve to
                         // identical x positions regardless of content.
                         Item {
-                            visible: sectionRoot.rowOrder.length > 0
+                            visible: sectionRoot.visibleGroups.length > 0
                             width: parent.width
                             height: 32
 
@@ -690,127 +703,224 @@ Item {
                             }
                         }
 
-                        // ---- Strategy rows (PR H: explicit-Y container) ------
-                        // Rows are positioned by index so drag can reposition
-                        // individual rows without reflowing the whole column.
-                        // clip:true keeps rows visually inside this section.
-                        Item {
-                            id: rowsContainer
-                            width: parent.width
-                            height: sectionRoot.rowOrder.length * sectionRoot.rowHeight
-                            clip: true
-                            visible: sectionRoot.rowOrder.length > 0
+                        // ---- Template groups (group-rollup read side) --------
+                        // One BenchGroupRow per visible group; clicking it
+                        // expands the instance roster below (standard BenchRow
+                        // delegates carrying the per-instance actions).
+                        Repeater {
+                            model: sectionRoot.visibleGroups
 
-                            Repeater {
-                                model: sectionRoot.rowOrder
+                            delegate: Column {
+                                id: groupBlock
+                                required property var modelData
 
-                                delegate: BenchRow {
-                                    id: benchRowDelegate
-                                    required property var modelData
-                                    required property int index
+                                width: sectionCol.width
+                                spacing: 0
 
-                                    width: rowsContainer.width
+                                property var groupData: modelData
+                                property bool expanded:
+                                    root.isGroupExpanded(groupData.groupKey || "")
 
-                                    // Y positioning: fully declarative.
-                                    // The dragged row's y is driven by dragYOffset
-                                    // (set via the delta-based onMoveRequested handler);
-                                    // non-dragged rows receive a shift to open the slot.
-                                    y: sectionRoot.draggingIndex === index
-                                       ? (index * sectionRoot.rowHeight + sectionRoot.dragYOffset)
-                                       : (index * sectionRoot.rowHeight + sectionRoot.shiftFor(index))
+                                // Session-only roster order (within-roster
+                                // reorder; non-persisting per ADR 0049).
+                                property var rowOrder: []
 
-                                    // Smooth neighbor shifts; disabled for the dragged
-                                    // row so it tracks the mouse without lag.
-                                    Behavior on y {
-                                        enabled: sectionRoot.draggingIndex !== index
-                                        NumberAnimation { duration: Theme.motion.fast }
+                                // ---- PR H drag state (scoped per roster) ----
+                                // rowHeight must match BenchRow.implicitHeight (78px).
+                                readonly property int rowHeight: 78
+                                // Index of the row currently being dragged (-1 = none).
+                                property int draggingIndex: -1
+                                // Target landing index as the drag moves (clamped).
+                                property int targetIndex: -1
+                                // Y offset of the dragged row relative to its resting slot.
+                                property real dragYOffset: 0
+
+                                // shiftFor(index): how many px a non-dragged row should
+                                // shift to open the landing slot for the dragged row.
+                                function shiftFor(idx) {
+                                    if (draggingIndex < 0 || idx === draggingIndex) return 0
+                                    var lo = Math.min(draggingIndex, targetIndex)
+                                    var hi = Math.max(draggingIndex, targetIndex)
+                                    if (idx < lo || idx > hi) return 0
+                                    // Dragging downward: rows between source and target shift up
+                                    // Dragging upward: rows between target and source shift down
+                                    return draggingIndex < targetIndex ? -rowHeight : rowHeight
+                                }
+
+                                function syncRows() {
+                                    // Guard: never rebuild row order mid-drag —
+                                    // doing so would destroy the delegate under
+                                    // the cursor.
+                                    if (draggingIndex >= 0) return
+                                    // The full roster, always — the archetype
+                                    // filter selects groups, not roster members.
+                                    rowOrder = (groupData && groupData.instances)
+                                               ? groupData.instances : []
+                                }
+
+                                Component.onCompleted: syncRows()
+                                onGroupDataChanged: { if (draggingIndex < 0) syncRows() }
+
+                                BenchGroupRow {
+                                    width: groupBlock.width
+                                    displayName: groupBlock.groupData.displayName || ""
+                                    groupKey: groupBlock.groupData.groupKey || ""
+                                    family: groupBlock.groupData.family || ""
+                                    stage: groupBlock.groupData.stage || ""
+                                    instanceCount: groupBlock.groupData.instanceCount || 0
+                                    stageMixLabel: groupBlock.groupData.stageMixLabel || ""
+                                    sharpe: root.formattedSharpe(groupBlock.groupData)
+                                    maxDD: root.formattedMaxDD(groupBlock.groupData)
+                                    tradeCount: root.formattedTrades(groupBlock.groupData)
+                                    expanded: groupBlock.expanded
+                                    onToggleRequested:
+                                        root.toggleGroup(groupBlock.groupData.groupKey || "")
+                                }
+
+                                // ---- Instance roster (depth on demand) -------
+                                // Explicit-Y container (PR H) so drag can
+                                // reposition individual rows without reflowing
+                                // the whole column. clip:true keeps rows
+                                // visually inside this roster.
+                                Item {
+                                    visible: groupBlock.expanded
+                                    width: groupBlock.width
+                                    height: groupBlock.rowOrder.length * groupBlock.rowHeight
+
+                                    // 1-px depth rule marking the roster block.
+                                    Rectangle {
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        anchors.bottom: parent.bottom
+                                        width: 1
+                                        color: Theme.color.border.subtle
                                     }
 
-                                    stage: sectionData.stage
-                                    strategyName: modelData.name || modelData.displayName || ""
-                                    strategyId: modelData.strategyId || ""
-                                    archetype: modelData.archetype || ""
-                                    sharpe: root.formattedSharpe(modelData)
-                                    maxDD: root.formattedMaxDD(modelData)
-                                    tradeCount: root.formattedTrades(modelData)
-                                    // Status prose column (bench-brief §4)
-                                    statusWord: modelData.statusWord || ""
-                                    statusWordColor: root.statusWordColor(modelData.statusKind || "info")
-                                    statusProse: modelData.statusTail || ""
-                                    metaLine: root.metaLine(modelData)
-                                    // Action slot — wired in PR G.
-                                    actionItems: modelData.actions || []
-                                    actionVariant: root.actionVariant(modelData)
+                                    Item {
+                                        id: rowsContainer
+                                        anchors.left: parent.left
+                                        anchors.leftMargin: Theme.space[4]
+                                        anchors.right: parent.right
+                                        anchors.top: parent.top
+                                        height: groupBlock.rowOrder.length * groupBlock.rowHeight
+                                        clip: true
 
-                                    // PR J: hand the raw row dict to the
-                                    // delegate so it can be forwarded to
-                                    // BenchEvidenceModal on Open Evidence.
-                                    rowData: modelData
+                                        Repeater {
+                                            model: groupBlock.rowOrder
 
-                                    onEvidenceRequested: (row) => {
-                                        // Mutual exclusion is structural via
-                                        // the activeModal enum — the helper
-                                        // simply transitions state.
-                                        root.openEvidenceModal(row)
-                                    }
+                                            delegate: BenchRow {
+                                                id: benchRowDelegate
+                                                required property var modelData
+                                                required property int index
 
-                                    // PR K: every menu item except Open
-                                    // Evidence routes here. Open the
-                                    // confirmation preview shell. No backend
-                                    // dispatch ever happens on this path.
-                                    onActionPreviewRequested: (row, action) => {
-                                        root.openConfirmationModal(row, action)
-                                    }
+                                                width: rowsContainer.width
 
-                                    // Stable coordinate frame for drag-delta math.
-                                    // rowsContainer does NOT move during drag (only its
-                                    // child rows reposition), so dragHandle.mapToItem
-                                    // returns a pointer-Y that is invariant to the
-                                    // dragged row's own motion. Required to prevent the
-                                    // negative-feedback oscillation that row-local mouseY
-                                    // produces. Do not point this at `root` or at the
-                                    // delegate itself.
-                                    dragCoordinateItem: rowsContainer
+                                                // Y positioning: fully declarative.
+                                                // The dragged row's y is driven by dragYOffset
+                                                // (set via the delta-based onMoveRequested handler);
+                                                // non-dragged rows receive a shift to open the slot.
+                                                y: groupBlock.draggingIndex === index
+                                                   ? (index * groupBlock.rowHeight + groupBlock.dragYOffset)
+                                                   : (index * groupBlock.rowHeight + groupBlock.shiftFor(index))
 
-                                    // Drag signal handlers (PR H).
-                                    onDragStarted: {
-                                        sectionRoot.draggingIndex = index
-                                        sectionRoot.targetIndex = index
-                                        sectionRoot.dragYOffset = 0
-                                        root.anyDragging = true
-                                    }
-                                    onMoveRequested: (delta) => {
-                                        // delta is cumulative offset from press.
-                                        // Clamp so the dragged row cannot leave the section.
-                                        var maxY = (sectionRoot.rowOrder.length - 1) * sectionRoot.rowHeight
-                                        var absY = Math.max(0, Math.min(maxY, index * sectionRoot.rowHeight + delta))
-                                        sectionRoot.dragYOffset = absY - (index * sectionRoot.rowHeight)
-                                        sectionRoot.targetIndex = Math.max(0,
-                                            Math.min(sectionRoot.rowOrder.length - 1,
-                                                     Math.round(absY / sectionRoot.rowHeight)))
-                                    }
-                                    onDragEnded: {
-                                        // ORDER MATTERS: snapshot indices, reset all
-                                        // drag state, THEN mutate rowOrder. Mutating
-                                        // rowOrder first causes the Repeater to tear
-                                        // down/recreate delegates — including the one
-                                        // whose handler is still executing — which
-                                        // invalidates the delegate's QML context and
-                                        // makes outer-scope ids (sectionRoot, root)
-                                        // unresolvable for the rest of this handler.
-                                        // Symptom: "ReferenceError: sectionRoot is
-                                        // not defined" on the post-splice reset lines.
-                                        var fromIdx = sectionRoot.draggingIndex
-                                        var toIdx = sectionRoot.targetIndex
-                                        sectionRoot.draggingIndex = -1
-                                        sectionRoot.targetIndex = -1
-                                        sectionRoot.dragYOffset = 0
-                                        root.anyDragging = false
-                                        if (toIdx !== fromIdx && fromIdx >= 0 && toIdx >= 0) {
-                                            var newOrder = sectionRoot.rowOrder.slice()
-                                            var item = newOrder.splice(fromIdx, 1)[0]
-                                            newOrder.splice(toIdx, 0, item)
-                                            sectionRoot.rowOrder = newOrder
+                                                // Smooth neighbor shifts; disabled for the dragged
+                                                // row so it tracks the mouse without lag.
+                                                Behavior on y {
+                                                    enabled: groupBlock.draggingIndex !== index
+                                                    NumberAnimation { duration: Theme.motion.fast }
+                                                }
+
+                                                // Per-instance stage — roster members can sit
+                                                // BELOW the group's section stage; the row must
+                                                // say so (honesty lives in the roster).
+                                                stage: modelData.stage || ""
+                                                strategyName: modelData.name || modelData.displayName || ""
+                                                strategyId: modelData.strategyId || ""
+                                                archetype: modelData.archetype || ""
+                                                sharpe: root.formattedSharpe(modelData)
+                                                maxDD: root.formattedMaxDD(modelData)
+                                                tradeCount: root.formattedTrades(modelData)
+                                                // Status prose column (bench-brief §4)
+                                                statusWord: modelData.statusWord || ""
+                                                statusWordColor: root.statusWordColor(modelData.statusKind || "info")
+                                                statusProse: modelData.statusTail || ""
+                                                metaLine: root.metaLine(modelData)
+                                                // Action slot — wired in PR G.
+                                                actionItems: modelData.actions || []
+                                                actionVariant: root.actionVariant(modelData)
+
+                                                // PR J: hand the raw row dict to the
+                                                // delegate so it can be forwarded to
+                                                // BenchEvidenceModal on Open Evidence.
+                                                rowData: modelData
+
+                                                onEvidenceRequested: (row) => {
+                                                    // Mutual exclusion is structural via
+                                                    // the activeModal enum — the helper
+                                                    // simply transitions state.
+                                                    root.openEvidenceModal(row)
+                                                }
+
+                                                // PR K: every menu item except Open
+                                                // Evidence routes here. Open the
+                                                // confirmation preview shell. No backend
+                                                // dispatch ever happens on this path.
+                                                onActionPreviewRequested: (row, action) => {
+                                                    root.openConfirmationModal(row, action)
+                                                }
+
+                                                // Stable coordinate frame for drag-delta math.
+                                                // rowsContainer does NOT move during drag (only its
+                                                // child rows reposition), so dragHandle.mapToItem
+                                                // returns a pointer-Y that is invariant to the
+                                                // dragged row's own motion. Required to prevent the
+                                                // negative-feedback oscillation that row-local mouseY
+                                                // produces. Do not point this at `root` or at the
+                                                // delegate itself.
+                                                dragCoordinateItem: rowsContainer
+
+                                                // Drag signal handlers (PR H).
+                                                onDragStarted: {
+                                                    groupBlock.draggingIndex = index
+                                                    groupBlock.targetIndex = index
+                                                    groupBlock.dragYOffset = 0
+                                                    root.anyDragging = true
+                                                }
+                                                onMoveRequested: (delta) => {
+                                                    // delta is cumulative offset from press.
+                                                    // Clamp so the dragged row cannot leave the roster.
+                                                    var maxY = (groupBlock.rowOrder.length - 1) * groupBlock.rowHeight
+                                                    var absY = Math.max(0, Math.min(maxY, index * groupBlock.rowHeight + delta))
+                                                    groupBlock.dragYOffset = absY - (index * groupBlock.rowHeight)
+                                                    groupBlock.targetIndex = Math.max(0,
+                                                        Math.min(groupBlock.rowOrder.length - 1,
+                                                                 Math.round(absY / groupBlock.rowHeight)))
+                                                }
+                                                onDragEnded: {
+                                                    // ORDER MATTERS: snapshot indices, reset all
+                                                    // drag state, THEN mutate rowOrder. Mutating
+                                                    // rowOrder first causes the Repeater to tear
+                                                    // down/recreate delegates — including the one
+                                                    // whose handler is still executing — which
+                                                    // invalidates the delegate's QML context and
+                                                    // makes outer-scope ids (groupBlock, root)
+                                                    // unresolvable for the rest of this handler.
+                                                    // Symptom: "ReferenceError: groupBlock is
+                                                    // not defined" on the post-splice reset lines.
+                                                    var fromIdx = groupBlock.draggingIndex
+                                                    var toIdx = groupBlock.targetIndex
+                                                    groupBlock.draggingIndex = -1
+                                                    groupBlock.targetIndex = -1
+                                                    groupBlock.dragYOffset = 0
+                                                    root.anyDragging = false
+                                                    if (toIdx !== fromIdx && fromIdx >= 0 && toIdx >= 0) {
+                                                        var newOrder = groupBlock.rowOrder.slice()
+                                                        var item = newOrder.splice(fromIdx, 1)[0]
+                                                        newOrder.splice(toIdx, 0, item)
+                                                        groupBlock.rowOrder = newOrder
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }

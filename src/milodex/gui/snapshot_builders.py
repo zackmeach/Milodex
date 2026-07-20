@@ -18,6 +18,7 @@ from typing import Any
 
 from milodex.gui import _event_queries
 from milodex.gui.bench_actions import _bench_evidence_by_stage, _bench_runs_in_flight
+from milodex.gui.bench_grouping import build_group_rollups
 from milodex.gui.ledger_builders import _ledger_entries
 from milodex.gui.query_helpers import (
     _latest_orchestration_jobs,
@@ -108,17 +109,28 @@ def build_bench_snapshot(
     conn: sqlite3.Connection | None = _open_ro_conn(db_path) if db_path.exists() else None
     try:
         rows = _strategy_rows(conn, configs_dir, locks_dir)
+        # as_qml() computed once per row; the flat per-stage lists and the
+        # group rosters share the same payload dicts.
+        qml_by_id = {row.strategy_id: row.as_qml() for row in rows}
+        groups = build_group_rollups(rows, qml_by_id)
         sections = []
         for stage in _VISIBLE_STAGES:
             roman, name, caption = labels[stage]
-            strategies = [row.as_qml() for row in rows if row.stage == stage]
+            strategies = [qml_by_id[row.strategy_id] for row in rows if row.stage == stage]
             sections.append(
                 {
                     "stage": stage,
                     "stageRoman": roman,
                     "stageName": name,
                     "stageCaption": caption,
+                    # Flat per-instance rows, unchanged shape — kept for every
+                    # existing consumer (capture scripts, tests, tooling).
                     "strategies": strategies,
+                    # Template-group rollup (read side): a group lands in the
+                    # section of its GROUP stage, so instances waiting below
+                    # render inside their group's roster here, not in their
+                    # own stage's section.
+                    "groups": [group for group in groups if group["stage"] == stage],
                 }
             )
     finally:

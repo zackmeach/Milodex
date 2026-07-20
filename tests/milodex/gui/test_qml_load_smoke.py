@@ -1858,3 +1858,98 @@ def test_bench_surface_renders_metrics_provenance_caption() -> None:
     assert "not reconstructed" in src.lower(), (
         "BenchSurface.qml's provenance caption must state the metrics are not reconstructed"
     )
+
+
+# ---------------------------------------------------------------------------
+# Bench template-group rollup (read side)
+# ---------------------------------------------------------------------------
+
+
+def test_bench_group_rollup_surface_wiring() -> None:
+    """Group-rollup read side: BenchSurface renders template groups with an
+    expandable instance roster; group visibility is Python-owned.
+
+    Model-level behavior (grouping, stage rollup, baseline exclusion) lives in
+    tests/milodex/gui/test_bench_grouping.py; these pins guard the QML wiring:
+    the surface consumes `groups`/`filterTags` from the read model instead of
+    re-deriving visibility, expansion is per-session UI state, and roster rows
+    remain standard BenchRow delegates (actions attach to instances).
+    """
+    group_row_path = _MILODEX_QML_DIR / "components" / "BenchGroupRow.qml"
+    assert group_row_path.exists(), f"BenchGroupRow.qml missing: {group_row_path}"
+
+    qmldir_src = (_MILODEX_QML_DIR / "qmldir").read_text(encoding="utf-8")
+    assert "BenchGroupRow 1.0 components/BenchGroupRow.qml" in qmldir_src, (
+        "qmldir must register BenchGroupRow 1.0"
+    )
+
+    surface_src = (_MILODEX_QML_DIR / "surfaces" / "BenchSurface.qml").read_text(encoding="utf-8")
+    assert "BenchGroupRow {" in surface_src, (
+        "BenchSurface.qml must render template groups via BenchGroupRow"
+    )
+    # Visibility is Python-owned (bench_grouping.filterTags); QML only indexes.
+    assert "filterTags" in surface_src, (
+        "BenchSurface.qml group filtering must consume the Python-owned filterTags"
+    )
+    assert "function matchesGroupFilter" in surface_src, (
+        "BenchSurface.qml must filter at group granularity (matchesGroupFilter)"
+    )
+    # Expansion is per-session UI state, default collapsed, never persisted.
+    assert "property var expandedGroups" in surface_src, (
+        "BenchSurface.qml must hold roster expansion as session-only UI state"
+    )
+    assert "function toggleGroup" in surface_src
+    # Roster rows remain standard BenchRow delegates carrying per-instance
+    # actions, and each roster row reports its own per-instance stage.
+    assert "BenchRow {" in surface_src, (
+        "BenchSurface.qml roster must render standard BenchRow delegates"
+    )
+    assert "stage: modelData.stage" in surface_src, (
+        "roster BenchRow delegates must bind the per-instance stage, not the section stage"
+    )
+
+
+def test_bench_group_row_is_presentation_only() -> None:
+    """BenchGroupRow carries NO action menu and no mutation pathway — actions
+    stay attached to roster instances (BenchRow); the group row only emits
+    toggleRequested for roster expansion."""
+    group_src = (_MILODEX_QML_DIR / "components" / "BenchGroupRow.qml").read_text(encoding="utf-8")
+
+    assert "signal toggleRequested" in group_src, (
+        "BenchGroupRow.qml must declare signal toggleRequested"
+    )
+    # No per-group action menu — the menu machinery belongs to BenchRow.
+    for forbidden in ("QQC2.Menu", "actionItems", "Instantiator", "evidenceRequested"):
+        assert forbidden not in group_src, (
+            f"BenchGroupRow.qml must not contain {forbidden!r} — actions attach to "
+            "roster instances, never to the group row"
+        )
+    # Shared column geometry contract with BenchRow and the section header.
+    for token in (
+        "Theme.column.benchMetric",
+        "Theme.column.benchStatus",
+        "Theme.column.benchAction",
+    ):
+        assert token in group_src, f"BenchGroupRow.qml must reference {token}"
+    # Mutation tokens forbidden — same list as the sibling Bench QML files.
+    mutation_tokens = (
+        "BenchState.promote",
+        "BenchState.demote",
+        "BenchState.start",
+        "BenchState.stop",
+        "BenchState.refresh",
+        "BenchState.backtest",
+        "BenchState.return",
+        "broker.",
+        "eventStore.",
+        "eventstore.",
+        "executeOrder",
+        "config.write",
+        "submitCommand",
+        "dispatchCommand",
+        "CommandProposal",
+    )
+    for token in mutation_tokens:
+        assert token not in group_src, (
+            f"BenchGroupRow.qml must not contain mutation token {token!r} (ADR 0049)"
+        )

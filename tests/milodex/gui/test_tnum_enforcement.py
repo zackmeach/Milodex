@@ -56,6 +56,7 @@ NUMERIC_QML_FILES: tuple[str, ...] = (
     # Components
     "components/ActivityTable.qml",
     "components/BenchRow.qml",
+    "components/BenchGroupRow.qml",
     "components/BenchEvidenceModal.qml",
     "components/BenchConfirmationModal.qml",
     # PR 13 decompose: numeric body sub-components extracted from
