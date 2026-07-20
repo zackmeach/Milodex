@@ -106,6 +106,40 @@ def test_sharpe_zero_variance_returns_none():
     assert s is None
 
 
+def test_sharpe_nonzero_risk_free_matches_textbook_excess_return_sharpe():
+    # Variance must be computed on excess returns (r - rf), not on raw
+    # returns around the excess mean — the latter inflates variance by
+    # n*rf^2/(n-1) whenever rf != 0 (ponytail audit 2026-07-17, decision 1).
+    import math
+
+    returns = [0.012, -0.004, 0.008, 0.001, -0.006, 0.015, 0.003, -0.002]
+    rf = 0.0002
+    excess = [r - rf for r in returns]
+    n = len(excess)
+    mean = sum(excess) / n
+    variance = sum((e - mean) ** 2 for e in excess) / (n - 1)  # ddof=1, as _sharpe uses
+    expected = (mean / math.sqrt(variance)) * math.sqrt(252)
+    assert _sharpe(returns, risk_free_daily=rf) == pytest.approx(expected, rel=1e-12)
+
+
+def test_sharpe_nonzero_risk_free_equals_zero_rf_sharpe_of_excess_series():
+    # Equivalent invariant: Sharpe(returns, rf) == Sharpe(returns - rf, 0).
+    returns = [0.012, -0.004, 0.008, 0.001, -0.006, 0.015, 0.003, -0.002]
+    rf = 0.0002
+    shifted = [r - rf for r in returns]
+    assert _sharpe(returns, risk_free_daily=rf) == pytest.approx(_sharpe(shifted), rel=1e-12)
+
+
+def test_sharpe_rf_zero_golden_values_unchanged():
+    # Pins rf=0 numerics (every production call site passes rf=0). Golden
+    # values captured from the pre-fix implementation — the excess-return
+    # variance fix must be a numeric no-op at rf=0.
+    assert _sharpe([0.01, -0.005, 0.02, -0.003]) == pytest.approx(7.4412956772280054, rel=1e-12)
+    assert _sharpe([0.012, -0.004, 0.008, 0.001, -0.006, 0.015, 0.003, -0.002]) == pytest.approx(
+        7.01874596875755, rel=1e-12
+    )
+
+
 def test_sortino_no_downside_returns_none():
     returns = [0.01, 0.02, 0.005]
     result = _sortino(returns)

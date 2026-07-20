@@ -342,8 +342,9 @@ def _sharpe(daily_returns: list[float], risk_free_daily: float = 0.0) -> float |
     if len(daily_returns) < 2:
         return None
     n = len(daily_returns)
-    mean = sum(daily_returns) / n - risk_free_daily
-    variance = sum((r - mean) ** 2 for r in daily_returns) / (n - 1)
+    excess = [r - risk_free_daily for r in daily_returns]
+    mean = sum(excess) / n
+    variance = sum((r - mean) ** 2 for r in excess) / (n - 1)
     if variance < _VARIANCE_EPSILON:
         return None
     return (mean / math.sqrt(variance)) * math.sqrt(252)
