@@ -573,6 +573,56 @@ def test_total_exposure_allows_sell_that_reduces_exposure():
     assert check_result(decision, "total_exposure").passed is True
 
 
+def test_total_exposure_allows_covered_exit_when_remainder_still_over_cap():
+    # DC-1 (mirrors _check_single_position_limit / _check_order_value): a covered
+    # exit that REDUCES account exposure must never be blocked by the total-
+    # exposure cap, even when the account sits so far over the cap that the
+    # post-exit remainder is STILL over it. The A-6 increasing/reducing split
+    # nets the covered notional to zero increasing, but projected = current -
+    # reducing can still exceed the cap purely from the pre-existing over-cap
+    # baseline — the exit is not the cause and must stay admissible.
+    #
+    # Reproduces the production deadlock (2026-07-21): the whole daily fleet's
+    # open-drain exits were vetoed max_total_exposure_exceeded ~190x each because
+    # Monday's entries pushed account exposure ~$19.6k over the ~$75.9k cap; each
+    # covered exit reduced exposure but the ~$85k remainder still exceeded it, so
+    # every held position was UNEXITABLE. Cap = 10,000 * 0.80 = 8,000.
+    existing = _position("QQQ", 90.0, 100.0)  # $9,000 exposure (over the $8,000 cap)
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="QQQ",
+            side=OrderSide.SELL,
+            quantity=5.0,  # covered by the 90 held; reduces to $8,500 — STILL over cap
+            estimated_unit_price=100.0,
+            positions=[existing],
+        )
+    )
+
+    result = check_result(decision, "total_exposure")
+    assert result.passed is True
+    assert "exempt" in result.message
+
+
+def test_total_exposure_partial_covered_exit_over_cap_is_exempt():
+    # Selling PART of a held long (5 of 90) is exposure-reducing and exempt even
+    # though the account (two positions, $18,000) remains far over the $8,000 cap
+    # after the exit. Pins that the exemption keys on the covered/held relation,
+    # not on the post-exit total dipping under the cap.
+    held_qqq = _position("QQQ", 90.0, 100.0)  # $9,000
+    held_spy = _position("SPY", 90.0, 100.0)  # $9,000
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            symbol="QQQ",
+            side=OrderSide.SELL,
+            quantity=5.0,
+            estimated_unit_price=100.0,
+            positions=[held_qqq, held_spy],
+        )
+    )
+
+    assert check_result(decision, "total_exposure").passed is True
+
+
 # --- A-6: naked / over-held SELL exposure netting (FIX4) --------------------
 # The single-position and total-exposure caps must not read a short or a
 # sell-beyond-held as benign exposure-REDUCING notional. exposure_increasing_

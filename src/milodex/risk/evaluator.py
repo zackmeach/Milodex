@@ -637,6 +637,35 @@ class RiskEvaluator:
         return RiskCheckResult("single_position", True, "Projected position size is within limits.")
 
     def _check_total_exposure(self, context: EvaluationContext) -> RiskCheckResult:
+        # DC-1 (mirrors _check_order_value / _check_single_position_limit): a
+        # genuinely exposure-REDUCING order must ALWAYS be admissible — a held
+        # position must be exitable in full even when the ACCOUNT already sits
+        # over the total-exposure cap. Without this exemption the cap projects
+        # the post-exit total (``current_exposure - reducing``) and blocks the
+        # exit whenever the remainder still exceeds the cap, deadlocking every
+        # covered exit for as long as the account is over-cap (observed in
+        # production 2026-07-21: Monday's entries pushed account exposure ~$19.6k
+        # over the ~$75.9k cap; the whole daily fleet's open-drain exits were
+        # vetoed max_total_exposure_exceeded ~190x each because each ~$10k covered
+        # exit still left an ~$85k remainder over the cap — every position was
+        # UNEXITABLE). The A-6 increasing/reducing split below already nets a
+        # covered SELL to zero increasing notional, but a net-reducing order can
+        # still leave ``projected > max`` purely from the pre-existing over-cap
+        # baseline — the exit is not the cause and must not be blocked. The three
+        # sibling caps got this DC-1 exemption in #363 / DC-1; total_exposure was
+        # overlooked and kept only the A-6 split, which nets correctly yet still
+        # deadlocks. Classification reuses is_exposure_increasing (the same
+        # plumbing as the sibling caps and the reconciliation gate), so a naked
+        # short or a sell BEYOND the held long still counts as increasing and
+        # faces the projected cap below — only its uncovered portion is capped.
+        if not is_exposure_increasing(context.intent, context.positions):
+            return RiskCheckResult(
+                "total_exposure",
+                True,
+                "Exposure-reducing order is exempt from the total-exposure cap; "
+                "the cap targets exposure growth and a held position must "
+                "always be exitable.",
+            )
         current_exposure = sum(position.market_value for position in context.positions)
         # In-flight (unfilled) BUY orders are real economic exposure before they
         # fill — count them too, so a burst of BUYs before any fill cannot
