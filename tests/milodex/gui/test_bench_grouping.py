@@ -114,9 +114,12 @@ def test_group_stage_is_highest_instance_stage() -> None:
 
 
 def test_unpromoted_group_stage_falls_back_to_highest_unpromoted_stage() -> None:
-    # `_strategy_rows` clamps any capital-claiming stage without a promotion
-    # record back to backtest, so an all-unpromoted group rolls up to backtest
-    # (or idle) naturally — no promotion-ledger read happens here.
+    # Unit-level only: these _StrategyRow objects are built POST-clamp (the
+    # rollup layer never sees YAML stages), so this proves the max-stage math,
+    # not the promotion clamp. The clamp composition — YAML paper claims
+    # without a promotion row arriving here already demoted to backtest — is
+    # exercised end-to-end in
+    # test_snapshot_clamps_unpromoted_paper_siblings_before_rollup.
     rows = [
         _row("gap.gap_continuation.intraday.spy.v1", stage="backtest"),
         _row("gap.gap_continuation.intraday.qqq.v1", stage="idle"),
@@ -347,6 +350,57 @@ def test_snapshot_places_group_in_its_group_stage_section(tmp_path: Path) -> Non
     # Flat per-instance lists keep their existing per-stage shape.
     assert [r["strategyId"] for r in paper["strategies"]] == [promoted]
     assert [r["strategyId"] for r in backtest["strategies"]] == [waiting]
+
+
+def test_snapshot_clamps_unpromoted_paper_siblings_before_rollup(tmp_path: Path) -> None:
+    """The rollup's honesty claim rests on the snapshot_builders clamp.
+
+    Production shape: sibling configs in the SAME template group all declare
+    ``stage: paper`` in YAML, but only one has a promotion row. The clamp in
+    ``_strategy_rows`` (promotion records — not YAML stage — bind a promoted
+    stage) must demote the unpromoted siblings to backtest BEFORE the rollup
+    runs, so the group reads 1 paper + N backtest, not N+1 paper. A refactor
+    that fed the rollup the raw YAML stage (e.g. ``meta_stage``) would pass
+    every unit test in this file and silently break exactly this.
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    promoted = _write_strategy_config(
+        configs, family="meanrev", template="rsi2.intraday", variant="spy", stage="paper"
+    )
+    unpromoted = [
+        _write_strategy_config(
+            configs, family="meanrev", template="rsi2.intraday", variant=variant, stage="paper"
+        )
+        for variant in ("qqq", "iwm")
+    ]
+    _seed_promotion(db, promoted)
+
+    snapshot = build_bench_snapshot(db, configs)
+    by_stage = {section["stage"]: section for section in snapshot["sections"]}
+
+    # (a) The group appears in the paper section and NOWHERE else.
+    assert [g["groupKey"] for g in by_stage["paper"]["groups"]] == ["meanrev.rsi2.intraday"]
+    for stage, section in by_stage.items():
+        if stage != "paper":
+            assert section["groups"] == [], f"group leaked into the {stage} section"
+
+    # (b) Stage mix reads exactly 1 paper + 2 backtest — not 3 paper.
+    group = by_stage["paper"]["groups"][0]
+    assert group["stageMix"] == [
+        {"stage": "paper", "count": 1},
+        {"stage": "backtest", "count": 2},
+    ]
+
+    # (c) The unpromoted siblings' roster entries carry the CLAMPED stage.
+    roster_stage_by_id = {entry["strategyId"]: entry["stage"] for entry in group["instances"]}
+    assert roster_stage_by_id[promoted] == "paper"
+    for strategy_id in unpromoted:
+        assert roster_stage_by_id[strategy_id] == "backtest"
 
 
 def test_snapshot_headline_uses_promotion_metrics_of_best_paper_instance(tmp_path: Path) -> None:
