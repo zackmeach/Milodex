@@ -121,6 +121,19 @@ SurfaceBase {
     // Returns "—" for empty/null. Delegates to Formatters.shortTime (PR10).
     function shortTime(iso) { return Formatters.shortTime(iso, root.timeFormat) }
 
+    // shortDateTime: "YYYY-MM-DD " + shortTime(iso). For timestamps that may
+    // be days old (an ended session's close), where a bare clock time is
+    // ambiguous.
+    function shortDateTime(iso) {
+        if (!iso) return "—"
+        var d = new Date(iso)
+        if (isNaN(d)) return iso
+        var mo = d.getMonth() + 1
+        var day = d.getDate()
+        return d.getFullYear() + "-" + (mo < 10 ? "0" + mo : mo)
+               + "-" + (day < 10 ? "0" + day : day) + " " + root.shortTime(iso)
+    }
+
     // ------------------------------------------------------------------
     // Background
     // ------------------------------------------------------------------
@@ -546,8 +559,13 @@ SurfaceBase {
                         for (var i = 0; i < rs.length; i++) {
                             if (rs[i].strategyId === want) return rs[i]
                         }
+                        // Default: rs[0] — the read model orders runners live
+                        // first, then most recently started, so the fallback
+                        // is the most operationally relevant session.
                         return rs[0]
                     }
+                    readonly property bool _selectedEnded:
+                        (activeOpsCol._selected.endedAt || "") !== ""
 
                     SectionHeader {
                         width: parent.width
@@ -573,6 +591,7 @@ SurfaceBase {
 
                     RunnerSelect {
                         id: runnerSelectInst
+                        objectName: "deskRunnerSelect"
                         width: parent.width
                         visible: ActiveOpsState.runners.length > 0
                         runners: activeOpsCol._runnerOptions
@@ -624,9 +643,14 @@ SurfaceBase {
                                     : Theme.color.text.secondary
                         }
                         KeyStat {
+                            objectName: "deskSessionAgeStat"
                             Layout.fillWidth: true
-                            k: "Session Age"
-                            v: activeOpsCol._selected.sessionAge || "—"
+                            // An ended session must not wear a ticking age —
+                            // say plainly that it ended, and when.
+                            k: activeOpsCol._selectedEnded ? "Ended" : "Session Age"
+                            v: activeOpsCol._selectedEnded
+                               ? root.shortDateTime(activeOpsCol._selected.endedAt)
+                               : (activeOpsCol._selected.sessionAge || "—")
                         }
                     }
                     Text {

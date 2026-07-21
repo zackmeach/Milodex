@@ -326,7 +326,10 @@ QtObject {
         // Width chosen to comfortably fit the status prose + meta line for
         // the common cases; longer strings elide.
         benchStatus: 280,
-        ledgerTimestamp: 148,
+        // Ledger timestamp column carries date + time ("2026-05-08 9:14 PM"
+        // worst case is 19 mono chars at data.sm) — sized so 12h never
+        // bleeds into the subject column.
+        ledgerTimestamp: 156,
         ledgerSubject: 224,
         ledgerTransition: 220,
         ledgerOutcome: 120,

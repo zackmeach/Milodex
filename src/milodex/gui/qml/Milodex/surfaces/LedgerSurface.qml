@@ -61,19 +61,25 @@ SurfaceBase {
     readonly property string timeFormat: sessionBag ? sessionBag.timeFormat : "24h"
 
     // formatTs: formats a raw ISO 8601 string per root.timeFormat.
-    // Returns "" for empty/null. Handles 24h and 12h.
+    // Returns "" for empty/null. Handles 24h and 12h. Carries the date —
+    // the ledger spans days, so a bare clock time ("16:25") is ambiguous
+    // in multi-day history.
     function formatTs(iso) {
         if (!iso) return ""
         var d = new Date(iso)
         if (isNaN(d)) return iso
+        var mo = d.getMonth() + 1
+        var day = d.getDate()
+        var date = d.getFullYear() + "-" + (mo < 10 ? "0" + mo : mo)
+                 + "-" + (day < 10 ? "0" + day : day)
         var hh = d.getHours()
         var mm = d.getMinutes()
         if (root.timeFormat === "12h") {
             var ampm = hh >= 12 ? "PM" : "AM"
             var h12 = hh % 12; if (h12 === 0) h12 = 12
-            return h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm
+            return date + " " + h12 + ":" + (mm < 10 ? "0" + mm : mm) + " " + ampm
         }
-        return (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm)
+        return date + " " + (hh < 10 ? "0" + hh : hh) + ":" + (mm < 10 ? "0" + mm : mm)
     }
     /* Legacy PR1 mock entries retained for reference only.
     [
