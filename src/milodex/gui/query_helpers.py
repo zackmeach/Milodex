@@ -75,6 +75,35 @@ def _latest_promotions(conn: sqlite3.Connection) -> dict[str, dict[str, Any]]:
     return {row["strategy_id"]: dict(row) for row in rows}
 
 
+def _frozen_manifest_stages(conn: sqlite3.Connection) -> dict[str, dict[str, str]]:
+    """Map ``strategy_id`` -> ``{stage: frozen_at}`` for active frozen manifests.
+
+    "Active" mirrors ``EventStore.get_active_manifest_for_strategy``: the most
+    recent row per ``(strategy_id, stage)`` (latest id wins). Read-only display
+    input — the bench roster uses it to mark a config that is manifest-frozen
+    at a promoted stage while the promotion ledger holds no promotion row.
+    """
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.strategy_id, m.stage, m.frozen_at
+            FROM strategy_manifests m
+            INNER JOIN (
+                SELECT strategy_id, stage, MAX(id) AS max_id
+                FROM strategy_manifests
+                GROUP BY strategy_id, stage
+            ) latest ON latest.max_id = m.id
+            """
+        ).fetchall()
+    except sqlite3.Error as exc:
+        log_db_read_error("query_helpers._frozen_manifest_stages", exc)
+        return {}
+    result: dict[str, dict[str, str]] = {}
+    for row in rows:
+        result.setdefault(row["strategy_id"], {})[str(row["stage"])] = str(row["frozen_at"] or "")
+    return result
+
+
 def _latest_session_states(
     conn: sqlite3.Connection, locks_dir: Path | None = None
 ) -> dict[str, dict[str, Any]]:
