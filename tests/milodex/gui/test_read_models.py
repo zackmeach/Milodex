@@ -103,6 +103,21 @@ def _seed_promotion(db: Path, strategy_id: str) -> None:
     conn.close()
 
 
+def _seed_frozen_manifest(db: Path, strategy_id: str, stage: str = "paper") -> None:
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        """
+        INSERT INTO strategy_manifests
+            (strategy_id, stage, config_hash, config_json, config_path, frozen_at, frozen_by)
+        VALUES (?, ?, 'a1b2c3', '{}', 'configs/test.yaml',
+                '2026-07-22T12:00:00+00:00', 'operator')
+        """,
+        (strategy_id, stage),
+    )
+    conn.commit()
+    conn.close()
+
+
 def _seed_stage_return(db: Path, strategy_id: str) -> None:
     conn = sqlite3.connect(str(db))
     conn.execute(
@@ -1057,6 +1072,118 @@ def test_bench_yaml_paper_without_promotion_record_clamps_to_backtest(tmp_path: 
     assert row["stage"] == "backtest"
     assert row["archetype"] != "paper"
     assert row["archetype"] == "research"
+
+
+def test_bench_frozen_manifest_without_promotion_record_reads_distinct(tmp_path: Path) -> None:
+    """A config claiming ``stage: paper`` with an active frozen manifest AT
+    paper but NO promotion ledger row is runnable (the freeze clears the risk
+    layer's no_frozen_manifest veto) yet unrecorded. The clamp still holds —
+    the row stays in the backtest section and does NOT lift its group — but
+    the row wears a distinct visible state instead of reading as an ordinary
+    awaiting-evidence config.
+    """
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_frozen_manifest(db, strategy_id, stage="paper")
+    # Deliberately NO promotion seed.
+
+    snapshot = build_bench_snapshot(db, configs)
+    paper = next(s for s in snapshot["sections"] if s["stage"] == "paper")
+    backtest = next(s for s in snapshot["sections"] if s["stage"] == "backtest")
+
+    # The clamp is load-bearing honesty: section and archetype are unchanged.
+    assert paper["strategies"] == []
+    assert len(backtest["strategies"]) == 1
+    row = backtest["strategies"][0]
+    assert row["stage"] == "backtest"
+    assert row["archetype"] != "paper"
+
+    # The distinct visible state.
+    assert row["frozenUnrecorded"] is True
+    assert row["frozenStage"] == "paper"
+    assert row["statusKind"] == "warning"
+    assert row["statusWord"] == "Manifest frozen at paper"
+    assert "promotion unrecorded" in row["statusTail"]
+
+
+def test_bench_frozen_manifest_with_promotion_record_reads_normal(tmp_path: Path) -> None:
+    """Frozen AND promotion-recorded is the ordinary promoted shape: the row
+    sits in the paper section with its usual status copy — no frozen-unrecorded
+    flag."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_backtest(db, strategy_id)
+    _seed_promotion(db, strategy_id)
+    _seed_frozen_manifest(db, strategy_id, stage="paper")
+
+    snapshot = build_bench_snapshot(db, configs)
+    paper = next(s for s in snapshot["sections"] if s["stage"] == "paper")
+
+    assert len(paper["strategies"]) == 1
+    row = paper["strategies"][0]
+    assert row["stage"] == "paper"
+    assert row["frozenUnrecorded"] is False
+    assert row["frozenStage"] == ""
+    assert row["statusWord"] == "Paper evidence passing"
+
+
+def test_bench_unfrozen_paper_claim_keeps_plain_clamp_copy(tmp_path: Path) -> None:
+    """Paper YAML with neither a frozen manifest nor a promotion row is the
+    plain clamped shape (still risk-vetoed by no_frozen_manifest): no
+    frozen-unrecorded flag, ordinary awaiting-evidence copy."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    # No manifest, no promotion.
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(s for s in snapshot["sections"] if s["stage"] == "backtest")
+
+    assert len(backtest["strategies"]) == 1
+    row = backtest["strategies"][0]
+    assert row["stage"] == "backtest"
+    assert row["frozenUnrecorded"] is False
+    assert row["frozenStage"] == ""
+    assert row["statusWord"] == "Config valid"
+
+
+def test_bench_frozen_at_other_stage_does_not_flag(tmp_path: Path) -> None:
+    """A frozen manifest at a stage OTHER than the claimed one does not clear
+    the veto for the claimed stage — no flag, plain clamped copy."""
+    from milodex.gui.read_models import build_bench_snapshot
+
+    configs = tmp_path / "configs"
+    configs.mkdir()
+    strategy_id = "meanrev.daily.rsi2pullback.v1"
+    _write_strategy_config(configs, strategy_id, stage="paper")
+    db = tmp_path / "milodex.db"
+    _create_db(db)
+    _seed_frozen_manifest(db, strategy_id, stage="micro_live")
+
+    snapshot = build_bench_snapshot(db, configs)
+    backtest = next(s for s in snapshot["sections"] if s["stage"] == "backtest")
+
+    assert len(backtest["strategies"]) == 1
+    row = backtest["strategies"][0]
+    assert row["frozenUnrecorded"] is False
+    assert row["statusWord"] == "Config valid"
 
 
 def test_bench_pr_m_packet_is_independent_of_flat_fields(tmp_path: Path) -> None:
