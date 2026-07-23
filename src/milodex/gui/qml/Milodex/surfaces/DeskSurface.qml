@@ -19,8 +19,11 @@
 // Slice toggles (II, IV) are pure client-side indices into the precomputed
 // bySlice maps — toggling never triggers a re-query.
 //
-// Animation discipline (locked): state changes instant; P&L figures never
-// crossfade; no idle animation. Chrome (Main.qml strip / kill banner) is
+// Animation discipline (locked, amended 2026-07-22): state changes instant;
+// P&L figures never crossfade; no idle animation — with ONE sanctioned
+// exception: the Section III fleet table's RUNNING pulse (a slow opacity
+// beat on the state dot), a founder-approved liveness affordance for
+// fleet-watching, not decoration. Chrome (Main.qml strip / kill banner) is
 // untouched and out of scope.
 //
 // Token-binding contract: NO hardcoded hex / size literals — Theme tokens
@@ -34,35 +37,6 @@ SurfaceBase {
     id: root
 
     captureContentHeight: scroller.contentHeight
-
-    // ------------------------------------------------------------------
-    // Issue 05: RunnerSelect dropdown relay signals.
-    //
-    // RunnerSelect lives inside activeOpsCol (Section III). Main.qml cannot
-    // reach it directly because it is loaded inside a Loader. These relay
-    // signals and the closeRunnerDropdown() function bridge the boundary:
-    //   Main.qml Connections.onRunnerDropdownOpened  → sets _dropdownOpen = true
-    //   Main.qml Connections.onRunnerDropdownDismissed → sets _dropdownOpen = false
-    //   Main.qml onDropdownDismissedSignal → calls closeRunnerDropdown() here
-    // ------------------------------------------------------------------
-    signal runnerDropdownOpened()
-    signal runnerDropdownDismissed()
-
-    function closeRunnerDropdown() {
-        runnerSelectInst.expanded = false
-    }
-
-    // I-1: relay the dropdown's scene rect to Main.qml's overlay hit-test.
-    // Main.qml cannot reach runnerSelectInst directly across the Loader boundary.
-    function runnerDropdownSceneRect() {
-        return runnerSelectInst.dropdownBoundsInScene()
-    }
-
-    Connections {
-        target: runnerSelectInst
-        function onOpened()    { root.runnerDropdownOpened() }
-        function onDismissed() { root.runnerDropdownDismissed() }
-    }
 
     // ------------------------------------------------------------------
     // Slice selection — pure client-side index into precomputed bySlice
@@ -178,6 +152,17 @@ SurfaceBase {
         font.pixelSize: Theme.typography.body.sm.size
         font.italic:    true
         wrapMode:       Text.WordWrap
+    }
+
+    // Uppercase column label for the Section III fleet-table header row.
+    component FleetHeadLabel: Text {
+        anchors.verticalCenter: parent.verticalCenter
+        color: Theme.color.text.muted
+        font.family:         Theme.typography.label.xs.family
+        font.pixelSize:      Theme.typography.label.xs.size
+        font.weight:         Theme.typography.label.xs.weight
+        font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+        font.capitalization: Font.AllUppercase
     }
 
     // ------------------------------------------------------------------
@@ -534,6 +519,17 @@ SurfaceBase {
                 }
 
                 // ---- III · ACTIVE OPERATIONS ----------------------
+                //
+                // FLEET TABLE (2026-07-22, founder-approved): one row per
+                // strategy in ActiveOpsState.runners (live first, then most
+                // recently started), replacing the single-runner
+                // RunnerSelect + KeyStat panel that hid all but one runner
+                // of a 6–11 runner fleet. Clicking a row expands the
+                // original KeyStat detail grid beneath the table (click
+                // again to collapse) — no capability lost. The heartbeat
+                // column ticks live for running rows; E · V · S are today's
+                // evaluations / vetoes / submits from the read model's
+                // single aggregate query.
                 Column {
                     id: activeOpsCol
                     objectName: "deskSectionActiveOps"
@@ -543,29 +539,66 @@ SurfaceBase {
                     Layout.alignment: Qt.AlignTop
                     spacing: Theme.space[3]
 
+                    // "" = no row expanded. Set by row click; cleared by
+                    // clicking the expanded row again.
                     property string selectedRunner: ""
 
-                    readonly property var _runnerOptions: {
-                        var out = []
-                        var rs = ActiveOpsState.runners
-                        for (var i = 0; i < rs.length; i++)
-                            out.push({ id: rs[i].strategyId, label: rs[i].strategyId })
-                        return out
-                    }
                     readonly property var _selected: {
                         var rs = ActiveOpsState.runners
-                        if (rs.length === 0) return ({})
                         var want = activeOpsCol.selectedRunner
+                        if (want === "") return ({})
                         for (var i = 0; i < rs.length; i++) {
                             if (rs[i].strategyId === want) return rs[i]
                         }
-                        // Default: rs[0] — the read model orders runners live
-                        // first, then most recently started, so the fallback
-                        // is the most operationally relevant session.
-                        return rs[0]
+                        // Selected runner vanished from the model (e.g. DB
+                        // swap) — treat as collapsed rather than showing a
+                        // stale detail grid.
+                        return ({})
                     }
+                    readonly property bool _expanded:
+                        (activeOpsCol._selected.strategyId || "") !== ""
                     readonly property bool _selectedEnded:
                         (activeOpsCol._selected.endedAt || "") !== ""
+
+                    // Live tick for the heartbeat column: the read model
+                    // refreshes every 30 s; between refreshes running rows
+                    // age their heartbeat client-side from lastRefreshedAt.
+                    property double _nowMs: Date.now()
+                    readonly property double _refreshedMs: {
+                        var iso = ActiveOpsState.lastRefreshedAt
+                        if (!iso) return 0
+                        var t = Date.parse(iso)
+                        return isNaN(t) ? 0 : t
+                    }
+                    Timer {
+                        interval: 1000
+                        repeat: true
+                        running: activeOpsCol.visible && ActiveOpsState.liveCount > 0
+                        onTriggered: activeOpsCol._nowMs = Date.now()
+                    }
+
+                    // Compact age: "32s" / "4m" / "2h" / "3d".
+                    function fmtAge(secs) {
+                        var s = Math.floor(secs)
+                        if (s < 0) s = 0
+                        if (s < 60) return s + "s"
+                        var m = Math.floor(s / 60)
+                        if (m < 60) return m + "m"
+                        var h = Math.floor(m / 60)
+                        if (h < 24) return h + "h"
+                        return Math.floor(h / 24) + "d"
+                    }
+
+                    function hbText(row) {
+                        var base = row.heartbeatAgeSeconds
+                        if (base === null || base === undefined) return "—"
+                        var age = Number(base)
+                        if (row.sessionState === "running" && activeOpsCol._refreshedMs > 0) {
+                            var extra = (activeOpsCol._nowMs - activeOpsCol._refreshedMs) / 1000
+                            if (extra > 0) age += extra
+                        }
+                        return activeOpsCol.fmtAge(age)
+                    }
 
                     SectionHeader {
                         width: parent.width
@@ -581,88 +614,390 @@ SurfaceBase {
                             font.features:  Theme.typography.data.sm.features
                         }
                     }
-                    Standfirst { text: "what is running right now in this session" }
+                    Standfirst { text: "the fleet, one row per strategy — E · V · S are today's evaluations, vetoes, and submits" }
 
                     SectionStatus {
                         status: ActiveOpsState.dataStatus
                         errorMessage: ActiveOpsState.dataErrorMessage
-                        hasData: ActiveOpsState.runners.length > 0
+                        hasData: ActiveOpsState.lastRefreshedAt !== ""
                     }
 
-                    RunnerSelect {
-                        id: runnerSelectInst
-                        objectName: "deskRunnerSelect"
-                        width: parent.width
-                        visible: ActiveOpsState.runners.length > 0
-                        runners: activeOpsCol._runnerOptions
-                        current: activeOpsCol._selected.strategyId || ""
-                        onSelected: function(runnerId) { activeOpsCol.selectedRunner = runnerId }
-                    }
-
-                    GridLayout {
-                        width: parent.width
-                        visible: ActiveOpsState.runners.length > 0
-                        columns: 2
-                        rowSpacing:    Theme.space[3]
-                        columnSpacing: Theme.space[6]
-
-                        KeyStat {
-                            Layout.fillWidth: true
-                            k: "Session"
-                            v: (activeOpsCol._selected.sessionState || "—").toUpperCase()
-                            vColor: (activeOpsCol._selected.sessionState || "").indexOf("running") === 0
-                                    ? Theme.status.positive
-                                    : Theme.color.text.secondary
-                        }
-                        KeyStat {
-                            Layout.fillWidth: true
-                            k: "Cadence"
-                            v: activeOpsCol._selected.cadence || "—"
-                        }
-                        KeyStat {
-                            Layout.fillWidth: true
-                            k: "Heartbeat"
-                            v: activeOpsCol._selected.heartbeat || "—"
-                            vColor: (activeOpsCol._selected.heartbeat || "") === "on schedule"
-                                    ? Theme.status.positive
-                                    : (activeOpsCol._selected.heartbeat || "").indexOf("overdue") === 0
-                                      ? Theme.status.warning
-                                      : Theme.color.text.muted
-                        }
-                        KeyStat {
-                            Layout.fillWidth: true
-                            k: "Lock"
-                            v: (activeOpsCol._selected.runnerLock || "—").toUpperCase()
-                        }
-                        KeyStat {
-                            Layout.fillWidth: true
-                            k: "Stop Req."
-                            v: activeOpsCol._selected.stopRequested ? "YES" : "NO"
-                            vColor: activeOpsCol._selected.stopRequested
-                                    ? Theme.status.warning
-                                    : Theme.color.text.secondary
-                        }
-                        KeyStat {
-                            objectName: "deskSessionAgeStat"
-                            Layout.fillWidth: true
-                            // An ended session must not wear a ticking age —
-                            // say plainly that it ended, and when.
-                            k: activeOpsCol._selectedEnded ? "Ended" : "Session Age"
-                            v: activeOpsCol._selectedEnded
-                               ? root.shortDateTime(activeOpsCol._selected.endedAt)
-                               : (activeOpsCol._selected.sessionAge || "—")
-                        }
-                    }
+                    // Empty state — honest quiet line, not an empty table
+                    // frame (mirrors LedgerSurface's "No entries yet.").
                     Text {
+                        visible: ActiveOpsState.dataStatus !== "error"
+                                 && ActiveOpsState.lastRefreshedAt !== ""
+                                 && ActiveOpsState.runners.length === 0
                         width: parent.width
-                        visible: ActiveOpsState.runners.length > 0
-                        text: activeOpsCol._selected.lastEval
-                              ? "last eval " + root.shortTime(activeOpsCol._selected.lastEval)
-                              : "no evaluations recorded"
+                        text: "No runner sessions on record — nothing has launched yet."
                         color: Theme.color.text.muted
                         font.family:    Theme.typography.body.sm.family
                         font.pixelSize: Theme.typography.body.sm.size
                         font.italic:    true
+                        wrapMode: Text.WordWrap
+                    }
+
+                    // ---- fleet table ------------------------------------
+                    Column {
+                        objectName: "deskFleetTable"
+                        width: parent.width
+                        spacing: 0
+                        visible: ActiveOpsState.runners.length > 0
+
+                        // Header row — uppercase mono-adjacent labels over a
+                        // hairline, same geometry as the data rows below.
+                        Item {
+                            width: parent.width
+                            height: fleetHeadStrategy.implicitHeight + Theme.space[2] * 2
+
+                            Rectangle {
+                                anchors.bottom: parent.bottom
+                                anchors.left:   parent.left
+                                anchors.right:  parent.right
+                                height: 1
+                                color:  Theme.color.border.regular
+                            }
+
+                            FleetHeadLabel {
+                                id: fleetHeadStrategy
+                                anchors.left: parent.left
+                                text: "Strategy"
+                            }
+                            FleetHeadLabel {
+                                id: fleetHeadSubmits
+                                anchors.right: parent.right
+                                width: Theme.column.fleetCount
+                                horizontalAlignment: Text.AlignRight
+                                text: "S"
+                            }
+                            FleetHeadLabel {
+                                id: fleetHeadVetoes
+                                anchors.right: fleetHeadSubmits.left
+                                anchors.rightMargin: Theme.space[2]
+                                width: Theme.column.fleetCount
+                                horizontalAlignment: Text.AlignRight
+                                text: "V"
+                            }
+                            FleetHeadLabel {
+                                id: fleetHeadEvals
+                                anchors.right: fleetHeadVetoes.left
+                                anchors.rightMargin: Theme.space[2]
+                                width: Theme.column.fleetCount
+                                horizontalAlignment: Text.AlignRight
+                                text: "E"
+                            }
+                            FleetHeadLabel {
+                                id: fleetHeadLast
+                                anchors.right: fleetHeadEvals.left
+                                anchors.rightMargin: Theme.space[2]
+                                width: Theme.column.fleetLast
+                                horizontalAlignment: Text.AlignRight
+                                text: "Last"
+                            }
+                            FleetHeadLabel {
+                                id: fleetHeadHb
+                                anchors.right: fleetHeadLast.left
+                                anchors.rightMargin: Theme.space[2]
+                                width: Theme.column.fleetHb
+                                horizontalAlignment: Text.AlignRight
+                                text: "HB"
+                            }
+                            FleetHeadLabel {
+                                anchors.right: fleetHeadHb.left
+                                anchors.rightMargin: Theme.space[2]
+                                width: Theme.column.fleetState
+                                text: "State"
+                            }
+                        }
+
+                        Repeater {
+                            model: ActiveOpsState.runners
+
+                            delegate: Item {
+                                id: fleetRow
+                                objectName: "deskFleetRow"
+                                width: parent.width
+                                height: fleetRowName.implicitHeight + Theme.space[2] * 2
+
+                                readonly property string strategyId: modelData.strategyId || ""
+                                readonly property string sessionState: modelData.sessionState || ""
+                                readonly property bool _isRunning: fleetRow.sessionState === "running"
+                                readonly property bool _isPhantom: fleetRow.sessionState === "phantom"
+                                readonly property bool _isSelected:
+                                    activeOpsCol.selectedRunner === fleetRow.strategyId
+
+                                Rectangle {
+                                    anchors.bottom: parent.bottom
+                                    anchors.left:   parent.left
+                                    anchors.right:  parent.right
+                                    height: 1
+                                    color:  Theme.color.border.subtle
+                                }
+
+                                // Strategy — family badge + display name,
+                                // filling the space left of the state cell.
+                                Text {
+                                    id: fleetRowFamily
+                                    anchors.left:           parent.left
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData.family || ""
+                                    color: Theme.color.text.muted
+                                    font.family:         Theme.typography.label.xs.family
+                                    font.pixelSize:      Theme.typography.label.xs.size
+                                    font.weight:         Theme.typography.label.xs.weight
+                                    font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+                                    font.capitalization: Font.AllUppercase
+                                }
+                                Text {
+                                    id: fleetRowName
+                                    anchors.left:           fleetRowFamily.right
+                                    anchors.leftMargin:     Theme.space[2]
+                                    anchors.right:          fleetRowState.left
+                                    anchors.rightMargin:    Theme.space[2]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    text: modelData.displayName || fleetRow.strategyId
+                                    color: fleetRow._isSelected
+                                           ? Theme.color.brand.primary
+                                           : Theme.color.text.primary
+                                    font.family:    Theme.typography.body.sm.family
+                                    font.pixelSize: Theme.typography.body.sm.size
+                                    font.weight:    Font.Medium
+                                    elide:          Text.ElideRight
+                                }
+
+                                // State — RUNNING pulses (the one sanctioned
+                                // idle animation, see header); PHANTOM is
+                                // alarming on purpose: dead-but-open.
+                                Row {
+                                    id: fleetRowState
+                                    anchors.right:          fleetRowHb.left
+                                    anchors.rightMargin:    Theme.space[2]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.column.fleetState
+                                    spacing: Theme.space[1]
+
+                                    Text {
+                                        id: fleetRowDot
+                                        visible: fleetRow._isRunning || fleetRow._isPhantom
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: "●"
+                                        color: fleetRow._isRunning
+                                               ? Theme.status.positive
+                                               : Theme.status.negative
+                                        font.family:    Theme.typography.label.xs.family
+                                        font.pixelSize: Theme.typography.label.xs.size
+
+                                        SequentialAnimation {
+                                            running: fleetRow._isRunning && fleetRow.visible
+                                            loops: Animation.Infinite
+                                            NumberAnimation {
+                                                target: fleetRowDot; property: "opacity"
+                                                from: 1.0; to: 0.3
+                                                duration: Theme.motion.deliberate * 3
+                                                easing.type: Easing.InOutQuad
+                                            }
+                                            NumberAnimation {
+                                                target: fleetRowDot; property: "opacity"
+                                                from: 0.3; to: 1.0
+                                                duration: Theme.motion.deliberate * 3
+                                                easing.type: Easing.InOutQuad
+                                            }
+                                            onStopped: fleetRowDot.opacity = 1.0
+                                        }
+                                    }
+                                    Text {
+                                        anchors.verticalCenter: parent.verticalCenter
+                                        text: (fleetRow.sessionState || "—").toUpperCase()
+                                        color: fleetRow._isRunning
+                                               ? Theme.status.positive
+                                               : fleetRow._isPhantom
+                                                 ? Theme.status.negative
+                                                 : fleetRow.sessionState === "failed"
+                                                   ? Theme.status.negative
+                                                   : Theme.color.text.muted
+                                        font.family:         Theme.typography.label.xs.family
+                                        font.pixelSize:      Theme.typography.label.xs.size
+                                        font.weight:         fleetRow._isPhantom
+                                                             ? Font.DemiBold
+                                                             : Theme.typography.label.xs.weight
+                                        font.letterSpacing:  Theme.typography.label.xs.letterSpacing
+                                        font.capitalization: Font.AllUppercase
+                                    }
+                                }
+
+                                // Heartbeat age — compact, ticking while running.
+                                Text {
+                                    id: fleetRowHb
+                                    anchors.right:          fleetRowLast.left
+                                    anchors.rightMargin:    Theme.space[2]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.column.fleetHb
+                                    text: activeOpsCol.hbText(modelData)
+                                    color: (modelData.heartbeat || "") === "on schedule"
+                                           ? Theme.color.text.primary
+                                           : (modelData.heartbeat || "").indexOf("overdue") === 0
+                                             ? Theme.status.warning
+                                             : Theme.color.text.muted
+                                    font.family:    Theme.typography.data.xs.family
+                                    font.pixelSize: Theme.typography.data.xs.size
+                                    font.features:  Theme.typography.data.xs.features
+                                    horizontalAlignment: Text.AlignRight
+                                }
+
+                                // Last eval time.
+                                Text {
+                                    id: fleetRowLast
+                                    anchors.right:          fleetRowEvals.left
+                                    anchors.rightMargin:    Theme.space[2]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.column.fleetLast
+                                    text: modelData.lastEval
+                                          ? root.shortTime(modelData.lastEval)
+                                          : "—"
+                                    color: modelData.lastEval
+                                           ? Theme.color.text.primary
+                                           : Theme.color.text.muted
+                                    font.family:    Theme.typography.data.xs.family
+                                    font.pixelSize: Theme.typography.data.xs.size
+                                    font.features:  Theme.typography.data.xs.features
+                                    horizontalAlignment: Text.AlignRight
+                                }
+
+                                // Today counts — evaluations / vetoes / submits.
+                                Text {
+                                    id: fleetRowEvals
+                                    anchors.right:          fleetRowVetoes.left
+                                    anchors.rightMargin:    Theme.space[2]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.column.fleetCount
+                                    text: String(modelData.evalsToday || 0)
+                                    color: (modelData.evalsToday || 0) > 0
+                                           ? Theme.color.text.primary
+                                           : Theme.color.text.muted
+                                    font.family:    Theme.typography.data.xs.family
+                                    font.pixelSize: Theme.typography.data.xs.size
+                                    font.features:  Theme.typography.data.xs.features
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Text {
+                                    id: fleetRowVetoes
+                                    anchors.right:          fleetRowSubmits.left
+                                    anchors.rightMargin:    Theme.space[2]
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.column.fleetCount
+                                    text: String(modelData.vetoesToday || 0)
+                                    color: (modelData.vetoesToday || 0) > 0
+                                           ? Theme.status.warning
+                                           : Theme.color.text.muted
+                                    font.family:    Theme.typography.data.xs.family
+                                    font.pixelSize: Theme.typography.data.xs.size
+                                    font.features:  Theme.typography.data.xs.features
+                                    horizontalAlignment: Text.AlignRight
+                                }
+                                Text {
+                                    id: fleetRowSubmits
+                                    anchors.right:          parent.right
+                                    anchors.verticalCenter: parent.verticalCenter
+                                    width: Theme.column.fleetCount
+                                    text: String(modelData.submitsToday || 0)
+                                    color: (modelData.submitsToday || 0) > 0
+                                           ? Theme.status.positive
+                                           : Theme.color.text.muted
+                                    font.family:    Theme.typography.data.xs.family
+                                    font.pixelSize: Theme.typography.data.xs.size
+                                    font.features:  Theme.typography.data.xs.features
+                                    horizontalAlignment: Text.AlignRight
+                                }
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: activeOpsCol.selectedRunner =
+                                        fleetRow._isSelected ? "" : fleetRow.strategyId
+                                }
+                            }
+                        }
+                    }
+
+                    // ---- drill-down detail (the original KeyStat grid) ----
+                    Column {
+                        objectName: "deskFleetDetail"
+                        width: parent.width
+                        spacing: Theme.space[3]
+                        visible: activeOpsCol._expanded
+
+                        Text {
+                            width: parent.width
+                            text: activeOpsCol._selected.strategyId || ""
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.data.xs.family
+                            font.pixelSize: Theme.typography.data.xs.size
+                            font.features:  Theme.typography.data.xs.features
+                            elide: Text.ElideRight
+                        }
+
+                        GridLayout {
+                            width: parent.width
+                            columns: 2
+                            rowSpacing:    Theme.space[3]
+                            columnSpacing: Theme.space[6]
+
+                            KeyStat {
+                                Layout.fillWidth: true
+                                k: "Session"
+                                v: (activeOpsCol._selected.sessionState || "—").toUpperCase()
+                                vColor: (activeOpsCol._selected.sessionState || "").indexOf("running") === 0
+                                        ? Theme.status.positive
+                                        : Theme.color.text.secondary
+                            }
+                            KeyStat {
+                                Layout.fillWidth: true
+                                k: "Cadence"
+                                v: activeOpsCol._selected.cadence || "—"
+                            }
+                            KeyStat {
+                                Layout.fillWidth: true
+                                k: "Heartbeat"
+                                v: activeOpsCol._selected.heartbeat || "—"
+                                vColor: (activeOpsCol._selected.heartbeat || "") === "on schedule"
+                                        ? Theme.status.positive
+                                        : (activeOpsCol._selected.heartbeat || "").indexOf("overdue") === 0
+                                          ? Theme.status.warning
+                                          : Theme.color.text.muted
+                            }
+                            KeyStat {
+                                Layout.fillWidth: true
+                                k: "Lock"
+                                v: (activeOpsCol._selected.runnerLock || "—").toUpperCase()
+                            }
+                            KeyStat {
+                                Layout.fillWidth: true
+                                k: "Stop Req."
+                                v: activeOpsCol._selected.stopRequested ? "YES" : "NO"
+                                vColor: activeOpsCol._selected.stopRequested
+                                        ? Theme.status.warning
+                                        : Theme.color.text.secondary
+                            }
+                            KeyStat {
+                                objectName: "deskSessionAgeStat"
+                                Layout.fillWidth: true
+                                // An ended session must not wear a ticking age —
+                                // say plainly that it ended, and when.
+                                k: activeOpsCol._selectedEnded ? "Ended" : "Session Age"
+                                v: activeOpsCol._selectedEnded
+                                   ? root.shortDateTime(activeOpsCol._selected.endedAt)
+                                   : (activeOpsCol._selected.sessionAge || "—")
+                            }
+                        }
+                        Text {
+                            width: parent.width
+                            text: activeOpsCol._selected.lastEval
+                                  ? "last eval " + root.shortTime(activeOpsCol._selected.lastEval)
+                                  : "no evaluations recorded"
+                            color: Theme.color.text.muted
+                            font.family:    Theme.typography.body.sm.family
+                            font.pixelSize: Theme.typography.body.sm.size
+                            font.italic:    true
+                        }
                     }
                 }
             }

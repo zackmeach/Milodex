@@ -246,7 +246,15 @@ def _seed_run(
     conn.close()
 
 
-def _seed_explanation(db: Path, session_id: str, recorded_at: str) -> None:
+def _seed_explanation(
+    db: Path,
+    session_id: str,
+    recorded_at: str,
+    *,
+    decision_type: str = "submit",
+    status: str = "submitted",
+    risk_allowed: int = 1,
+) -> None:
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
@@ -258,12 +266,12 @@ def _seed_explanation(db: Path, session_id: str, recorded_at: str) -> None:
             risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json
         )
         VALUES (?, ?, 'entry',
-                'submit', 'submitted', 'SPY', 'buy', 1.0,
+                ?, ?, 'SPY', 'buy', 1.0,
                 'market', 'day', 'test', 1,
                 10000.0, 10000.0, 10000.0, 0.0,
-                1, 'ok', '[]', '{}', '{}')
+                ?, 'ok', '[]', '{}', '{}')
         """,
-        (session_id, recorded_at),
+        (session_id, recorded_at, decision_type, status, risk_allowed),
     )
     conn.commit()
     conn.close()
@@ -448,6 +456,199 @@ def test_query_active_ops_last_eval_from_explanations(tmp_path) -> None:
 
     result = _query_active_ops(db, now)
     assert result[0]["lastEval"] == latest
+
+
+# ---------------------------------------------------------------------------
+# Fleet-table today counts (evaluations / vetoes / submits per runner row)
+#
+# Classification contract (mirrors the RiskThroughputState funnel):
+#   evaluations — every explanation row for the runner's session today
+#   vetoes      — risk_allowed = 0 (the risk layer said no)
+#   submits     — status = 'submitted' (an order actually went to the broker;
+#                 a blocked decision_type='submit' row must NOT count)
+# "Today" is the UTC calendar day of the query's `now`.
+# ---------------------------------------------------------------------------
+
+
+def test_query_active_ops_counts_classify_vetoes_and_submits(tmp_path) -> None:
+    """Vetoes key on risk_allowed=0; submits on status='submitted'; every row
+    counts as an evaluation."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(hours=2)).isoformat())
+
+    t = (now - timedelta(minutes=10)).isoformat()
+    # A real broker submit.
+    _seed_explanation(db, "sess-001", t, decision_type="submit", status="submitted")
+    # A risk veto (blocked submit): risk_allowed=0 — veto, NOT a submit.
+    _seed_explanation(db, "sess-001", t, decision_type="submit", status="rejected", risk_allowed=0)
+    # A no-signal evaluation: neither veto nor submit.
+    _seed_explanation(db, "sess-001", t, decision_type="no_trade", status="no_signal")
+
+    result = _query_active_ops(db, now)
+    r = result[0]
+    assert r["evalsToday"] == 3
+    assert r["vetoesToday"] == 1
+    assert r["submitsToday"] == 1
+
+
+def test_query_active_ops_counts_exclude_prior_utc_days(tmp_path) -> None:
+    """A 23:59 row from the prior UTC day is excluded from today's counts,
+    while lastEval still reflects the overall MAX(recorded_at)."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(days=2)).isoformat())
+
+    yesterday = datetime(2026, 5, 15, 23, 59, 0, tzinfo=UTC).isoformat()
+    today = datetime(2026, 5, 16, 1, 0, 0, tzinfo=UTC).isoformat()
+    _seed_explanation(db, "sess-001", yesterday, status="rejected", risk_allowed=0)
+    _seed_explanation(db, "sess-001", today)
+
+    result = _query_active_ops(db, now)
+    r = result[0]
+    assert r["evalsToday"] == 1
+    assert r["vetoesToday"] == 0  # yesterday's veto does not leak into today
+    assert r["submitsToday"] == 1
+    assert r["lastEval"] == today
+
+
+def test_query_active_ops_counts_zero_with_no_explanations(tmp_path) -> None:
+    """A session with zero explanation rows reads 0 / 0 / 0, not None."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(hours=1)).isoformat())
+
+    result = _query_active_ops(db, now)
+    r = result[0]
+    assert r["evalsToday"] == 0
+    assert r["vetoesToday"] == 0
+    assert r["submitsToday"] == 0
+
+
+def test_query_active_ops_counts_scoped_per_session(tmp_path) -> None:
+    """Counts are keyed on each runner's own session — no cross-strategy bleed."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    t = (now - timedelta(hours=1)).isoformat()
+    _seed_run(db, "strat.a.v1", "sess-a", t)
+    _seed_run(db, "strat.b.v1", "sess-b", t)
+
+    recorded = (now - timedelta(minutes=5)).isoformat()
+    _seed_explanation(db, "sess-a", recorded)
+    _seed_explanation(db, "sess-a", recorded, status="rejected", risk_allowed=0)
+
+    result = _query_active_ops(db, now)
+    row_a = next(r for r in result if r["strategyId"] == "strat.a.v1")
+    row_b = next(r for r in result if r["strategyId"] == "strat.b.v1")
+    assert (row_a["evalsToday"], row_a["vetoesToday"], row_a["submitsToday"]) == (2, 1, 1)
+    assert (row_b["evalsToday"], row_b["vetoesToday"], row_b["submitsToday"]) == (0, 0, 0)
+
+
+# ---------------------------------------------------------------------------
+# Fleet-table display fields (displayName / family)
+# ---------------------------------------------------------------------------
+
+
+def test_query_active_ops_display_fields_derived_without_config(tmp_path) -> None:
+    """No config resolves: displayName derives from the id's third dotted
+    segment (Bench's _short_strategy_name rule) and family from the first."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    _seed_run(
+        db,
+        "meanrev.daily.pullback_rsi2.v1",
+        "sess-001",
+        (now - timedelta(hours=1)).isoformat(),
+    )
+
+    result = _query_active_ops(db, now)
+    r = result[0]
+    assert r["displayName"] == "Pullback Rsi2"
+    assert r["family"] == "meanrev"
+
+
+def test_query_active_ops_display_fields_from_yaml(tmp_path) -> None:
+    """Config-provided display_name and family win over the derived fallbacks."""
+    import yaml
+
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    configs_dir = tmp_path / "configs"
+    configs_dir.mkdir()
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(hours=1)).isoformat())
+
+    yaml_content = {
+        "strategy": {
+            "id": "strat.a.v1",
+            "family": "momentum",
+            "display_name": "Example Momentum",
+            "tempo": {"bar_size": "1D"},
+        }
+    }
+    (configs_dir / "strat_a_v1.yaml").write_text(yaml.dump(yaml_content), encoding="utf-8")
+
+    result = _query_active_ops(db, now, configs_dir=configs_dir)
+    r = result[0]
+    assert r["displayName"] == "Example Momentum"
+    assert r["family"] == "momentum"
+
+
+def test_query_active_ops_heartbeat_age_seconds_payload(tmp_path) -> None:
+    """heartbeatAgeSeconds carries the raw lock-mtime age for a live lock and
+    None when unverifiable (same gating as the heartbeat label)."""
+    import os
+    import time
+
+    from milodex.core.advisory_lock import AdvisoryLock
+    from milodex.gui.active_ops_state import _query_active_ops
+    from milodex.strategies.paper_runner_control import runner_lock_name
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+    locks_dir = tmp_path / "locks"
+    locks_dir.mkdir()
+
+    now_ts = time.time()
+    now = datetime.fromtimestamp(now_ts, tz=UTC)
+    _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(hours=1)).isoformat())
+
+    # No locks_dir → no lock surface → None.
+    assert _query_active_ops(db, now)[0]["heartbeatAgeSeconds"] is None
+
+    lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)
+    lock.acquire()
+    try:
+        t = now_ts - 30
+        os.utime(lock.path, (t, t))
+        r = _query_active_ops(db, now, locks_dir=locks_dir)[0]
+        assert r["heartbeatAgeSeconds"] is not None
+        assert 25.0 <= r["heartbeatAgeSeconds"] <= 40.0  # generous CI window
+    finally:
+        lock.release()
 
 
 def test_query_active_ops_empty_strategy_runs(tmp_path) -> None:

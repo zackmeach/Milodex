@@ -129,7 +129,6 @@ _DESK_COMPONENTS = [
     "FunnelRow.qml",
     "RollupCell.qml",
     "TapeRow.qml",
-    "RunnerSelect.qml",
     "ActivityTable.qml",
     # PR11 shared surface shells (components/). EditorialHeader has real color
     # bindings worth pinning; all three are Theme-token-clean — gate them so.
@@ -266,26 +265,6 @@ TapeRow {
 }
 """
     _run(_build_load_script(qml), "TapeRow")
-
-
-@_skip_no_qt
-def test_runner_select_loads_clean() -> None:
-    """RunnerSelect loads with runners list + current, zero QML warnings."""
-    qml = """
-import QtQuick
-import Milodex 1.0
-
-RunnerSelect {
-    runners: [
-        { id: "r1", label: "regime.daily.sma200" },
-        { id: "r2", label: "momentum.weekly.v2"  }
-    ]
-    current: "r1"
-    width: 240
-    height: 36
-}
-"""
-    _run(_build_load_script(qml), "RunnerSelect")
 
 
 @_skip_no_qt
