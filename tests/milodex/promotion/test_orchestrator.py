@@ -655,6 +655,250 @@ def test_operator_override_reason_guard_refuses_blank_recommendation():
 
 
 # ---------------------------------------------------------------------------
+# Record-only catch-up: operator_override into the YAML-claimed paper stage.
+# The ledger could never catch up to a YAML-claimed stage because the
+# same-stage transition is refused; a fully-qualified operator_override whose
+# target equals the claimed paper stage with NO promotion row at that stage is
+# admitted as a record-only catch-up. Every other same-stage shape keeps the
+# pre-existing refusal byte-identical.
+# ---------------------------------------------------------------------------
+
+
+def _catchup_request(cfg_path: Path, *, recommendation: str | None = None) -> PromoteRequest:
+    return PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation=(
+            "record-only catch-up: manifest frozen at paper, ledger has no promotion row"
+            if recommendation is None
+            else recommendation
+        ),
+        known_risks=["ledger catch-up bypasses the statistical gate"],
+        approved_by="operator",
+        run_id=None,
+        operator_override=True,
+        now=_NOW,
+    )
+
+
+def test_operator_override_catchup_into_claimed_paper_stage_records_promotion(tmp_path):
+    """YAML claims paper, no promotion row exists at paper, fully-qualified
+    operator_override targeting paper: admitted as a record-only catch-up.
+    The ledger gains a paper->paper operator_override row (+ frozen manifest),
+    the YAML is byte-identical after, and the evidence self-describes the
+    catch-up."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    result = prepare_and_record_promotion(_catchup_request(cfg_path), store)
+
+    assert isinstance(result, PromoteSuccess)
+    assert result.promotion_type == "operator_override"
+    assert result.from_stage == "paper"
+    assert result.to_stage == "paper"
+    assert result.manifest_id is not None
+    # Record-only: the YAML stage line already said paper — no content change.
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+
+    promotions = store.list_promotions_for_strategy(_NON_REGIME_ID)
+    assert len(promotions) == 1
+    assert promotions[0].promotion_type == "operator_override"
+    assert promotions[0].from_stage == "paper"
+    assert promotions[0].to_stage == "paper"
+
+    override = result.evidence.gate_check_outcome["operator_override"]
+    assert override["reason"].startswith("record-only catch-up")
+    assert override["record_only_catchup"] is True
+
+
+def test_operator_override_catchup_refused_when_promotion_record_exists(tmp_path):
+    """A promotion row at paper already exists -> the request is a true no-op
+    and keeps the pre-existing same-stage refusal byte-identical. No new rows."""
+    from milodex.core.event_store import PromotionEvent
+
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=_NON_REGIME_ID,
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="statistical",
+            approved_by="operator",
+            recorded_at=_NOW,
+        )
+    )
+    original_yaml = cfg_path.read_text(encoding="utf-8")
+
+    result = prepare_and_record_promotion(_catchup_request(cfg_path), store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_INVALID_STAGE_TRANSITION
+    assert "already at stage" in result.message
+    assert cfg_path.read_text(encoding="utf-8") == original_yaml
+    assert len(store.list_promotions_for_strategy(_NON_REGIME_ID)) == 1
+
+
+def test_operator_override_catchup_refused_after_demotion_history(tmp_path):
+    """Promoted-to-paper then demoted, YAML hand-reset to paper: a paper
+    promotion row EXISTS, so the catch-up is NOT admitted (fail closed) — the
+    same-stage refusal stands. The operator resolves by returning the YAML to
+    backtest and re-promoting through the normal path."""
+    from milodex.core.event_store import PromotionEvent
+
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=_NON_REGIME_ID,
+            from_stage="backtest",
+            to_stage="paper",
+            promotion_type="statistical",
+            approved_by="operator",
+            recorded_at=_NOW,
+        )
+    )
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=_NON_REGIME_ID,
+            from_stage="paper",
+            to_stage="backtest",
+            promotion_type="demotion",
+            approved_by="operator",
+            recorded_at=_NOW,
+        )
+    )
+
+    result = prepare_and_record_promotion(_catchup_request(cfg_path), store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_INVALID_STAGE_TRANSITION
+    assert len(store.list_promotions_for_strategy(_NON_REGIME_ID)) == 2
+
+
+def test_operator_override_catchup_admitted_despite_rows_at_other_stages(tmp_path):
+    """Ledger rows whose to_stage is NOT paper (e.g. a stage_return to
+    backtest) do not block the catch-up — only a row AT the claimed stage
+    does."""
+    from milodex.core.event_store import PromotionEvent
+
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+    store.append_promotion(
+        PromotionEvent(
+            strategy_id=_NON_REGIME_ID,
+            from_stage="idle",
+            to_stage="backtest",
+            promotion_type="stage_return",
+            approved_by="bench_gui",
+            recorded_at=_NOW,
+        )
+    )
+
+    result = prepare_and_record_promotion(_catchup_request(cfg_path), store)
+
+    assert isinstance(result, PromoteSuccess)
+    assert result.promotion_type == "operator_override"
+    rows = store.list_promotions_for_strategy(_NON_REGIME_ID)
+    assert len(rows) == 2
+
+
+def test_same_stage_refusal_without_override_flag_is_unchanged(tmp_path):
+    """PIN: the catch-up admission requires the explicit operator_override
+    flag. A statistical same-stage request keeps the pre-existing refusal
+    (also covered by test_invalid_stage_transition_returns_blocked; this pins
+    the no-promotion-row shape specifically)."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation="no override flag set",
+        known_risks=["should keep the same-stage refusal"],
+        approved_by="operator",
+        run_id=None,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_INVALID_STAGE_TRANSITION
+    assert "already at stage" in result.message
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+def test_lifecycle_exempt_same_stage_refusal_is_unchanged(tmp_path):
+    """PIN: lifecycle_exempt gets no catch-up admission — same-stage refusal
+    byte-identical."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper")
+
+    request = PromoteRequest(
+        strategy_id=_STRATEGY_ID,
+        config_path=cfg_path,
+        to_stage="paper",
+        recommendation="lifecycle exemption is not a catch-up mechanism",
+        known_risks=["should keep the same-stage refusal"],
+        approved_by="operator",
+        run_id=None,
+        lifecycle_exempt=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_INVALID_STAGE_TRANSITION
+    assert "already at stage" in result.message
+    assert store.list_promotions_for_strategy(_STRATEGY_ID) == []
+
+
+def test_operator_override_catchup_shape_with_blank_reason_keeps_same_stage_refusal(tmp_path):
+    """PIN: the catch-up predicate only ADMITS — it never re-routes a refusal.
+    An override in catch-up shape with a blank reason falls through to the
+    same-stage refusal exactly as before this change (not
+    REASON_OVERRIDE_REASON_REQUIRED)."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="paper", strategy_id=_NON_REGIME_ID)
+
+    result = prepare_and_record_promotion(_catchup_request(cfg_path, recommendation="   "), store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_INVALID_STAGE_TRANSITION
+    assert "already at stage" in result.message
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+def test_operator_override_catchup_is_paper_only(tmp_path):
+    """PIN: a same-stage override at a capital stage stays refused with the
+    pre-existing same-stage refusal — the catch-up predicate is paper-only, so
+    the request never reaches the override's own stage guard."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg_path = _write_config(tmp_path, stage="micro_live", strategy_id=_NON_REGIME_ID)
+
+    request = PromoteRequest(
+        strategy_id=_NON_REGIME_ID,
+        config_path=cfg_path,
+        to_stage="micro_live",
+        recommendation="capital-stage catch-up attempt",
+        known_risks=["must keep the same-stage refusal"],
+        approved_by="operator",
+        run_id=None,
+        operator_override=True,
+        now=_NOW,
+    )
+    result = prepare_and_record_promotion(request, store)
+
+    assert isinstance(result, PromoteBlocked)
+    assert result.reason_code == REASON_INVALID_STAGE_TRANSITION
+    assert "already at stage" in result.message
+    assert store.list_promotions_for_strategy(_NON_REGIME_ID) == []
+
+
+# ---------------------------------------------------------------------------
 # Atomicity — a transition-time failure surfaces as PromoteError, not silent partial-write
 # ---------------------------------------------------------------------------
 

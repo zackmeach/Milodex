@@ -651,6 +651,95 @@ def test_promotion_promote_operator_override_writes_promotion(tmp_path):
     assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
 
 
+def test_promotion_promote_operator_override_catchup_into_claimed_stage(tmp_path):
+    """A YAML already claiming paper with NO promotion row is admitted as a
+    record-only catch-up under --operator-override: the ledger gains a
+    paper->paper operator_override row and the YAML is byte-identical after."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_non_regime_config(config_dir, stage="paper")
+    original_yaml = config_path.read_text(encoding="utf-8")
+
+    exit_code, out, err = _run(
+        [
+            "promotion",
+            "promote",
+            _NON_REGIME_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "record-only catch-up: manifest frozen at paper, ledger has no promotion row",
+            "--risk",
+            "ledger catch-up bypasses the statistical gate",
+            "--operator-override",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code == 0, err.getvalue()
+
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    promotions = store.list_promotions()
+    assert len(promotions) == 1
+    p = promotions[0]
+    assert p.from_stage == "paper"
+    assert p.to_stage == "paper"
+    assert p.promotion_type == "operator_override"
+    assert p.evidence_json is not None
+    override = p.evidence_json["gate_check_outcome"]["operator_override"]
+    assert override["record_only_catchup"] is True
+    assert config_path.read_text(encoding="utf-8") == original_yaml
+
+
+def test_promotion_promote_operator_override_true_noop_still_refused(tmp_path):
+    """When a paper promotion row already exists, the same request is a true
+    no-op and keeps the pre-existing 'already at stage' refusal. No new rows."""
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    config_path = _write_non_regime_config(config_dir, stage="backtest")
+
+    # First: a real operator-override promotion backtest -> paper.
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _NON_REGIME_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "deliberate operator bypass for platform smoke",
+            "--risk",
+            "statistical gate deliberately skipped",
+            "--operator-override",
+        ],
+        tmp_path,
+    )
+    assert exit_code == 0, err.getvalue()
+    assert 'stage: "paper"' in config_path.read_text(encoding="utf-8")
+
+    # Second identical-target request: true no-op — refused.
+    exit_code, _, err = _run(
+        [
+            "promotion",
+            "promote",
+            _NON_REGIME_ID,
+            "--to",
+            "paper",
+            "--recommendation",
+            "attempting the same promotion again",
+            "--risk",
+            "should be refused as a true no-op",
+            "--operator-override",
+        ],
+        tmp_path,
+    )
+
+    assert exit_code != 0
+    assert "already at stage" in err.getvalue()
+    store = EventStore(tmp_path / "data" / "milodex.db")
+    assert len(store.list_promotions()) == 1
+
+
 def test_promotion_promote_operator_override_refused_beyond_paper(tmp_path):
     """--operator-override is paper-only; a capital-stage target is refused with
     no durable write."""
