@@ -1,5 +1,10 @@
 # Founder GUI Walk Script — 2026-07-11
 
+> **SUPERSEDED 2026-07-22 by [`2026-07-24-founder-gui-walk-script.md`](2026-07-24-founder-gui-walk-script.md).**
+> This version predates the GUI cleanup: §3 walks DesignSystemShowcase, which
+> was deleted in #370, and the Bench navigation predates the #377 template-group
+> rollup. Walk the refreshed script; keep this file as history only.
+
 A step-by-step operator walk for the founder's supervised GUI window, covering
 the manual checks that automated screenshots/tests cannot exercise: first-run
 empty state, the design-system showcase gating, missing/invalid broker
