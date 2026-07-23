@@ -454,13 +454,28 @@ proof is the remaining M1 gate event (§2).
   reconciliation) + an isolated worktree/scratch evidence state — **not on M1**.
   **D-5** (durability labeling) decided here.
 
-### M4 — Recovery & failure-mode proof  *(coarse)*
+### M4 — Recovery & failure-mode proof  *(active; opened 2026-07-11 at the M2 close)*
 
 - **Outcome.** A drill matrix with PASS evidence for: stale market data, locked/
   corrupt SQLite DB, broker outage/API error, dead/wedged runner; plus first-launch/
   clean-room, controlled-stop-on-wedged, and kill-switch trip→reset — each an injected
   fault + observable operator-facing message + durable log (unit-test coverage is not
   sufficient). Absorbs usage-burn F1/F2/F3 and the D-7-adjudicated fault-mode docs.
+- **Gate-review staging (2026-07-22 — evidence links only; the founder closes the
+  gate, not this note).** Drill matrix 8/8 PASS:
+  [`drills/2026-07-11-m4-drill-matrix.md`](drills/2026-07-11-m4-drill-matrix.md)
+  (#355, clean-room hermeticity re-verified post-#362). Draft closure
+  retrospective with the per-item PROVEN/PARTIAL/OPEN table and the verified
+  2026-07-13→07-22 live evidence (exit-blocker gauntlet #363/#364/#374/#378;
+  entries+exits filled with reconcile CLEAN diff=0; recovery from schedule
+  death/orphans/crash; kill switch untouched):
+  [`architecture/roadmaps/2026-07-24-m4-closure-retrospective.md`](architecture/roadmaps/2026-07-24-m4-closure-retrospective.md).
+  Draft autonomy-boundary review (all seven VISION items walked):
+  [`architecture/roadmaps/2026-07-24-m4-boundary-review.md`](architecture/roadmaps/2026-07-24-m4-boundary-review.md).
+  Refreshed founder walk script (HR-4/HR-5 + observables, 20–30 min):
+  [`drills/2026-07-24-founder-gui-walk-script.md`](drills/2026-07-24-founder-gui-walk-script.md).
+  Remaining before close: founder GUI walks, F2 lifecycle rehearsal on current
+  code, boundary-review signature.
 
 ### M5 — Continuity, shutdown & multi-session reliability  *(coarse)*
 
