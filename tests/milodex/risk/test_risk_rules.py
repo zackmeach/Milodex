@@ -1807,7 +1807,10 @@ def test_data_staleness_1d_matching_session_fresh_18h_old(monkeypatch):
 
 def test_data_staleness_1d_none_session_fails_closed(monkeypatch):
     """R-OPS-007. Same fresh 1D bar, but the exchange calendar could not resolve the
-    latest session (None) -> BLOCKED (fail-closed)."""
+    latest session (None) -> BLOCKED (fail-closed), with the transient-specific
+    ``calendar_unavailable`` reason code — NOT the permanent ``stale_market_data``
+    umbrella, which the drain retire branch (#381) keys on. The check still
+    fails; only the reason code differs."""
     fixed_now = datetime(2026, 5, 11, 14, 0, 0, tzinfo=UTC)
     _freeze_now(monkeypatch, fixed_now)
     session = date(2026, 5, 8)
@@ -1821,7 +1824,9 @@ def test_data_staleness_1d_none_session_fails_closed(monkeypatch):
     )
     result = check_result(decision, "data_staleness")
     assert result.passed is False
-    assert result.reason_code == "stale_market_data"
+    assert result.reason_code == "calendar_unavailable"
+    assert decision.allowed is False
+    assert "stale_market_data" not in decision.reason_codes
 
 
 def test_data_staleness_1d_session_mismatch_dead_feed_blocked(monkeypatch):

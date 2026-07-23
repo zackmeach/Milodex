@@ -23,7 +23,14 @@ only a defense-in-depth ceiling:
 
   - **Fail closed** (stale) when the exchange calendar could not resolve the
     latest completed session (``context.latest_completed_session is None``) —
-    an unavailable or ambiguous calendar must never license a trade.
+    an unavailable or ambiguous calendar must never license a trade. This
+    sub-cause is TRANSIENT (the resolution is already retry-wrapped upstream,
+    so ``None`` means a sustained outage — but one that can still heal within
+    the session), unlike the two permanent sub-causes below, so its verdict
+    carries the distinct reason code ``calendar_unavailable`` instead of the
+    ``stale_market_data`` umbrella. Consumers that treat a staleness veto as
+    permanent (the drain retire branch, #381) key on ``stale_market_data``
+    only; the fail-closed veto itself is identical for both codes.
   - Otherwise FRESH iff the bar's session date equals the latest completed
     session **and** the bar is within a generous seven-calendar-day ceiling.
     The ceiling is pure defense in depth against a dead feed whose session
@@ -63,12 +70,20 @@ class StalenessVerdict:
 
     ``is_stale`` is the single bit both gates branch on. ``detail`` is a
     human-readable reason; ``age_seconds`` is the bar age in seconds (or
-    ``None`` when no bar was available).
+    ``None`` when no bar was available). ``reason_code`` is the veto reason
+    the ``data_staleness`` check emits when stale (``None`` when fresh):
+    ``calendar_unavailable`` for the transient calendar-resolution failure,
+    ``stale_market_data`` for every permanent sub-cause. The disable-condition
+    gate deliberately ignores it (it branches on ``is_stale`` alone), so the
+    code split cannot loosen ``data_quality_issue``. The no-bar case also
+    carries ``stale_market_data``, but the evaluator pre-empts it with its own
+    ``no_latest_bar`` code before consulting the verdict.
     """
 
     is_stale: bool
     detail: str
     age_seconds: int | None
+    reason_code: str | None = None
 
 
 def _is_daily(context: EvaluationContext) -> bool:
@@ -91,6 +106,7 @@ def staleness_verdict(context: EvaluationContext, now: datetime) -> StalenessVer
             is_stale=True,
             detail="no latest bar available",
             age_seconds=None,
+            reason_code="stale_market_data",
         )
 
     # Normalize to UTC-aware before subtracting: a naive bar timestamp would
@@ -107,11 +123,13 @@ def staleness_verdict(context: EvaluationContext, now: datetime) -> StalenessVer
         latest_session = context.latest_completed_session
         if latest_session is None:
             # Fail closed: an unavailable or ambiguous exchange calendar must
-            # never license a 1D submit.
+            # never license a 1D submit. TRANSIENT sub-cause — distinct reason
+            # code so permanent-veto consumers (drain retire, #381) don't act.
             return StalenessVerdict(
                 is_stale=True,
                 detail="exchange calendar unavailable; cannot confirm latest session (fail-closed)",
                 age_seconds=age_seconds,
+                reason_code="calendar_unavailable",
             )
         # PRECONDITION: ``bar_ts.date()`` must be the bar's SESSION date. This
         # holds for a daily session-stamped bar (Alpaca daily bars are stamped
@@ -135,6 +153,7 @@ def staleness_verdict(context: EvaluationContext, now: datetime) -> StalenessVer
                     f"completed session {latest_session.isoformat()}"
                 ),
                 age_seconds=age_seconds,
+                reason_code="stale_market_data",
             )
         if age > DAILY_STALENESS_CEILING:
             return StalenessVerdict(
@@ -144,6 +163,7 @@ def staleness_verdict(context: EvaluationContext, now: datetime) -> StalenessVer
                     f"(beyond {DAILY_STALENESS_CEILING.days}-day ceiling)"
                 ),
                 age_seconds=age_seconds,
+                reason_code="stale_market_data",
             )
         return StalenessVerdict(
             is_stale=False,
@@ -158,6 +178,7 @@ def staleness_verdict(context: EvaluationContext, now: datetime) -> StalenessVer
             is_stale=True,
             detail=f"latest bar is stale by {age_seconds} seconds",
             age_seconds=age_seconds,
+            reason_code="stale_market_data",
         )
     return StalenessVerdict(
         is_stale=False,

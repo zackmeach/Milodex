@@ -462,11 +462,16 @@ class RiskEvaluator:
             )
         verdict = staleness_verdict(context, datetime.now(tz=UTC))
         if verdict.is_stale:
+            # The verdict carries the reason code: ``calendar_unavailable`` for
+            # the transient calendar-resolution failure, ``stale_market_data``
+            # for the permanent sub-causes. Both FAIL identically (fail-closed
+            # unchanged); the split only lets permanent-veto consumers (the
+            # drain retire branch, #381) leave the transient case retryable.
             return RiskCheckResult(
                 name="data_staleness",
                 passed=False,
                 message=f"Latest bar rejected: {verdict.detail}.",
-                reason_code="stale_market_data",
+                reason_code=verdict.reason_code,
             )
         return RiskCheckResult("data_staleness", True, "Latest bar is within staleness limits.")
 

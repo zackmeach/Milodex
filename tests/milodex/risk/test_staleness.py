@@ -77,19 +77,28 @@ def test_no_bar_is_stale_with_none_age():
     verdict = staleness_verdict(ctx, _NOW)
     assert verdict.is_stale is True
     assert verdict.age_seconds is None
+    # The evaluator pre-empts this case with its own ``no_latest_bar`` code
+    # before consulting the verdict; the verdict carries the legacy umbrella.
+    assert verdict.reason_code == "stale_market_data"
 
 
 def test_1d_matching_session_within_ceiling_is_fresh():
     ctx = _ctx(latest_bar=_daily_bar(_SESSION), bar_size="1D", latest_completed_session=_SESSION)
     verdict = staleness_verdict(ctx, _NOW)
     assert verdict.is_stale is False
+    assert verdict.reason_code is None
 
 
-def test_1d_none_session_fails_closed():
+def test_1d_none_session_fails_closed_with_calendar_unavailable_code():
+    """Sub-cause (c): a calendar-resolution failure still FAILS (fail-closed
+    unchanged) but carries the transient-specific ``calendar_unavailable``
+    reason code, NOT the permanent ``stale_market_data`` umbrella — the drain
+    retire branch (#381) keys on the latter and must not retire on the former."""
     ctx = _ctx(latest_bar=_daily_bar(_SESSION), bar_size="1D", latest_completed_session=None)
     verdict = staleness_verdict(ctx, _NOW)
     assert verdict.is_stale is True
     assert "fail-closed" in verdict.detail
+    assert verdict.reason_code == "calendar_unavailable"
 
 
 def test_1d_session_mismatch_is_stale():
@@ -100,6 +109,7 @@ def test_1d_session_mismatch_is_stale():
     )
     verdict = staleness_verdict(ctx, _NOW)
     assert verdict.is_stale is True
+    assert verdict.reason_code == "stale_market_data"
 
 
 def test_1d_beyond_ceiling_is_stale_even_if_date_matches():
@@ -109,13 +119,18 @@ def test_1d_beyond_ceiling_is_stale_even_if_date_matches():
     ctx = _ctx(latest_bar=_daily_bar(_SESSION), bar_size="1D", latest_completed_session=_SESSION)
     verdict = staleness_verdict(ctx, far_now)
     assert verdict.is_stale is True
+    assert verdict.reason_code == "stale_market_data"
 
 
 def test_non_1d_uses_300s_budget_fresh_then_stale():
     fresh = _ctx(latest_bar=_bar_aged(299), bar_size="5Min", latest_completed_session=None)
-    assert staleness_verdict(fresh, _NOW).is_stale is False
+    fresh_verdict = staleness_verdict(fresh, _NOW)
+    assert fresh_verdict.is_stale is False
+    assert fresh_verdict.reason_code is None
     stale = _ctx(latest_bar=_bar_aged(301), bar_size="5Min", latest_completed_session=None)
-    assert staleness_verdict(stale, _NOW).is_stale is True
+    stale_verdict = staleness_verdict(stale, _NOW)
+    assert stale_verdict.is_stale is True
+    assert stale_verdict.reason_code == "stale_market_data"
 
 
 def test_none_config_uses_300s_budget_not_1d_path():

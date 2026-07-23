@@ -130,6 +130,13 @@ def _evaluate_data_quality(context: EvaluationContext) -> ConditionEvaluation:
     this disable condition cannot diverge by construction (the session-aware
     1D rule and the 300s non-1D budget both live in one place). ``now`` is
     read from this module's ``datetime`` (kept independently monkeypatchable).
+
+    Deliberately consumes only ``verdict.is_stale`` — NOT the verdict's reason
+    code — so the ``calendar_unavailable`` / ``stale_market_data`` split (a
+    transient-vs-permanent distinction for the drain retire branch, #381)
+    cannot loosen this gate: a calendar-resolution failure trips
+    ``data_quality_issue`` exactly as any other stale verdict (fail-closed
+    parity preserved).
     """
     verdict = staleness_verdict(context, datetime.now(tz=UTC))
     return ConditionEvaluation(active=verdict.is_stale, detail=verdict.detail)
