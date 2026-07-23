@@ -1066,8 +1066,10 @@ class StrategyRunner:
         """Terminally drop a DECIDED ENTRY at the drain + record a per-row audit row.
 
         Fix #3: a DECIDED entry drop — not-tradable/halt, signal no-match/side-flip,
-        or a re-derived/resized 0-share quantity — is a determination the
-        strategy/broker made on the FROZEN locked bars. Leaving the row ``queued``
+        a re-derived/resized 0-share quantity, or a post-submit staleness veto
+        (``stale_locked_veto``: the frozen locked bar can never freshen, so the
+        risk veto is permanent) — is a determination made on the FROZEN locked
+        bars. Leaving the row ``queued``
         re-drains it every open until TTL for no reason. Mark it ``'dropped'``
         (terminal: excluded from ``get_active_queued_intents`` and untouched by the
         expiry sweep) and write a ``no_trade`` explanation keyed to the drain
@@ -1312,6 +1314,12 @@ class StrategyRunner:
         retrying every poll. The vetoed row is retired for good by supersession at
         the next lock-in of the same logical intent (``supersede_queued_intents``),
         or by TTL expiry — no terminal-veto status is introduced.
+
+        EXCEPTION — staleness veto (2026-07-23): a veto whose reason codes include
+        ``stale_market_data`` evaluates the FROZEN locked-in decision bar, so it can
+        never clear. Both classes retire durably after the FIRST such veto: EXIT
+        alerts (``stale_locked_veto``) + ``obsolete``; ENTRY takes the terminal
+        decided-drop path (``dropped`` + audit row, no alert).
         """
         intents = self._event_store.get_active_queued_intents(
             self._strategy_id,
@@ -1542,6 +1550,33 @@ class StrategyRunner:
             # alert is observational; do not mutate status further. ENTRY stays silent.
             if queued.intent_class == "exit" and result.status == ExecutionStatus.REJECTED:
                 self._emit_exit_drop_alert(queued, reason="submit_rejected")
+            # A staleness veto (`stale_market_data`) on a drained intent is
+            # PERMANENT by construction: the risk gate evaluates the
+            # reconstructed locked-in decision bar (threaded as
+            # `latest_bar_override`), which is frozen in the row — a fixed bar
+            # only ever gets staler, so retrying can never succeed. Observed
+            # 2026-07-23: intents locked at the 7/21 close drained after a
+            # skipped session (7/22 no-op), were correctly vetoed, then retried
+            # every open poll for hours (hundreds of blocked explanations).
+            # Retire on the FIRST such veto. EXIT: alert with the DISTINCT
+            # reason `stale_locked_veto` + `obsolete` — the strategy re-emits a
+            # fresh exit at the next close-eval (the existing recovery model).
+            # ENTRY: terminal drop via the decided-entry bookkeeping (audit
+            # row, no alert spam). Transient data problems are untouched: the
+            # #374 no-fresh-price EXIT retry never reaches submit, and
+            # `no_latest_bar` / `idempotency_suppressed` /
+            # `submit_serialization_unavailable` carry their own codes.
+            if (
+                result.status == ExecutionStatus.BLOCKED
+                and result.risk_decision is not None
+                and "stale_market_data" in result.risk_decision.reason_codes
+            ):
+                if queued.intent_class == "exit":
+                    self._emit_exit_drop_alert(queued, reason="stale_locked_veto")
+                    self._event_store.mark_queued_intent_obsolete(queued.id)
+                else:
+                    self._mark_drain_entry_dropped(queued, decision_bar, reason="stale_locked_veto")
+                continue
             # A BLOCKED ENTRY (pre-CAS risk veto that leaves the row 'queued', OR an
             # idempotency-suppressed race-loss where another process already consumed
             # the row) must not re-submit every ~60s open poll for the rest of this
