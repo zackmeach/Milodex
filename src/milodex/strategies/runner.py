@@ -1319,7 +1319,13 @@ class StrategyRunner:
         ``stale_market_data`` evaluates the FROZEN locked-in decision bar, so it can
         never clear. Both classes retire durably after the FIRST such veto: EXIT
         alerts (``stale_locked_veto``) + ``obsolete``; ENTRY takes the terminal
-        decided-drop path (``dropped`` + audit row, no alert).
+        decided-drop path (``dropped`` + audit row, no alert). The TRANSIENT
+        staleness sub-cause — the exchange calendar could not resolve the latest
+        completed session — carries its own reason code ``calendar_unavailable``
+        (still fail-closed) and is deliberately OUTSIDE this exception: a calendar
+        outage can heal mid-session, so such an intent keeps the pre-retirement
+        behavior above (EXIT retries every poll; ENTRY joins the in-memory veto
+        dedup) instead of being retired on a recoverable condition.
         """
         intents = self._event_store.get_active_queued_intents(
             self._strategy_id,
@@ -1563,9 +1569,15 @@ class StrategyRunner:
             # fresh exit at the next close-eval (the existing recovery model).
             # ENTRY: terminal drop via the decided-entry bookkeeping (audit
             # row, no alert spam). Transient data problems are untouched: the
-            # #374 no-fresh-price EXIT retry never reaches submit, and
+            # #374 no-fresh-price EXIT retry never reaches submit;
             # `no_latest_bar` / `idempotency_suppressed` /
-            # `submit_serialization_unavailable` carry their own codes.
+            # `submit_serialization_unavailable` carry their own codes; and the
+            # TRANSIENT staleness sub-cause — calendar resolution failure —
+            # carries `calendar_unavailable` (not `stale_market_data`), so it
+            # falls through this gate to the pre-retirement handling below
+            # (EXIT retries every poll and proceeds once the calendar recovers;
+            # ENTRY joins the in-memory veto dedup). The staleness CHECK still
+            # fails closed for it — only the retirement is withheld.
             if (
                 result.status == ExecutionStatus.BLOCKED
                 and result.risk_decision is not None

@@ -220,6 +220,46 @@ def test_stale_bar_activates_data_quality_condition():
     assert "data_quality_issue" in check.message
 
 
+def test_calendar_unavailable_still_activates_data_quality_condition():
+    """Fail-closed parity pin for the ``calendar_unavailable`` reason-code split:
+    a 1D context whose exchange calendar could not resolve
+    (``latest_completed_session=None``) must STILL trip ``data_quality_issue``
+    (the disable condition consumes only the shared verdict's stale bit, not
+    the veto reason code — the split must not weaken this gate)."""
+    today = datetime.now(tz=UTC).date()
+    fresh_daily_bar = Bar(
+        timestamp=datetime(today.year, today.month, today.day, tzinfo=UTC),
+        open=100.0,
+        high=101.0,
+        low=99.0,
+        close=100.0,
+        volume=1_000,
+        vwap=100.0,
+    )
+    config = StrategyExecutionConfig(
+        name="daily_calendar_none",
+        enabled=True,
+        stage="paper",
+        max_position_pct=0.20,
+        max_positions=3,
+        daily_loss_cap_pct=0.03,
+        path=Path("daily_calendar_none.yaml"),
+        family="momentum",
+        bar_size="1D",
+    )
+    decision = RiskEvaluator().evaluate(
+        make_context(
+            strategy_config=config,
+            latest_bar=fresh_daily_bar,
+            latest_completed_session=None,  # calendar unavailable / ambiguous
+        )
+    )
+    check = check_result(decision, "disable_conditions")
+    assert check.passed is False
+    assert "data_quality_issue" in check.message
+    assert "disable_condition_active" in decision.reason_codes
+
+
 def test_drawdown_breach_activates_for_eight_condition_family_only():
     """R-STR-014: drawdown breach is a meanrev/momentum/breakout default,
     not a regime default — the catalog is family-scoped."""
