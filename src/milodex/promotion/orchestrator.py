@@ -144,6 +144,51 @@ class PromoteError:
 PromoteResult = PromoteSuccess | PromoteBlocked | PromoteError
 
 
+def _is_record_only_catchup(
+    request: PromoteRequest,
+    *,
+    from_stage: str,
+    to_stage: str,
+    event_store: EventStore,
+) -> bool:
+    """True iff the request is an admissible record-only catch-up.
+
+    The promotion ledger can never catch up to a YAML-claimed stage because
+    ``validate_stage_transition`` refuses same-stage transitions — a config
+    whose YAML claims ``paper`` with no promotion row (e.g. manifest frozen
+    manually, promotion never recorded) is permanently unrecordable. This
+    predicate admits exactly that shape, and nothing else:
+
+    1. ``operator_override`` is set (an explicit operator act — the general
+       gate bypass of ADR 0058, with all its constraints still enforced by
+       ``_check_bypass_admissibility`` downstream);
+    2. the target stage equals the YAML-claimed stage;
+    3. that stage is ``paper`` (the only stage an operator override may
+       touch — capital stages belong to the autonomy boundary);
+    4. the override carries its required non-blank reason; and
+    5. NO promotion row with ``to_stage == paper`` exists for the strategy.
+
+    Conditions 1-4 are part of the predicate deliberately so it can only
+    ADMIT — it never re-routes a refusal. Any same-stage request failing one
+    of them falls through to the pre-existing same-stage refusal byte-for-byte
+    (an unqualified override, a lifecycle-exempt request, a capital-stage
+    claim, a blank reason). Condition 5 fails closed on ANY prior row at the
+    claimed stage, including a promoted-then-demoted history — a true no-op
+    keeps its refusal, and a demoted strategy re-claiming paper in YAML must
+    return through the normal path.
+    """
+    if not request.operator_override:
+        return False
+    if to_stage != STAGE_PAPER or from_stage != to_stage:
+        return False
+    if not request.recommendation or not request.recommendation.strip():
+        return False
+    return not any(
+        promotion.to_stage == to_stage
+        for promotion in event_store.list_promotions_for_strategy(request.strategy_id)
+    )
+
+
 def _check_bypass_admissibility(
     request: PromoteRequest,
     *,
@@ -230,6 +275,8 @@ def _build_gate_check_outcome(
     request: PromoteRequest,
     gate_result: PromotionCheckResult,
     lifecycle_criteria_result: LifecycleCriteriaResult | None = None,
+    *,
+    record_only_catchup: bool = False,
 ) -> dict[str, Any]:
     """Serialize the durable gate outcome for the evidence package (ADR 0058).
 
@@ -254,6 +301,12 @@ def _build_gate_check_outcome(
         outcome["operator_override"] = {
             "reason": (request.recommendation or "").strip(),
         }
+        if record_only_catchup:
+            # Additive marker: the durable evidence self-describes a
+            # record-only catch-up (from_stage == to_stage; the ledger caught
+            # up to the YAML-claimed stage). Absent on a regular override so
+            # existing rows keep their shape.
+            outcome["operator_override"]["record_only_catchup"] = True
         return outcome
 
     if request.lifecycle_exempt:
@@ -303,15 +356,25 @@ def prepare_and_record_promotion(
     from_stage = config.stage
     to_stage = request.to_stage
 
-    try:
-        validate_stage_transition(from_stage, to_stage)
-    except ValueError as exc:
-        return PromoteBlocked(
-            reason_code=REASON_INVALID_STAGE_TRANSITION,
-            message=str(exc),
-            from_stage=from_stage,
-            to_stage=to_stage,
-        )
+    # Record-only catch-up (operator_override into the YAML-claimed paper
+    # stage with no promotion row at that stage): skip ONLY the same-stage
+    # refusal — every downstream step (override admissibility, evidence,
+    # atomic transition) runs unchanged, the ledger gains a paper->paper
+    # operator_override row + frozen manifest, and the YAML rewrite is
+    # content-identical. Read-only event-store query; no side effects here.
+    record_only_catchup = _is_record_only_catchup(
+        request, from_stage=from_stage, to_stage=to_stage, event_store=event_store
+    )
+    if not record_only_catchup:
+        try:
+            validate_stage_transition(from_stage, to_stage)
+        except ValueError as exc:
+            return PromoteBlocked(
+                reason_code=REASON_INVALID_STAGE_TRANSITION,
+                message=str(exc),
+                from_stage=from_stage,
+                to_stage=to_stage,
+            )
 
     # D-4 (ADR 0058) gate-bypass admissibility. These refusals are fail-closed
     # and evaluated BEFORE any metric lookup — a request that names two
@@ -418,7 +481,10 @@ def prepare_and_record_promotion(
         known_risks=list(request.known_risks),
         promotion_type=gate_result.promotion_type,
         gate_check_outcome=_build_gate_check_outcome(
-            request, gate_result, lifecycle_criteria_result
+            request,
+            gate_result,
+            lifecycle_criteria_result,
+            record_only_catchup=record_only_catchup,
         ),
         metrics_snapshot=metrics_snapshot,
         event_store=event_store,
