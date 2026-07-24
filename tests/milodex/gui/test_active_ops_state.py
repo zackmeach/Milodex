@@ -248,30 +248,42 @@ def _seed_run(
 
 def _seed_explanation(
     db: Path,
-    session_id: str,
+    session_id: str | None,
     recorded_at: str,
     *,
+    strategy_name: str | None = None,
     decision_type: str = "submit",
     status: str = "submitted",
     risk_allowed: int = 1,
+    backtest_run_id: int | None = None,
 ) -> None:
     conn = sqlite3.connect(str(db))
     conn.execute(
         """
         INSERT INTO explanations (
-            session_id, recorded_at, strategy_stage,
+            session_id, recorded_at, strategy_name, strategy_stage,
             decision_type, status, symbol, side, quantity,
             order_type, time_in_force, submitted_by, market_open,
             account_equity, account_cash, account_portfolio_value, account_daily_pnl,
-            risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json
+            risk_allowed, risk_summary, reason_codes_json, risk_checks_json, context_json,
+            backtest_run_id
         )
-        VALUES (?, ?, 'entry',
+        VALUES (?, ?, ?, 'entry',
                 ?, ?, 'SPY', 'buy', 1.0,
                 'market', 'day', 'test', 1,
                 10000.0, 10000.0, 10000.0, 0.0,
-                ?, 'ok', '[]', '{}', '{}')
+                ?, 'ok', '[]', '{}', '{}',
+                ?)
         """,
-        (session_id, recorded_at, decision_type, status, risk_allowed),
+        (
+            session_id,
+            recorded_at,
+            strategy_name,
+            decision_type,
+            status,
+            risk_allowed,
+            backtest_run_id,
+        ),
     )
     conn.commit()
     conn.close()
@@ -451,8 +463,8 @@ def test_query_active_ops_last_eval_from_explanations(tmp_path) -> None:
 
     earlier = (now - timedelta(minutes=5)).isoformat()
     latest = (now - timedelta(minutes=1)).isoformat()
-    _seed_explanation(db, "sess-001", earlier)
-    _seed_explanation(db, "sess-001", latest)
+    _seed_explanation(db, "sess-001", earlier, strategy_name="strat.a.v1")
+    _seed_explanation(db, "sess-001", latest, strategy_name="strat.a.v1")
 
     result = _query_active_ops(db, now)
     assert result[0]["lastEval"] == latest
@@ -462,11 +474,15 @@ def test_query_active_ops_last_eval_from_explanations(tmp_path) -> None:
 # Fleet-table today counts (evaluations / vetoes / submits per runner row)
 #
 # Classification contract (mirrors the RiskThroughputState funnel):
-#   evaluations — every explanation row for the runner's session today
+#   evaluations — every explanation row for the STRATEGY today (all of its
+#                 sessions — a relaunched strategy keeps its earlier same-day
+#                 sessions' counts)
 #   vetoes      — risk_allowed = 0 (the risk layer said no)
 #   submits     — status = 'submitted' (an order actually went to the broker;
 #                 a blocked decision_type='submit' row must NOT count)
-# "Today" is the UTC calendar day of the query's `now`.
+# "Today" is the UTC calendar day of the query's `now`.  Scope guards:
+# session_id IS NOT NULL (synthetic fault-injection / legacy rows out) and
+# backtest_run_id IS NULL (backtest rows out).
 # ---------------------------------------------------------------------------
 
 
@@ -483,17 +499,89 @@ def test_query_active_ops_counts_classify_vetoes_and_submits(tmp_path) -> None:
 
     t = (now - timedelta(minutes=10)).isoformat()
     # A real broker submit.
-    _seed_explanation(db, "sess-001", t, decision_type="submit", status="submitted")
+    _seed_explanation(
+        db, "sess-001", t, strategy_name="strat.a.v1", decision_type="submit", status="submitted"
+    )
     # A risk veto (blocked submit): risk_allowed=0 — veto, NOT a submit.
-    _seed_explanation(db, "sess-001", t, decision_type="submit", status="rejected", risk_allowed=0)
+    _seed_explanation(
+        db,
+        "sess-001",
+        t,
+        strategy_name="strat.a.v1",
+        decision_type="submit",
+        status="rejected",
+        risk_allowed=0,
+    )
     # A no-signal evaluation: neither veto nor submit.
-    _seed_explanation(db, "sess-001", t, decision_type="no_trade", status="no_signal")
+    _seed_explanation(
+        db, "sess-001", t, strategy_name="strat.a.v1", decision_type="no_trade", status="no_signal"
+    )
 
     result = _query_active_ops(db, now)
     r = result[0]
     assert r["evalsToday"] == 3
     assert r["vetoesToday"] == 1
     assert r["submitsToday"] == 1
+
+
+def test_query_active_ops_counts_sum_across_same_day_sessions(tmp_path) -> None:
+    """Relaunch resilience (review fix): a strategy hard-killed and relaunched
+    the same UTC day keeps its earlier session's activity in the Today counts.
+
+    Seeds explanations under BOTH an ended morning session and the live
+    afternoon session of ONE strategy; the Today columns must SUM across both,
+    and lastEval must be the max across both sessions.
+    """
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 20, 0, 0, tzinfo=UTC)
+    morning_start = datetime(2026, 5, 16, 9, 0, 0, tzinfo=UTC).isoformat()
+    morning_end = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC).isoformat()
+    afternoon_start = datetime(2026, 5, 16, 13, 0, 0, tzinfo=UTC).isoformat()
+
+    _seed_run(
+        db,
+        "strat.a.v1",
+        "sess-morning",
+        morning_start,
+        ended_at=morning_end,
+        exit_reason="orphan_recovered",
+    )
+    _seed_run(db, "strat.a.v1", "sess-afternoon", afternoon_start)
+
+    # Morning session: one submit + one veto.
+    t_morning = datetime(2026, 5, 16, 10, 0, 0, tzinfo=UTC).isoformat()
+    _seed_explanation(db, "sess-morning", t_morning, strategy_name="strat.a.v1")
+    _seed_explanation(
+        db,
+        "sess-morning",
+        t_morning,
+        strategy_name="strat.a.v1",
+        status="rejected",
+        risk_allowed=0,
+    )
+    # Afternoon (latest) session: one no-signal evaluation.
+    t_afternoon = datetime(2026, 5, 16, 14, 0, 0, tzinfo=UTC).isoformat()
+    _seed_explanation(
+        db,
+        "sess-afternoon",
+        t_afternoon,
+        strategy_name="strat.a.v1",
+        decision_type="no_trade",
+        status="no_signal",
+    )
+
+    result = _query_active_ops(db, now)
+    assert len(result) == 1  # one row per strategy — the latest session
+    r = result[0]
+    # Session-keyed counts would read (1, 0, 0) here — the defect.
+    assert r["evalsToday"] == 3
+    assert r["vetoesToday"] == 1
+    assert r["submitsToday"] == 1
+    assert r["lastEval"] == t_afternoon
 
 
 def test_query_active_ops_counts_exclude_prior_utc_days(tmp_path) -> None:
@@ -509,8 +597,10 @@ def test_query_active_ops_counts_exclude_prior_utc_days(tmp_path) -> None:
 
     yesterday = datetime(2026, 5, 15, 23, 59, 0, tzinfo=UTC).isoformat()
     today = datetime(2026, 5, 16, 1, 0, 0, tzinfo=UTC).isoformat()
-    _seed_explanation(db, "sess-001", yesterday, status="rejected", risk_allowed=0)
-    _seed_explanation(db, "sess-001", today)
+    _seed_explanation(
+        db, "sess-001", yesterday, strategy_name="strat.a.v1", status="rejected", risk_allowed=0
+    )
+    _seed_explanation(db, "sess-001", today, strategy_name="strat.a.v1")
 
     result = _query_active_ops(db, now)
     r = result[0]
@@ -521,7 +611,7 @@ def test_query_active_ops_counts_exclude_prior_utc_days(tmp_path) -> None:
 
 
 def test_query_active_ops_counts_zero_with_no_explanations(tmp_path) -> None:
-    """A session with zero explanation rows reads 0 / 0 / 0, not None."""
+    """A strategy with zero explanation rows reads 0 / 0 / 0, not None."""
     from milodex.gui.active_ops_state import _query_active_ops
 
     db = tmp_path / "ops.db"
@@ -537,8 +627,8 @@ def test_query_active_ops_counts_zero_with_no_explanations(tmp_path) -> None:
     assert r["submitsToday"] == 0
 
 
-def test_query_active_ops_counts_scoped_per_session(tmp_path) -> None:
-    """Counts are keyed on each runner's own session — no cross-strategy bleed."""
+def test_query_active_ops_counts_scoped_per_strategy(tmp_path) -> None:
+    """Counts are keyed on each row's own strategy — no cross-strategy bleed."""
     from milodex.gui.active_ops_state import _query_active_ops
 
     db = tmp_path / "ops.db"
@@ -550,14 +640,69 @@ def test_query_active_ops_counts_scoped_per_session(tmp_path) -> None:
     _seed_run(db, "strat.b.v1", "sess-b", t)
 
     recorded = (now - timedelta(minutes=5)).isoformat()
-    _seed_explanation(db, "sess-a", recorded)
-    _seed_explanation(db, "sess-a", recorded, status="rejected", risk_allowed=0)
+    _seed_explanation(db, "sess-a", recorded, strategy_name="strat.a.v1")
+    _seed_explanation(
+        db, "sess-a", recorded, strategy_name="strat.a.v1", status="rejected", risk_allowed=0
+    )
 
     result = _query_active_ops(db, now)
     row_a = next(r for r in result if r["strategyId"] == "strat.a.v1")
     row_b = next(r for r in result if r["strategyId"] == "strat.b.v1")
     assert (row_a["evalsToday"], row_a["vetoesToday"], row_a["submitsToday"]) == (2, 1, 1)
     assert (row_b["evalsToday"], row_b["vetoesToday"], row_b["submitsToday"]) == (0, 0, 0)
+
+
+def test_query_active_ops_counts_exclude_null_session_and_backtest_rows(tmp_path) -> None:
+    """Scope guards: a synthetic fault-injection row (session_id=NULL — the
+    promotion/fault_injection.py signature) and a backtest row (non-NULL
+    backtest_run_id, which always rides WITH a session_id) never inflate the
+    Today counts, even though both carry the strategy's canonical id in
+    strategy_name."""
+    from milodex.gui.active_ops_state import _query_active_ops
+
+    db = tmp_path / "ops.db"
+    _create_fixture_db(db)
+
+    now = datetime(2026, 5, 16, 12, 0, 0, tzinfo=UTC)
+    _seed_run(db, "strat.a.v1", "sess-001", (now - timedelta(hours=2)).isoformat())
+
+    t = (now - timedelta(minutes=10)).isoformat()
+    # One genuine live evaluation.
+    _seed_explanation(db, "sess-001", t, strategy_name="strat.a.v1")
+    # Synthetic fault-injection veto: session_id=None.
+    _seed_explanation(
+        db,
+        None,
+        t,
+        strategy_name="strat.a.v1",
+        decision_type="synthetic_fault_injection",
+        status="rejected",
+        risk_allowed=0,
+    )
+    # Backtest rows: carry a session_id AND a backtest_run_id.
+    _seed_explanation(
+        db,
+        "bt-run-uuid:w1",
+        t,
+        strategy_name="strat.a.v1",
+        decision_type="backtest_fill",
+        risk_allowed=0,
+        backtest_run_id=999,
+    )
+    _seed_explanation(
+        db,
+        "bt-run-uuid:w1",
+        t,
+        strategy_name="strat.a.v1",
+        decision_type="backtest_fill",
+        backtest_run_id=999,
+    )
+
+    result = _query_active_ops(db, now)
+    r = result[0]
+    assert r["evalsToday"] == 1
+    assert r["vetoesToday"] == 0
+    assert r["submitsToday"] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1117,7 +1262,9 @@ def test_query_active_ops_heartbeat_fresh_lock_on_schedule(tmp_path) -> None:
     _seed_run(db, "strat.a.v1", "sess-001", started)
 
     # Explanation recorded 6 hours ago — old logic would report "overdue".
-    _seed_explanation(db, "sess-001", (now - timedelta(hours=6)).isoformat())
+    _seed_explanation(
+        db, "sess-001", (now - timedelta(hours=6)).isoformat(), strategy_name="strat.a.v1"
+    )
 
     # Lock file refreshed only 30s ago — within cadence*2.0 (60*2.0=120s).
     lock = AdvisoryLock(runner_lock_name("strat.a.v1"), locks_dir=locks_dir)

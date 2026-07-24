@@ -142,25 +142,39 @@ WHERE rn = 1
 """
 
 # One aggregate pass per refresh (no N+1): lastEval plus the fleet-table
-# today-counts, all keyed on the runner's session_id.  "Today" is the UTC
-# calendar day — recorded_at is an ISO-8601 UTC string, so the lexical >=
-# compare against midnight matches the MAX() ordering assumption above and
-# RiskThroughputState's Today slice.  Classification mirrors the throughput
-# funnel: a veto is `risk_allowed = 0` (the risk layer said no), a submit is
-# `status = 'submitted'` (an order actually went to the broker — blocked
-# `decision_type='submit'` rows do not count).  Synthetic fault-injection
-# rows carry `session_id=NULL` (promotion/fault_injection.py), so session
-# scoping alone keeps them out of these counts.
-_SQL_SESSION_STATS = """
+# today-counts, keyed on the STRATEGY (explanations.strategy_name stores the
+# canonical strategy_id — runner.py sets strategy_name=self._strategy_id at
+# every write site), NOT the latest session.  Session-keying lost a relaunched
+# strategy's earlier same-day sessions from the Today columns (hard-kill +
+# relaunch is a real fleet path); strategy-keying sums across all of today's
+# sessions.  "Today" is the UTC calendar day — recorded_at is an ISO-8601 UTC
+# string, so the lexical >= compare against midnight matches the MAX()
+# ordering assumption above and RiskThroughputState's Today slice.
+# Classification mirrors the throughput funnel: a veto is `risk_allowed = 0`
+# (the risk layer said no), a submit is `status = 'submitted'` (an order
+# actually went to the broker — blocked `decision_type='submit'` rows do not
+# count).  Two scope guards (dual-ancestor model, migration 008):
+#   session_id IS NOT NULL      — excludes synthetic fault-injection rows
+#                                 (promotion/fault_injection.py writes
+#                                 session_id=None) and pre-session legacy rows
+#   backtest_run_id IS NULL     — the canonical live/backtest discriminator;
+#                                 backtest rows carry BOTH a session_id and a
+#                                 backtest_run_id (simulation_kernel.py), so a
+#                                 same-day backtest of a fleet strategy would
+#                                 otherwise flood the Today columns (the
+#                                 2026-05-29 benchmark-leak pattern)
+_SQL_STRATEGY_STATS = """
 SELECT
-    session_id,
+    strategy_name,
     MAX(recorded_at) AS last_eval,
     SUM(CASE WHEN recorded_at >= ? THEN 1 ELSE 0 END) AS evals_today,
     SUM(CASE WHEN recorded_at >= ? AND risk_allowed = 0 THEN 1 ELSE 0 END) AS vetoes_today,
     SUM(CASE WHEN recorded_at >= ? AND status = 'submitted' THEN 1 ELSE 0 END) AS submits_today
 FROM explanations
-WHERE session_id IN ({placeholders})
-GROUP BY session_id
+WHERE strategy_name IN ({placeholders})
+  AND session_id IS NOT NULL
+  AND backtest_run_id IS NULL
+GROUP BY strategy_name
 """
 
 
@@ -181,29 +195,28 @@ def _query_active_ops(
         runs = conn.execute(_SQL_LATEST_RUNS).fetchall()
         if not runs:
             return []
-        session_ids = [r["session_id"] for r in runs]
-        placeholders = ",".join("?" * len(session_ids))
+        strategy_ids = [r["strategy_id"] for r in runs]
+        placeholders = ",".join("?" * len(strategy_ids))
         today_start_iso = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
         stat_rows = conn.execute(
-            _SQL_SESSION_STATS.format(placeholders=placeholders),
-            [today_start_iso, today_start_iso, today_start_iso, *session_ids],
+            _SQL_STRATEGY_STATS.format(placeholders=placeholders),
+            [today_start_iso, today_start_iso, today_start_iso, *strategy_ids],
         ).fetchall()
     finally:
         conn.close()
 
-    stats_by_session: dict[str, sqlite3.Row] = {r["session_id"]: r for r in stat_rows}
+    stats_by_strategy: dict[str, sqlite3.Row] = {r["strategy_name"]: r for r in stat_rows}
 
     result: list[dict[str, Any]] = []
     for run in runs:
         strategy_id: str = run["strategy_id"]
-        session_id: str = run["session_id"]
 
         config = _load_config(strategy_id, configs_dir)
         label = _cadence_label(config)
         cad_secs = _cadence_seconds(config)
         display_name, family = _display_fields(strategy_id, config)
 
-        stats = stats_by_session.get(session_id)
+        stats = stats_by_strategy.get(strategy_id)
         last_eval: str | None = stats["last_eval"] if stats is not None else None
 
         # One identity-verified lock check, two distinct consumers (PR6).
