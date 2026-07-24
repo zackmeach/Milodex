@@ -1127,6 +1127,167 @@ class TestCacheWritePersistenceFailSoft:
                 )
 
 
+class TestSustainedContentionEscalation:
+    """Sustained cache-write contention escalates to ONE durable operator alert.
+
+    The #383 fail-soft serves in-memory bars and logs a warning per poll, but a
+    persistently-unwritable destination (e.g. a readonly-attribute parquet)
+    would stay quiet forever. The provider keeps a per-symbol consecutive-
+    contention counter; on the Nth consecutive contention it emits exactly one
+    ``cache_write_contention_sustained`` operator alert through the optional
+    alert sink, stays silent while the streak continues, and re-arms when a
+    persist for that symbol succeeds. With no sink configured the counter
+    still works and nothing crashes (backtests / CLI construct the provider
+    bare).
+    """
+
+    @staticmethod
+    def _threshold() -> int:
+        import milodex.data.alpaca_provider as provider_module
+
+        return provider_module._SUSTAINED_CONTENTION_ALERT_STREAK
+
+    @staticmethod
+    def _weekdays(n: int, start: date = date(2025, 1, 2)) -> list[date]:
+        out: list[date] = []
+        d = start
+        while len(out) < n:
+            if d.weekday() < 5:
+                out.append(d)
+            d += timedelta(days=1)
+        return out
+
+    @staticmethod
+    def _bars_for(days: list[date]) -> list[MagicMock]:
+        return [
+            _make_bar(datetime(d.year, d.month, d.day, 5, 0, tzinfo=UTC), close=150.0 + i)
+            for i, d in enumerate(days)
+        ]
+
+    def _poll(self, provider, days: list[date], *, contended: bool):
+        """One get_bars poll over [days[0], days[-1]], optionally unwritable."""
+        provider._client.get_stock_bars.return_value = MagicMock(
+            data={"AAPL": self._bars_for(days)}
+        )
+        if not contended:
+            return provider.get_bars(
+                symbols=["AAPL"], timeframe=Timeframe.DAY_1, start=days[0], end=days[-1]
+            )
+        with patch(
+            "milodex.data.cache.os.replace",
+            side_effect=PermissionError("[WinError 5] Access is denied (simulated)"),
+        ):
+            with patch("milodex.data.cache.time.sleep"):
+                return provider.get_bars(
+                    symbols=["AAPL"], timeframe=Timeframe.DAY_1, start=days[0], end=days[-1]
+                )
+
+    def test_below_threshold_no_alert(self, provider):
+        """(a) N-1 consecutive contentions -> no alert."""
+        alerts = []
+        provider.set_alert_sink(alerts.append)
+        days = self._weekdays(3)
+
+        for _ in range(self._threshold() - 1):
+            self._poll(provider, days, contended=True)
+
+        assert alerts == []
+
+    def test_nth_consecutive_contention_emits_exactly_one_alert(self, provider):
+        """(b) The Nth consecutive contention emits exactly one alert with the
+        symbol, streak count, and last error in context."""
+        alerts = []
+        provider.set_alert_sink(alerts.append)
+        days = self._weekdays(3)
+        n = self._threshold()
+
+        for _ in range(n - 1):
+            self._poll(provider, days, contended=True)
+        assert alerts == []
+        self._poll(provider, days, contended=True)
+
+        assert len(alerts) == 1
+        alert = alerts[0]
+        assert alert.alert_type == "cache_write_contention_sustained"
+        assert alert.severity == "warning"
+        assert alert.symbol == "AAPL"
+        assert alert.context_json["symbol"] == "AAPL"
+        assert alert.context_json["streak"] == n
+        assert alert.context_json["timeframe"] == Timeframe.DAY_1.value
+        assert "stayed blocked" in alert.context_json["last_error"]
+
+    def test_continued_streak_does_not_realert(self, provider):
+        """(c) A streak running past N stays at one alert (no re-alert spam)."""
+        alerts = []
+        provider.set_alert_sink(alerts.append)
+        days = self._weekdays(3)
+
+        for _ in range(self._threshold() + 5):
+            self._poll(provider, days, contended=True)
+
+        assert len(alerts) == 1
+
+    def test_successful_persist_resets_counter_and_realert_eligibility(self, provider):
+        """(d) A successful persist resets the streak; the next sustained
+        episode alerts again."""
+        alerts = []
+        provider.set_alert_sink(alerts.append)
+        n = self._threshold()
+        days = self._weekdays(3 + n)
+
+        for _ in range(n):
+            self._poll(provider, days[:3], contended=True)
+        assert len(alerts) == 1
+
+        # Successful persist for AAPL -> streak and re-alert eligibility reset.
+        self._poll(provider, days[:3], contended=False)
+        assert len(provider._cache.read("AAPL", Timeframe.DAY_1)) == 3
+
+        # Second sustained episode. The on-disk cache now covers days[:3], so
+        # each poll extends the requested end by one weekday to force a fetch
+        # (new tail) and therefore a merge/persist attempt.
+        for j in range(1, n):
+            self._poll(provider, days[: 3 + j], contended=True)
+        assert len(alerts) == 1, "streak must restart from zero after the successful persist"
+        self._poll(provider, days[: 3 + n], contended=True)
+        assert len(alerts) == 2, "a fresh streak reaching N must alert again"
+
+    def test_no_sink_counter_still_works_no_crash(self, provider):
+        """(e) With no sink configured the counter still tracks the streak and
+        crossing N neither crashes nor emits."""
+        days = self._weekdays(3)
+        polls = self._threshold() + 2
+
+        for _ in range(polls):
+            result = self._poll(provider, days, contended=True)
+            assert len(result["AAPL"]) == 3, "fail-soft serving must be unaffected"
+
+        assert provider._cache_contention_streaks["AAPL"] == polls
+
+    def test_sink_failure_is_swallowed(self, provider, caplog):
+        """A raising sink must not break the poll path (the whole point of the
+        #383 fail-soft is that a cache-side problem never kills a runner)."""
+
+        def _exploding_sink(_event):
+            raise sqlite3_error_stub()
+
+        provider.set_alert_sink(_exploding_sink)
+        days = self._weekdays(3)
+
+        with caplog.at_level(logging.ERROR, logger="milodex.data.alpaca_provider"):
+            for _ in range(self._threshold()):
+                result = self._poll(provider, days, contended=True)
+
+        assert len(result["AAPL"]) == 3
+        assert any("alert" in r.getMessage() for r in caplog.records)
+
+
+def sqlite3_error_stub() -> Exception:
+    """A stand-in for the concurrent-writer SQLite lock error an event-store
+    sink can raise (6 runners + GUI share data/milodex.db)."""
+    return RuntimeError("database is locked (simulated)")
+
+
 def test_timeframe_map_covers_every_timeframe_member() -> None:
     """Every Timeframe enum member must have an Alpaca TimeFrame mapping.
 

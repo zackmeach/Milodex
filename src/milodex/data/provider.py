@@ -9,8 +9,14 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import date
+from typing import TYPE_CHECKING
 
 from milodex.data.models import Bar, BarSet, Timeframe
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from milodex.core.event_store import OperatorAlertEvent
 
 
 class DataConnectivityError(Exception):
@@ -29,6 +35,18 @@ class DataConnectivityError(Exception):
 
 class DataProvider(ABC):
     """Abstract market data provider."""
+
+    def set_alert_sink(self, sink: Callable[[OperatorAlertEvent], None]) -> None:
+        """Install a durable operator-alert sink. Base implementation: ignore.
+
+        Providers that can detect operator-worthy anomalies (e.g. sustained
+        cache-write contention) override this to store ``sink`` and call it
+        with a fully-built ``OperatorAlertEvent``. The default is a no-op so
+        wiring sites can install a sink on any ``DataProvider`` without
+        caring which implementation they hold, and every provider works
+        identically with no sink configured (backtests and CLI one-offs
+        construct providers bare).
+        """
 
     @abstractmethod
     def get_bars(

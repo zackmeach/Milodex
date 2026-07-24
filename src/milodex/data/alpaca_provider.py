@@ -9,6 +9,7 @@ being returned to callers.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import UTC, date, datetime, timedelta
 
 import pandas as pd
@@ -23,6 +24,7 @@ from milodex.core._alpaca_retry import (
     call_with_retry_on_429,
     call_with_retry_on_transient,
 )
+from milodex.core.event_store import OperatorAlertEvent
 from milodex.data.cache import CacheWriteContentionError, ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.data.provider import DataConnectivityError, DataProvider
@@ -51,6 +53,14 @@ CACHE_VERSION = "v3"
 # slip under it — negligible for the liquid-ETF / large-cap Phase-One universe.
 _ADJUSTMENT_EPOCH_EPSILON = 1e-4
 
+# Consecutive same-symbol cache-write contentions (get_bars persistence step)
+# before the per-poll fail-soft warning escalates to ONE durable operator
+# alert. Transient co-run races — a sibling runner holding the parquet open
+# past the writer's rename-retry budget — resolve in 1-2 polls; a streak of 10
+# means the destination has been unwritable for ~10 straight poll cycles,
+# which is sustained (e.g. a readonly-attribute parquet), not a race.
+_SUSTAINED_CONTENTION_ALERT_STREAK = 10
+
 # Map our Timeframe enum to Alpaca's TimeFrame objects
 _TIMEFRAME_MAP: dict[Timeframe, TimeFrame] = {
     Timeframe.MINUTE_1: TimeFrame(1, TimeFrameUnit.Minute),
@@ -73,6 +83,19 @@ class AlpacaDataProvider(DataProvider):
         api_key, secret_key = get_alpaca_credentials()
         self._client = StockHistoricalDataClient(api_key, secret_key)
         self._cache = ParquetCache(get_cache_dir(), version=CACHE_VERSION)
+        # Optional durable operator-alert sink (see set_alert_sink). None by
+        # default: backtests and CLI one-offs construct the provider bare and
+        # get log-only behaviour.
+        self._alert_sink: Callable[[OperatorAlertEvent], None] | None = None
+        # symbol (upper) -> consecutive CacheWriteContentionError count on the
+        # get_bars persistence step. In-memory on purpose (no schema change): a
+        # restart legitimately restarts the evidence window. Reset on the first
+        # successful persist for the symbol, which also re-arms the alert.
+        self._cache_contention_streaks: dict[str, int] = {}
+
+    def set_alert_sink(self, sink: Callable[[OperatorAlertEvent], None]) -> None:
+        """Install the durable operator-alert sink (see DataProvider docs)."""
+        self._alert_sink = sink
 
     def get_bars(
         self,
@@ -293,10 +316,14 @@ class AlpacaDataProvider(DataProvider):
                         timeframe.value,
                         exc,
                     )
+                    self._register_cache_contention(symbol, timeframe, exc)
                     full_cache: pd.DataFrame | None = self._cache.merged_view(
                         symbol, timeframe, new_data
                     )
                 else:
+                    # Successful persist ends any contention streak for this
+                    # symbol and re-arms the sustained-contention alert.
+                    self._cache_contention_streaks.pop(symbol.upper(), None)
                     full_cache = self._cache.read(symbol, timeframe)
             else:
                 full_cache = self._cache.read(symbol, timeframe)
@@ -320,6 +347,74 @@ class AlpacaDataProvider(DataProvider):
                 )
 
         return result
+
+    def _register_cache_contention(
+        self,
+        symbol: str,
+        timeframe: Timeframe,
+        exc: CacheWriteContentionError,
+    ) -> None:
+        """Track one get_bars persistence contention; escalate a sustained streak.
+
+        Increments the per-symbol consecutive-contention counter and, exactly
+        on the ``_SUSTAINED_CONTENTION_ALERT_STREAK``-th consecutive hit, emits
+        ONE ``cache_write_contention_sustained`` operator alert through the
+        optional sink — never again while the same streak continues (the
+        counter keeps growing past the threshold without re-firing). A
+        successful persist in get_bars resets the counter, so a later
+        sustained episode alerts afresh. Counts only the get_bars poll path —
+        ``backfill_range`` and the adjustment heal are one-shot operator/
+        fail-safe flows, not a poll cadence a streak is meaningful for.
+
+        The sink call is fail-safe: this runs inside the #383 fail-soft branch
+        whose entire purpose is that a cache-side problem never kills a
+        runner, so a sink failure (e.g. a concurrent-writer SQLite lock on the
+        shared event store) is logged and swallowed, mirroring the runner's
+        own alert-write guard.
+        """
+        key = symbol.upper()
+        streak = self._cache_contention_streaks.get(key, 0) + 1
+        self._cache_contention_streaks[key] = streak
+        if streak != _SUSTAINED_CONTENTION_ALERT_STREAK:
+            return
+        _logger.warning(
+            "cache_write_contention_sustained symbol=%s timeframe=%s streak=%d; "
+            "destination parquet appears persistently unwritable",
+            key,
+            timeframe.value,
+            streak,
+        )
+        if self._alert_sink is None:
+            return
+        event = OperatorAlertEvent(
+            alert_type="cache_write_contention_sustained",
+            severity="warning",
+            summary=(
+                f"Cache writes for {key} ({timeframe.value}) have hit rename "
+                f"contention {streak} polls in a row; the destination parquet "
+                f"appears persistently unwritable. Bars are being served from "
+                f"memory; the on-disk cache is going stale."
+            ),
+            strategy_id=None,
+            session_id=None,
+            symbol=key,
+            side=None,
+            context_json={
+                "symbol": key,
+                "timeframe": timeframe.value,
+                "streak": streak,
+                "threshold": _SUSTAINED_CONTENTION_ALERT_STREAK,
+                "last_error": str(exc),
+            },
+            recorded_at=datetime.now(tz=UTC),
+        )
+        try:
+            self._alert_sink(event)
+        except Exception:  # noqa: BLE001 — alert emission must never break the poll path
+            _logger.exception(
+                "Failed to deliver cache_write_contention_sustained alert for %s; continuing.",
+                key,
+            )
 
     @staticmethod
     def _bars_to_df(bars: list) -> pd.DataFrame:
