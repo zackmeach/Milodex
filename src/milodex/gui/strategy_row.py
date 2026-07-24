@@ -110,6 +110,15 @@ class _StrategyRow:
     backtest_run_started_at: str = ""
     promoted_at: str = ""
     promotion_type: str = ""
+    # Manifest-frozen-but-promotion-unrecorded state (honest display, not a
+    # stage claim): True when the YAML claims a promoted stage, an active
+    # frozen manifest exists AT that stage (so the risk layer's
+    # no_frozen_manifest veto is cleared and the strategy is runnable), but
+    # the promotion ledger holds no promotion row. Section placement and the
+    # group rollup still key on promotion records — the row stays clamped to
+    # backtest; these fields only make the in-between state visible.
+    frozen_unrecorded: bool = False
+    frozen_stage: str = ""
     gate_failures: tuple[str, ...] = ()
     archetype: str = ""
     status_kind: str = "info"
@@ -156,6 +165,8 @@ class _StrategyRow:
             "evidenceRunId": self.evidence_run_id,
             "promotedAt": self.promoted_at,
             "promotionType": self.promotion_type,
+            "frozenUnrecorded": self.frozen_unrecorded,
+            "frozenStage": self.frozen_stage,
             "gateFailures": list(self.gate_failures),
             "archetype": self.archetype,
             "statusKind": self.status_kind,

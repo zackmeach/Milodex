@@ -21,6 +21,7 @@ from milodex.gui.bench_actions import _bench_evidence_by_stage, _bench_runs_in_f
 from milodex.gui.bench_grouping import build_group_rollups
 from milodex.gui.ledger_builders import _ledger_entries
 from milodex.gui.query_helpers import (
+    _frozen_manifest_stages,
     _latest_orchestration_jobs,
     _latest_pnl,
     _latest_promotions,
@@ -34,6 +35,7 @@ from milodex.gui.row_formatters import (
     _display_name,
     _empty_front_summary,
     _float_or_none,
+    _frozen_unrecorded_copy,
     _int_or_none,
     _market_placeholder,
     _meta_evidence,
@@ -164,11 +166,13 @@ def _strategy_rows(
         promotions = _latest_promotions(conn)
         sessions = _latest_session_states(conn, locks_dir)
         jobs = _latest_orchestration_jobs(conn)
+        frozen_manifests = _frozen_manifest_stages(conn)
     else:
         latest_runs = {}
         promotions = {}
         sessions = {}
         jobs = {}
+        frozen_manifests = {}
     rows: list[_StrategyRow] = []
     for config in configs:
         metrics = latest_runs.get(config.strategy_id, {})
@@ -190,6 +194,17 @@ def _strategy_rows(
         # archetype together, so the chip can never contradict the ladder.
         if effective_stage in {"paper", "micro_live", "live"} and not promotion:
             effective_stage = "backtest"
+        # Distinct honest state (NOT a stage lift): the YAML claims a promoted
+        # stage, an active frozen manifest exists AT that stage (the risk
+        # layer's no_frozen_manifest veto is cleared — the strategy is
+        # runnable), but no promotion ledger row exists. The clamp above still
+        # holds — section and archetype stay at backtest — the row just says
+        # so instead of reading as an ordinary awaiting-evidence config.
+        frozen_unrecorded = (
+            config.stage in {"paper", "micro_live", "live"}
+            and not promotion
+            and config.stage in frozen_manifests.get(config.strategy_id, {})
+        )
         promotion_type = str(promotion.get("promotion_type") or "")
         # Feed the classifier only evidence-grounded gate failures: when all
         # three metrics are None the strategy was never evaluated, and the
@@ -207,6 +222,8 @@ def _strategy_rows(
         status_kind, status_word, status_tail = _status_copy(
             config.stage, failures, sharpe, max_dd, trade_count
         )
+        if frozen_unrecorded:
+            status_kind, status_word, status_tail = _frozen_unrecorded_copy(config.stage)
         meta_config_key = f"{config.family}.{config.template}"
         meta_evidence_label, meta_evidence_at = _meta_evidence(promotion, metrics)
         display_name, display_name_source = _display_name(config)
@@ -230,6 +247,8 @@ def _strategy_rows(
                 backtest_run_started_at=str(metrics.get("started_at") or ""),
                 promoted_at=str(promotion.get("recorded_at") or ""),
                 promotion_type=promotion_type,
+                frozen_unrecorded=frozen_unrecorded,
+                frozen_stage=config.stage if frozen_unrecorded else "",
                 gate_failures=failures,
                 archetype=archetype,
                 status_kind=status_kind,

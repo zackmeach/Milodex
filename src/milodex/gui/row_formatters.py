@@ -67,6 +67,24 @@ def _status_copy(
     return "info", "Evidence recorded", "stage remains governed by existing policy."
 
 
+def _frozen_unrecorded_copy(stage: str) -> tuple[str, str, str]:
+    """Status copy for a manifest-frozen, promotion-unrecorded row.
+
+    The manifest freeze clears the risk layer's ``no_frozen_manifest`` veto —
+    the strategy is runnable at its claimed stage — but the promotion ledger
+    holds no promotion row, so the roster keeps the row in the backtest
+    section (promotion records, not YAML stage, are the binding stage source).
+    This copy makes that in-between state visibly distinct instead of reading
+    as an ordinary awaiting-evidence config.
+    """
+    label = _stage_label(stage).lower()
+    return (
+        "warning",
+        f"Manifest frozen at {label}",
+        "promotion unrecorded — the row sits at backtest until the ledger catches up.",
+    )
+
+
 def _meta_line(config: StrategyConfig, promotion: dict[str, Any], metrics: dict[str, Any]) -> str:
     parts = [f"{config.family}.{config.template}", config.stage]
     if promotion.get("recorded_at"):
