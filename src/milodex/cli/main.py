@@ -180,6 +180,10 @@ def main(
         broker = broker_factory()
         data_provider = data_provider_factory()
         event_store = get_event_store()
+        # Runner-path alert seam: let the data provider escalate sustained
+        # cache-write contention into the durable operator_alerts ledger.
+        # No-op for providers that don't emit alerts (DataProvider base).
+        data_provider.set_alert_sink(event_store.append_operator_alert)
         kill_switch_store = KillSwitchStateStore(
             event_store=event_store,
             legacy_path=get_logs_dir() / "kill_switch_state.json",
