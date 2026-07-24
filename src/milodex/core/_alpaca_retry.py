@@ -80,7 +80,15 @@ def call_with_retry_on_429(
 
 # Transient network failures that are safe to retry on an IDEMPOTENT read.
 # ConnectTimeout subclasses both ConnectionError and Timeout; listing all three
-# keeps the intent explicit.
+# keeps the intent explicit. ConnectionError ALSO covers the TLS/connection-
+# teardown classes requests wraps for urllib3 — requests.exceptions.SSLError is
+# a ConnectionError subclass, so TLS EOF (ssl.SSLEOFError /
+# UNEXPECTED_EOF_WHILE_READING — observed 2026-07-23 killing four daily runners
+# mid close-eval), connection reset, and remote disconnect all classify as
+# transient here. A non-transient SSL failure (e.g. certificate verification)
+# rides the same bounded retry and then re-raises unchanged — accepted:
+# distinguishing SSL sub-causes means digging through wrapped exception chains,
+# and a bounded retry of a hard failure only delays the identical crash.
 _TRANSIENT_READ_ERRORS = (
     requests.exceptions.ReadTimeout,
     requests.exceptions.ConnectTimeout,

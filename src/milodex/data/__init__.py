@@ -7,6 +7,6 @@ without changing consuming code.
 """
 
 from milodex.data.models import Bar, BarSet, Timeframe
-from milodex.data.provider import DataProvider
+from milodex.data.provider import DataConnectivityError, DataProvider
 
-__all__ = ["Bar", "BarSet", "DataProvider", "Timeframe"]
+__all__ = ["Bar", "BarSet", "DataConnectivityError", "DataProvider", "Timeframe"]

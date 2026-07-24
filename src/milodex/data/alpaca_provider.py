@@ -18,10 +18,14 @@ from alpaca.data.requests import Adjustment, StockBarsRequest, StockLatestBarReq
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from milodex.config import get_alpaca_credentials, get_cache_dir
-from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
+from milodex.core._alpaca_retry import (
+    _TRANSIENT_READ_ERRORS,
+    call_with_retry_on_429,
+    call_with_retry_on_transient,
+)
 from milodex.data.cache import CacheWriteContentionError, ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
-from milodex.data.provider import DataProvider
+from milodex.data.provider import DataConnectivityError, DataProvider
 
 _logger = logging.getLogger(__name__)
 
@@ -217,7 +221,25 @@ class AlpacaDataProvider(DataProvider):
                 batch_symbols[0] if len(batch_symbols) == 1 else batch_symbols
             )
             request = self._stock_bars_request(symbol_or_symbols, fetch_start, fetch_end, alpaca_tf)
-            response = call_with_retry_on_429(lambda: self._client.get_stock_bars(request))
+            # Transient retry + classification (live defect 2026-07-23): this is
+            # THE fetch the daily close-eval rides. A TLS teardown (SSLEOFError,
+            # surfaced as requests.exceptions.SSLError — a ConnectionError
+            # subclass) crashed four daily runners at the identical second when
+            # this call rode the 429-only helper. The read is idempotent, so it
+            # takes the bounded transient retry; exhaustion is translated to
+            # DataConnectivityError so the runner's poll loop can classify it
+            # under its outage budget, exactly like broker reads surface
+            # BrokerConnectionError. Non-transient errors propagate unchanged.
+            try:
+                response = call_with_retry_on_transient(
+                    lambda: self._client.get_stock_bars(request)
+                )
+            except _TRANSIENT_READ_ERRORS as exc:
+                msg = (
+                    f"bars fetch for {', '.join(batch_symbols)} could not reach "
+                    f"the data source after bounded retries: {exc}"
+                )
+                raise DataConnectivityError(msg) from exc
 
             # Split the batched response back into per-symbol DataFrames.
             # Alpaca returns an empty list (not an error) for symbols with no
@@ -515,17 +537,27 @@ class AlpacaDataProvider(DataProvider):
         """Fetch the most recent bar from Alpaca.
 
         Retries on transient network failures (ReadTimeout / ConnectTimeout /
-        ConnectionError) as well as 429s: this is an idempotent read on the live
-        trade path (drain fresh-price + cap pricing), so a single connection
-        reset must not propagate out and kill the runner's poll loop. Mirrors the
-        broker-read hardening that followed the 2026-06-17 same-symbol co-run
-        soak (call_with_retry_on_transient).
+        ConnectionError, which includes the SSLError TLS-teardown classes) as
+        well as 429s: this is an idempotent read on the live trade path (drain
+        fresh-price + cap pricing), so a single connection reset must not
+        propagate out and kill the runner's poll loop. Mirrors the broker-read
+        hardening that followed the 2026-06-17 same-symbol co-run soak
+        (call_with_retry_on_transient). Transient exhaustion is translated to
+        DataConnectivityError (2026-07-23) so callers with their own poll
+        cadence classify it as a failed poll, not a crash.
         """
-        response = call_with_retry_on_transient(
-            lambda: self._client.get_stock_latest_bar(
-                StockLatestBarRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+        try:
+            response = call_with_retry_on_transient(
+                lambda: self._client.get_stock_latest_bar(
+                    StockLatestBarRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
+                )
             )
-        )
+        except _TRANSIENT_READ_ERRORS as exc:
+            msg = (
+                f"latest-bar fetch for {symbol} could not reach the data source "
+                f"after bounded retries: {exc}"
+            )
+            raise DataConnectivityError(msg) from exc
         alpaca_bar = response[symbol]
         return Bar(
             timestamp=alpaca_bar.timestamp,

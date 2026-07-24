@@ -85,6 +85,29 @@ class TestSubmitOrder:
         )
         assert result.order_type == OrderType.LIMIT
 
+    def test_submit_order_does_not_retry_tls_eof(self, client):
+        """Submit-path retry rules are UNCHANGED by the data-fetch TLS hardening.
+
+        A write that dies mid-TLS-teardown is ambiguous — the order may already
+        exist broker-side — so it must NOT be blindly retried (unlike idempotent
+        data reads, which retry TLS EOF after 2026-07-23). Exactly one attempt,
+        then the connect-classified translation raises BrokerConnectionError.
+        """
+        from milodex.broker.exceptions import BrokerConnectionError
+
+        err = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='api.alpaca.markets', port=443): Max retries "
+            "exceeded with url: /v2/orders (Caused by SSLError(SSLEOFError(8, "
+            "'[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol')))"
+        )
+        client._client.submit_order.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(BrokerConnectionError):
+                client.submit_order("AAPL", OrderSide.BUY, 10.0)
+
+        assert client._client.submit_order.call_count == 1
+
 
 class TestGetOrder:
     def test_get_order_by_id(self, client):
