@@ -145,8 +145,8 @@ The posture held through all of it — **fail-closed, durably observed, no
 unsafe action** — but the scheduling substrate itself is now the
 proven-weakest link. The founder decision on rebuilding self-renewing
 launch/stop tasks (vs. the current session-cron driving) is pending and is an
-M5 continuity concern, not an M4 gate item (ADR 0012 still forbids a
-daemon/scheduler in Phase 1; D-3 owns the fork at M5).
+M5 continuity concern, not an M4 gate item (the ADR 0012 no-daemon/scheduler
+constraint still binds; D-3 owns the fork at M5).
 
 ### 2.4 The M4 observables, live
 
@@ -208,11 +208,15 @@ the event store):**
   (+`disable_condition_active`); all 8 rows left `queued`. The one-session-
   staleness rule held across a skipped day.
 - (b) The three rsi2 exit intents (DIA/QQQ/SMH) re-drained and re-vetoed on a
-  ~90s cadence all morning — 69/70/70 blocked explanations 13:30→15:14 UTC and
-  continuing, versus exactly one veto per entry intent (#346's veto dedup
-  covers the ENTRY class only). Candidate follow-up, not fixed: obsolete a
-  stale-locked intent on a `stale_market_data` veto instead of retrying it for
-  the rest of the session.
+  ~90s cadence all morning — 69/70/70 blocked explanations 13:30→15:14 UTC,
+  versus exactly one veto per entry intent (#346's veto dedup covers the
+  ENTRY class only). A staleness veto on a drained intent is permanent by
+  construction (the locked bar only gets staler), so the retry could never
+  succeed. Fixed same day: #381 (merged 2026-07-23) retires a stale-locked
+  intent on its first `stale_market_data` veto — EXIT via an
+  `exit_intent_dropped` alert (reason `stale_locked_veto`) + row obsolete,
+  ENTRY via the durable decided-entry drop. The #374 no-fresh-price retry
+  window (which CAN heal intra-session) is untouched.
 - (c) SPY intraday canary `manifest_drift` veto observed 15:11 UTC (2026-05-29
   manifests vs evolved configs); operator re-froze the five SPY canary
   manifests at 15:14 UTC (manifest ids 22–26); subsequent canary vetoes no
