@@ -19,7 +19,7 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
 from milodex.config import get_alpaca_credentials, get_cache_dir
 from milodex.core._alpaca_retry import call_with_retry_on_429, call_with_retry_on_transient
-from milodex.data.cache import ParquetCache
+from milodex.data.cache import CacheWriteContentionError, ParquetCache
 from milodex.data.models import Bar, BarSet, Timeframe
 from milodex.data.provider import DataProvider
 
@@ -249,9 +249,35 @@ class AlpacaDataProvider(DataProvider):
             sym_dfs = fetched[symbol]
             if sym_dfs:
                 new_data = pd.concat(sym_dfs, ignore_index=True)
-                self._cache.merge(symbol, timeframe, new_data)
-
-            full_cache = self._cache.read(symbol, timeframe)
+                try:
+                    self._cache.merge(symbol, timeframe, new_data)
+                except CacheWriteContentionError as exc:
+                    # Fail SOFT on the cache PERSISTENCE step ONLY. This
+                    # exhaustion was runner-fatal on 2026-07-23: five
+                    # co-running SPY intraday runners held SPY.parquet open
+                    # (parquet reads) past the whole rename-retry budget, and
+                    # the PermissionError propagated out of the poll loop and
+                    # killed two sessions. The fetched bars are already in
+                    # memory and re-fetchable next poll, so serve the merged
+                    # in-memory view now and let the next poll re-persist.
+                    # ONLY CacheWriteContentionError is caught: upstream fetch
+                    # errors (Phase 2, above) and merge data-integrity errors
+                    # (schema/dtype ValueError) must stay loud.
+                    _logger.warning(
+                        "cache_write_contention symbol=%s timeframe=%s err=%s; "
+                        "serving in-memory merged bars (cache unchanged; next "
+                        "poll re-fetches and re-persists)",
+                        symbol.upper(),
+                        timeframe.value,
+                        exc,
+                    )
+                    full_cache: pd.DataFrame | None = self._cache.merged_view(
+                        symbol, timeframe, new_data
+                    )
+                else:
+                    full_cache = self._cache.read(symbol, timeframe)
+            else:
+                full_cache = self._cache.read(symbol, timeframe)
             if full_cache is not None and not full_cache.empty:
                 ts = pd.to_datetime(full_cache["timestamp"])
                 mask = (ts.dt.date >= start) & (ts.dt.date <= end)
