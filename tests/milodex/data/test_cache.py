@@ -2,13 +2,21 @@
 
 import multiprocessing
 import os
+import sys
+import threading
 from datetime import date
 from unittest.mock import patch
 
 import pandas as pd
 import pytest
 
-from milodex.data.cache import ParquetCache
+from milodex.data.cache import (
+    _RENAME_BASE_DELAY_SECONDS,
+    _RENAME_JITTER_FRACTION,
+    _RENAME_MAX_ATTEMPTS,
+    CacheWriteContentionError,
+    ParquetCache,
+)
 from milodex.data.models import Timeframe
 
 
@@ -362,7 +370,9 @@ def test_replace_with_retry_succeeds_after_transient_permission_error(cache, cac
 
 def test_replace_with_retry_gives_up_after_max_attempts(cache, cache_dir, sample_df):
     """When os.replace always raises PermissionError, _replace_with_retry
-    exhausts max_attempts (default 4) calls then re-raises.
+    exhausts the _RENAME_MAX_ATTEMPTS budget then raises the DISTINCT
+    CacheWriteContentionError (2026-07-23 live defect: budget exhaustion must
+    be catchable by the poll path without widening to fetch/integrity errors).
 
     The BaseException cleanup path must have run — no .tmp* files remain.
     """
@@ -375,14 +385,160 @@ def test_replace_with_retry_gives_up_after_max_attempts(cache, cache_dir, sample
 
     with patch("milodex.data.cache.os.replace", side_effect=_always_fail):
         with patch("milodex.data.cache.time.sleep"):  # don't actually sleep in tests
-            with pytest.raises(PermissionError):
+            with pytest.raises(CacheWriteContentionError) as excinfo:
                 cache.write("AAPL", Timeframe.DAY_1, sample_df)
 
-    assert call_count == 4, f"expected exactly 4 os.replace calls (max_attempts), got {call_count}"
+    assert call_count == _RENAME_MAX_ATTEMPTS, (
+        f"expected exactly {_RENAME_MAX_ATTEMPTS} os.replace calls "
+        f"(_RENAME_MAX_ATTEMPTS), got {call_count}"
+    )
+
+    # Distinct-type contract: the exhaustion error must NOT be a
+    # PermissionError (the budget is spent — it is no longer transient, and a
+    # transient-retry `except PermissionError` handler must not swallow it),
+    # but it stays in the OSError family and chains the underlying cause.
+    err = excinfo.value
+    assert isinstance(err, OSError)
+    assert not isinstance(err, PermissionError), (
+        "CacheWriteContentionError must be distinct from PermissionError so "
+        "transient-retry handlers cannot catch an exhausted budget"
+    )
+    assert isinstance(err.__cause__, PermissionError)
 
     # BaseException cleanup must have removed the tmp file.
     tmp_files = list(cache_dir.rglob("*.tmp*"))
     assert tmp_files == [], f"orphan tmp files found after exhausted retry: {tmp_files}"
+
+
+def test_replace_retry_backoff_is_bounded_and_jittered(cache, sample_df):
+    """The retry sleeps exactly (attempts - 1) times, each an exponential
+    base delay plus bounded jitter — never after the final failed attempt.
+
+    Pins the budget shape so a future edit cannot silently reintroduce the
+    ~70 ms burst that was observed exhausted under five co-running SPY
+    runners (2026-07-23)."""
+    sleeps: list[float] = []
+
+    def _always_fail(src, dst):
+        raise PermissionError("[WinError 5] Access is denied (simulated)")
+
+    with patch("milodex.data.cache.os.replace", side_effect=_always_fail):
+        with patch("milodex.data.cache.time.sleep", side_effect=sleeps.append):
+            with pytest.raises(CacheWriteContentionError):
+                cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    assert len(sleeps) == _RENAME_MAX_ATTEMPTS - 1, (
+        f"expected {_RENAME_MAX_ATTEMPTS - 1} sleeps (no sleep after the final "
+        f"attempt), got {len(sleeps)}"
+    )
+    for n, slept in enumerate(sleeps):
+        lower = _RENAME_BASE_DELAY_SECONDS * 2**n
+        upper = lower * (1.0 + _RENAME_JITTER_FRACTION)
+        assert lower <= slept <= upper, (
+            f"sleep #{n} = {slept:.4f}s outside jittered exponential bounds "
+            f"[{lower:.4f}, {upper:.4f}]"
+        )
+
+
+def test_write_survives_real_open_handle_contention(cache, cache_dir, sample_df):
+    """REAL two-handle contention: a second OS handle holds the destination
+    open while write() runs; the rename retries until the handle closes.
+
+    On Windows this exercises the live 2026-07-23 defect mechanism exactly —
+    os.replace needs DELETE access on the destination, and a plain open
+    handle (shared read/write, NOT delete) denies it → PermissionError
+    [WinError 5] until the holder closes. On POSIX rename-over-open-file
+    succeeds immediately, so the test degenerates to a plain overwrite (still
+    a valid pass; the contention branch is exercised by the deterministic
+    monkeypatch tests above, which run on every platform)."""
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+    dest = cache_dir / "v1" / Timeframe.DAY_1.value / "AAPL.parquet"
+    assert dest.exists()
+
+    replace_calls = 0
+    real_replace = os.replace
+
+    def _counting_replace(src, dst):
+        nonlocal replace_calls
+        replace_calls += 1
+        real_replace(src, dst)
+
+    updated = sample_df.copy()
+    updated["close"] = [1.0, 2.0, 3.0]
+
+    holder = open(dest, "rb")  # noqa: SIM115 - deliberate raw handle held across the write
+    hold_release = threading.Timer(0.25, holder.close)
+    try:
+        hold_release.start()
+        with patch("milodex.data.cache.os.replace", side_effect=_counting_replace):
+            cache.write("AAPL", Timeframe.DAY_1, updated)
+    finally:
+        hold_release.cancel()
+        if not holder.closed:
+            holder.close()
+
+    result = cache.read("AAPL", Timeframe.DAY_1)
+    assert result is not None
+    assert list(result["close"]) == [1.0, 2.0, 3.0]
+
+    if sys.platform == "win32":
+        assert replace_calls >= 2, (
+            "on Windows the open handle must have forced at least one retry; "
+            f"got {replace_calls} os.replace call(s)"
+        )
+
+    tmp_files = list(cache_dir.rglob("*.tmp*"))
+    assert tmp_files == [], f"orphan tmp files found: {tmp_files}"
+
+
+# ---------------------------------------------------------------------------
+# merged_view tests (in-memory merge fallback for the poll path's fail-soft)
+# ---------------------------------------------------------------------------
+
+
+def test_merged_view_matches_merge_without_writing(cache, sample_df):
+    """merged_view returns exactly the frame merge() would persist (concat,
+    keep-last dedup by timestamp, sorted) while leaving the on-disk cache
+    untouched — the poll path serves this when persistence hits contention."""
+    cache.write("AAPL", Timeframe.DAY_1, sample_df)
+
+    new_data = pd.DataFrame(
+        {
+            # Overlaps 01-15 (updated close) and appends 01-16.
+            "timestamp": pd.to_datetime(["2025-01-15", "2025-01-16"], utc=True),
+            "open": [150.5, 151.5],
+            "high": [152.5, 153.0],
+            "low": [150.0, 151.0],
+            "close": [152.0, 152.5],
+            "volume": [1_100_000, 1_200_000],
+            "vwap": [151.5, 152.2],
+        }
+    )
+
+    view = cache.merged_view("AAPL", Timeframe.DAY_1, new_data)
+
+    assert len(view) == 4  # 3 cached + 1 new, overlap deduped keep-last
+    assert list(view["timestamp"]) == sorted(view["timestamp"])
+    overlap = view.loc[view["timestamp"] == pd.Timestamp("2025-01-15", tz="UTC"), "close"]
+    assert float(overlap.iloc[0]) == 152.0, "keep-last dedup must prefer the new row"
+
+    # The on-disk cache must be untouched.
+    on_disk = cache.read("AAPL", Timeframe.DAY_1)
+    assert len(on_disk) == 3
+    assert float(on_disk["close"].iloc[-1]) == 151.0
+
+    # And merge() must persist exactly the same frame.
+    cache.merge("AAPL", Timeframe.DAY_1, new_data)
+    persisted = cache.read("AAPL", Timeframe.DAY_1)
+    pd.testing.assert_frame_equal(persisted, view.reset_index(drop=True))
+
+
+def test_merged_view_returns_new_data_when_cache_empty(cache, sample_df):
+    """With no existing cache, merged_view mirrors merge()'s existing-None
+    branch: the new frame IS the view, and nothing is written."""
+    view = cache.merged_view("AAPL", Timeframe.DAY_1, sample_df)
+    pd.testing.assert_frame_equal(view, sample_df)
+    assert cache.read("AAPL", Timeframe.DAY_1) is None
 
 
 def test_concurrent_failure_leaves_no_orphan_tmp_for_other_writer(

@@ -3175,6 +3175,118 @@ def test_runner_run_writes_crashed_exit_reason_on_unhandled_exception(
     )
 
 
+def test_runner_cycle_survives_cache_write_contention(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    caplog: pytest.LogCaptureFixture,
+):
+    """A cache-WRITE contention failure inside the poll's fetch path must NOT
+    crash the runner session (2026-07-23: five co-running SPY intraday runners
+    held SPY.parquet open past the whole rename-retry budget; the resulting
+    PermissionError propagated through get_bars -> merge -> write and killed
+    two sessions). The fetched bars are already in memory and re-fetchable
+    next poll, so the cycle completes with one warning and the run row stays
+    open.
+
+    Contrast with test_runner_run_writes_crashed_exit_reason_on_unhandled
+    _exception: only the cache PERSISTENCE step is soft — a genuine fetch or
+    data-integrity error still crashes with 'crashed:' semantics.
+    """
+    import logging
+    from unittest.mock import MagicMock, patch
+
+    from milodex.data.alpaca_provider import AlpacaDataProvider
+
+    # Execution-service wiring mirrors _build_crash_runner (stub provider for
+    # freshness checks) — but the RUNNER's data provider is a REAL
+    # AlpacaDataProvider over a REAL ParquetCache in tmp_path, with only the
+    # Alpaca SDK client mocked, so the real cache write path runs.
+    stub_provider = StubProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        }
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=False,
+    )
+    service, event_store, _ = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=stub_provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+
+    with patch(
+        "milodex.data.alpaca_provider.get_alpaca_credentials",
+        return_value=("test-key", "test-secret"),
+    ):
+        with patch(
+            "milodex.data.alpaca_provider.get_cache_dir",
+            return_value=tmp_path / "market_cache",
+        ):
+            with patch("milodex.data.alpaca_provider.StockHistoricalDataClient"):
+                alpaca_provider = AlpacaDataProvider()
+
+    def _mock_bar(ts, close: float):
+        bar = MagicMock()
+        bar.timestamp = ts
+        bar.open = close
+        bar.high = close
+        bar.low = close
+        bar.close = close
+        bar.volume = 1_000_000
+        bar.vwap = close
+        return bar
+
+    end = datetime.now(tz=UTC).replace(hour=21, minute=0, second=0, microsecond=0)
+    stamps = pd.date_range(end=end, periods=3, freq="D", tz=UTC)
+    alpaca_provider._client.get_stock_bars.return_value = MagicMock(
+        data={
+            "SPY": [_mock_bar(ts.to_pydatetime(), 10.0) for ts in stamps],
+            "SHY": [_mock_bar(ts.to_pydatetime(), 10.0) for ts in stamps],
+        }
+    )
+
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=alpaca_provider,
+        execution_service=service,
+        event_store=event_store,
+        poll_interval_seconds=0.0,
+    )
+
+    with patch(
+        "milodex.data.cache.os.replace",
+        side_effect=PermissionError("[WinError 5] Access is denied (simulated)"),
+    ):
+        with patch("milodex.data.cache.time.sleep"):
+            with caplog.at_level(logging.WARNING, logger="milodex.data.alpaca_provider"):
+                runner.run_cycle()  # must not raise
+
+    assert any("cache_write_contention" in r.getMessage() for r in caplog.records), (
+        "the failed persistence must be surfaced as a warning"
+    )
+
+    # Survival: the session's run row is still open — no crashed exit.
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].ended_at is None
+    assert runs[0].exit_reason is None
+
+    runner.shutdown(mode="controlled")
+
+
 def test_runner_run_writes_interrupted_exit_reason_on_keyboard_interrupt(
     tmp_path: Path,
     strategy_config_dir: Path,

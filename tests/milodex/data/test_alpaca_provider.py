@@ -915,6 +915,129 @@ class TestGetLatestBarTransientRetry:
         assert provider._client.get_stock_latest_bar.call_count == 2
 
 
+class TestCacheWritePersistenceFailSoft:
+    """The poll path's cache PERSISTENCE step is fail-soft; everything else stays loud.
+
+    2026-07-23 live defect: five co-running SPY intraday runners held
+    SPY.parquet open (pd.read_parquet handles) so long that the writer's
+    rename-retry budget exhausted and the PermissionError crashed two runner
+    sessions. The fetched bars were already in memory and re-fetchable next
+    poll, so losing the session over a failed cache WRITE is strictly worse
+    than serving the in-memory merge and retrying persistence next poll.
+
+    Boundary contract pinned here:
+    - CacheWriteContentionError from merge  -> fail soft (serve in-memory merge,
+      one warning, cache untouched)
+    - upstream fetch errors                 -> propagate unchanged
+    - merge data-integrity errors           -> propagate unchanged
+    """
+
+    @staticmethod
+    def _daily_bars(days: list[int], closes: list[float]) -> list[MagicMock]:
+        return [
+            _make_bar(datetime(2025, 1, day, 5, 0, tzinfo=UTC), close=close)
+            for day, close in zip(days, closes, strict=True)
+        ]
+
+    def test_serves_fetched_bars_when_cache_write_contended_cold_cache(self, provider, caplog):
+        """Cold cache + unpersistable write: get_bars still returns the fetched
+        bars and logs exactly one contention warning for the symbol."""
+        bars = self._daily_bars([13, 14, 15], [150.0, 151.0, 152.0])
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": bars})
+
+        with patch(
+            "milodex.data.cache.os.replace",
+            side_effect=PermissionError("[WinError 5] Access is denied (simulated)"),
+        ):
+            with patch("milodex.data.cache.time.sleep"):
+                with caplog.at_level(logging.WARNING, logger="milodex.data.alpaca_provider"):
+                    result = provider.get_bars(
+                        symbols=["AAPL"],
+                        timeframe=Timeframe.DAY_1,
+                        start=date(2025, 1, 13),
+                        end=date(2025, 1, 15),
+                    )
+
+        barset = result["AAPL"]
+        assert len(barset) == 3, "fetched bars must be served despite the failed persistence"
+
+        warnings = [r for r in caplog.records if "cache_write_contention" in r.getMessage()]
+        assert len(warnings) == 1, f"expected exactly one contention warning, got {len(warnings)}"
+
+        # Persistence genuinely failed — nothing on disk.
+        assert provider._cache.read("AAPL", Timeframe.DAY_1) is None
+
+    def test_serves_in_memory_merge_of_cache_and_fetch_on_contention(self, provider, caplog):
+        """Warm cache + new tail + unpersistable write: get_bars serves the
+        in-memory merge (cached history + fresh tail) while the on-disk cache
+        stays on its previous state for the next poll to heal."""
+        seed = self._daily_bars([13, 14], [150.0, 151.0])
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": seed})
+        provider.get_bars(
+            symbols=["AAPL"],
+            timeframe=Timeframe.DAY_1,
+            start=date(2025, 1, 13),
+            end=date(2025, 1, 14),
+        )
+        assert len(provider._cache.read("AAPL", Timeframe.DAY_1)) == 2
+
+        tail = self._daily_bars([15], [152.0])
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": tail})
+
+        with patch(
+            "milodex.data.cache.os.replace",
+            side_effect=PermissionError("[WinError 5] Access is denied (simulated)"),
+        ):
+            with patch("milodex.data.cache.time.sleep"):
+                with caplog.at_level(logging.WARNING, logger="milodex.data.alpaca_provider"):
+                    result = provider.get_bars(
+                        symbols=["AAPL"],
+                        timeframe=Timeframe.DAY_1,
+                        start=date(2025, 1, 13),
+                        end=date(2025, 1, 15),
+                    )
+
+        barset = result["AAPL"]
+        assert len(barset) == 3, "must serve cached history merged with the fresh tail"
+        assert float(barset.to_dataframe()["close"].iloc[-1]) == 152.0
+
+        # On-disk cache unchanged — the next poll re-fetches the tail and
+        # re-persists.
+        assert len(provider._cache.read("AAPL", Timeframe.DAY_1)) == 2
+
+    def test_fetch_errors_still_propagate(self, provider):
+        """The fail-soft boundary covers ONLY cache persistence: an upstream
+        fetch failure propagates out of get_bars exactly as before."""
+        err500 = requests.exceptions.HTTPError(response=MagicMock(status_code=500))
+        provider._client.get_stock_bars.side_effect = err500
+
+        with pytest.raises(requests.exceptions.HTTPError):
+            provider.get_bars(
+                symbols=["AAPL"],
+                timeframe=Timeframe.DAY_1,
+                start=date(2025, 1, 13),
+                end=date(2025, 1, 15),
+            )
+
+    def test_merge_data_integrity_errors_still_propagate(self, provider):
+        """A schema/dtype ValueError from merge is a data-integrity failure,
+        not a persistence hiccup — it must stay loud (silent NaN/dtype
+        corruption feeding the promotion gate is worse than a dead runner)."""
+        bars = self._daily_bars([13], [150.0])
+        provider._client.get_stock_bars.return_value = MagicMock(data={"AAPL": bars})
+
+        with patch.object(
+            provider._cache, "merge", side_effect=ValueError("schema drift (simulated)")
+        ):
+            with pytest.raises(ValueError, match="schema drift"):
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 13),
+                    end=date(2025, 1, 15),
+                )
+
+
 def test_timeframe_map_covers_every_timeframe_member() -> None:
     """Every Timeframe enum member must have an Alpaca TimeFrame mapping.
 
