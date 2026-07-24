@@ -1164,14 +1164,14 @@ class TestSustainedContentionEscalation:
             for i, d in enumerate(days)
         ]
 
-    def _poll(self, provider, days: list[date], *, contended: bool):
+    def _poll(self, provider, days: list[date], *, contended: bool, symbol: str = "AAPL"):
         """One get_bars poll over [days[0], days[-1]], optionally unwritable."""
         provider._client.get_stock_bars.return_value = MagicMock(
-            data={"AAPL": self._bars_for(days)}
+            data={symbol: self._bars_for(days)}
         )
         if not contended:
             return provider.get_bars(
-                symbols=["AAPL"], timeframe=Timeframe.DAY_1, start=days[0], end=days[-1]
+                symbols=[symbol], timeframe=Timeframe.DAY_1, start=days[0], end=days[-1]
             )
         with patch(
             "milodex.data.cache.os.replace",
@@ -1179,7 +1179,7 @@ class TestSustainedContentionEscalation:
         ):
             with patch("milodex.data.cache.time.sleep"):
                 return provider.get_bars(
-                    symbols=["AAPL"], timeframe=Timeframe.DAY_1, start=days[0], end=days[-1]
+                    symbols=[symbol], timeframe=Timeframe.DAY_1, start=days[0], end=days[-1]
                 )
 
     def test_below_threshold_no_alert(self, provider):
@@ -1263,6 +1263,39 @@ class TestSustainedContentionEscalation:
             assert len(result["AAPL"]) == 3, "fail-soft serving must be unaffected"
 
         assert provider._cache_contention_streaks["AAPL"] == polls
+
+    def test_cross_symbol_isolation(self, provider):
+        """Streaks are per-symbol: a sibling symbol's successful persist
+        neither resets another symbol's in-progress streak nor suppresses its
+        alert, and the successful symbol's own counter is cleared."""
+        alerts = []
+        provider.set_alert_sink(alerts.append)
+        days = self._weekdays(3)
+        n = self._threshold()
+        mid = 6
+
+        # AAPL accrues an in-progress streak.
+        for _ in range(mid):
+            self._poll(provider, days, contended=True, symbol="AAPL")
+        # MSFT contends a little, then persists successfully.
+        for _ in range(3):
+            self._poll(provider, days, contended=True, symbol="MSFT")
+        self._poll(provider, days, contended=False, symbol="MSFT")
+
+        assert provider._cache_contention_streaks["AAPL"] == mid, (
+            "sibling's successful persist must not touch AAPL's streak"
+        )
+        assert "MSFT" not in provider._cache_contention_streaks, (
+            "successful persist must clear MSFT's own counter"
+        )
+        assert alerts == []
+
+        # AAPL's streak continues uninterrupted to N and still alerts.
+        for _ in range(n - mid):
+            self._poll(provider, days, contended=True, symbol="AAPL")
+        assert len(alerts) == 1
+        assert alerts[0].symbol == "AAPL"
+        assert alerts[0].context_json["streak"] == n
 
     def test_sink_failure_is_swallowed(self, provider, caplog):
         """A raising sink must not break the poll path (the whole point of the
