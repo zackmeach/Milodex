@@ -209,3 +209,27 @@ class TestCallWithRetryOnTransient:
 
         assert exc_info.value is err
         assert call.call_count == 1
+
+    def test_retries_on_tls_eof_ssl_error_then_succeeds(self):
+        """TLS-teardown classes are transient: pin SSLError coverage.
+
+        requests wraps urllib3's mid-handshake/mid-read TLS teardown
+        (``ssl.SSLEOFError`` — UNEXPECTED_EOF_WHILE_READING) in
+        ``requests.exceptions.SSLError``, a ``ConnectionError`` subclass, so
+        the transient set covers it by subclassing. Pinned explicitly so a
+        future narrowing of ``_TRANSIENT_READ_ERRORS`` (e.g. swapping
+        ``ConnectionError`` for an enumerated list) cannot silently drop the
+        class that killed four daily runners mid close-eval on 2026-07-23.
+        """
+        err = requests.exceptions.SSLError(
+            "HTTPSConnectionPool(host='data.alpaca.markets', port=443): Max retries "
+            "exceeded with url: /v2/stocks/bars (Caused by SSLError(SSLEOFError(8, "
+            "'[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol')))"
+        )
+        call = MagicMock(side_effect=[err, "ok"])
+
+        with patch("time.sleep"):
+            result = call_with_retry_on_transient(call)
+
+        assert result == "ok"
+        assert call.call_count == 2

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import math
+import random
 import signal
 import sqlite3
 import time
@@ -24,7 +25,7 @@ from milodex.core.event_store import (
     QueuedIntentEvent,
     StrategyRunEvent,
 )
-from milodex.data import DataProvider
+from milodex.data import DataConnectivityError, DataProvider
 from milodex.data.models import Bar, BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
@@ -56,21 +57,40 @@ _POLL_INTERVAL_BY_BAR_SIZE: dict[str, float] = {
 }
 
 # Consecutive-connectivity-outage budget for the poll loop (R-OPS-005
-# "retry per a conservative policy"). A BrokerConnectionError raised by a
-# poll cycle is treated as a failed poll and retried on the next cycle (the
-# poll interval is the backoff) rather than crashing the runner: a transient
-# network/broker blip killed all six paper runners at once on 2026-07-15
-# 23:24 UTC, and an unclean death also voids the queued-intent clean-handoff
-# fence (I-4) — so a crash costs both the session AND the next open's drain.
-# The budget is bounded: once an outage episode exceeds this window the next
-# connectivity failure re-raises and the runner crashes exactly as before
-# (fail-closed; RISK_POLICY.md lists sustained connectivity loss as a
-# kill-switch trigger — wiring that trigger is the kill-switch-triggers
-# workstream, not this constant). Only BrokerConnectionError is retried:
-# every other exception still crashes on first raise. Module constant, not
-# config: promote to configs/risk_defaults.yaml when an operator actually
-# needs to tune it.
+# "retry per a conservative policy"). A connectivity-classified error raised
+# by a poll cycle is treated as a failed poll and retried on the next cycle
+# (the poll interval is the backoff) rather than crashing the runner: a
+# transient network/broker blip killed all six paper runners at once on
+# 2026-07-15 23:24 UTC, and an unclean death also voids the queued-intent
+# clean-handoff fence (I-4) — so a crash costs both the session AND the next
+# open's drain. The budget is bounded: once an outage episode exceeds this
+# window the next connectivity failure re-raises and the runner crashes
+# exactly as before (fail-closed; RISK_POLICY.md lists sustained connectivity
+# loss as a kill-switch trigger — wiring that trigger is the
+# kill-switch-triggers workstream, not this constant). Exactly two classes
+# retry — BrokerConnectionError from the broker layer and
+# DataConnectivityError from the data layer (2026-07-23: a TLS-EOF burst on
+# the post-close close-eval bars fetch crashed four daily runners at the
+# identical second, before any Friday intent could queue); every other
+# exception still crashes on first raise. Module constant, not config:
+# promote to configs/risk_defaults.yaml when an operator actually needs to
+# tune it.
 _CONNECTIVITY_RETRY_BUDGET_SECONDS: float = 30.0 * 60.0
+
+# Multiplicative poll-sleep jitter fraction. The four daily runners that died
+# on 2026-07-23 fetched /v2/stocks/bars at the IDENTICAL second — same launch
+# minute + same fixed 60 s cadence kept the fleet phase-locked, so one TLS
+# teardown took out every one of them in a single poll. Each sleep now
+# stretches by uniform(0, 10%) of the poll interval, de-phasing co-launched
+# runners within a few polls (their offsets random-walk apart). Safety of the
+# bound: jitter is ADDITIVE-ONLY (a sleep is never shorter than the base
+# interval), so consecutive lockin fetches stay >= the poll interval (60 s at
+# the 1D default) >= close_lockin_min_interval_seconds (30 s) — the
+# stability confirmation cannot be starved — and the worst case adds 10% to
+# lockin-confirmation latency (two confirming polls <= 132 s vs the 300 s
+# close_lockin_max_wait_seconds re-arm budget). Intraday tempos (5-15 s
+# polls) gain <= 1.5 s per poll — inside normal feed publication lag.
+_POLL_JITTER_FRACTION: float = 0.10
 
 # Bounded retry window for an EXIT whose drain finds no confirmable fresh price.
 # Why 30 minutes: IEX-thin symbols (observed 2026-07-20: XLF/XLV/JNJ ~17s after
@@ -192,7 +212,8 @@ class StrategyRunner:
         # episode (even on the same date after a recovery) then re-alerts.
         self._stale_bar_alerted_for: date | None = None
         self._requested_shutdown: str | None = None
-        # Monotonic timestamp of the first BrokerConnectionError of the current
+        # Monotonic timestamp of the first connectivity-classified failure
+        # (BrokerConnectionError / DataConnectivityError) of the current
         # outage episode; None when connectivity is healthy. Used by run() to
         # bound connectivity retries (_CONNECTIVITY_RETRY_BUDGET_SECONDS) and to
         # emit the degraded-connectivity operator alert once per episode.
@@ -292,11 +313,12 @@ class StrategyRunner:
                     break
                 try:
                     self.run_cycle()
-                except BrokerConnectionError as exc:
-                    # Connectivity-classified only: treat as a failed poll and
-                    # retry next cycle, bounded by the outage budget (which
-                    # re-raises). Stop requests stay responsive below — they
-                    # are local-filesystem reads, not broker calls.
+                except (BrokerConnectionError, DataConnectivityError) as exc:
+                    # Connectivity-classified only (broker OR data plane):
+                    # treat as a failed poll and retry next cycle, bounded by
+                    # the outage budget (which re-raises). Stop requests stay
+                    # responsive below — they are local-filesystem reads, not
+                    # network calls.
                     self._register_connectivity_failure(exc)
                 else:
                     self._clear_connectivity_outage()
@@ -304,7 +326,10 @@ class StrategyRunner:
                 if self._requested_shutdown is not None:
                     _exit_mode = self._requested_shutdown
                     break
-                time.sleep(self._poll_interval_seconds)
+                # De-phase co-launched runners (see _POLL_JITTER_FRACTION):
+                # additive-only jitter, never below the base interval.
+                jitter = 1.0 + random.uniform(0.0, _POLL_JITTER_FRACTION)
+                time.sleep(self._poll_interval_seconds * jitter)
         except KeyboardInterrupt:
             # Raw KeyboardInterrupt (not routed through _handle_sigint) — treat
             # as operator-requested interruption rather than a crash.
@@ -317,24 +342,29 @@ class StrategyRunner:
             signal.signal(signal.SIGINT, previous_handler)
             self.shutdown(mode=_exit_mode)
 
-    def _register_connectivity_failure(self, exc: BrokerConnectionError) -> None:
+    def _register_connectivity_failure(
+        self, exc: BrokerConnectionError | DataConnectivityError
+    ) -> None:
         """Bound connectivity retries; re-raise ``exc`` once the budget is spent.
 
-        First failure of an episode records the episode start and emits a
-        single ``broker_connectivity_degraded`` operator alert (the event
-        store is local SQLite — a broker outage does not affect it). Later
-        failures only log. When the episode has lasted longer than
+        Covers both connectivity planes: ``BrokerConnectionError`` (trading
+        API) and ``DataConnectivityError`` (market-data API, 2026-07-23 —
+        the post-close close-eval bars fetch). First failure of an episode
+        records the episode start and emits a single
+        ``broker_connectivity_degraded`` operator alert (the event store is
+        local SQLite — a network outage does not affect it). Later failures
+        only log. When the episode has lasted longer than
         ``_CONNECTIVITY_RETRY_BUDGET_SECONDS`` the original exception is
         re-raised, so the runner crashes with the exact pre-existing
-        ``crashed:BrokerConnectionError(...)`` exit_reason. Observational
-        only otherwise — no submit, no risk-state mutation.
+        ``crashed:<ExceptionType>(...)`` exit_reason. Observational only
+        otherwise — no submit, no risk-state mutation.
         """
         now = time.monotonic()
         if self._connectivity_outage_started is None:
             self._connectivity_outage_started = now
             logger.warning(
-                "Broker connectivity lost (%s); retrying each poll for up to %.0f s "
-                "before crashing.",
+                "Connectivity lost (%s: %s); retrying each poll for up to %.0f s before crashing.",
+                type(exc).__name__,
                 exc,
                 _CONNECTIVITY_RETRY_BUDGET_SECONDS,
             )
@@ -344,8 +374,9 @@ class StrategyRunner:
                         alert_type="broker_connectivity_degraded",
                         severity="warning",
                         summary=(
-                            f"Broker unreachable for {self._strategy_id}; retrying each poll "
-                            f"for up to {_CONNECTIVITY_RETRY_BUDGET_SECONDS:.0f}s before crashing."
+                            f"Broker/data connectivity lost for {self._strategy_id}; retrying "
+                            f"each poll for up to {_CONNECTIVITY_RETRY_BUDGET_SECONDS:.0f}s "
+                            "before crashing."
                         ),
                         strategy_id=self._strategy_id,
                         session_id=self._session_id,
@@ -353,6 +384,7 @@ class StrategyRunner:
                         side=None,
                         context_json={
                             "error": str(exc),
+                            "error_type": type(exc).__name__,
                             "retry_budget_seconds": _CONNECTIVITY_RETRY_BUDGET_SECONDS,
                         },
                         recorded_at=self._now(),
@@ -370,14 +402,14 @@ class StrategyRunner:
         elapsed = now - self._connectivity_outage_started
         if elapsed > _CONNECTIVITY_RETRY_BUDGET_SECONDS:
             logger.error(
-                "Broker connectivity outage exceeded the %.0f s retry budget "
-                "(%.0f s elapsed); crashing.",
+                "Connectivity outage exceeded the %.0f s retry budget (%.0f s elapsed); crashing.",
                 _CONNECTIVITY_RETRY_BUDGET_SECONDS,
                 elapsed,
             )
             raise exc
         logger.warning(
-            "Broker still unreachable (%s); %.0f s of %.0f s retry budget elapsed.",
+            "Still unreachable (%s: %s); %.0f s of %.0f s retry budget elapsed.",
+            type(exc).__name__,
             exc,
             elapsed,
             _CONNECTIVITY_RETRY_BUDGET_SECONDS,
@@ -387,7 +419,7 @@ class StrategyRunner:
         """Reset the outage episode after a successful poll cycle."""
         if self._connectivity_outage_started is not None:
             logger.info(
-                "Broker connectivity restored after %.0f s.",
+                "Connectivity restored after %.0f s.",
                 time.monotonic() - self._connectivity_outage_started,
             )
             self._connectivity_outage_started = None

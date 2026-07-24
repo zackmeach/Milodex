@@ -20,6 +20,7 @@ from milodex.broker.models import (
     TimeInForce,
 )
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
+from milodex.data import DataConnectivityError
 from milodex.execution import ExecutionService
 from milodex.execution.models import ExecutionStatus
 from milodex.execution.state import KillSwitchStateStore
@@ -1473,6 +1474,7 @@ def _build_connectivity_runner(
     strategy_config_dir: Path,
     risk_defaults_file: Path,
     fail_times: int | None,
+    poll_interval_seconds: float = 0.0,
 ):
     """Wire a runner over a FlakyConnectivityBroker for outage-path tests."""
     provider = StubProvider(
@@ -1504,7 +1506,7 @@ def _build_connectivity_runner(
         data_provider=provider,
         execution_service=service,
         event_store=event_store,
-        poll_interval_seconds=0.0,
+        poll_interval_seconds=poll_interval_seconds,
         prompt_fn=lambda: "c",
     )
     return runner, broker, event_store, kill_switch_store
@@ -1672,6 +1674,263 @@ def test_runner_non_connectivity_broker_error_still_crashes_on_first_raise(
     assert runs[0].exit_reason.startswith("crashed:BrokerAuthError")
     # No retry episode was opened and no degraded alert emitted.
     assert event_store.list_operator_alerts(alert_type="broker_connectivity_degraded") == []
+
+
+# ---------------------------------------------------------------------------
+# Data-plane connectivity (live defect 2026-07-23): a TLS EOF burst on the
+# post-close close-eval bars fetch killed four daily runners at once. The
+# data layer now classifies transient-exhausted fetches as
+# DataConnectivityError, and the runner's poll loop treats it exactly like
+# BrokerConnectionError — a failed poll inside the bounded outage budget.
+# ---------------------------------------------------------------------------
+
+
+class FlakyConnectivityProvider(StubProvider):
+    """StubProvider whose ``get_bars`` raises DataConnectivityError.
+
+    ``fail_times=N`` fails the first N calls then recovers; ``fail_times=None``
+    fails every call (a sustained data-plane outage).
+    """
+
+    def __init__(self, bars_by_symbol: dict[str, object], *, fail_times: int | None) -> None:
+        super().__init__(bars_by_symbol)
+        self._fail_times = fail_times
+
+    def get_bars(self, symbols: list[str], timeframe, start: date, end: date):
+        if self._fail_times is None:
+            raise DataConnectivityError(
+                "bars fetch could not reach the data source after bounded retries: TLS EOF"
+            )
+        if self._fail_times > 0:
+            self._fail_times -= 1
+            raise DataConnectivityError(
+                "bars fetch could not reach the data source after bounded retries: TLS EOF"
+            )
+        return super().get_bars(symbols, timeframe, start, end)
+
+
+def _build_data_connectivity_runner(
+    *,
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    fail_times: int | None,
+):
+    """Wire a POST-CLOSE daily runner over a FlakyConnectivityProvider.
+
+    ``market_open=False`` puts every cycle on the close-eval path (the path
+    the 2026-07-23 crash rode); ``close_lockin_min_interval_seconds=0.0``
+    lets two consecutive successful fetches confirm the lockin without a
+    pinned clock.
+    """
+    provider = FlakyConnectivityProvider(
+        {
+            "SPY": build_barset([10.0, 10.0, 10.0]),
+            "SHY": build_barset([10.0, 10.0, 10.0]),
+        },
+        fail_times=fail_times,
+    )
+    broker = StubBroker(
+        account=AccountInfo(
+            equity=10_000.0,
+            cash=10_000.0,
+            buying_power=10_000.0,
+            portfolio_value=10_000.0,
+            daily_pnl=0.0,
+        ),
+        market_open=False,
+    )
+    service, event_store, kill_switch_store = build_service(
+        tmp_path=tmp_path,
+        broker=broker,
+        provider=provider,
+        risk_defaults_file=risk_defaults_file,
+    )
+    from tests.milodex._helpers.promotion import seed_frozen_manifest
+
+    seed_frozen_manifest(event_store, strategy_config_dir / "regime_runner.yaml")
+    runner = StrategyRunner(
+        strategy_id="regime.daily.sma200_rotation.spy_shy.v1",
+        config_dir=strategy_config_dir,
+        broker_client=broker,
+        data_provider=provider,
+        execution_service=service,
+        event_store=event_store,
+        poll_interval_seconds=0.0,
+        prompt_fn=lambda: "c",
+        close_lockin_min_interval_seconds=0.0,
+    )
+    return runner, provider, event_store, kill_switch_store
+
+
+def test_runner_close_eval_survives_data_fetch_failure_and_completes_later(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A transient data-fetch failure is a failed poll; close-eval lands later.
+
+    Regression for 2026-07-23 20:09:25Z: four daily runners crashed
+    simultaneously when the post-close bars fetch hit SSLEOFError, so ZERO
+    intents were queued for the next open and positions carried unmanaged.
+    Two failing polls followed by recovery must leave the runner alive,
+    emit exactly one degraded-connectivity alert, and complete the SAME
+    session's close-eval on a later poll (watermark advanced = the locked-in
+    close was evaluated and durably recorded).
+    """
+    runner, _provider, event_store, kill_switch_store = _build_data_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=2,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    fired = {"count": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        # Two failing cycles, one recovered observation cycle, one lockin
+        # confirmation cycle, then a controlled stop.
+        fired["count"] += 1
+        if fired["count"] >= 6:
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason == "controlled_stop"
+    assert kill_switch_store.get_state().active is False
+    alerts = event_store.list_operator_alerts(alert_type="broker_connectivity_degraded")
+    assert len(alerts) == 1
+    # Recovery cleared the episode AND the close-eval completed afterwards.
+    assert runner._connectivity_outage_started is None
+    assert runner._last_processed_bar_at is not None
+
+
+def test_runner_data_connectivity_budget_exhaustion_crashes_as_before(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Window-expiry escalation is preserved for the data plane.
+
+    Once a sustained data outage outlives the budget the runner crashes with
+    the same ``crashed:<ExceptionType>(...)`` exit_reason contract as the
+    broker-plane budget exhaustion — transient handling never becomes an
+    unbounded retry loop.
+    """
+    runner, _provider, event_store, _kill = _build_data_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=None,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    monkeypatch.setattr(runner_module, "_CONNECTIVITY_RETRY_BUDGET_SECONDS", -1.0)
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _s: None)
+
+    with pytest.raises(DataConnectivityError):
+        runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason is not None
+    assert runs[0].exit_reason.startswith("crashed:DataConnectivityError")
+    # The crash came AFTER a retry episode (first failure alerted + retried;
+    # the budget check escalated a LATER failure) — not on the first raise.
+    alerts = event_store.list_operator_alerts(alert_type="broker_connectivity_degraded")
+    assert len(alerts) == 1
+
+
+def test_runner_non_connectivity_data_error_still_crashes_on_first_raise(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Only connectivity-classified data errors retry — anything else crashes.
+
+    Kills the mutant that widens the poll-loop handler to a blanket
+    ``except Exception``: a corrupt-frame ValueError from the provider is not
+    transient, and retrying it for the whole budget would just delay the
+    crash by 30 minutes while trading blind.
+    """
+    runner, provider, event_store, _kill = _build_data_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=0,
+    )
+
+    def raise_value_error(symbols, timeframe, start, end):
+        raise ValueError("corrupt frame")
+
+    monkeypatch.setattr(provider, "get_bars", raise_value_error)
+
+    from milodex.strategies import runner as runner_module
+
+    monkeypatch.setattr(runner_module.time, "sleep", lambda _s: None)
+
+    with pytest.raises(ValueError):
+        runner.run()
+
+    runs = event_store.list_strategy_runs()
+    assert len(runs) == 1
+    assert runs[0].exit_reason is not None
+    assert runs[0].exit_reason.startswith("crashed:ValueError")
+    # No retry episode was opened and no degraded alert emitted.
+    assert event_store.list_operator_alerts(alert_type="broker_connectivity_degraded") == []
+
+
+def test_runner_poll_sleep_jitters_within_bounded_fraction(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Poll sleeps carry bounded additive jitter to de-phase the fleet.
+
+    The four 2026-07-23 crashes hit /v2/stocks/bars at the IDENTICAL second:
+    same launch minute + same fixed 60 s cadence kept the daily fleet
+    phase-locked, so one TLS teardown killed all of them in a single poll.
+    Each sleep must stretch by uniform(0, 10%) of the poll interval —
+    additive-only (never below the base interval, so lockin's consecutive
+    min-interval spacing is preserved) and capped at 10% (two confirming
+    polls stay far inside close_lockin_max_wait_seconds).
+    """
+    runner, _broker, _event_store, _kill = _build_connectivity_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        fail_times=0,
+        poll_interval_seconds=60.0,
+    )
+
+    from milodex.strategies import runner as runner_module
+
+    sleeps: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) >= 5:
+            runner._handle_sigint(signal.SIGINT, None)
+
+    monkeypatch.setattr(runner_module.time, "sleep", fake_sleep)
+
+    runner.run()
+
+    assert len(sleeps) >= 5
+    assert all(60.0 <= s <= 66.0 for s in sleeps), sleeps
+    # Continuous-uniform jitter: five identical draws means no jitter at all.
+    assert len(set(sleeps)) > 1, sleeps
 
 
 # ---------------------------------------------------------------------------

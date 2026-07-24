@@ -13,6 +13,20 @@ from datetime import date
 from milodex.data.models import Bar, BarSet, Timeframe
 
 
+class DataConnectivityError(Exception):
+    """Transient connectivity failure reaching the market-data source.
+
+    Raised by provider implementations when an idempotent data read (bars
+    fetch / latest-bar fetch) exhausts its bounded in-process transient
+    retries — TLS teardown (SSLEOFError), connection reset, remote
+    disconnect, connect/read timeout. The data-plane analogue of the broker
+    layer's ``BrokerConnectionError``: callers with their own poll cadence
+    (the strategy runner) treat it as a failed poll and retry within their
+    outage budget instead of crashing. Non-transient errors are never
+    translated into this class — they propagate unchanged.
+    """
+
+
 class DataProvider(ABC):
     """Abstract market data provider."""
 

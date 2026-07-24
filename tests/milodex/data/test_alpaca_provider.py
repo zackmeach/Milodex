@@ -17,6 +17,21 @@ from alpaca.data.requests import Adjustment
 
 from milodex.data.alpaca_provider import AlpacaDataProvider
 from milodex.data.models import Bar, BarSet, Timeframe
+from milodex.data.provider import DataConnectivityError
+
+
+def _make_tls_eof_error() -> requests.exceptions.SSLError:
+    """The exact class/shape that killed four daily runners on 2026-07-23.
+
+    urllib3 surfaces a mid-read TLS teardown as ``MaxRetryError`` caused by
+    ``SSLEOFError``; requests re-wraps it in ``requests.exceptions.SSLError``
+    (a ``ConnectionError`` subclass).
+    """
+    return requests.exceptions.SSLError(
+        "HTTPSConnectionPool(host='data.alpaca.markets', port=443): Max retries "
+        "exceeded with url: /v2/stocks/bars (Caused by SSLError(SSLEOFError(8, "
+        "'[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol')))"
+    )
 
 
 def _make_429_api_error() -> APIError:
@@ -132,6 +147,80 @@ class TestGetBars:
 
         request = provider._client.get_stock_bars.call_args.args[0]
         assert request.adjustment == Adjustment.ALL
+
+
+class TestGetBarsTransientConnectivity:
+    """The bars fetch survives TLS/connection teardown (live defect 2026-07-23).
+
+    Four daily runners crashed at the identical second when their post-close
+    close-eval bars fetch hit ``SSLEOFError``: ``get_bars`` wrapped its fetch
+    in the 429-only retry helper, so the raw ``requests.exceptions.SSLError``
+    bubbled out of the data layer unclassified. Bars reads are idempotent —
+    they now ride ``call_with_retry_on_transient``, and transient exhaustion
+    is translated to ``DataConnectivityError`` (the data-plane analogue of
+    ``BrokerConnectionError``) so the runner's poll loop can classify it.
+    """
+
+    def test_get_bars_retries_tls_eof_then_succeeds(self, provider, mock_alpaca_bar):
+        err = _make_tls_eof_error()
+        ok = MagicMock(data={"AAPL": [mock_alpaca_bar]})
+        provider._client.get_stock_bars.side_effect = [err, ok]
+
+        with patch("time.sleep"):
+            result = provider.get_bars(
+                symbols=["AAPL"],
+                timeframe=Timeframe.DAY_1,
+                start=date(2025, 1, 15),
+                end=date(2025, 1, 15),
+            )
+
+        assert len(result["AAPL"]) == 1
+        assert provider._client.get_stock_bars.call_count == 2
+
+    def test_get_bars_transient_exhaustion_raises_data_connectivity_error(self, provider):
+        err = _make_tls_eof_error()
+        provider._client.get_stock_bars.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(DataConnectivityError) as exc_info:
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        assert exc_info.value.__cause__ is err
+
+    def test_get_bars_non_transient_error_propagates_unchanged(self, provider):
+        """A non-transient, non-429 error is neither retried nor translated."""
+        http_error = MagicMock(spec=requests.exceptions.HTTPError)
+        http_error.response = MagicMock()
+        http_error.response.status_code = 422
+        err = APIError('{"code": 422, "message": "unprocessable"}', http_error)
+        provider._client.get_stock_bars.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(APIError) as exc_info:
+                provider.get_bars(
+                    symbols=["AAPL"],
+                    timeframe=Timeframe.DAY_1,
+                    start=date(2025, 1, 15),
+                    end=date(2025, 1, 15),
+                )
+
+        assert exc_info.value is err
+        assert provider._client.get_stock_bars.call_count == 1
+
+    def test_get_latest_bar_transient_exhaustion_raises_data_connectivity_error(self, provider):
+        err = _make_tls_eof_error()
+        provider._client.get_stock_latest_bar.side_effect = err
+
+        with patch("time.sleep"):
+            with pytest.raises(DataConnectivityError) as exc_info:
+                provider.get_latest_bar("AAPL")
+
+        assert exc_info.value.__cause__ is err
 
 
 class TestBackfillRange:
