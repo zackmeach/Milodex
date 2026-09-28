@@ -613,6 +613,69 @@ def test_propose_promote_to_paper_lifecycle_exempt_skips_run_id_requirement(
     assert proposal.projected_outcome["promotion_type"] == "lifecycle_exempt"
 
 
+def test_regime_null_min_trades_and_lifecycle_refusal_reasons(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    config_path = _write_regime_strategy(config_dir, stage="backtest")
+    config_path.write_text(
+        config_path.read_text(encoding="utf-8").replace(
+            "min_trades_required: 30", "min_trades_required: null"
+        ),
+        encoding="utf-8",
+    )
+    facade = make_facade()
+    proposal = facade.propose_promote_to_paper(
+        _REGIME_STRATEGY_ID,
+        recommendation="Test the regime lifecycle in paper.",
+        known_risks=["Whipsaw"],
+        lifecycle_exempt=True,
+    )
+    assert proposal.admissible, proposal.blockers
+    result = facade.submit_promote_to_paper(proposal)
+    assert result.status == "blocked"
+    assert len(result.blockers) == 3
+    assert all(b.reason_code == "lifecycle_criteria_unmet" for b in result.blockers)
+    assert [f"Criterion ({c})" in b.message for c, b in zip("abc", result.blockers)] == [
+        True, True, True
+    ]
+    assert event_store.list_promotions_for_strategy(_REGIME_STRATEGY_ID) == []
+    assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")
+
+
+def test_regime_fault_check_records_only_synthetic_veto(
+    make_facade, config_dir: Path, event_store: EventStore
+) -> None:
+    _write_regime_strategy(config_dir, stage="backtest")
+    facade = make_facade()
+    before = facade.lifecycle_criteria_status(_REGIME_STRATEGY_ID)
+    assert before["eligible"] is True
+    assert [item["satisfied"] for item in before["criteria"]] == [False, False, False]
+    assert facade.run_lifecycle_fault_check(STRATEGY_ID)["status"] == "blocked"
+
+    check = facade.run_lifecycle_fault_check(_REGIME_STRATEGY_ID)
+    assert check["status"] == "recorded", check
+    assert check["explanation_id"]
+    after = facade.lifecycle_criteria_status(_REGIME_STRATEGY_ID)
+    assert [item["satisfied"] for item in after["criteria"]] == [False, False, True]
+    assert event_store.list_promotions_for_strategy(_REGIME_STRATEGY_ID) == []
+
+
+def test_regime_fault_check_hides_unexpected_error(
+    make_facade, config_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _write_regime_strategy(config_dir, stage="backtest")
+
+    def _fail(*args, **kwargs):
+        raise RuntimeError("private policy path and token")
+
+    monkeypatch.setattr(facade_module, "run_synthetic_fault_injection", _fail)
+    result = make_facade().run_lifecycle_fault_check(_REGIME_STRATEGY_ID)
+    assert result == {
+        "status": "blocked",
+        "message": "Synthetic fault-check could not complete. See logs.",
+    }
+
+
 def test_propose_promote_to_paper_blocks_wrong_source_stage(make_facade, config_dir: Path) -> None:
     _write_strategy(config_dir, stage="paper")
     facade = make_facade()

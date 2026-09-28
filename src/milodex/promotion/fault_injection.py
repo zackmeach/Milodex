@@ -43,6 +43,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from milodex.broker.models import AccountInfo, OrderSide, OrderType, TimeInForce
+from milodex.config import get_bundled_resource_dir
 from milodex.core.event_store import ExplanationEvent
 from milodex.data.models import Bar
 from milodex.execution.models import ExecutionRequest, TradeIntent
@@ -193,7 +194,9 @@ def run_synthetic_fault_injection(
     """
     config = load_strategy_config(config_path)
     evaluator = risk_evaluator or RiskEvaluator()
-    defaults_path = risk_defaults_path or Path("configs/risk_defaults.yaml")
+    defaults_path = risk_defaults_path or (
+        get_bundled_resource_dir() / "configs" / "risk_defaults.yaml"
+    )
     context = _build_synthetic_context(defaults_path)
 
     decision = evaluator.evaluate(context)

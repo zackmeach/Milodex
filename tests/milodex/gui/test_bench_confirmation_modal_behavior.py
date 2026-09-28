@@ -89,11 +89,12 @@ _HARNESS = r'''
 import os, sys, json, tempfile, pathlib
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QUrl, QTimer, QObject, Signal, Slot, Property, QMetaObject
+from PySide6.QtCore import QUrl, QTimer, QObject, Signal, Slot, Property, QMetaObject, Qt
 from PySide6.QtCore import QObject as _QObjectBase
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQuick import QQuickView
 from PySide6.QtQml import qmlRegisterSingletonInstance
+from PySide6.QtTest import QTest
 
 from milodex.gui.fonts import load_fonts
 from milodex.gui.theme_manager import ThemeManager
@@ -115,6 +116,8 @@ class FakeBenchCommandBridge(QObject):
     """
     submitCompleted = Signal("QVariantMap")
     submitQueued = Signal("QVariantMap")
+    lifecycleCriteriaCompleted = Signal("QVariantMap")
+    lifecycleFaultCheckCompleted = Signal("QVariantMap")
     recentCompletionsChanged = Signal()
 
     _PROPOSAL = {{"proposal_id": "fake-proposal-1", "blockers": []}}
@@ -142,6 +145,17 @@ class FakeBenchCommandBridge(QObject):
     @Slot("QVariantMap", result="QVariantMap")
     def proposePromoteToPaper(self, inputs):
         _record("proposePromoteToPaper", dict(inputs)); return dict(self._PROPOSAL)
+    @Slot(str, result=bool)
+    def lifecycleExemptEligible(self, strategy_id):
+        return strategy_id == "regime.daily.sma200_rotation.spy_shy.v1"
+    @Slot(str, result="QVariantMap")
+    def requestLifecycleCriteria(self, strategy_id):
+        _record("requestLifecycleCriteria", strategy_id)
+        return {{"bridge_status": "queued", "request_id": "criteria-1", "strategy_id": strategy_id}}
+    @Slot(str, result="QVariantMap")
+    def runLifecycleFaultCheckAsync(self, strategy_id):
+        _record("runLifecycleFaultCheckAsync", strategy_id)
+        return {{"bridge_status": "queued", "request_id": "fault-1", "strategy_id": strategy_id}}
     @Slot(str, result="QVariantMap")
     def submitPromoteToPaper(self, pid):
         _record("submitPromoteToPaper", pid); return dict(self._SYNC_OK)
@@ -301,6 +315,112 @@ _ROW_BACKTEST_STAGE = (
     '{ "strategyId": "regime.daily.x.spy.v1", "name": "Regime", "stage": "backtest", '
     '"evidenceRunId": "run-1" }'
 )
+_ROW_REGIME_BACKTEST_STAGE = (
+    '{ "strategyId": "regime.daily.sma200_rotation.spy_shy.v1", "name": "SPY/SHY", '
+    '"stage": "backtest" }'
+)
+
+
+@_skip_no_qt
+def test_regime_modal_exposes_fault_check_and_delegates_exemption(tmp_path) -> None:
+    records = tmp_path / "records.json"
+    assertions = (
+        "if 'Run synthetic risk fault-check' not in _texts():\n"
+        "    print('fault-check action missing: ' + json.dumps(_texts()) "
+        "+ ' status=' + str(_to_py(modal.property('_lifecycleStatus'))) "
+        "+ ' promote=' + str(modal.property('_isPromoteToPaperSubmit')), "
+        "file=sys.stderr); sys.exit(5)\n"
+        "button = root.findChild(_QObjectBase, 'benchLifecycleFaultCheckButton')\n"
+        "if not button or not button.property('activeFocusOnTab'):\n"
+        "    print('fault-check not keyboard focusable', file=sys.stderr); sys.exit(6)\n"
+        "_fake_bridge.lifecycleCriteriaCompleted.emit({'strategy_id': 'other', "
+        "'request_id': 'criteria-1', 'criteria': []})\n"
+        "if not _to_py(modal.property('_lifecycleStatus')).get('loading'):\n"
+        "    print('wrong-strategy criteria accepted', file=sys.stderr); sys.exit(11)\n"
+        "_fake_bridge.lifecycleCriteriaCompleted.emit({"
+        "'strategy_id': 'regime.daily.sma200_rotation.spy_shy.v1', "
+        "'request_id': 'criteria-1', 'criteria': []})\n"
+        "if _to_py(modal.property('_lifecycleStatus')).get('loading'):\n"
+        "    print('matching criteria not accepted', file=sys.stderr); sys.exit(12)\n"
+        "button.forceActiveFocus()\n"
+        "QTest.keyClick(view, Qt.Key.Key_Space)\n"
+        "if not modal.property('_faultCheckInFlight'):\n"
+        "    print('fault-check did not enter pending state', file=sys.stderr); sys.exit(7)\n"
+        "if button.property('enabled'):\n"
+        "    print('fault-check button active while pending', file=sys.stderr); sys.exit(13)\n"
+        "_invoke('_runLifecycleFaultCheck')\n"
+        "_fake_bridge.lifecycleFaultCheckCompleted.emit({'strategy_id': 'other', "
+        "'request_id': 'fault-1', 'message': 'wrong strategy'})\n"
+        "if not modal.property('_faultCheckInFlight'):\n"
+        "    print('wrong-strategy completion accepted', file=sys.stderr); sys.exit(8)\n"
+        "_fake_bridge.lifecycleFaultCheckCompleted.emit({"
+        "'strategy_id': 'regime.daily.sma200_rotation.spy_shy.v1', "
+        "'request_id': 'stale', 'message': 'stale'})\n"
+        "if not modal.property('_faultCheckInFlight'):\n"
+        "    print('stale completion accepted', file=sys.stderr); sys.exit(9)\n"
+        "_fake_bridge.lifecycleFaultCheckCompleted.emit({"
+        "'strategy_id': 'regime.daily.sma200_rotation.spy_shy.v1', "
+        "'request_id': 'fault-1', 'status': 'recorded', "
+        "'message': 'Synthetic veto recorded'})\n"
+        "if modal.property('_faultCheckInFlight'):\n"
+        "    print('matching completion left button pending', file=sys.stderr); sys.exit(10)\n"
+        "if modal.property('_submitErrorMessage'):\n"
+        "    print('successful check shown as error', file=sys.stderr); sys.exit(14)\n"
+        "modal.setProperty('_recommendationText', 'Paper lifecycle check')\n"
+        "modal.setProperty('_knownRiskText', 'Whipsaw')\n"
+        "_invoke('_dispatchPromoteToPaperSubmit')\n"
+        "recs = json.loads(RECORDS_PATH.read_text(encoding='utf-8'))\n"
+        "checks = [r for r in recs if r['method'] == 'runLifecycleFaultCheckAsync']\n"
+        "proposes = [r for r in recs if r['method'] == 'proposePromoteToPaper']\n"
+        "if len(checks) != 1 or checks[0]['args'] != "
+        "['regime.daily.sma200_rotation.spy_shy.v1']:\n"
+        "    print('fault-check not delegated: ' + json.dumps(recs), "
+        "file=sys.stderr); sys.exit(6)\n"
+        "if len(proposes) != 1 or 'lifecycle_exempt' in proposes[0]['args'][0]:\n"
+        "    print('QML selected governance bypass: ' + json.dumps(recs), "
+        "file=sys.stderr); sys.exit(7)\n"
+        "print('REGIME_LIFECYCLE_OK')\n"
+        "sys.exit(0)\n"
+    )
+    out = _run(
+        _build(_ROW_REGIME_BACKTEST_STAGE, _ACTION_PROMOTE_PAPER, assertions, records),
+        "regime lifecycle modal",
+    )
+    assert "REGIME_LIFECYCLE_OK" in out
+
+
+@_skip_no_qt
+def test_regime_row_change_discards_pending_fault_check(tmp_path) -> None:
+    records = tmp_path / "records.json"
+    assertions = (
+        "_invoke('_runLifecycleFaultCheck')\n"
+        "if not modal.property('_faultCheckInFlight'):\n"
+        "    print('fault-check did not start', file=sys.stderr); sys.exit(5)\n"
+        "modal.setProperty('rowData', {'strategyId': 'sample.other.v1', "
+        "'name': 'Other', 'stage': 'backtest'})\n"
+        "app.processEvents()\n"
+        "if modal.property('_faultCheckInFlight') or modal.property('_faultCheckRequestId'):\n"
+        "    print('old check still pending after strategy change', file=sys.stderr); sys.exit(6)\n"
+        "_fake_bridge.lifecycleFaultCheckCompleted.emit({"
+        "'strategy_id': 'regime.daily.sma200_rotation.spy_shy.v1', "
+        "'request_id': 'fault-1', 'status': 'blocked', 'message': 'old result'})\n"
+        "if modal.property('_submitErrorMessage'):\n"
+        "    print('old result reached new strategy', file=sys.stderr); sys.exit(7)\n"
+        "modal.setProperty('rowData', {'strategyId': "
+        "'regime.daily.sma200_rotation.spy_shy.v1', 'name': 'SPY/SHY', "
+        "'stage': 'backtest'})\n"
+        "app.processEvents()\n"
+        "button = root.findChild(_QObjectBase, 'benchLifecycleFaultCheckButton')\n"
+        "if not button or not button.isVisible() or not button.isEnabled():\n"
+        "    print('new row is not actionable', file=sys.stderr); sys.exit(8)\n"
+        "print('ROW_CHANGE_OK')\n"
+        "sys.exit(0)\n"
+    )
+    out = _run(
+        _build(_ROW_REGIME_BACKTEST_STAGE, _ACTION_PROMOTE_PAPER, assertions, records),
+        "regime row change",
+    )
+    assert "ROW_CHANGE_OK" in out
 
 
 # ===========================================================================

@@ -983,6 +983,73 @@ def test_propose_promote_to_paper_returns_dict_and_caches_proposal(
     )
 
 
+def test_regime_promotion_uses_policy_scoped_exemption_and_fault_check(
+    facade: BenchCommandFacade, config_dir: Path
+) -> None:
+    source = Path(__file__).resolve().parents[3] / "configs" / "spy_shy_200dma_v1.yaml"
+    (config_dir / source.name).write_text(
+        source.read_text(encoding="utf-8").replace('stage: "paper"', 'stage: "backtest"'),
+        encoding="utf-8",
+    )
+    strategy_id = "regime.daily.sma200_rotation.spy_shy.v1"
+    bridge = BenchCommandBridge(facade)
+    proposal = bridge.proposePromoteToPaper(
+        {
+            "strategy_id": strategy_id,
+            "recommendation": "Test the regime lifecycle in paper.",
+            "known_risk": "Whipsaw",
+        }
+    )
+    assert proposal["inputs"]["lifecycle_exempt"] is True
+    assert not any(b["reason_code"] == "missing_run_id" for b in proposal["blockers"])
+    criteria_results: list[dict] = []
+    fault_results: list[dict] = []
+    bridge.lifecycleCriteriaCompleted.connect(criteria_results.append)
+    bridge.lifecycleFaultCheckCompleted.connect(fault_results.append)
+    assert bridge.lifecycleExemptEligible(strategy_id) is True
+    queued = bridge.requestLifecycleCriteria(strategy_id)
+    assert queued["bridge_status"] == "queued"
+    assert _process_qt_until(lambda: len(criteria_results) == 1)
+    assert criteria_results[0]["strategy_id"] == strategy_id
+    assert [c["satisfied"] for c in criteria_results[0]["criteria"]] == [
+        False, False, False
+    ]
+    queued_fault = bridge.runLifecycleFaultCheckAsync(strategy_id)
+    duplicate = bridge.runLifecycleFaultCheckAsync(strategy_id)
+    assert duplicate["request_id"] == queued_fault["request_id"]
+    assert _process_qt_until(lambda: len(fault_results) == 1)
+    assert fault_results[0]["status"] == "recorded"
+    bridge.requestLifecycleCriteria(strategy_id)
+    assert _process_qt_until(lambda: len(criteria_results) == 2)
+    assert [c["satisfied"] for c in criteria_results[1]["criteria"]] == [
+        False, False, True
+    ]
+
+
+def test_lifecycle_criteria_read_does_not_block_gui_thread(
+    facade: BenchCommandFacade, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    release = threading.Event()
+    finished = threading.Event()
+
+    def _slow_read(strategy_id: str) -> dict:
+        release.wait(2)
+        finished.set()
+        return {"eligible": True, "criteria": []}
+
+    monkeypatch.setattr(facade, "lifecycle_criteria_status", _slow_read)
+    bridge = BenchCommandBridge(facade)
+    completions: list[dict] = []
+    bridge.lifecycleCriteriaCompleted.connect(completions.append)
+    try:
+        queued = bridge.requestLifecycleCriteria("regime.daily.sma200_rotation.spy_shy.v1")
+        assert queued["bridge_status"] == "queued"
+        assert not finished.is_set(), "criteria read ran on the GUI thread"
+    finally:
+        release.set()
+    assert _process_qt_until(lambda: len(completions) == 1)
+
+
 def test_submit_promote_to_paper_with_known_id_writes_event_and_refreshes(
     facade: BenchCommandFacade,
     config_dir: Path,

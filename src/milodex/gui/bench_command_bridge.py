@@ -34,6 +34,7 @@ by the facade and the modules it routes into (``milodex.promotion``,
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
@@ -163,6 +164,48 @@ class _ReconciliationRunnable(QRunnable):
         self._signals.completed.emit(result)
 
 
+class _LifecycleSignals(QObject):
+    completed = Signal("QVariantMap")
+
+
+class _LifecycleRunnable(QRunnable):
+    """Run a lifecycle evidence read or synthetic check outside the GUI thread."""
+
+    def __init__(
+        self,
+        operation: str,
+        strategy_id: str,
+        request_id: str,
+        work: Callable[[str], dict[str, Any]],
+        signals: _LifecycleSignals,
+    ) -> None:
+        super().__init__()
+        self._operation = operation
+        self._strategy_id = strategy_id
+        self._request_id = request_id
+        self._work = work
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:  # pragma: no cover - exercised through queued Qt tests
+        try:
+            result = self._work(self._strategy_id)
+        except Exception:  # noqa: BLE001 - keep unexpected detail in logs.
+            logger.exception("Bench lifecycle %s failed for %s", self._operation, self._strategy_id)
+            result = {
+                "status": "blocked",
+                "error": "Lifecycle operation could not complete. See logs.",
+            }
+        self._signals.completed.emit(
+            {
+                **result,
+                "operation": self._operation,
+                "strategy_id": self._strategy_id,
+                "request_id": self._request_id,
+            }
+        )
+
+
 class BenchCommandBridge(QObject):
     """Qt-side bridge to the Bench command facade (ADR 0051 Phase F).
 
@@ -189,6 +232,8 @@ class BenchCommandBridge(QObject):
     # Emitted when an async reconciliation run completes (HR-10 / G-P2-2).
     # Payload is the dict returned by BenchCommandFacade.run_reconciliation_now().
     reconciliationCompleted = Signal("QVariantMap")  # noqa: N815
+    lifecycleCriteriaCompleted = Signal("QVariantMap")  # noqa: N815
+    lifecycleFaultCheckCompleted = Signal("QVariantMap")  # noqa: N815
 
     def __init__(
         self,
@@ -215,11 +260,18 @@ class BenchCommandBridge(QObject):
         self._completions: list[dict[str, Any]] = []
         self._thread_pool = QThreadPool()
         self._submit_signals = _SubmitSignals(self)
+        self._lifecycle_signals = _LifecycleSignals(self)
+        self._fault_check_pending: dict[str, str] = {}
         self._completed_connected = False
         self._submit_signals.completed.connect(
             self._on_async_submit_completed,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._lifecycle_signals.completed.connect(
+            self._on_lifecycle_completed,
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._lifecycle_connected = True
         self._completed_connected = True
         # Set True by stop(); guards _refresh_after_submit so a late async
         # completion delivered after shutdown cannot restart work on
@@ -264,6 +316,12 @@ class BenchCommandBridge(QObject):
         self._stopped = True
         drained = self._thread_pool.waitForDone(_SHUTDOWN_DRAIN_TIMEOUT_MS)
         self._disconnect_completed_signal()
+        if self._lifecycle_connected:
+            try:
+                self._lifecycle_signals.completed.disconnect(self._on_lifecycle_completed)
+            except (RuntimeError, TypeError):
+                pass
+            self._lifecycle_connected = False
         return drained
 
     def _disconnect_completed_signal(self) -> None:
@@ -633,6 +691,49 @@ class BenchCommandBridge(QObject):
     # QML-callable slots (promote to paper)
     # ------------------------------------------------------------------ #
 
+    @Slot(str, result=bool)
+    def lifecycleExemptEligible(self, strategy_id: str) -> bool:  # noqa: N802
+        return self._facade.lifecycle_exempt_eligible(strategy_id)
+
+    def _queue_lifecycle(
+        self, operation: str, strategy_id: str, work: Callable[[str], dict[str, Any]]
+    ) -> dict[str, Any]:
+        if operation == "fault_check" and strategy_id in self._fault_check_pending:
+            request_id = self._fault_check_pending[strategy_id]
+        else:
+            request_id = str(uuid.uuid4())
+            if operation == "fault_check":
+                self._fault_check_pending[strategy_id] = request_id
+            self._thread_pool.start(
+                _LifecycleRunnable(
+                    operation, strategy_id, request_id, work, self._lifecycle_signals
+                )
+            )
+        return {"bridge_status": "queued", "strategy_id": strategy_id, "request_id": request_id}
+
+    @Slot(str, result="QVariantMap")
+    def requestLifecycleCriteria(self, strategy_id: str) -> dict[str, Any]:  # noqa: N802
+        return self._queue_lifecycle(
+            "criteria", strategy_id, self._facade.lifecycle_criteria_status
+        )
+
+    @Slot(str, result="QVariantMap")
+    def runLifecycleFaultCheckAsync(self, strategy_id: str) -> dict[str, Any]:  # noqa: N802
+        return self._queue_lifecycle(
+            "fault_check", strategy_id, self._facade.run_lifecycle_fault_check
+        )
+
+    @Slot("QVariantMap")
+    def _on_lifecycle_completed(self, payload: dict[str, Any]) -> None:
+        if self._stopped:
+            return
+        if payload["operation"] == "fault_check":
+            if self._fault_check_pending.get(payload["strategy_id"]) == payload["request_id"]:
+                del self._fault_check_pending[payload["strategy_id"]]
+            self.lifecycleFaultCheckCompleted.emit(payload)
+        else:
+            self.lifecycleCriteriaCompleted.emit(payload)
+
     @Slot("QVariantMap", result="QVariantMap")
     def proposePromoteToPaper(self, inputs: dict[str, Any]) -> dict[str, Any]:  # noqa: N802
         """Build a promote-to-paper proposal and cache it by id."""
@@ -641,13 +742,16 @@ class BenchCommandBridge(QObject):
         recommendation = str(recommendation_raw) if recommendation_raw is not None else None
         run_id_raw = inputs.get("run_id")
         run_id = str(run_id_raw) if run_id_raw else None
+        lifecycle_exempt = inputs.get("lifecycle_exempt")
+        if lifecycle_exempt is None:
+            lifecycle_exempt = self._facade.lifecycle_exempt_eligible(strategy_id)
         proposal = self._facade.propose_promote_to_paper(
             strategy_id,
             recommendation=recommendation,
             known_risks=_known_risks_from_qvariant(inputs),
             run_id=run_id,
             approved_by=_resolve_operator_identity(),
-            lifecycle_exempt=bool(inputs.get("lifecycle_exempt", False)),
+            lifecycle_exempt=bool(lifecycle_exempt),
         )
         self._proposals[proposal.proposal_id] = proposal
         return proposal.to_dict()
