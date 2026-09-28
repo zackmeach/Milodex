@@ -59,6 +59,11 @@ product-phase numbers (Phases 1–5 closed, Phase 6 open). Do not conflate them.
 
 *Gate update 2026-07-09: M1 closed (retrospective §11).*
 
+*Formal M3 preflight update 2026-09-28: **HOLD** on the frozen IEX input
+contract ([evidence](reviews/2026-09-28-M3-current-window-preflight-hold.md)).
+M4 remains the active critical-path milestone. The July M3 run forecast in the
+historical status table below is superseded by this gate result.*
+
 | Field | Value |
 |---|---|
 | **As-of** | 2026-07-09 (M1 gate closure) |
@@ -453,6 +458,10 @@ proof is the remaining M1 gate event (§2).
   merged in `ea12cc1`**, so M3 depends only on **M0** (repo/evidence-state
   reconciliation) + an isolated worktree/scratch evidence state — **not on M1**.
   **D-5** (durability labeling) decided here.
+- **Current gate result (2026-09-28): HOLD.** The full-window frozen capture
+  fails the every-session and 90% coverage preflight; no current verdict row
+  was written. See the [preflight evidence](reviews/2026-09-28-M3-current-window-preflight-hold.md)
+  and the [D-5 current-window amendment](reviews/2026-09-28-D5-current-window-amendment.md).
 
 ### M4 — Recovery & failure-mode proof  *(active; opened 2026-07-11 at the M2 close)*
 
