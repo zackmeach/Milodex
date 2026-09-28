@@ -636,7 +636,9 @@ def test_regime_null_min_trades_and_lifecycle_refusal_reasons(
     assert len(result.blockers) == 3
     assert all(b.reason_code == "lifecycle_criteria_unmet" for b in result.blockers)
     assert [f"Criterion ({c})" in b.message for c, b in zip("abc", result.blockers)] == [
-        True, True, True
+        True,
+        True,
+        True,
     ]
     assert event_store.list_promotions_for_strategy(_REGIME_STRATEGY_ID) == []
     assert 'stage: "backtest"' in config_path.read_text(encoding="utf-8")

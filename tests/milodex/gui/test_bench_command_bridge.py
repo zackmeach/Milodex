@@ -1011,9 +1011,7 @@ def test_regime_promotion_uses_policy_scoped_exemption_and_fault_check(
     assert queued["bridge_status"] == "queued"
     assert _process_qt_until(lambda: len(criteria_results) == 1)
     assert criteria_results[0]["strategy_id"] == strategy_id
-    assert [c["satisfied"] for c in criteria_results[0]["criteria"]] == [
-        False, False, False
-    ]
+    assert [c["satisfied"] for c in criteria_results[0]["criteria"]] == [False, False, False]
     queued_fault = bridge.runLifecycleFaultCheckAsync(strategy_id)
     duplicate = bridge.runLifecycleFaultCheckAsync(strategy_id)
     assert duplicate["request_id"] == queued_fault["request_id"]
@@ -1021,9 +1019,7 @@ def test_regime_promotion_uses_policy_scoped_exemption_and_fault_check(
     assert fault_results[0]["status"] == "recorded"
     bridge.requestLifecycleCriteria(strategy_id)
     assert _process_qt_until(lambda: len(criteria_results) == 2)
-    assert [c["satisfied"] for c in criteria_results[1]["criteria"]] == [
-        False, False, True
-    ]
+    assert [c["satisfied"] for c in criteria_results[1]["criteria"]] == [False, False, True]
 
 
 def test_lifecycle_criteria_read_does_not_block_gui_thread(
