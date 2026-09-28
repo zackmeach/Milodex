@@ -19,8 +19,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import TYPE_CHECKING, Any
 
-from milodex.backtesting.engine import _trading_days_in_range
 from milodex.backtesting.walk_forward_runner import (
+    _window_trading_days,
     compute_window_spans,
     run_walk_forward,
 )
@@ -101,6 +101,7 @@ def run_batch(
     fail_fast: bool = False,
     initial_equity: float = 100_000.0,
     parallel: int = 1,
+    session_dates: Sequence[date] | None = None,
 ) -> BatchResult:
     """Run walk-forward screening over ``strategy_ids``.
 
@@ -125,6 +126,10 @@ def run_batch(
     if end_date < start_date:
         msg = "end_date must be on or after start_date"
         raise ValueError(msg)
+    if session_dates is not None:
+        session_dates = tuple(_window_trading_days({}, start_date, end_date, session_dates))
+        if parallel > 1:
+            raise ValueError("session_dates requires sequential batch execution")
 
     if parallel <= 1:
         return _run_batch_sequential(
@@ -134,6 +139,7 @@ def run_batch(
             ctx=ctx,
             fail_fast=fail_fast,
             initial_equity=initial_equity,
+            session_dates=session_dates,
         )
     return _run_batch_parallel(
         strategy_ids=strategy_ids,
@@ -154,6 +160,7 @@ def _run_batch_sequential(
     ctx: CommandContext,
     fail_fast: bool,
     initial_equity: float,
+    session_dates: Sequence[date] | None,
 ) -> BatchResult:
     bar_cache: dict[tuple, dict[str, BarSet]] = {}
     rows: list[BatchRow] = []
@@ -166,6 +173,7 @@ def _run_batch_sequential(
                 ctx=ctx,
                 initial_equity=initial_equity,
                 bar_cache=bar_cache,
+                session_dates=session_dates,
             )
         except Exception as exc:
             if fail_fast:
@@ -214,6 +222,7 @@ def _run_batch_parallel(
             ctx=ctx,
             fail_fast=fail_fast,
             initial_equity=initial_equity,
+            session_dates=None,
         )
 
     rows_by_id: dict[str, BatchRow] = {}
@@ -395,6 +404,7 @@ def _screen_one(
     ctx: CommandContext,
     initial_equity: float,
     bar_cache: dict[tuple, dict[str, BarSet]],
+    session_dates: Sequence[date] | None = None,
 ) -> BatchRow:
     engine = ctx.get_backtest_engine(strategy_id, initial_equity=initial_equity)
     family = engine.strategy_family
@@ -411,7 +421,7 @@ def _screen_one(
         all_bars = engine.prefetch_bars(start_date, end_date, timeframe=timeframe)
         bar_cache[cache_key] = all_bars
 
-    total_days = len(_trading_days_in_range(all_bars, start_date, end_date))
+    total_days = len(_window_trading_days(all_bars, start_date, end_date, session_dates))
     train_days, test_days, step_days = compute_window_spans(
         total_days,
         engine.walk_forward_windows,
@@ -426,6 +436,7 @@ def _screen_one(
         step_days=step_days,
         initial_equity=initial_equity,
         all_bars=all_bars,
+        session_dates=session_dates,
     )
 
     # Stamp the run record so research-screen runs are distinguishable from

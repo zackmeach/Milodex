@@ -179,6 +179,38 @@ def test_batch_runs_two_strategies_and_returns_row_per():
     }
 
 
+def test_frozen_session_schedule_keeps_windows_equal_with_a_missing_symbol_session():
+    first, _ = _make_engine("candidate", "meanrev", universe=("SPY",))
+    second, provider = _make_engine("null", "benchmark", universe=("QQQ",))
+    bars = provider.get_bars.return_value["QQQ"].to_dataframe()
+    provider.get_bars.return_value["QQQ"] = BarSet(bars.drop(index=14))
+    ctx = _make_ctx({"candidate": first, "null": second})
+    sessions = tuple(date(2024, 1, 2) + timedelta(days=i) for i in range(30))
+
+    result = run_batch(
+        strategy_ids=["candidate", "null"],
+        start_date=sessions[0],
+        end_date=sessions[-1],
+        ctx=ctx,
+        fail_fast=True,
+        session_dates=sessions,
+    )
+
+    assert {row.strategy_id for row in result.rows} == {"candidate", "null"}
+    assert all(row.error is None for row in result.rows)
+    windows = [
+        engine._event_store.get_backtest_run(row.run_id).metadata["windows"]  # noqa: SLF001
+        for row in result.rows
+        for engine in [first if row.strategy_id == "candidate" else second]
+    ]
+    boundaries = [
+        [(w["train_start"], w["train_end"], w["test_start"], w["test_end"]) for w in entries]
+        for entries in windows
+    ]
+    assert boundaries[0] == boundaries[1]
+    assert len(windows[0]) == 4
+
+
 def test_batch_uses_public_engine_lifecycle_surface():
     """Production batch path must not stamp lifecycle metadata through private engine state."""
     source = Path(batch_module.__file__).read_text(encoding="utf-8")
