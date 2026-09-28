@@ -17,8 +17,8 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -97,6 +97,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     )
     screen.add_argument("--start", required=True, help="Screening start date YYYY-MM-DD.")
     screen.add_argument("--end", required=True, help="Screening end date YYYY-MM-DD.")
+    screen.add_argument("--snapshot", help="Offline frozen research snapshot directory.")
+    screen.add_argument("--scratch-db", help="Dedicated scratch SQLite path for snapshot runs.")
+    screen.add_argument("--candidate-family", dest="candidate_family")
+    screen.add_argument("--candidate-template", dest="candidate_template")
     screen.add_argument(
         "--fail-fast",
         action="store_true",
@@ -139,6 +143,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
     evidence.add_argument("--universe-ref", required=True, dest="universe_ref")
     evidence.add_argument("--start", required=True, help="Start date YYYY-MM-DD.")
     evidence.add_argument("--end", required=True, help="End date YYYY-MM-DD.")
+    evidence.add_argument("--snapshot", help="Offline frozen research snapshot directory.")
+    evidence.add_argument("--scratch-db", help="Same scratch SQLite path used by screen.")
     evidence.add_argument("--experiment-id", required=True, dest="experiment_id")
     evidence.add_argument("--hypothesis", required=True)
     evidence.add_argument(
@@ -173,12 +179,28 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         dest="fanout_universe_ref",
         help="Universe ref string, e.g. 'universe.liquid_etf_core.v1'.",
     )
+
     fanout.add_argument(
         "--out",
         dest="fanout_out",
         default="configs",
         help="Output directory for generated configs (default: configs).",
     )
+    snapshot = research_sub.add_parser("snapshot", help="Freeze local cache for offline research.")
+    add_global_flags(snapshot)
+    snapshot.add_argument("--cache-dir", required=True)
+    snapshot.add_argument("--out", required=True)
+    snapshot.add_argument("--start", required=True)
+    snapshot.add_argument("--end", required=True)
+    match_random = research_sub.add_parser(
+        "match-random", help="Measure candidate OOS rates and freeze a matched hypothesis snapshot."
+    )
+    add_global_flags(match_random)
+    match_random.add_argument("--snapshot", required=True)
+    match_random.add_argument("--scratch-db", required=True)
+    match_random.add_argument("--out", required=True)
+    match_random.add_argument("--candidate-family", required=True)
+    match_random.add_argument("--candidate-template", required=True)
 
 
 def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
@@ -188,11 +210,17 @@ def run(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         return _fanout(args, ctx)
     if args.research_command == "evidence":
         return _evidence(args, ctx)
+    if args.research_command == "snapshot":
+        return _snapshot(args, ctx)
+    if args.research_command == "match-random":
+        return _match_random(args, ctx)
     msg = f"Unsupported research command: {args.research_command}"
     raise ValueError(msg)
 
 
-def _batch_result_from_screen_json(path: Path, *, event_store: EventStore) -> BatchResult:
+def _batch_result_from_screen_json(
+    path: Path, *, event_store: EventStore, snapshot_id: str | None = None
+) -> BatchResult:
     """Rehydrate a BatchResult from a 'research screen --report-out' JSON sibling.
 
     Inverse of _write_report's JSON serialisation. Successful rows are accepted
@@ -200,6 +228,8 @@ def _batch_result_from_screen_json(path: Path, *, event_store: EventStore) -> Ba
     screen error rows are the sole run-id-free exception.
     """
     data = json.loads(path.read_text(encoding="utf-8"))
+    if snapshot_id is not None and data.get("snapshot_id") != snapshot_id:
+        raise ValueError("screen JSON snapshot_id does not match frozen snapshot")
     start_date = date.fromisoformat(data["start_date"])
     end_date = date.fromisoformat(data["end_date"])
 
@@ -353,11 +383,36 @@ def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
 
     start = parse_iso_date(args.start)
     end = parse_iso_date(args.end)
+    snapshot = None
+    if getattr(args, "snapshot", None):
+        from milodex.research.snapshot import (
+            UNIVERSE_REF,
+            preflight_snapshot,
+            required_strategy_ids,
+            verify_cells,
+            verify_oos_boundaries,
+            verify_snapshot,
+        )
+
+        if args.universe_ref != UNIVERSE_REF or not args.screen_json:
+            raise ValueError("snapshot evidence requires liquid ETF universe and --screen-json")
+        snapshot = Path(args.snapshot)
+        ready = preflight_snapshot(snapshot)
+        frozen_id = ready["snapshot_id"]
+        ctx = _snapshot_context(ctx, snapshot, frozen_id, getattr(args, "scratch_db", None))
+        expected = required_strategy_ids(
+            ctx.config_dir,
+            verify_snapshot(snapshot)["symbols"],
+            args.candidate_family,
+            args.candidate_template,
+        )
 
     batch_result: BatchResult | None = None
     if args.screen_json is not None:
         batch_result = _batch_result_from_screen_json(
-            Path(args.screen_json), event_store=ctx.get_event_store()
+            Path(args.screen_json),
+            event_store=ctx.get_event_store(),
+            snapshot_id=frozen_id if snapshot else None,
         )
         # ponytail: validates provenance consistency — the JSON must describe the
         # same screened window as the CLI args; a mismatch means the wrong JSON was supplied.
@@ -367,6 +422,13 @@ def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
                 f"does not match CLI args ({start} – {end}); wrong JSON supplied"
             )
             raise ValueError(msg)
+        if snapshot:
+            verify_cells(batch_result.rows, expected)
+            verify_oos_boundaries(ctx.get_event_store(), batch_result.rows)
+            for row in batch_result.rows:
+                persisted = ctx.get_event_store().get_backtest_run(row.run_id)
+                if persisted.metadata.get("snapshot_id") != frozen_id:
+                    raise ValueError(f"run {row.run_id} lacks frozen snapshot identity")
 
     report, row_id = assemble_intraday_evidence(
         candidate_family=args.candidate_family,
@@ -379,7 +441,10 @@ def _evidence(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
         ctx=ctx,
         batch_result=batch_result,
         feed_label="iex",  # ponytail: lane is IEX-only — label is fixed.
+        **({"snapshot_id": frozen_id, "snapshot_root": snapshot} if snapshot else {}),
     )
+    if snapshot:
+        verify_snapshot(snapshot, expected_id=frozen_id)
 
     agg = report.aggregate
     verdict = agg.get("verdict", "n/a")
@@ -437,26 +502,206 @@ def _screen(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
     if end < start:
         raise ValueError("--end must be on or after --start.")
 
-    discovery = _resolve_strategy_ids(args, ctx)
+    snapshot = Path(args.snapshot) if getattr(args, "snapshot", None) else None
+    frozen_id = None
+    session_dates = None
+    preflight = None
+    if snapshot:
+        from milodex.research.snapshot import (
+            preflight_snapshot,
+            required_strategy_ids,
+            verify_cells,
+            verify_oos_boundaries,
+            verify_snapshot,
+        )
+
+        if (
+            args.configs
+            or args.strategy_ids
+            or not args.candidate_family
+            or not args.candidate_template
+        ):
+            raise ValueError("snapshot screen requires candidate family/template without filters")
+        if args.report_out is None:
+            raise ValueError("snapshot screen requires --report-out for auditable cells")
+        if args.report_out != "__default__" and Path(args.report_out).resolve().is_relative_to(
+            snapshot.resolve()
+        ):
+            raise ValueError("screen report must be outside read-only snapshot")
+        ready = preflight_snapshot(snapshot)
+        preflight = {k: v for k, v in ready.items() if k != "session_dates"}
+        manifest = verify_snapshot(snapshot)
+        if (start.isoformat(), end.isoformat()) != (manifest["start"], manifest["end"]):
+            raise ValueError("screen window differs from frozen snapshot")
+        if args.initial_equity != manifest["settings"]["initial_equity"]:
+            raise ValueError("screen initial equity differs from frozen settings")
+        frozen_id = ready["snapshot_id"]
+        session_dates = ready["session_dates"]
+        ctx = _snapshot_context(ctx, snapshot, frozen_id, getattr(args, "scratch_db", None))
+        strategy_ids = required_strategy_ids(
+            ctx.config_dir, manifest["symbols"], args.candidate_family, args.candidate_template
+        )
+        discovery = StrategyDiscovery(
+            strategy_ids=strategy_ids, matched_config_count=len(strategy_ids)
+        )
+    else:
+        discovery = _resolve_strategy_ids(args, ctx)
 
     parallel = max(1, int(getattr(args, "parallel", 1) or 1))
+    batch_kwargs = {"session_dates": session_dates} if snapshot else {}
     result = run_batch(
         strategy_ids=discovery.strategy_ids,
         start_date=start,
         end_date=end,
         ctx=ctx,
-        fail_fast=args.fail_fast,
+        fail_fast=True if snapshot else args.fail_fast,
         initial_equity=args.initial_equity,
-        parallel=parallel,
+        parallel=1 if snapshot else parallel,
+        **batch_kwargs,
     )
+    if snapshot:
+        verify_cells(result.rows, discovery.strategy_ids)
+        store = ctx.get_event_store()
+        verify_oos_boundaries(store, result.rows)
+        for row in result.rows:
+            persisted = store.get_backtest_run(row.run_id)
+            store.update_backtest_run_metadata(
+                row.run_id, metadata={**persisted.metadata, "snapshot_id": frozen_id}
+            )
+        verify_snapshot(snapshot, expected_id=frozen_id)
 
     report_path: Path | None = None
     if args.report_out is not None:
-        report_path = _write_report(args.report_out, result, discovery=discovery)
+        report_path = _write_report(
+            args.report_out,
+            result,
+            discovery=discovery,
+            snapshot_id=frozen_id,
+            preflight=preflight,
+        )
 
     data = _build_data(result, report_path=report_path, discovery=discovery)
+    if frozen_id:
+        data["snapshot_id"] = frozen_id
+        data["preflight"] = preflight
     lines = _build_human(result, report_path=report_path, discovery=discovery)
+    if preflight:
+        lines.append(f"Readiness warnings: {preflight['readiness']['warning_count']}")
     return CommandResult(command="research.screen", data=data, human_lines=lines)
+
+
+def _snapshot_context(
+    ctx: CommandContext, root: Path, snapshot_id: str, scratch_db: str | None
+) -> CommandContext:
+    """Build an offline-only research context with a separate scratch event store."""
+    from milodex.backtesting.engine import BacktestEngine
+    from milodex.core.event_store import EventStore
+    from milodex.research.snapshot import SnapshotDataProvider
+    from milodex.strategies.loader import StrategyLoader, resolve_config_path
+
+    config_dir = root / "configs"
+    expected_db = (root.parent / f"research-{snapshot_id[:16]}.sqlite").resolve()
+    if scratch_db is None or not Path(scratch_db).is_absolute():
+        raise ValueError("snapshot run requires absolute --scratch-db path")
+    db_path = Path(scratch_db).resolve()
+    if db_path != expected_db:
+        raise ValueError(f"scratch DB must be {expected_db}")
+    store = EventStore(db_path)
+    provider = SnapshotDataProvider(root)
+
+    def engine(strategy_id: str, **kwargs) -> BacktestEngine:
+        loaded = StrategyLoader().load(resolve_config_path(strategy_id, config_dir))
+        return BacktestEngine(
+            loaded=loaded,
+            data_provider=provider,
+            event_store=store,
+            risk_defaults_path=config_dir / "risk_defaults.yaml",
+            **kwargs,
+        )
+
+    return replace(
+        ctx,
+        config_dir=config_dir,
+        get_event_store=lambda: store,
+        data_provider_factory=lambda: provider,
+        get_backtest_engine=engine,
+    )
+
+
+def _snapshot(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    from milodex.research.snapshot import create_snapshot, preflight_snapshot
+
+    root = Path(args.out)
+    create_snapshot(
+        cache_dir=Path(args.cache_dir),
+        config_dir=ctx.config_dir,
+        calendar_broker=ctx.broker_factory(),
+        out_dir=root,
+        start=parse_iso_date(args.start),
+        end=parse_iso_date(args.end),
+        fetched_at=datetime.now(tz=UTC),
+    )
+    ready = preflight_snapshot(root)
+    data = {k: v for k, v in ready.items() if k != "session_dates"}
+    data["path"] = str(root)
+    return CommandResult(
+        command="research.snapshot",
+        data=data,
+        human_lines=[f"Snapshot: {root}", f"SHA-256: {ready['snapshot_id']}"],
+    )
+
+
+def _match_random(args: argparse.Namespace, ctx: CommandContext) -> CommandResult:
+    """Run only the 17 candidates, then freeze their measured random nulls."""
+    from milodex.research.snapshot import (
+        candidate_strategy_ids,
+        create_matched_snapshot,
+        measured_candidate_rates,
+        preflight_snapshot,
+        verify_snapshot,
+    )
+
+    source = Path(args.snapshot)
+    ready = preflight_snapshot(source)
+    source_id = ready["snapshot_id"]
+    manifest = verify_snapshot(source, expected_id=source_id)
+    expected = candidate_strategy_ids(
+        manifest["symbols"], args.candidate_family, args.candidate_template
+    )
+    offline = _snapshot_context(ctx, source, source_id, args.scratch_db)
+    result = run_batch(
+        strategy_ids=expected,
+        start_date=date.fromisoformat(manifest["start"]),
+        end_date=date.fromisoformat(manifest["end"]),
+        ctx=offline,
+        fail_fast=True,
+        initial_equity=manifest["settings"]["initial_equity"],
+        parallel=1,
+        session_dates=ready["session_dates"],
+    )
+    store = offline.get_event_store()
+    measured_candidate_rates(result.rows, store, expected)
+    for row in result.rows:
+        persisted = store.get_backtest_run(row.run_id)
+        store.update_backtest_run_metadata(
+            row.run_id, metadata={**persisted.metadata, "snapshot_id": source_id}
+        )
+    verify_snapshot(source, expected_id=source_id)
+    out = Path(args.out)
+    create_matched_snapshot(
+        source_root=source,
+        out_dir=out,
+        family=args.candidate_family,
+        template=args.candidate_template,
+        candidate_rows=result.rows,
+        event_store=store,
+    )
+    matched_id = preflight_snapshot(out)["snapshot_id"]
+    return CommandResult(
+        command="research.match-random",
+        data={"source_snapshot_id": source_id, "snapshot_id": matched_id, "path": str(out)},
+        human_lines=[f"Matched snapshot: {out}", f"SHA-256: {matched_id}"],
+    )
 
 
 def _resolve_strategy_ids(args: argparse.Namespace, ctx: CommandContext) -> StrategyDiscovery:
@@ -594,7 +839,14 @@ def _format_skipped_configs(skipped_configs: tuple[SkippedConfig, ...]) -> list[
     return lines
 
 
-def _write_report(target: str, result: BatchResult, *, discovery: StrategyDiscovery) -> Path:
+def _write_report(
+    target: str,
+    result: BatchResult,
+    *,
+    discovery: StrategyDiscovery,
+    snapshot_id: str | None = None,
+    preflight: dict[str, Any] | None = None,
+) -> Path:
     stem_date = date.today().isoformat()
     if target == "__default__":
         path = Path("docs/reviews") / f"screen_{stem_date}.md"
@@ -608,6 +860,8 @@ def _write_report(target: str, result: BatchResult, *, discovery: StrategyDiscov
             {
                 "start_date": result.start_date.isoformat(),
                 "end_date": result.end_date.isoformat(),
+                "snapshot_id": snapshot_id,
+                "preflight": preflight,
                 "generated_at": datetime.now().astimezone().isoformat(),
                 "matched_config_count": discovery.matched_config_count,
                 "selected_strategy_ids": list(discovery.strategy_ids),

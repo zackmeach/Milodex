@@ -134,6 +134,7 @@ class IntradayEvidenceReport:
     feed: str = "iex"
     survivorship_corrected: bool = False
     schema_version: int = _SCHEMA_VERSION
+    snapshot_id: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         """Return a fully JSON-serializable representation.
@@ -159,6 +160,7 @@ class IntradayEvidenceReport:
             "feed": self.feed,
             "survivorship_corrected": self.survivorship_corrected,
             "schema_version": self.schema_version,
+            "snapshot_id": self.snapshot_id,
         }
 
 
@@ -188,6 +190,8 @@ def assemble_intraday_evidence(
     batch_result: BatchResult | None = None,
     config_dir: Path | None = None,
     feed_label: str = "iex",
+    snapshot_id: str | None = None,
+    snapshot_root: Path | None = None,
 ) -> tuple[IntradayEvidenceReport, int]:
     """Join a walk-forward batch into one evidence report and write one registry row.
 
@@ -274,6 +278,7 @@ def assemble_intraday_evidence(
         run_manifest=run_manifest,
         feed="iex",
         survivorship_corrected=survivorship,
+        snapshot_id=snapshot_id,
     )
 
     row_id = _write_registry_row(
@@ -283,6 +288,7 @@ def assemble_intraday_evidence(
         hypothesis=hypothesis,
         candidate_spy_id=candidate_spy_id,
         candidate_spy_config_path=candidate_spy_config_path,
+        snapshot_root=snapshot_root,
     )
     return report, row_id
 
@@ -675,6 +681,7 @@ def _write_registry_row(
     hypothesis: str,
     candidate_spy_id: str,
     candidate_spy_config_path: Path,
+    snapshot_root: Path | None = None,
 ) -> int:
     from milodex.core.event_store import ExperimentEvent
 
@@ -722,6 +729,10 @@ def _write_registry_row(
         lessons=None,
         revisitable=revisitable,
     )
+    if snapshot_root is not None:
+        from milodex.research.snapshot import verify_snapshot
+
+        verify_snapshot(snapshot_root, expected_id=report.snapshot_id)
     return ctx.get_event_store().append_experiment(event)
 
 
