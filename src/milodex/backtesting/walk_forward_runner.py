@@ -39,6 +39,8 @@ from milodex.data.bar_quality import DataQualityError
 from milodex.risk import RiskPolicy
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from milodex.backtesting.engine import BacktestEngine
 
 
@@ -132,6 +134,23 @@ def compute_window_spans(
     return train_days, test_days, test_days
 
 
+def _window_trading_days(
+    all_bars: dict,
+    start_date: date,
+    end_date: date,
+    session_dates: Sequence[date] | None,
+) -> list[date]:
+    """Use an explicit exchange calendar when supplied; otherwise use observed bars."""
+    if session_dates is None:
+        from milodex.backtesting.engine import _trading_days_in_range
+
+        return _trading_days_in_range(all_bars, start_date, end_date)
+    days = list(session_dates)
+    if not days or days != sorted(set(days)) or days[0] < start_date or days[-1] > end_date:
+        raise ValueError("session_dates must be ordered unique dates within the run range")
+    return days
+
+
 def derive_walk_forward_spans(
     engine: BacktestEngine,
     start: date,
@@ -182,6 +201,7 @@ def run_walk_forward(
     initial_equity: float | None = None,
     run_id: str | None = None,
     all_bars: dict | None = None,
+    session_dates: Sequence[date] | None = None,
 ) -> WalkForwardResult:
     """Run walk-forward validation and return per-window + OOS-aggregate metrics.
 
@@ -211,9 +231,7 @@ def run_walk_forward(
         all_bars = engine.prefetch_bars(
             start_date, end_date, timeframe=timeframe_from_bar_size(engine.bar_size)
         )
-    from milodex.backtesting.engine import _trading_days_in_range
-
-    trading_days = _trading_days_in_range(all_bars, start_date, end_date)
+    trading_days = _window_trading_days(all_bars, start_date, end_date, session_dates)
     if len(trading_days) < train_days + test_days:
         msg = (
             f"Not enough trading days for walk-forward: have {len(trading_days)}, "
