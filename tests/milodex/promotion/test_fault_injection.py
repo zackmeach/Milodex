@@ -14,7 +14,9 @@ from pathlib import Path
 
 import pytest
 
+from milodex.config import get_bundled_resource_dir
 from milodex.core.event_store import EventStore
+from milodex.promotion import fault_injection as fault_module
 from milodex.promotion.fault_injection import (
     EXPECTED_GUARDRAIL_REASON_CODE,
     SYNTHETIC_FAULT_DECISION_TYPE,
@@ -115,6 +117,35 @@ def test_fault_injection_records_marked_veto(tmp_path):
     assert row.context["synthetic_fault_injection"] is True
     assert row.context["expected_reason_code"] == EXPECTED_GUARDRAIL_REASON_CODE
     assert EXPECTED_GUARDRAIL_REASON_CODE in row.reason_codes
+
+
+def test_fault_check_uses_bundled_guardrails_outside_repo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    work_dir = tmp_path / "untrusted_working_dir"
+    (work_dir / "configs").mkdir(parents=True)
+    (work_dir / "configs" / "risk_defaults.yaml").write_text(
+        "this is not a valid risk policy: [", encoding="utf-8"
+    )
+    monkeypatch.chdir(work_dir)
+    store = EventStore(tmp_path / "milodex.db")
+    config = _write_config(tmp_path)
+    loaded_paths: list[Path] = []
+    original_load = fault_module.load_risk_defaults
+
+    def _record_policy_path(path: Path):
+        loaded_paths.append(path)
+        return original_load(path)
+
+    monkeypatch.setattr(fault_module, "load_risk_defaults", _record_policy_path)
+
+    result = run_synthetic_fault_injection(_STRATEGY_ID, config, store, now=_NOW)
+
+    bundled = get_bundled_resource_dir() / "configs" / "risk_defaults.yaml"
+    assert loaded_paths == [bundled]
+    assert bundled.is_file()
+    assert EXPECTED_GUARDRAIL_REASON_CODE in result.reason_codes
+    assert store.get_latest_synthetic_fault_injection_veto(_STRATEGY_ID) is not None
 
 
 def test_fault_injection_queryable_by_criterion_c(tmp_path):

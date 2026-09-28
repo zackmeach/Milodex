@@ -1462,7 +1462,11 @@ def test_bench_pr14_modal_promote_to_paper_submit_affordance() -> None:
     assert '"recommendation": recommendation' in modal_src
     assert '"known_risk": knownRisk' in modal_src
     assert '"run_id": runId' in modal_src
-    assert '"lifecycle_exempt": false' in modal_src
+    assert '"lifecycle_exempt": false' not in modal_src
+    assert "BenchCommandBridge.requestLifecycleCriteria(" in modal_src
+    assert "BenchCommandBridge.runLifecycleFaultCheckAsync(" in modal_src
+    assert "Accessible.role: Accessible.Button" in modal_src
+    assert "Keys.onSpacePressed" in modal_src
     start = modal_src.find("function _dispatchPromoteToPaperSubmit")
     assert start != -1
     end = modal_src.find("function _dispatchSubmit", start)

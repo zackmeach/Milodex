@@ -108,6 +108,13 @@ Item {
     property string _reasonText: ""
     property string _recommendationText: ""
     property string _knownRiskText: ""
+    property var _lifecycleStatus: ({})
+    readonly property bool _lifecycleEligible: root._isPromoteToPaperSubmit
+        && BenchCommandBridge.lifecycleExemptEligible((rowData && rowData.strategyId) || "")
+    property string _criteriaRequestId: ""
+    property string _faultCheckRequestId: ""
+    property bool _faultCheckInFlight: false
+    property string _lifecycleStrategyId: ""
     property bool   _submitInFlight: false
     property string _submitErrorMessage: ""
     property string _pendingProposalId: ""
@@ -200,13 +207,47 @@ Item {
             root._submitErrorMessage = ""
             root._submitInFlight = false
             root._pendingProposalId = ""
+            root._criteriaRequestId = ""
+            root._faultCheckRequestId = ""
+            root._faultCheckInFlight = false
+            root._lifecycleStrategyId = (root.rowData && root.rowData.strategyId) || ""
+            root._refreshLifecycleCriteria()
             forceActiveFocus()
+        } else {
+            root._criteriaRequestId = ""
+            root._faultCheckRequestId = ""
         }
     }
+
+    onRowDataChanged: {
+        var strategyId = (rowData && rowData.strategyId) || ""
+        if (strategyId !== root._lifecycleStrategyId) {
+            root._lifecycleStrategyId = strategyId
+            root._faultCheckRequestId = ""
+            root._faultCheckInFlight = false
+            root._submitErrorMessage = ""
+        }
+        if (open) _refreshLifecycleCriteria()
+    }
+    onActionDataChanged: if (open) _refreshLifecycleCriteria()
+    Component.onCompleted: if (open) _refreshLifecycleCriteria()
 
     Connections {
         target: BenchCommandBridge
         function onSubmitCompleted(result) { root._handleAsyncSubmitCompleted(result) }
+        function onLifecycleCriteriaCompleted(result) {
+            if (!root.open || result.strategy_id !== ((root.rowData && root.rowData.strategyId) || "")
+                    || result.request_id !== root._criteriaRequestId) return
+            root._lifecycleStatus = result
+        }
+        function onLifecycleFaultCheckCompleted(result) {
+            if (!root.open || result.strategy_id !== ((root.rowData && root.rowData.strategyId) || "")
+                    || result.request_id !== root._faultCheckRequestId) return
+            root._faultCheckInFlight = false
+            root._submitErrorMessage = result.status === "recorded"
+                ? "" : (result.message || result.error || "Fault-check failed.")
+            root._refreshLifecycleCriteria()
+        }
     }
 
     function _defaultReasonText() {
@@ -229,6 +270,39 @@ Item {
             return ""
         }
         return "Paper mode only; monitor live-feed behavior and stop if evidence drifts."
+    }
+
+    function _refreshLifecycleCriteria() {
+        if (!root._lifecycleEligible) {
+            root._lifecycleStatus = ({})
+            root._criteriaRequestId = ""
+            return
+        }
+        root._lifecycleStatus = ({ "loading": true })
+        var queued = BenchCommandBridge.requestLifecycleCriteria(root.rowData.strategyId)
+        root._criteriaRequestId = queued.request_id || ""
+    }
+
+    function _lifecycleCriteriaText() {
+        var status = root._lifecycleStatus || ({})
+        if (status.loading) return "Checking lifecycle evidence…"
+        if (status.error) return status.error
+        var criteria = status.criteria || []
+        var lines = []
+        for (var i = 0; i < criteria.length; i++) {
+            var item = criteria[i]
+            lines.push("(" + item.criterion + ") " + (item.satisfied ? "PASS — " : "UNMET — ") + item.detail)
+        }
+        return lines.join("\n")
+    }
+
+    function _runLifecycleFaultCheck() {
+        if (!root._lifecycleEligible || root._faultCheckInFlight || root._submitInFlight) return
+        var strategyId = (root.rowData && root.rowData.strategyId) || ""
+        root._faultCheckInFlight = true
+        root._submitErrorMessage = ""
+        var queued = BenchCommandBridge.runLifecycleFaultCheckAsync(strategyId)
+        root._faultCheckRequestId = queued.request_id || ""
     }
 
     // Format EVERY blocker's operator-facing message as a refusal summary, so a
@@ -471,8 +545,7 @@ Item {
             "strategy_id": strategyId,
             "recommendation": recommendation,
             "known_risk": knownRisk,
-            "run_id": runId,
-            "lifecycle_exempt": false
+            "run_id": runId
         })
         if (!root._validateProposal(proposal)) return
 
@@ -895,7 +968,48 @@ Item {
 
             ProseBlock {
                 visible: root._isPromoteToPaperSubmit
-                text: "Promotion to paper records the operator recommendation and known risk alongside the selected backtest evidence run."
+                text: root._lifecycleEligible
+                    ? "Lifecycle-proof promotion requires a recent completed backtest, explanation coverage for every simulated signal, and a fresh synthetic risk veto."
+                    : "Promotion to paper records the operator recommendation and known risk alongside the selected backtest evidence run."
+            }
+
+            ProseBlock {
+                visible: root._lifecycleEligible
+                text: root._lifecycleCriteriaText()
+            }
+
+            Rectangle {
+                id: faultCheckButton
+                objectName: "benchLifecycleFaultCheckButton"
+                visible: root._lifecycleEligible
+                enabled: !root._submitInFlight && !root._faultCheckInFlight
+                width: faultCheckLabel.implicitWidth + Theme.space[4] * 2
+                height: 36
+                color: Theme.color.surface.raised
+                border.color: activeFocus ? Theme.status.positive : Theme.color.text.primary
+                radius: Theme.radius.md
+                activeFocusOnTab: true
+                Accessible.role: Accessible.Button
+                Accessible.name: "Run synthetic risk fault-check"
+                Accessible.description: "Evaluate a synthetic order against the risk layer without submitting an order"
+                Accessible.onPressAction: root._runLifecycleFaultCheck()
+                Keys.onReturnPressed: root._runLifecycleFaultCheck()
+                Keys.onEnterPressed: root._runLifecycleFaultCheck()
+                Keys.onSpacePressed: root._runLifecycleFaultCheck()
+                Text {
+                    id: faultCheckLabel
+                    anchors.centerIn: parent
+                    text: root._faultCheckInFlight ? "Running fault-check…" : "Run synthetic risk fault-check"
+                    color: Theme.color.text.primary
+                }
+                MouseArea {
+                    anchors.fill: parent
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                        faultCheckButton.forceActiveFocus()
+                        root._runLifecycleFaultCheck()
+                    }
+                }
             }
 
             LabeledTextField {

@@ -55,6 +55,7 @@ from milodex.promotion import (
     PAPER_MIN_SHARPE,
     REASON_GATE_FAILED,
     REASON_INVALID_STAGE_TRANSITION,
+    REASON_LIFECYCLE_CRITERIA_UNMET,
     REASON_MISSING_BACKTEST_RUN,
     PromoteBlocked,
     PromoteError,
@@ -62,8 +63,15 @@ from milodex.promotion import (
     PromoteSuccess,
     prepare_and_record_promotion,
 )
+from milodex.promotion.fault_injection import (
+    SyntheticFaultApprovedError,
+    SyntheticFaultGuardrailError,
+    run_synthetic_fault_injection,
+)
+from milodex.promotion.lifecycle_criteria import evaluate_lifecycle_criteria
 from milodex.promotion.manifest import freeze_manifest as _governance_freeze_manifest
 from milodex.promotion.manifest import resolve_strategy_config_path
+from milodex.promotion.policy import ACTIVE_PROMOTION_POLICY
 from milodex.promotion.stage_compat import ALLOWED_STAGES_BY_MODE
 from milodex.promotion.state_machine import _update_stage_in_yaml as _governance_update_stage
 from milodex.promotion.state_machine import demote as _governance_demote
@@ -720,6 +728,57 @@ class BenchCommandFacade:
             proposal_id=_new_proposal_id(),
         )
 
+    @staticmethod
+    def lifecycle_exempt_eligible(strategy_id: str) -> bool:
+        return strategy_id in ACTIVE_PROMOTION_POLICY.lifecycle_gate.applies_to
+
+    def lifecycle_criteria_status(self, strategy_id: str) -> dict[str, Any]:
+        """Read the existing lifecycle gate for the policy-listed proof strategy."""
+        if not self.lifecycle_exempt_eligible(strategy_id):
+            return {"eligible": False, "criteria": []}
+        if self._event_store_factory is None:
+            return {"eligible": True, "criteria": [], "error": "Event store unavailable."}
+        try:
+            result = evaluate_lifecycle_criteria(strategy_id, self._event_store_factory())
+        except Exception:  # noqa: BLE001 - GUI read must fail closed.
+            logger.exception("Could not inspect lifecycle criteria for %s", strategy_id)
+            return {"eligible": True, "criteria": [], "error": "Lifecycle evidence unavailable."}
+        return {"eligible": True, **result.as_evidence_dict()}
+
+    def run_lifecycle_fault_check(self, strategy_id: str) -> dict[str, Any]:
+        """Run the existing synthetic risk veto test; never submit an order."""
+        if not self.lifecycle_exempt_eligible(strategy_id):
+            return {
+                "status": "blocked",
+                "message": "Lifecycle fault-check is not available for this strategy.",
+            }
+        config, blocker = self._resolve_config(strategy_id)
+        if blocker is not None or config is None:
+            return {
+                "status": "blocked",
+                "message": blocker.message if blocker else "Strategy unavailable.",
+            }
+        if self._event_store_factory is None:
+            return {"status": "blocked", "message": "Event store unavailable."}
+        try:
+            result = run_synthetic_fault_injection(
+                strategy_id, config.path, self._event_store_factory()
+            )
+        except (SyntheticFaultApprovedError, SyntheticFaultGuardrailError) as exc:
+            logger.exception("Lifecycle fault-check failed for %s", strategy_id)
+            return {"status": "blocked", "message": str(exc)}
+        except Exception:  # noqa: BLE001 - unexpected detail belongs in logs.
+            logger.exception("Lifecycle fault-check failed for %s", strategy_id)
+            return {
+                "status": "blocked",
+                "message": "Synthetic fault-check could not complete. See logs.",
+            }
+        return {
+            "status": "recorded",
+            "message": f"Synthetic risk veto recorded (explanation {result.explanation_id}).",
+            "explanation_id": result.explanation_id,
+        }
+
     def propose_promote_to_paper(
         self,
         strategy_id: str,
@@ -818,7 +877,10 @@ class BenchCommandFacade:
                 )
             )
 
-        min_trades_required = int(config.backtest.get("min_trades_required", MIN_TRADES))
+        configured_min_trades = config.backtest.get("min_trades_required")
+        min_trades_required = int(
+            MIN_TRADES if configured_min_trades is None else configured_min_trades
+        )
 
         # Gate evidence: a run_id is needed to derive the statistical metrics
         # unless lifecycle_exempt. We surface this as a precondition; the gate
@@ -2724,6 +2786,11 @@ def _blockers_from_promote_blocked(
     codes, so the translation lives at the facade boundary rather than in the
     orchestrator.
     """
+    if result.reason_code == REASON_LIFECYCLE_CRITERIA_UNMET:
+        return [
+            Blocker(reason_code=REASON_LIFECYCLE_CRITERIA_UNMET, message=failure, context={})
+            for failure in (result.gate_failures or [result.message])
+        ]
     if result.reason_code == REASON_GATE_FAILED:
         snapshot = result.metrics_snapshot or {}
         return [
