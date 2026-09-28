@@ -323,6 +323,27 @@ def _cal(session_date, close):
     return row
 
 
+def test_research_calendar_freezes_exact_broker_sessions(client):
+    from datetime import date
+
+    now = datetime(2026, 5, 11, 14, 0, tzinfo=UTC)
+    friday = _cal(date(2026, 5, 8), datetime(2026, 5, 8, 16))
+    friday.open = datetime(2026, 5, 8, 9, 30)
+    monday = _cal(date(2026, 5, 11), datetime(2026, 5, 11, 16))
+    monday.open = datetime(2026, 5, 11, 9, 30)
+    client._client.get_calendar.return_value = [friday, monday]
+    result = client.research_calendar(date(2026, 5, 8), date(2026, 5, 11), now)
+    assert result["source"] == "alpaca_exchange_calendar"
+    assert result["window_end"] == "2026-05-11"
+    assert result["sessions"] == [
+        {"date": "2026-05-08", "open": "09:30", "close": "16:00"},
+        {"date": "2026-05-11", "open": "09:30", "close": "16:00"},
+    ]
+    client._client.get_calendar.return_value = [monday, friday]
+    with pytest.raises(ValueError, match="ordered"):
+        client.research_calendar(date(2026, 5, 8), date(2026, 5, 11), now)
+
+
 class TestLatestCompletedSession:
     """latest_completed_session maps the Alpaca trading calendar to the date of
     the most recent session that has already closed; fails closed (None) on any

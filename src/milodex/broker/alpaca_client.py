@@ -420,6 +420,43 @@ class AlpacaBrokerClient(BrokerClient):
                 latest = session_date
         return latest
 
+    def research_calendar(self, start: date, end: date, now: datetime) -> dict:
+        """Fetch an unfiltered exchange-session schedule for a frozen research window."""
+        if now.tzinfo is None or end < start:
+            raise ValueError("research calendar requires aware now and ordered dates")
+        request = GetCalendarRequest(start=start, end=end)
+        rows = self._read_call(
+            "research_calendar",
+            lambda: call_with_retry_on_transient(lambda: self._client.get_calendar(request)),
+        )
+        if not rows:
+            raise ValueError("Alpaca returned no research calendar sessions")
+        sessions = []
+        for row in rows:
+            if row.date is None or row.open is None or row.close is None:
+                raise ValueError("Alpaca research calendar has a malformed session")
+            day = row.date
+            if not start <= day <= end or row.open.date() != day or row.close.date() != day:
+                raise ValueError("Alpaca research calendar session outside requested window")
+            sessions.append(
+                {
+                    "date": day.isoformat(),
+                    "open": row.open.strftime("%H:%M"),
+                    "close": row.close.strftime("%H:%M"),
+                }
+            )
+        dates = [item["date"] for item in sessions]
+        if dates != sorted(set(dates)):
+            raise ValueError("Alpaca research calendar sessions must be ordered and unique")
+        return {
+            "source": "alpaca_exchange_calendar",
+            "fetched_at": now.isoformat(),
+            "timezone": "America/New_York",
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "sessions": sessions,
+        }
+
     def is_symbol_tradable(self, symbol: str) -> bool | None:
         """Read Alpaca's asset status for ``symbol``.
 

@@ -685,6 +685,33 @@ def test_all_no_signal_is_inconclusive_not_failed(tmp_path):
     assert "no trades" in ev.rationale.lower() or "no-signal" in ev.rationale.lower()
 
 
+def test_registry_append_checks_snapshot_at_write_boundary(tmp_path, monkeypatch):
+    from milodex.research.evidence_assembler import _write_registry_row
+
+    report, _, store = _assemble(tmp_path, _make_batch_result())
+    ctx = _StubCtx(
+        tmp_path / "configs",
+        store,
+        _StubProvider({sym: _full_session_barset() for sym in _UNIVERSE}),
+    )
+
+    def changed(*args, **kwargs):
+        raise ValueError("snapshot hash changed")
+
+    monkeypatch.setattr("milodex.research.snapshot.verify_snapshot", changed)
+    with pytest.raises(ValueError, match="snapshot hash changed"):
+        _write_registry_row(
+            ctx=ctx,
+            report=report,
+            experiment_id="must-not-append",
+            hypothesis="test",
+            candidate_spy_id=_CANDIDATE_SPY_ID,
+            candidate_spy_config_path=tmp_path / "configs" / _BASE_CONFIG.name,
+            snapshot_root=tmp_path / "snapshot",
+        )
+    assert store.get_experiment("must-not-append") is None
+
+
 def test_writer_invariant_refuses_rejected_with_durable_true(tmp_path):
     # A rejected IEX row forced durable=True must be refused by the writer.
     import dataclasses
