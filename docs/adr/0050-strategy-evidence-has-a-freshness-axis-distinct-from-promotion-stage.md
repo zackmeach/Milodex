@@ -3,6 +3,10 @@
 **Status:** Accepted - 2026-05-12
 **Related:** [ADR 0047](0047-bench-action-availability-is-the-validation-surface.md) (Action menu computation), [ADR 0049](0049-phase-6-bench-v1-is-a-visual-prototype-with-no-backend-mutation.md) (v1 prototype scope), [ADR 0036](0036-operator-kanban-surface-for-promotion-pipeline.md) (Bench visual spec), [ADR 0009](0009-promotion-pipeline-stage-model.md) (promotion stage model), [ADR 0011](0011-sqlite-event-store.md) (event store), [ADR 0015](0015-strategy-identifier-and-frozen-manifest.md) (manifest discipline), [ADR 0030](0030-backtest-is-exploratory-manifest-binds-at-paper-plus.md) (backtest exploratory), [ADR 0042](0042-live-and-micro-live-eligibility-is-locked-and-evidence-based.md) (eligibility evidence)
 
+## Paper-v1 menu addendum — 2026-09-28
+
+The M4/M5 [D-8 boundary decision](../reviews/2026-09-28-m5-boundary-decisions.md) supersedes Decision 5 **only for the paper-v1 Promote-to-Paper proposal affordance**. Until the full freshness state machine is implemented, a completed passing backtest with a durable source run may leave its current applicability **unknown**. The menu may still offer Promote to Paper as a *proposal* with that unknown state visible in the menu and confirmation. It must not synthesize `Freshness.FRESH` from the mere existence of a completed run. The submit path rechecks the existing promotion policy; this addendum creates no new age threshold, invalidation rule, or promotion gate and changes no capital-stage lock. Decision 5 remains the rule when actual Fresh/Aging evidence is established, and for other stage transitions.
+
 ## Context
 
 The Bench read-model needs to represent a strategy's evidence at each stage as a first-class concept, distinct from the strategy's current promotion stage. Stage alone cannot answer the questions the Action menu must compute.
