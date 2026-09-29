@@ -11,12 +11,14 @@ FRONT liveness copy
     sessions, DESK's "N runners" source) and reads "None of your M strategies
     are running right now." when nothing runs.
 
-DESK Active Operations default + ended labeling
+DESK Active Operations ordering + ended labeling
     The runner panel defaulted to runners[0] in arbitrary SQL order — an
     ancient stopped session (observed: 6/22, "SESSION AGE 653h") could win
     over a live or newer one, and an ended session wore a ticking SESSION AGE.
-    The read model now orders live-first / most-recently-started, and the
-    panel labels an ended session "Ended <date time>".
+    The read model now orders live-first / most-recently-started, and an
+    ended session is labeled "Ended <date time>".  Since the 2026-07-22
+    fleet-table rework the order is pinned on the table's visual row order
+    and the ended label on the click-to-expand drill-down grid.
 
 Each test spawns a subprocess that seeds a REAL EventStore DB (and, for live
 runners, holds a REAL advisory lock via the subprocess's own PID so
@@ -342,15 +344,38 @@ def test_front_live_runner_count_matches_read_model() -> None:
 
 
 # ---------------------------------------------------------------------------
-# CUT 3 — DESK Active Operations default selection + ended labeling
+# CUT 3 — DESK fleet-table row order + drill-down ended labeling
+#
+# The single-runner RunnerSelect panel was replaced by the fleet table
+# (2026-07-22): every runner renders as a row, ordered live-first / most-
+# recently-started (the read model's order IS the visual order), and the
+# original KeyStat detail grid became the click-to-expand drill-down.  The
+# honesty contracts these tests pin are unchanged: an ancient session must
+# not outrank a live or newer one, and an ended session wears a dated
+# "Ended" label — never a ticking SESSION AGE.
 # ---------------------------------------------------------------------------
+
+# Shared probe: collect fleet rows in visual (y) order and expand a row by
+# setting the section's selectedRunner (the same property a row click writes).
+_FLEET_PROBE = (
+    "\nrows = [it for it in _walk(root)"
+    " if it.property('objectName') == 'deskFleetRow']\n"
+    "rows.sort(key=lambda it: it.property('y'))\n"
+    "row_ids = [str(it.property('strategyId')) for it in rows]\n"
+    "ops_col = root.findChild(_QObjectBase, 'deskSectionActiveOps')\n"
+    "detail = root.findChild(_QObjectBase, 'deskFleetDetail')\n"
+    "if ops_col is None or detail is None:\n"
+    "    print('deskSectionActiveOps / deskFleetDetail not found',"
+    " file=sys.stderr); sys.exit(4)\n"
+)
 
 
 @_skip_no_qt
-def test_desk_defaults_to_most_recent_and_labels_ended_plainly() -> None:
-    """All sessions ended: the panel defaults to the most recently STARTED
-    one (not the ancient session), and the age stat reads "Ended <date ...>"
-    — a dated label, not a ticking SESSION AGE.
+def test_desk_fleet_orders_most_recent_first_and_labels_ended_plainly() -> None:
+    """All sessions ended: the fleet table lists the most recently STARTED
+    session first (not the ancient one), the drill-down starts collapsed, and
+    expanding an ended row reads "Ended <date ...>" — a dated label, not a
+    ticking SESSION AGE.
     """
     seed = (
         "\nseed_run('strat.ancient.v1', 'sess-ancient',"
@@ -360,38 +385,44 @@ def test_desk_defaults_to_most_recent_and_labels_ended_plainly() -> None:
         " '2026-07-18T13:30:00+00:00',"
         " ended_at='2026-07-18T20:05:00+00:00', exit_reason='controlled_stop')\n"
     )
-    assertions = (
-        "\nsel = root.findChild(_QObjectBase, 'deskRunnerSelect')\n"
-        "if sel is None:\n"
-        "    print('deskRunnerSelect not found', file=sys.stderr); sys.exit(5)\n"
-        "if sel.property('current') != 'strat.recent.v1':\n"
-        "    print('default selection is ' + repr(sel.property('current'))\n"
-        "          + ', expected the most recently started strat.recent.v1',"
+    assertions = _FLEET_PROBE + (
+        "if row_ids != ['strat.recent.v1', 'strat.ancient.v1']:\n"
+        "    print('fleet row order is ' + repr(row_ids)\n"
+        "          + ', expected most recently started first',"
+        " file=sys.stderr); sys.exit(5)\n"
+        "if detail.property('visible'):\n"
+        "    print('drill-down visible before any row was selected',"
         " file=sys.stderr); sys.exit(6)\n"
+        "ops_col.setProperty('selectedRunner', 'strat.recent.v1')\n"
+        "QCoreApplication.processEvents()\n"
+        "if not detail.property('visible'):\n"
+        "    print('drill-down did not expand for the selected row',"
+        " file=sys.stderr); sys.exit(7)\n"
         "stat = root.findChild(_QObjectBase, 'deskSessionAgeStat')\n"
         "if stat is None:\n"
-        "    print('deskSessionAgeStat not found', file=sys.stderr); sys.exit(7)\n"
+        "    print('deskSessionAgeStat not found', file=sys.stderr); sys.exit(8)\n"
         "if stat.property('k') != 'Ended':\n"
         "    print('ended session stat label is ' + repr(stat.property('k'))\n"
-        "          + ', expected Ended', file=sys.stderr); sys.exit(8)\n"
+        "          + ', expected Ended', file=sys.stderr); sys.exit(9)\n"
         "v = str(stat.property('v'))\n"
         "if not re.match(r'^\\d{4}-\\d{2}-\\d{2} ', v):\n"
         "    print('ended stat value ' + repr(v) + ' does not lead with a date',"
-        " file=sys.stderr); sys.exit(9)\n"
+        " file=sys.stderr); sys.exit(10)\n"
         "print('DESK_ENDED_OK')\n"
         "sys.exit(0)\n"
     )
     out = _run(
         _build(seed, "surfaces/DeskSurface.qml", assertions),
-        "DESK ended-session default + label",
+        "DESK fleet ended-session order + label",
     )
     assert "DESK_ENDED_OK" in out
 
 
 @_skip_no_qt
-def test_desk_prefers_live_runner_and_keeps_ticking_age() -> None:
-    """A live (PID-verified) runner wins the default selection over a newer
-    ended session, and a LIVE session keeps the ticking "Session Age" stat.
+def test_desk_fleet_lists_live_runner_first_and_keeps_ticking_age() -> None:
+    """A live (PID-verified) runner outranks a newer ended session in the
+    fleet table, its row reads sessionState 'running', and expanding it keeps
+    the ticking "Session Age" stat.
     """
     seed = (
         "\nseed_run('strat.live.v1', 'sess-live', '2026-07-19T05:00:00+00:00')\n"
@@ -400,29 +431,34 @@ def test_desk_prefers_live_runner_and_keeps_ticking_age() -> None:
         " '2026-07-19T13:00:00+00:00',"
         " ended_at='2026-07-19T16:22:00+00:00', exit_reason='controlled_stop')\n"
     )
-    assertions = (
-        "\nsel = root.findChild(_QObjectBase, 'deskRunnerSelect')\n"
-        "if sel is None:\n"
-        "    print('deskRunnerSelect not found', file=sys.stderr); sys.exit(5)\n"
-        "if sel.property('current') != 'strat.live.v1':\n"
-        "    print('default selection is ' + repr(sel.property('current'))\n"
-        "          + ', expected the live strat.live.v1',"
+    assertions = _FLEET_PROBE + (
+        "if row_ids != ['strat.live.v1', 'strat.newer_ended.v1']:\n"
+        "    print('fleet row order is ' + repr(row_ids)\n"
+        "          + ', expected the live runner first', file=sys.stderr); sys.exit(5)\n"
+        "if str(rows[0].property('sessionState')) != 'running':\n"
+        "    print('live row sessionState is '\n"
+        "          + repr(rows[0].property('sessionState')),"
         " file=sys.stderr); sys.exit(6)\n"
+        "ops_col.setProperty('selectedRunner', 'strat.live.v1')\n"
+        "QCoreApplication.processEvents()\n"
+        "if not detail.property('visible'):\n"
+        "    print('drill-down did not expand for the live row',"
+        " file=sys.stderr); sys.exit(7)\n"
         "stat = root.findChild(_QObjectBase, 'deskSessionAgeStat')\n"
         "if stat is None:\n"
-        "    print('deskSessionAgeStat not found', file=sys.stderr); sys.exit(7)\n"
+        "    print('deskSessionAgeStat not found', file=sys.stderr); sys.exit(8)\n"
         "if stat.property('k') != 'Session Age':\n"
         "    print('live session stat label is ' + repr(stat.property('k'))\n"
-        "          + ', expected Session Age', file=sys.stderr); sys.exit(8)\n"
+        "          + ', expected Session Age', file=sys.stderr); sys.exit(9)\n"
         "v = str(stat.property('v'))\n"
         "if not re.match(r'^(\\d+h \\d{2}m|\\d{1,2}m)$', v):\n"
         "    print('live stat value ' + repr(v) + ' is not an age', file=sys.stderr)\n"
-        "    sys.exit(9)\n"
+        "    sys.exit(10)\n"
         "print('DESK_LIVE_OK')\n"
         "sys.exit(0)\n"
     )
     out = _run(
         _build(seed, "surfaces/DeskSurface.qml", assertions),
-        "DESK live-session default + age",
+        "DESK fleet live-row order + age",
     )
     assert "DESK_LIVE_OK" in out

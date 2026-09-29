@@ -60,13 +60,6 @@ Window {
                                         ? topBar.height + surfaceLoader.item.captureContentHeight
                                         : height
 
-    // Issue 05: outside-click dismiss for RunnerSelect dropdown.
-    // _dropdownOpen drives the overlay visibility. Wired via surfaceLoader
-    // status change — see Connections block below.
-    property bool _dropdownOpen: false
-
-    signal dropdownDismissedSignal()
-
     // PR-7c: active risk profile — initialised on Component.onCompleted,
     // updated via onSwitchApplied from RiskProfileBridge.
     property string _activeProfile: "conservative"
@@ -86,39 +79,6 @@ Window {
         property string benchArchetypeFilter: "all"
     }
 
-    MouseArea {
-        id: dropdownOutsideClick
-        anchors.fill: parent
-        visible: root._dropdownOpen
-        z: 9000  // Above page content, below dropdown bounds (which sit higher in z).
-        // I-1: propagateComposedEvents allows mouse.accepted = false to pass
-        // the click through to sibling items (surfaceLoader subtree) when the
-        // click lands inside the open dropdown's bounding rect.
-        propagateComposedEvents: true
-        onClicked: function(mouse) {
-            // Geometric exclusion: if the click is inside the open dropdown,
-            // do not dismiss — let the event fall through to the dropdown row.
-            var rect = (surfaceLoader.item && typeof surfaceLoader.item.runnerDropdownSceneRect === "function")
-                       ? surfaceLoader.item.runnerDropdownSceneRect()
-                       : Qt.rect(0, 0, 0, 0)
-            var inside = rect.width > 0
-                         && mouse.x >= rect.x && mouse.x <= rect.x + rect.width
-                         && mouse.y >= rect.y && mouse.y <= rect.y + rect.height
-            if (inside) {
-                mouse.accepted = false
-                return
-            }
-            root._dropdownOpen = false
-            root.dropdownDismissedSignal()
-        }
-    }
-
-    // Issue 05: connect to DeskSurface relay signals.
-    // DeskSurface declares runnerDropdownOpened / runnerDropdownDismissed and
-    // closeRunnerDropdown(); the Connections block targets surfaceLoader.item
-    // (which is DeskSurface when the desk tab is active) and ignores unknown
-    // signals on other surfaces.
-    //
     // Issue 12: perfSlice / throughputSlice write-back to sessionBag.
     // When the operator changes a slice toggle inside DeskSurface, the surface
     // emits perfSliceChanged / throughputSliceChanged (Qt auto-signals for
@@ -128,8 +88,6 @@ Window {
     Connections {
         target: surfaceLoader.item
         ignoreUnknownSignals: true
-        function onRunnerDropdownOpened() { root._dropdownOpen = true }
-        function onRunnerDropdownDismissed() { root._dropdownOpen = false }
         function onPerfSliceChanged() {
             if (surfaceLoader.item && surfaceLoader.item.perfSlice !== undefined) {
                 sessionBag.perfSlice = surfaceLoader.item.perfSlice
@@ -167,12 +125,6 @@ Window {
             killSwitchResetModal.open = true
         }
     }
-    onDropdownDismissedSignal: {
-        if (surfaceLoader.item && typeof surfaceLoader.item.closeRunnerDropdown === "function") {
-            surfaceLoader.item.closeRunnerDropdown()
-        }
-    }
-
     // ------------------------------------------------------------------
     // Inline component: tab control.
     //
