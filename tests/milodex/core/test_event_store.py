@@ -2247,3 +2247,30 @@ def test_get_latest_open_session_id_returns_latest_of_multiple_open(tmp_path):
     )
     result = store.get_latest_open_session_id(strategy_id)
     assert result == "session-b"
+
+
+def test_get_latest_bar_timestamp_ignores_synthetic_fault_injection_rows(tmp_path):
+    """A fault-check row stamps its synthetic bar at the self-test's wall clock;
+    it must not read as fresh market data (Bench data-freshness gate input)."""
+    store = EventStore(tmp_path / "milodex.db")
+    live_bar = datetime(2026, 10, 2, 19, 55, tzinfo=UTC)
+    synthetic_bar = datetime(2026, 10, 5, 13, 0, tzinfo=UTC)
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(submitted_by="operator", latest_bar_timestamp=live_bar)
+        )
+    )
+    store.append_explanation(
+        ExplanationEvent(
+            **_explanation_kwargs(
+                submitted_by="promotion_fault_check",
+                decision_type="synthetic_fault_injection",
+                status="blocked",
+                risk_allowed=False,
+                recorded_at=synthetic_bar,
+                latest_bar_timestamp=synthetic_bar,
+            )
+        )
+    )
+
+    assert store.get_latest_bar_timestamp() == live_bar

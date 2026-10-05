@@ -160,6 +160,17 @@ def test_fault_injection_queryable_by_criterion_c(tmp_path):
     assert store.get_latest_synthetic_fault_injection_veto("other.strat.v1") is None
 
 
+def test_fault_injection_does_not_read_as_fresh_market_data(tmp_path):
+    """The synthetic bar is stamped at the self-test's clock; it must not satisfy
+    the data-freshness signal (end-to-end through the real writer, so a rename of
+    the decision type that the store's SQL literal misses fails here)."""
+    store = EventStore(tmp_path / "milodex.db")
+    cfg = _write_config(tmp_path)
+    run_synthetic_fault_injection(_STRATEGY_ID, cfg, store, now=_NOW)
+
+    assert store.get_latest_bar_timestamp() is None
+
+
 def test_fault_injection_screams_when_risk_layer_approves(tmp_path):
     store = EventStore(tmp_path / "milodex.db")
     cfg = _write_config(tmp_path)

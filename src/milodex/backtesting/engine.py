@@ -354,8 +354,14 @@ class BacktestEngine:
         return self._warmup_calendar_days()
 
     def min_trades_required(self) -> int:
-        """Configured paper-promotion trade floor for this strategy."""
-        return int(self._loaded.config.backtest.get("min_trades_required", 30))
+        """Configured paper-promotion trade floor for this strategy.
+
+        ``.get(k, default)`` returns None for a present-but-null key; the regime
+        config sets ``min_trades_required: null`` (R-PRM-004 exemption). Treat it as
+        the statistical floor, mirroring the orchestrator and the backtest CLI.
+        """
+        configured = self._loaded.config.backtest.get("min_trades_required")
+        return 30 if configured is None else int(configured)
 
     def start_walk_forward_parent_run(
         self,

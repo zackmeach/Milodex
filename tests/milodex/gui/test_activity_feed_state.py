@@ -984,13 +984,13 @@ def test_bounded_feed_preserves_newest_first_across_cap(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_backtest_feed_metrics_identical_after_refactor(tmp_path: Path) -> None:
-    """Backtest feed row detail is byte-identical whether metrics come from SQL
-    json_extract (pre-refactor) or Python oos_aggregate_metrics (post-refactor).
+def test_backtest_feed_metrics_render_exact_detail(tmp_path: Path) -> None:
+    """Backtest feed row detail renders the oos_aggregate metrics exactly.
 
     Seeds a completed backtest run and confirms:
     - kind == 'backtest'
-    - detail contains 'Sharpe', 'max-dd', 'n=' formatted exactly as before
+    - detail is exactly 'Sharpe · max-dd · n=' with max-dd rendered as the
+      stored percent (not ×100)
     - symbol is empty string
     - tone is 'data' (backtest tone)
     """
@@ -1016,11 +1016,9 @@ def test_backtest_feed_metrics_identical_after_refactor(tmp_path: Path) -> None:
     row = bt_rows[0]
     detail = row["detail"]
 
-    # Check exact format: "Sharpe 0.83 · max-dd 1788.0% · n=20"
-    # max_dd = abs(17.88) * 100 = 1788.0
-    assert "Sharpe 0.83" in detail, f"Expected 'Sharpe 0.83' in detail: {detail!r}"
-    assert "max-dd" in detail, f"Expected 'max-dd' in detail: {detail!r}"
-    assert "n=20" in detail, f"Expected 'n=20' in detail: {detail!r}"
+    # oos_aggregate.max_drawdown_pct is already a percent (the gate compares it to
+    # 25.0), so it renders as-is — not ×100.
+    assert detail == "Sharpe 0.83 · max-dd 17.9% · n=20", detail
     assert row["symbol"] == ""
     assert row["tone"] == "data"
 
