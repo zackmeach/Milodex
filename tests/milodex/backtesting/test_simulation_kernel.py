@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
+import random
 import tempfile
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from milodex.backtesting import engine as engine_module
 from milodex.backtesting.simulation_kernel import (
@@ -18,6 +21,7 @@ from milodex.backtesting.simulation_kernel import (
 from milodex.broker.models import OrderSide, OrderType
 from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.models import BarSet
+from milodex.data.sessions import held_days
 from milodex.execution.models import TradeIntent
 from milodex.risk import NullRiskEvaluator
 from milodex.strategies.base import DecisionReasoning, StrategyDecision
@@ -526,38 +530,104 @@ def test_simulate_decision_step_sync_day_drives_broker_sync_independently_of_dec
 
 
 # ---------------------------------------------------------------------------
-# tick_held_days — held_days encapsulation
+# refresh_held_days — held_days is the closed form over the run's trading days
 # ---------------------------------------------------------------------------
 
 
-def test_tick_held_days_bumps_all_open_positions() -> None:
-    """Every entry in entry_state gets its held_days incremented by 1."""
-    store = _event_store()
-    _append_run(store)
-    kernel = _kernel(store)
-    kernel.entry_state = {
-        "SPY": {"entry_price": 100.0, "held_days": 0},
-        "QQQ": {"entry_price": 200.0, "held_days": 5},
-        "IWM": {"entry_price": 150.0, "held_days": 1},
-    }
-
-    kernel.tick_held_days()
-
-    assert kernel.entry_state["SPY"]["held_days"] == 1
-    assert kernel.entry_state["QQQ"]["held_days"] == 6
-    assert kernel.entry_state["IWM"]["held_days"] == 2
+_BUY_SELL = (OrderSide.BUY, OrderSide.SELL)
 
 
-def test_tick_held_days_is_noop_on_empty_entry_state() -> None:
+def _fill(
+    kernel: BacktestSimulationKernel, db_run_id: int, symbol: str, side: OrderSide, day: date
+) -> None:
+    """Fill ``symbol`` through the real drain, as the engine does on outer day ``day``."""
+    kernel.drain_pending_orders(
+        pending=[PendingOrder(_intent(symbol, side, 1.0), _reasoning())],
+        opens={symbol: 100.0},
+        day=day,
+        session_id="held-days",
+        db_run_id=db_run_id,
+        missing_open_policy=MissingOpenPolicy.SKIP,
+    )
+
+
+def test_refresh_held_days_is_noop_on_empty_entry_state() -> None:
     """No positions held → no-op; no error."""
     store = _event_store()
     _append_run(store)
     kernel = _kernel(store)
     assert kernel.entry_state == {}
+    days = [date(2024, 1, 2), date(2024, 1, 3)]
 
-    kernel.tick_held_days()  # must not raise
+    kernel.refresh_held_days(day=days[1], trading_days=days)  # must not raise
 
     assert kernel.entry_state == {}
+
+
+@pytest.mark.parametrize("seed", range(12))
+def test_refresh_held_days_is_the_closed_form_of_the_per_day_tick(seed: int) -> None:
+    """Random fill/eval days over a gappy day list: kernel == ``held_days`` == per-day tick.
+
+    Runs the engine's per-outer-day protocol (refresh, drain, then the strategy reads
+    ``entry_state``). The legacy kernel ticked ``held_days`` +1 per outer day after the
+    fill; that count is replayed here as the independent oracle.
+    """
+    rng = random.Random(seed)
+    start = date(2024, 1, 1) + timedelta(days=rng.randrange(300))
+    span = (start + timedelta(days=n) for n in range(rng.randint(15, 45)))
+    days = [d for d in span if rng.random() < 0.7]  # gaps: weekends, holidays, missing bars
+    plan = {  # per symbol: alternating BUY / SELL fills on distinct random days
+        sym: dict(zip(sorted(rng.sample(days, rng.randint(1, 4))), itertools.cycle(_BUY_SELL)))
+        for sym in ("SPY", "QQQ")
+    }
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store, initial_cash=10_000.0)
+    opened: dict[str, date] = {}
+    ticks: dict[str, int] = {}
+
+    for day in days:
+        kernel.refresh_held_days(day=day, trading_days=days)
+        for sym in ticks:
+            ticks[sym] += 1
+        for sym, fills in plan.items():
+            if day in fills:
+                _fill(kernel, db_run_id, sym, fills[day], day)
+                if fills[day] is OrderSide.BUY:
+                    opened[sym], ticks[sym] = day, 0
+                else:
+                    del opened[sym], ticks[sym]
+
+        assert set(kernel.entry_state) == set(opened)
+        for sym, fill_day in opened.items():
+            state = kernel.entry_state[sym]
+            assert state["held_days"] == held_days(days, fill_day, day) == ticks[sym]
+            assert set(state) == {"entry_price", "held_days"}  # the fill day stays private
+
+
+def test_closed_positions_are_forgotten_and_a_reopened_lot_counts_from_its_new_fill() -> None:
+    store = _event_store()
+    db_run_id = _append_run(store)
+    kernel = _kernel(store, initial_cash=10_000.0)
+    days = [date(2024, 1, 2) + timedelta(days=n) for n in range(8)]
+    _fill(kernel, db_run_id, "SPY", OrderSide.BUY, days[0])
+    _fill(kernel, db_run_id, "QQQ", OrderSide.BUY, days[0])
+    assert kernel._opened_on == {"SPY": days[0], "QQQ": days[0]}  # noqa: SLF001
+
+    _fill(kernel, db_run_id, "SPY", OrderSide.SELL, days[1])  # a drained exit
+    kernel.liquidate_open_positions(  # the same-session flatten
+        closes={"QQQ": 100.0},
+        day=days[2],
+        session_id="held-days",
+        db_run_id=db_run_id,
+        reason=_reasoning(),
+    )
+    assert kernel._opened_on == {}  # noqa: SLF001
+    assert kernel.entry_state == {}
+
+    _fill(kernel, db_run_id, "SPY", OrderSide.BUY, days[3])
+    kernel.refresh_held_days(day=days[7], trading_days=days)
+    assert kernel.entry_state["SPY"]["held_days"] == 4
 
 
 # ---------------------------------------------------------------------------

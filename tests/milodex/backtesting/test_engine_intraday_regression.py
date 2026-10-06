@@ -339,9 +339,9 @@ def test_intraday_regression_cross_day_round_trip() -> None:
 # ---------------------------------------------------------------------------
 # Regression test 2: held-days tick-per-outer-day invariant
 #
-# Pins the documented contract that ``tick_held_days()`` ticks ONCE per outer
-# trading day (not per intraday evaluate).  A future refactor that ticks per
-# evaluate would inflate held_days within a single session.
+# Pins the documented contract that ``refresh_held_days()`` advances held_days
+# ONCE per outer trading day (not per intraday evaluate).  A future refactor
+# that counts per evaluate would inflate held_days within a single session.
 #
 # N2 note: the original form of this test relied on a single never-selling
 # position being carried across THREE sessions to observe held_days flip
@@ -352,8 +352,8 @@ def test_intraday_regression_cross_day_round_trip() -> None:
 # still-meaningful invariant this test pins is: within the entry session,
 # held_days does NOT increment per intraday bar (it stays 0 across the day's
 # many evaluates), and the position is flat at session close (N2).  The
-# per-outer-day increment of tick_held_days itself is independently unit-tested
-# in test_simulation_kernel.test_tick_held_days_bumps_all_open_positions.
+# per-outer-day count of refresh_held_days itself is independently property-tested
+# in test_simulation_kernel.test_refresh_held_days_is_the_closed_form_of_the_per_day_tick.
 # ---------------------------------------------------------------------------
 
 
@@ -404,7 +404,7 @@ def test_intraday_regression_held_days_no_intraday_tick_then_flat_at_close() -> 
     result = engine.run(start_date, end_date)
 
     # Day 1 (entry session): held_days stays 0 across EVERY intraday evaluate —
-    # tick_held_days runs once at the next outer-day boundary, never per bar.
+    # held_days advances once at the next outer-day boundary, never per bar.
     day_1 = date(2024, 1, 8)
     day_1_observations = observed_held_per_day.get(day_1, [])
     assert day_1_observations, "expected evaluations on Day 1"
