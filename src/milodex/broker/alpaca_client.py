@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TypeVar
 from zoneinfo import ZoneInfo
 
@@ -368,6 +368,14 @@ class AlpacaBrokerClient(BrokerClient):
             lambda: call_with_retry_on_transient(lambda: self._client.get_clock()),
         )
         return clock.is_open
+
+    def next_close(self) -> datetime | None:
+        """The clock's next market close as aware UTC (``same_session`` deadline, ADR 0059)."""
+        clock = self._read_call(
+            "next_close",
+            lambda: call_with_retry_on_transient(lambda: self._client.get_clock()),
+        )
+        return clock.next_close.astimezone(UTC)
 
     def latest_completed_session(self, now: datetime) -> date | None:
         """Latest exchange session whose close is at or before ``now``.

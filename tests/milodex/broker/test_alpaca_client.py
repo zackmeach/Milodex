@@ -6,6 +6,7 @@ All tests mock the Alpaca SDK -- no real API calls.
 
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
@@ -234,6 +235,18 @@ class TestIsMarketOpen:
         clock.is_open = False
         client._client.get_clock.return_value = clock
         assert client.is_market_open() is False
+
+
+def test_next_close_reads_the_clock_as_aware_utc(client):
+    """next_close() exposes the clock's next close (Eastern-stamped) normalized to UTC."""
+    clock = MagicMock()
+    clock.next_close = datetime(2026, 11, 27, 13, 0, tzinfo=ZoneInfo("America/New_York"))
+    client._client.get_clock.return_value = clock
+
+    next_close = client.next_close()
+
+    assert next_close == datetime(2026, 11, 27, 18, 0, tzinfo=UTC)
+    assert next_close.tzinfo is UTC
 
 
 class TestRetryOn429:
