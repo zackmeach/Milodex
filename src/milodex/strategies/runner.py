@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
+
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient, BrokerConnectionError
 from milodex.broker.models import OrderSide
@@ -25,7 +27,7 @@ from milodex.core.event_store import (
     QueuedIntentEvent,
     StrategyRunEvent,
 )
-from milodex.data import DataConnectivityError, DataProvider
+from milodex.data import DataConnectivityError, DataProvider, sessions
 from milodex.data.models import Bar, BarSet
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
@@ -535,7 +537,7 @@ class StrategyRunner:
             positions=self._current_positions(),
             equity=account.equity,
             bars_by_symbol=bars_by_symbol,
-            entry_state=self._build_entry_state(),
+            entry_state=self._build_entry_state(bars_by_symbol, latest_bar.timestamp.date()),
         )
         decision = self._loaded.strategy.evaluate(primary_bars, context)
         intents = decision.intents
@@ -1415,7 +1417,7 @@ class StrategyRunner:
                     positions=self._current_positions(),
                     equity=account.equity,
                     bars_by_symbol=eval_bars,
-                    entry_state=self._build_entry_state(),
+                    entry_state=self._build_entry_state(eval_bars, decision_bar.timestamp.date()),
                 )
                 decision = self._loaded.strategy.evaluate(primary_bars, context)
                 match = self._match_drain_intent(decision.intents, queued)
@@ -1782,21 +1784,34 @@ class StrategyRunner:
         msg = f"Strategy '{self._strategy_id}' has no resolvable universe for runtime execution."
         raise ValueError(msg)
 
-    def _build_entry_state(self) -> dict[str, dict[str, Any]]:
-        """Build entry_state from this strategy's event-store open lots (ADR 0055)."""
+    def _build_entry_state(
+        self, bars_by_symbol: dict[str, Any], as_of: date
+    ) -> dict[str, dict[str, Any]]:
+        """Build entry_state from this strategy's event-store open lots (ADR 0055).
+
+        ``held_days`` is the backtest kernel's count: bar days after the lot's fill, up to
+        the evaluated bar's date ``as_of`` (``sessions.held_days``). Bar days are the UTC
+        dates of every bar of every symbol the strategy is about to see, as in the engine's
+        ``_trading_days_in_range``; the lot's fill day is likewise its UTC date. Wall-clock
+        time is deliberately unused, so an evening lock-in and the next open's drain agree.
+        """
         open_lots = strategy_open_lots(self._strategy_id, self._event_store)
         if not open_lots:
             return {}
 
-        today = self._now().date()  # UTC, consistent with session-bar checks
+        bar_days: set[date] = set()
+        for bars in bars_by_symbol.values():
+            stamps = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True)
+            bar_days.update(stamps.dt.normalize().unique().date)
         entry_state: dict[str, dict[str, Any]] = {}
         for sym, lot in open_lots.items():
             opened_at = lot["opened_at"]
-            opened_date = opened_at.date() if isinstance(opened_at, datetime) else today
-            entry_state[sym] = {
-                "entry_price": float(lot["avg_entry_price"]),
-                "held_days": (today - opened_date).days,
-            }
+            held = 0  # legacy: a non-datetime opened_at
+            if isinstance(opened_at, datetime):
+                if opened_at.tzinfo is not None:  # a naive stamp is taken as UTC already
+                    opened_at = opened_at.astimezone(UTC)
+                held = sessions.held_days(bar_days, opened_at.date(), as_of)
+            entry_state[sym] = {"entry_price": float(lot["avg_entry_price"]), "held_days": held}
         return entry_state
 
     def _history_window_days(self) -> int:
