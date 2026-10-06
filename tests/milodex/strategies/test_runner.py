@@ -258,6 +258,31 @@ def build_barset(closes: list[float]):
     )
 
 
+def build_session_barset(start: date, end: date, closed: tuple[date, ...] = ()):
+    """Flat daily bars on every weekday in ``[start, end]`` except ``closed``.
+
+    Stamped 04:00Z like Alpaca's 1D bars (session-midnight ET), so the UTC date is the
+    session date. ``build_barset`` instead emits a bar on every calendar day.
+    """
+    from milodex.data.models import BarSet
+
+    days = [d.date() for d in pd.bdate_range(start, end) if d.date() not in closed]
+    closes = [10.0] * len(days)
+    return BarSet(
+        pd.DataFrame(
+            {
+                "timestamp": [datetime(d.year, d.month, d.day, 4, tzinfo=UTC) for d in days],
+                "open": closes,
+                "high": closes,
+                "low": closes,
+                "close": closes,
+                "volume": [1_000_000] * len(closes),
+                "vwap": closes,
+            }
+        )
+    )
+
+
 def build_service(
     *,
     tmp_path: Path,
@@ -869,14 +894,8 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
     """_build_entry_state() maps avg_entry_price and held_days for open positions."""
     event_store = EventStore(tmp_path / "data" / "milodex.db")
 
-    # Seed a paper BUY trade for SPY 7 days ago.  Anchor to UTC date so that
-    # _build_entry_state's (self._now().date() - opened_at.date()).days is
-    # exactly 7 regardless of timezone offset between UTC and local time.
-    # Using date.today() (local) here would skew by 1 when the machine is past
-    # midnight UTC (e.g. UTC+1 or later).
-    buy_date = datetime.combine(
-        datetime.now(tz=UTC).date() - timedelta(days=7), datetime.min.time(), tzinfo=UTC
-    )
+    # Seed a paper BUY for SPY filled Tue 2026-07-07 (the at-open drain submits ~13:30Z).
+    buy_date = datetime(2026, 7, 7, 13, 30, tzinfo=UTC)
     explanation_id = event_store.append_explanation(
         ExplanationEvent(
             recorded_at=buy_date,
@@ -932,8 +951,8 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
 
     provider = StubProvider(
         {
-            "SPY": build_barset([10.0, 10.0, 10.0]),
-            "SHY": build_barset([10.0, 10.0, 10.0]),
+            "SPY": build_session_barset(date(2026, 7, 6), date(2026, 7, 14)),
+            "SHY": build_session_barset(date(2026, 7, 6), date(2026, 7, 14)),
         }
     )
     broker = StubBroker(
@@ -977,11 +996,13 @@ def test_runner_builds_entry_state_from_positions_and_paper_trades(
         event_store=event_store,
     )
 
-    entry_state = runner._build_entry_state()
+    entry_state = runner._build_entry_state(provider._bars_by_symbol, date(2026, 7, 14))
 
     assert "SPY" in entry_state
     assert entry_state["SPY"]["entry_price"] == 100.0
-    assert entry_state["SPY"]["held_days"] == 7
+    # Trading sessions after the fill through the evaluated bar's: Wed 8, Thu 9, Fri 10,
+    # Mon 13, Tue 14. The old calendar-day count said 7.
+    assert entry_state["SPY"]["held_days"] == 5
 
 
 def test_runner_builds_empty_entry_state_when_no_positions(
@@ -1020,7 +1041,7 @@ def test_runner_builds_empty_entry_state_when_no_positions(
         event_store=event_store,
     )
 
-    assert runner._build_entry_state() == {}
+    assert runner._build_entry_state(provider._bars_by_symbol, date(2026, 7, 14)) == {}
 
 
 def test_runner_current_positions_uses_strategy_ledger_not_broker_net(
@@ -1113,8 +1134,8 @@ def test_runner_current_positions_uses_strategy_ledger_not_broker_net(
 
     provider = StubProvider(
         {
-            "SPY": build_barset([10.0, 10.0, 10.0]),
-            "SHY": build_barset([10.0, 10.0, 10.0]),
+            "SPY": build_session_barset(date(2026, 6, 1), date(2026, 6, 9)),
+            "SHY": build_session_barset(date(2026, 6, 1), date(2026, 6, 9)),
         }
     )
     broker = StubBroker(
@@ -1144,9 +1165,10 @@ def test_runner_current_positions_uses_strategy_ledger_not_broker_net(
 
     assert runner._current_positions() == {"SPY": 13.0}
 
-    entry_state = runner._build_entry_state()
+    entry_state = runner._build_entry_state(provider._bars_by_symbol, date(2026, 6, 9))
     assert entry_state["SPY"]["entry_price"] == 590.0
-    assert entry_state["SPY"]["held_days"] == (datetime.now(tz=UTC).date() - buy_at.date()).days
+    # Thu 4, Fri 5, Mon 8, Tue 9 sessions after the Wed 6/3 fill (6 calendar days).
+    assert entry_state["SPY"]["held_days"] == 4
 
 
 def test_runner_evaluation_symbol_uses_resolved_context_universe(
