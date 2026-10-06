@@ -582,7 +582,7 @@ def test_expand_table_rejects_special_session_on_a_non_session_day():
 # The committed XNYS table
 # ---------------------------------------------------------------------------
 
-# The hardcoded set in strategies/_session_intraday.py (to be deleted) ...
+# The hardcoded set strategies/_session_intraday.py held before it read this table ...
 _LEGACY_HALF_DAYS = {
     date(2022, 11, 25),
     date(2023, 7, 3),
@@ -596,7 +596,7 @@ _LEGACY_HALF_DAYS = {
     date(2026, 11, 27),
     date(2026, 12, 24),
 }
-# ... which misses these three early closes (#396, V6).
+# ... which missed these three early closes (#396, V6).
 _MISSED_HALF_DAYS = {date(2020, 11, 27), date(2020, 12, 24), date(2021, 11, 26)}
 
 

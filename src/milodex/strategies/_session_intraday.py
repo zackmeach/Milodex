@@ -5,12 +5,13 @@ window", "is this date a half-day session", etc. — concepts every intraday
 strategy needs but the daily-strategy harness does not.
 
 Half-day handling:
-    The US equities half-day calendar is encoded as a hardcoded frozenset
-    covering the 2022-2025 backtest window. This is intentionally a stopgap
-    until a more dynamic calendar dep (e.g. ``pandas-market-calendars``) is
-    justified by additional intraday strategies. Extending the window means
-    adding entries here. See ``docs/STRATEGY_BANK.md`` for the maintenance
-    note.
+    Early closes come from the committed XNYS calendar table
+    (``milodex.data.sessions.SessionCalendar.xnys()``), not a list kept here.
+    A day with no session (weekend, holiday) keeps the full-day (16:00 ET)
+    answer, so synthetic fixtures on closed days behave as they always did. A
+    day outside the table's coverage raises ``CalendarCoverageError``: a
+    backtest never guesses a calendar. A test fails once coverage reaches
+    under a year ahead; ``scripts/README.md`` says how to regenerate the table.
 
 Time zone convention:
     All bar timestamps coming from Alpaca are tz-aware UTC. Conversion to
@@ -25,6 +26,8 @@ from datetime import date, datetime, time, timedelta
 
 import pandas as pd
 
+from milodex.data.sessions import ET, SessionCalendar
+
 ET_TZ = "America/New_York"
 
 #: Regular session open in Eastern Time.
@@ -32,29 +35,6 @@ MARKET_OPEN_ET = time(9, 30)
 
 #: Regular session close in Eastern Time.
 MARKET_CLOSE_ET_FULL = time(16, 0)
-
-#: Half-day session close in Eastern Time (early close at 1pm).
-MARKET_CLOSE_ET_HALF = time(13, 0)
-
-#: US equities early-close (13:00 ET) days for the 2022-2026 backtest window.
-#: Sourced from NYSE's published holiday calendar. Half-days are: day after
-#: Thanksgiving, day before July 4 when 7/4 is Wed/Thu/Fri, Christmas Eve when
-#: it falls on a weekday.
-US_MARKET_HALF_DAYS: frozenset[date] = frozenset(
-    {
-        date(2022, 11, 25),  # Day after Thanksgiving
-        date(2023, 7, 3),  # Day before July 4
-        date(2023, 11, 24),  # Day after Thanksgiving
-        date(2024, 7, 3),  # Day before July 4
-        date(2024, 11, 29),  # Day after Thanksgiving
-        date(2024, 12, 24),  # Christmas Eve (Tue)
-        date(2025, 7, 3),  # Day before July 4
-        date(2025, 11, 28),  # Day after Thanksgiving
-        date(2025, 12, 24),  # Christmas Eve (Wed)
-        date(2026, 11, 27),  # Day after Thanksgiving
-        date(2026, 12, 24),  # Christmas Eve (Thu)
-    }
-)
 
 
 def to_eastern(ts: datetime | pd.Timestamp) -> pd.Timestamp:
@@ -69,8 +49,21 @@ def to_eastern(ts: datetime | pd.Timestamp) -> pd.Timestamp:
 
 
 def is_half_day(d: date) -> bool:
-    """Return True if ``d`` is a known US equities early-close day."""
-    return d in US_MARKET_HALF_DAYS
+    """Return True if ``d`` is an XNYS early-close session (13:00 ET).
+
+    Raises ``CalendarCoverageError`` for a date outside the calendar table's coverage.
+    """
+    return SessionCalendar.xnys().is_early_close(d)
+
+
+def _close_time_et(d: date) -> time:
+    """ET wall-clock close of ``d``: the calendar's (13:00 on an early close), else 16:00.
+
+    A closed day (no session) reads 16:00, the full-day answer. Raises
+    ``CalendarCoverageError`` for a date outside the calendar table's coverage.
+    """
+    session = SessionCalendar.xnys().session(d)
+    return MARKET_CLOSE_ET_FULL if session is None else session.close.astimezone(ET).time()
 
 
 def session_date_et(ts: datetime | pd.Timestamp) -> date:
@@ -117,8 +110,7 @@ def is_time_stop_bar(
     """
     et = to_eastern(ts)
     d = et.date()
-    close_t = MARKET_CLOSE_ET_HALF if is_half_day(d) else MARKET_CLOSE_ET_FULL
-    close_dt = datetime.combine(d, close_t)
+    close_dt = datetime.combine(d, _close_time_et(d))
     target = (close_dt - timedelta(minutes=minutes_before_close)).time()
     return et.time() == target
 
@@ -197,7 +189,7 @@ def session_close_offset_minutes(session_date: date) -> int:
 
     Full session: 390 (9:30 -> 16:00). Half-day: 210 (9:30 -> 13:00).
     """
-    close_t = MARKET_CLOSE_ET_HALF if is_half_day(session_date) else MARKET_CLOSE_ET_FULL
+    close_t = _close_time_et(session_date)
     return (close_t.hour - MARKET_OPEN_ET.hour) * 60 + (close_t.minute - MARKET_OPEN_ET.minute)
 
 
