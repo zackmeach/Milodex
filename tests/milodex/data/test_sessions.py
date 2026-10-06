@@ -1,8 +1,7 @@
 """Tests for milodex.data.sessions: calendar, held-days, visibility, flatten deadline (#396).
 
 Pure: literal calendars and a fixed ``now`` -- the only wall-clock read is the coverage
-tripwire. Nothing consumes the module yet; the equivalence pins at the bottom compare the
-shared helpers to the engine's current copies and go once the engine adopts them.
+tripwire.
 """
 
 from __future__ import annotations
@@ -11,19 +10,15 @@ from datetime import UTC, date, datetime, timedelta
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 import pytest
 
-from milodex.backtesting.engine import BacktestEngine
-from milodex.backtesting.intraday_simulation import _regular_session_mask
 from milodex.data.sessions import (
     CalendarCoverageError,
     SessionCalendar,
     SessionPolicy,
     _expand_table,
     held_days,
-    regular_hours_mask,
     session_day,
     warmup_calendar_days,
 )
@@ -650,21 +645,8 @@ def test_xnys_coverage_reaches_a_year_ahead():
 
 
 # ---------------------------------------------------------------------------
-# Equivalence pins against the engine's current copies (delete when the engine adopts these)
+# warmup_calendar_days
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("start", "end"),
-    [("2025-03-07", "2025-03-12"), ("2025-10-30", "2025-11-05")],
-    ids=["spring-forward", "fall-back"],
-)
-def test_regular_hours_mask_matches_the_engines_mask_across_dst(start, end):
-    index = pd.date_range(start, end, freq="5min", tz="UTC")  # includes extended hours
-    mask = regular_hours_mask(index)
-    assert mask.any()
-    assert not mask.all()
-    assert np.array_equal(mask, _regular_session_mask(index))
 
 
 @pytest.mark.parametrize(
@@ -682,12 +664,5 @@ def test_regular_hours_mask_matches_the_engines_mask_across_dst(start, end):
         (0, {"n": 0, "m": -5}, 365),  # non-positive ignored
     ],
 )
-def test_warmup_calendar_days_matches_the_engine_resolver(declared, parameters, expected):
-    engine_like = SimpleNamespace(
-        _loaded=SimpleNamespace(
-            strategy=SimpleNamespace(max_lookback_periods=lambda: declared),
-            config=SimpleNamespace(parameters=parameters),
-        )
-    )
-    assert BacktestEngine._warmup_calendar_days(engine_like) == expected
+def test_warmup_calendar_days_resolution(declared, parameters, expected):
     assert warmup_calendar_days(declared, parameters) == expected

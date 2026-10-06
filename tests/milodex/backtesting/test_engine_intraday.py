@@ -1935,6 +1935,43 @@ def test_same_session_exit_ignores_after_hours_fill_and_uses_rth_close() -> None
     assert sell_explanations[0].context["reasoning"]["rule"] == ("benchmark.intraday_long.exit")
 
 
+def test_same_session_strategy_never_sees_extended_hours_bars() -> None:
+    """The engine masks pre-/post-market bars out of a same_session run's visible history."""
+    df = _build_synthetic_5min_barset(["2024-01-08"]).to_dataframe()
+    extended = [
+        pd.Timestamp(f"2024-01-08 {hhmm}").tz_localize("America/New_York").tz_convert("UTC")
+        for hhmm in ("08:20", "09:25", "16:00", "16:05")
+    ]
+    extra = pd.DataFrame(
+        {
+            "timestamp": extended,
+            "open": 500.0,
+            "high": 500.0,
+            "low": 500.0,
+            "close": 500.0,
+            "volume": 100_000,
+            "vwap": 500.0,
+        }
+    )
+    df = pd.concat([df, extra], ignore_index=True).sort_values("timestamp", ignore_index=True)
+
+    loaded = _make_intraday_loaded_strategy("stub.rth_only_history.v1", ("SPY",))
+    seen: list[pd.Timestamp] = []
+
+    def fake_evaluate(bars: BarSet, _context: StrategyContext) -> StrategyDecision:
+        seen.extend(pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True))
+        return StrategyDecision(
+            intents=[], reasoning=DecisionReasoning(rule="no_signal", narrative="rth only")
+        )
+
+    loaded.strategy.evaluate.side_effect = fake_evaluate
+    engine = _make_intraday_engine(loaded, {"SPY": BarSet(df)})
+    engine.run(date(2024, 1, 8), date(2024, 1, 8))
+
+    seen_et = pd.DatetimeIndex(seen).tz_convert("America/New_York")
+    assert [seen_et.min().strftime("%H:%M"), seen_et.max().strftime("%H:%M")] == ["09:30", "15:55"]
+
+
 def test_multi_session_intraday_position_survives_until_held_days_exit() -> None:
     """A multi-session 30Min strategy may carry until its day-granular max hold."""
     session_dates = ["2024-01-08", "2024-01-09", "2024-01-10"]

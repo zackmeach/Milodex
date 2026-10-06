@@ -16,8 +16,8 @@ fee/slippage sensitivity:
   (3) ``max_hold_days`` reached so a position cannot linger forever.
 - Fill executes at the *next* bar's open (engine T+1 semantics — no lookahead).
 
-**Max-hold is day-granular.** The backtest engine's held-days accounting ticks
-once per outer trading day by design (simulation_kernel.py "tick_held_days"),
+**Max-hold is day-granular.** The backtest engine's held-days accounting counts
+outer trading days by design (simulation_kernel.py "refresh_held_days"),
 so ``max_hold`` is expressed in days, not in 30-minute bars. A true bar-count
 max-hold for a sub-day 24/7 strategy would require threading an entry timestamp
 through the shared simulation kernel — out of scope for this proof slice. In

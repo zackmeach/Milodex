@@ -38,20 +38,21 @@ Do not change it without re-baselining
 ``tests/milodex/backtesting/test_engine_daily_regression.py`` AND any
 intraday regression suite (see ``test_engine_intraday_regression.py``).
 
-``tick_held_days()`` ticks per outer-day iteration, not per evaluation
----------------------------------------------------------------------
-See the docstring on :meth:`tick_held_days` (currently at line 289-291).
-The increment is unconditional once per outer trading day on both the
-daily and intraday paths.  A strategy with ``held_days >= max_hold`` will
-exit on the **first intraday tick of the next day**, not at EOD of the
-entry day.  Preserved deliberately; pinned here for the next reader.
+``refresh_held_days()`` counts outer trading days, not evaluations
+-----------------------------------------------------------------
+See the docstring on :meth:`refresh_held_days`.  The engine calls it once per
+outer trading day on both the daily and intraday paths, and ``held_days`` is
+the number of those days since the fill.  A strategy with
+``held_days >= max_hold`` will exit on the **first intraday tick of the next
+day**, not at EOD of the entry day.  Preserved deliberately; pinned here for
+the next reader.
 """
 
 from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from enum import Enum
@@ -64,6 +65,7 @@ from milodex.broker.models import AccountInfo, OrderSide, OrderType, Position
 from milodex.broker.simulated import SimulatedBroker
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.data.models import BarSet
+from milodex.data.sessions import held_days
 from milodex.data.simulated import SimulatedDataProvider
 from milodex.execution.models import ExecutionStatus, TradeIntent
 from milodex.execution.service import ExecutionService
@@ -159,6 +161,9 @@ class BacktestSimulationKernel:
         self.cash = initial_cash
         self.positions: dict[str, tuple[float, float]] = {}
         self.entry_state: dict[str, dict] = {}
+        # Fill day per open position, for ``held_days``. Private on purpose:
+        # strategies read ``entry_state``, so it must not grow keys.
+        self._opened_on: dict[str, date] = {}
         self.sym_fills: dict[str, dict[str, int]] = {}
         # Set when the final ADR 0053 snapshot write fails; the engine
         # surfaces it into the run's final metadata as `snapshot_write_error`.
@@ -322,26 +327,33 @@ class BacktestSimulationKernel:
             )
         return []
 
-    def tick_held_days(self) -> None:
-        """Increment ``held_days`` for every symbol with an open position.
+    def refresh_held_days(self, *, day: date, trading_days: Sequence[date]) -> None:
+        """Set ``held_days`` for every symbol with an open position.
 
-        Replaces the inline pattern previously duplicated at engine.py:919-921
-        (daily) and engine.py:1164-1166 (intraday). The engine should not be
-        reaching into ``entry_state`` dict shape.
+        ``day`` is the current OUTER trading day and ``trading_days`` the run's
+        full day list, so a position filled on ``f`` holds
+        :func:`milodex.data.sessions.held_days` ``(trading_days, f, day)``: the
+        listed days in ``(f, day]``. That is what ticking once per outer-day
+        iteration counted, in closed form -- the paper runner derives the same
+        number from bar dates (#396), so the two cannot drift. The engine should
+        not be reaching into ``entry_state`` dict shape.
 
         Documented intentional behavior:
-          - Ticks every calendar iteration the caller invokes, regardless of
-            whether the strategy actually evaluated that iteration. Daily
-            path calls this once per ``trading_days`` iteration; intraday
-            calls once per OUTER-day iteration (NOT per intraday bar). This
-            means an intraday strategy crossing a ``held_days`` threshold
-            fires on the FIRST intraday tick of the next day, not at EOD of
-            the entry day. Pre-existing behavior, preserved deliberately.
+          - Counts every day in ``trading_days`` after the fill, regardless of
+            whether the strategy actually evaluated that day. Daily path calls
+            this once per ``trading_days`` iteration; intraday calls once per
+            OUTER-day iteration (NOT per intraday bar). This means an intraday
+            strategy crossing a ``held_days`` threshold fires on the FIRST
+            intraday tick of the next day, not at EOD of the entry day.
+            Pre-existing behavior, preserved deliberately.
           - A future reviewer must not "fix" this without auditing every
             ``held_days`` consumer.
         """
-        for sym in self.entry_state:
-            self.entry_state[sym]["held_days"] = int(self.entry_state[sym]["held_days"]) + 1
+        # ponytail: O(len(trading_days)) per open position per day (measured ~0.2% of a
+        # 4y intraday run, ~1.6% of a 6y x 10-name daily run); bisect on the sorted days
+        # if it ever shows in a profile.
+        for sym, state in self.entry_state.items():
+            state["held_days"] = held_days(trading_days, self._opened_on[sym], day)
 
     def drain_pending_orders(
         self,
@@ -411,6 +423,7 @@ class BacktestSimulationKernel:
             self.cash += proceeds
             del self.positions[sym]
             self.entry_state.pop(sym, None)
+            self._opened_on.pop(sym, None)
             sell_count += 1
             self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
 
@@ -465,6 +478,7 @@ class BacktestSimulationKernel:
             self.cash -= realized_cost
             self.positions[sym] = (qty, fill_price)
             self.entry_state[sym] = {"entry_price": fill_price, "held_days": 0}
+            self._opened_on[sym] = day
             buy_count += 1
             self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["buys"] += 1
 
@@ -557,6 +571,7 @@ class BacktestSimulationKernel:
             self.cash += proceeds
             del self.positions[sym]
             self.entry_state.pop(sym, None)
+            self._opened_on.pop(sym, None)
             flattened.add(sym)
             self.sym_fills.setdefault(sym, {"buys": 0, "sells": 0})["sells"] += 1
         return flattened

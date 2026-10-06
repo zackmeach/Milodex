@@ -46,13 +46,6 @@ def _is_rth_bar(bar_ts: pd.Timestamp, day: date) -> bool:
     return eastern.date() == day and _RTH_OPEN <= eastern.time() < _RTH_CLOSE
 
 
-def _regular_session_mask(ts_index: pd.DatetimeIndex) -> np.ndarray:
-    """Return a vectorized mask for US-equity regular-session bar starts."""
-    eastern = ts_index.tz_convert(_EASTERN_TZ)
-    minute_of_day = eastern.hour * 60 + eastern.minute
-    return np.asarray((minute_of_day >= 9 * 60 + 30) & (minute_of_day < 16 * 60))
-
-
 def _build_intraday_event_timeline(
     per_symbol_ts_utc: dict[str, pd.DatetimeIndex],
     day: date,

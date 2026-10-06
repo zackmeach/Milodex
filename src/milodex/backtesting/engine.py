@@ -30,7 +30,6 @@ guarantee.
 from __future__ import annotations
 
 import bisect
-import math
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -49,7 +48,6 @@ from milodex.backtesting.intraday_simulation import (
     _latest_close_at_ts,
     _mark_to_market_at_day_end,
     _opens_at_timestamp,
-    _regular_session_mask,
 )
 from milodex.backtesting.run_manifest import (
     BacktestRunManifestInput,
@@ -71,6 +69,7 @@ from milodex.broker.models import OrderSide
 from milodex.core.event_store import BacktestRunEvent, EventStore
 from milodex.data.bar_quality import DataQualityError, scan_backtest_bars
 from milodex.data.models import BarSet, Timeframe
+from milodex.data.sessions import SessionPolicy, warmup_calendar_days
 from milodex.data.timeframes import (
     bar_size_minutes_from_timeframe,
     timeframe_from_bar_size,
@@ -1049,7 +1048,7 @@ class BacktestEngine:
         pending: list[PendingOrder] = []
 
         for day in trading_days:
-            kernel.tick_held_days()
+            kernel.refresh_held_days(day=day, trading_days=trading_days)
 
             bars_by_symbol = _slice_bars_to_day(all_bars, day, ts_index)
             fill_opens = _opens_on_day(bars_by_symbol, day, ts_index)
@@ -1203,10 +1202,8 @@ class BacktestEngine:
             )
 
         bar_size_minutes = bar_size_minutes_from_timeframe(timeframe)
-        position_lifecycle = str(
-            self._loaded.config.tempo.get("position_lifecycle", "multi_session")
-        )
-        same_session = position_lifecycle == "same_session"
+        policy = SessionPolicy.for_tempo(self._loaded.config.tempo)
+        same_session = policy.same_session
 
         # ------------------------------------------------------------------
         # Correction 6: precompute per-symbol lookup maps once.
@@ -1221,7 +1218,7 @@ class BacktestEngine:
             ts_utc = pd.to_datetime(df["timestamp"], utc=True)
             dti = pd.DatetimeIndex(ts_utc)
             if same_session:
-                rth_mask = _regular_session_mask(dti)
+                rth_mask = policy.visible(dti)
                 df = df.loc[rth_mask].reset_index(drop=True)
                 dti = dti[rth_mask]
             per_symbol_df[symbol] = df
@@ -1255,7 +1252,7 @@ class BacktestEngine:
             # ------------------------------------------------------------------
             # 1. Held-days accounting (mirror daily path).
             # ------------------------------------------------------------------
-            kernel.tick_held_days()
+            kernel.refresh_held_days(day=day, trading_days=trading_days)
 
             # ------------------------------------------------------------------
             # 2. Build the event timeline for this day.
@@ -1535,46 +1532,11 @@ class BacktestEngine:
     def _warmup_calendar_days(self) -> int:
         """Return the number of calendar days to prepend before the run window.
 
-        Resolution order:
-
-        1. ``strategy.max_lookback_periods()`` — if the concrete strategy
-           declares a non-zero value, convert it to calendar days using a
-           1.4× trading-to-calendar multiplier (5 trading days / 7 calendar,
-           rounded up generously) plus a 30-day buffer for holiday variation.
-           This covers strategies whose lookback is expressed as a float param
-           or nested in a sub-dict — cases that the integer-param heuristic
-           (step 2) cannot reach.
-        2. Integer-param heuristic — scan ``config.parameters`` values, take
-           the largest *numeric whole-number* value (int or float-that-is-whole),
-           multiply by 3 to convert trading periods to calendar days, floor at
-           365.  ``bool`` values are excluded (they are ``int`` subclasses but
-           not lookback periods).
+        The resolution rules live in :func:`milodex.data.sessions.warmup_calendar_days`.
         """
-        # Step 1: strategy-declared maximum lookback.
-        declared = self._loaded.strategy.max_lookback_periods()
-        if declared > 0:
-            # 1.4 calendar days per trading day (= 7/5), rounded up, plus 30-day buffer.
-            return math.ceil(declared * 1.4) + 30
-
-        # Step 2: heuristic — scan parameter values for the largest numeric
-        # whole-number (covers both int and float like 200.0).  Exclude booleans
-        # (bool is a subclass of int in Python) and negative/zero values.
-        # Whole-number constraint keeps fractional multipliers (e.g. 2.0 meaning
-        # "2× ATR") from being mis-interpreted as lookback periods; the 365-day
-        # floor is the safety net for strategies with small integer params.
-        numeric_params = [
-            int(v)
-            for v in self._loaded.config.parameters.values()
-            if isinstance(v, (int, float))
-            and not isinstance(v, bool)
-            and v > 0
-            and float(v) == int(v)
-        ]
-        largest = max(numeric_params, default=30)
-        # ponytail: cap at 10 years — no real strategy needs more lookback, and an
-        # un-capped heuristic lets a large non-lookback param (e.g. a seed) explode
-        # `start - timedelta(days=...)` into an OverflowError.
-        return min(3650, max(365, largest * 3))
+        return warmup_calendar_days(
+            self._loaded.strategy.max_lookback_periods(), self._loaded.config.parameters
+        )
 
 
 # ---------------------------------------------------------------------------
