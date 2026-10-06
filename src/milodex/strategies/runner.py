@@ -217,11 +217,15 @@ class StrategyRunner:
         # reset to None the moment a current-session bar is observed — a fresh
         # episode (even on the same date after a recovery) then re-alerts.
         self._stale_bar_alerted_for: date | None = None
-        # same_session alert dedup (in-memory, ADR 0059): one session_end_flatten_blocked
-        # alert per (symbol, lot opened_at, ET session day); one session_calendar_fail_closed
-        # alert per ET session day.
+        # same_session flatten state (in-memory, this process only; ADR 0059): one
+        # session_end_flatten_blocked alert per (symbol, lot opened_at, ET session day); one
+        # session_calendar_fail_closed alert per ET session day; lots whose flatten delivery
+        # is unknown (never auto-resubmitted); the earliest retry of an overdue / fail-closed
+        # flatten that was not sent.
         self._flatten_alerted: set[tuple[str, datetime, date]] = set()
         self._calendar_alerted_day: date | None = None
+        self._flatten_suspended: set[tuple[str, datetime]] = set()
+        self._flatten_retry_after: dict[tuple[str, datetime], datetime] = {}
         self._requested_shutdown: str | None = None
         # Monotonic timestamp of the first connectivity-classified failure
         # (BrokerConnectionError / DataConnectivityError) of the current
@@ -1000,8 +1004,10 @@ class StrategyRunner:
         closed. A lot is due once ``now`` reaches the flatten deadline (min(table close,
         broker ``next_close``) - lead) or when it is overdue (opened in an earlier ET
         session). Each due lot is sold whole through ``submit_paper`` -- ordinary risk
-        evaluation, no exemption. A blocked or raising flatten leaves the lot open, so it
-        is retried every open cycle and, past the close, sold as overdue at the next open.
+        evaluation, no exemption; ``_flatten_session_lot`` handles the outcome. A lot whose
+        delivery is unknown is skipped for the rest of this process, and an overdue /
+        fail-closed lot that was not sent waits a bar before its next attempt. A lot still
+        open after the close is overdue and is sold at the next open.
         Without a trustworthy deadline -- today outside calendar coverage, or a day the
         table says is closed while the broker reports open -- this fails closed: every lot
         is due and nothing evaluates.
@@ -1009,7 +1015,12 @@ class StrategyRunner:
         if not market_open:
             return False
         policy = self._session_policy
-        next_close = self._broker.next_close()
+        try:
+            next_close = self._broker.next_close()
+        except Exception as exc:  # noqa: BLE001 — the table owns scheduled closes
+            # is_market_open() above already covers an unscheduled closure.
+            logger.warning("next_close read failed (%s); the session table sets the deadline.", exc)
+            next_close = None
         today = session_day(now)
         try:
             session = policy.calendar.session(today)
@@ -1032,17 +1043,28 @@ class StrategyRunner:
             "flatten_lead_minutes": int(policy.flatten_lead / timedelta(minutes=1)),
         }
         for symbol, lot in strategy_open_lots(self._strategy_id, self._event_store).items():
+            key = (symbol, lot["opened_at"])
+            retry_after = self._flatten_retry_after.get(key)
+            if key in self._flatten_suspended or (retry_after is not None and now < retry_after):
+                continue
             basis = "overdue" if policy.overdue(lot["opened_at"], now) else due_basis
             if basis is not None:
                 opened_on = session_day(lot["opened_at"]).isoformat()
                 triggering = {"basis": basis, **timing, "opened_on": opened_on}
-                self._flatten_session_lot(symbol, lot, today, triggering)
+                self._flatten_session_lot(symbol, lot, triggering, now)
         return evaluation_open
 
     def _flatten_session_lot(
-        self, symbol: str, lot: dict[str, Any], day: date, triggering: dict[str, Any]
+        self, symbol: str, lot: dict[str, Any], triggering: dict[str, Any], now: datetime
     ) -> None:
-        """Sell one whole same_session lot through the chokepoint; alert if not submitted."""
+        """Sell one whole same_session lot through the chokepoint and act on the outcome.
+
+        SUBMITTED closes the ledger lot. REJECTED, or a raise once an order may have left
+        (an attempt or submitted SELL on record), is delivery-unknown: the lot is suspended
+        and never auto-resubmitted by this process. A risk veto, or a raise before any
+        broker call, leaves the lot to retry: every cycle in the deadline window, otherwise
+        not before a bar has passed (a persistent veto must not write a row every poll).
+        """
         intent = TradeIntent(
             symbol=symbol,
             side=OrderSide.SELL,
@@ -1063,20 +1085,89 @@ class StrategyRunner:
             result = self._execution_service.submit_paper(
                 self._runner_intent(intent), session_id=self._session_id, reasoning=reasoning
             )
-        except Exception as exc:  # noqa: BLE001 — the lot stays open; retried next open cycle
+        except Exception as exc:  # noqa: BLE001 — classified below, never re-raised
             logger.warning("Session-end flatten submit raised for %s: %s", symbol, exc)
-            self._alert_flatten_blocked(
-                symbol, lot, day, triggering, reason=f"submit_error: {exc!r}", codes=[]
+            reason, codes = f"submit_error: {exc!r}", []
+            if self._flatten_may_have_left(symbol, lot):
+                self._suspend_flatten(symbol, lot, triggering, reason=reason)
+                return
+        else:
+            if result.status == ExecutionStatus.SUBMITTED:
+                return
+            if result.status == ExecutionStatus.REJECTED:
+                self._suspend_flatten(symbol, lot, triggering, reason=f"rejected: {result.message}")
+                return
+            reason, codes = result.status.value, list(result.risk_decision.reason_codes)
+        # Not sent: a risk veto, or a raise before any broker call.
+        if triggering["basis"] != "deadline":
+            self._flatten_retry_after[(symbol, lot["opened_at"])] = now + self._session_policy.bar
+        self._alert_flatten_blocked(
+            symbol, lot, session_day(now), triggering, reason=reason, codes=codes
+        )
+
+    def _flatten_may_have_left(self, symbol: str, lot: dict[str, Any]) -> bool:
+        """Whether a raised flatten may have left an order at the broker.
+
+        Counts this strategy's SELL attempts (pending/submitted/error) and submitted SELL
+        trades on ``symbol`` since the lot opened; rejected attempts are excluded. Zero means
+        the raise came before any broker call. A failing query proves nothing: unknown.
+        """
+        try:
+            recorded = self._event_store.count_recent_submitted_orders(
+                symbol=symbol,
+                side=OrderSide.SELL.value,
+                since=lot["opened_at"],
+                strategy_name=self._strategy_id,
             )
-            return
-        if result.status != ExecutionStatus.SUBMITTED:
-            self._alert_flatten_blocked(
-                symbol,
-                lot,
-                day,
-                triggering,
-                reason=result.status.value,
-                codes=list(result.risk_decision.reason_codes),
+        except Exception:  # noqa: BLE001 — cannot prove no order left, so treat it as unknown
+            logger.exception("Flatten delivery check failed for %s; treating as unknown.", symbol)
+            return True
+        return recorded > 0
+
+    def _suspend_flatten(
+        self, symbol: str, lot: dict[str, Any], triggering: dict[str, Any], *, reason: str
+    ) -> None:
+        """Never auto-resubmit a flatten whose broker delivery is unknown; alert once.
+
+        Alpaca reports a 5xx/504 as a rejection even when the order landed (audit V9), and a
+        raise after the broker call leaves only an attempt row, so a resubmit could sell a
+        flat book short. The ledger lot stays open; the suspension lasts for this runner
+        process only, and a restart re-arms the flatten once the operator has verified the
+        broker position and reconciled.
+        """
+        self._flatten_suspended.add((symbol, lot["opened_at"]))
+        logger.error(
+            "Session-end flatten of %s: broker delivery unknown (%s); not resubmitting.",
+            symbol,
+            reason,
+        )
+        try:
+            self._event_store.append_operator_alert(
+                OperatorAlertEvent(
+                    alert_type="session_end_flatten_delivery_unknown",
+                    severity="warning",
+                    summary=(
+                        f"Session-end flatten of {symbol}: broker delivery unknown ({reason}). "
+                        "A broker 5xx/504 can be recorded as rejected after the order landed. "
+                        "Not resubmitted: verify the broker position and reconcile; restarting "
+                        "the runner re-arms the flatten."
+                    ),
+                    strategy_id=self._strategy_id,
+                    session_id=self._session_id,
+                    symbol=symbol,
+                    side=OrderSide.SELL.value,
+                    context_json={
+                        **triggering,
+                        "reason": reason,
+                        "quantity": float(lot["quantity"]),
+                        "opened_at": lot["opened_at"].isoformat(),
+                    },
+                    recorded_at=self._now(),
+                )
+            )
+        except Exception:  # noqa: BLE001 — alert write must never break the poll loop
+            logger.exception(
+                "Failed to record session_end_flatten_delivery_unknown for %s.", symbol
             )
 
     def _alert_flatten_blocked(
@@ -1091,17 +1182,16 @@ class StrategyRunner:
     ) -> None:
         """One durable ``session_end_flatten_blocked`` alert per lot per ET session.
 
-        The ledger only closes a lot on a submitted SELL, so a blocked flatten is retried
-        every open cycle; the in-memory key keeps those retries from re-alerting. Fail-soft:
-        an alert-write failure must not stop the retries, so the key is only recorded once
-        the row is written.
+        The ledger only closes a lot on a submitted SELL, so a flatten that was not sent is
+        retried; the in-memory key keeps those retries from re-alerting. Fail-soft: an
+        alert-write failure must not stop the retries, so the key is only recorded once the
+        row is written.
         """
         key = (symbol, lot["opened_at"], day)
         if key in self._flatten_alerted:
             return
         logger.warning(
-            "Session-end flatten of %s not submitted (%s); the lot stays open and is retried "
-            "every open-market cycle.",
+            "Session-end flatten of %s not submitted (%s); the lot stays open and is retried.",
             symbol,
             reason,
         )
@@ -1133,8 +1223,8 @@ class StrategyRunner:
     def _alert_calendar_fail_closed(self, day: date, cause: str) -> None:
         """One alert per ET day while the session table cannot set today's deadline.
 
-        A same_session runner then evaluates nothing and flattens every open lot. Outside
-        coverage the fix is regenerating the table (``scripts/generate_xnys_calendar.py``).
+        A same_session runner then evaluates nothing and attempts to flatten every open lot.
+        Outside coverage the fix is regenerating the table (``scripts/generate_xnys_calendar.py``).
         Fail-soft: the day is only recorded once the row is written.
         """
         if self._calendar_alerted_day == day:
@@ -1147,7 +1237,8 @@ class StrategyRunner:
                     severity="warning",
                     summary=(
                         f"No trustworthy session deadline for {self._strategy_id} "
-                        f"({cause}): same_session evaluation halted, open lots flattened."
+                        f"({cause}): same_session evaluation halted; flatten attempted for "
+                        "open lots."
                     ),
                     strategy_id=self._strategy_id,
                     session_id=self._session_id,

@@ -2,7 +2,7 @@
 
 **Status:** Accepted
 **Date:** 2026-10-06
-**Related:** [issue #396](https://github.com/zackmeach/Milodex/issues/396) (C1, PR 2), [2026-10-05 architecture-deepening audit](../reviews/2026-10-05-architecture-deepening-audit.md) (V5, V10, C3), [ADR 0008](0008-risk-layer-veto-architecture.md) (risk-layer veto), [ADR 0055](0055-event-store-per-strategy-position-ledger.md) (strategy ledger), [`src/milodex/data/sessions.py`](../../src/milodex/data/sessions.py), [`src/milodex/strategies/runner.py`](../../src/milodex/strategies/runner.py)
+**Related:** [issue #396](https://github.com/zackmeach/Milodex/issues/396) (C1, PR 2), [2026-10-05 architecture-deepening audit](../reviews/2026-10-05-architecture-deepening-audit.md) (V5, V9, V10, C3), [ADR 0008](0008-risk-layer-veto-architecture.md) (risk-layer veto), [ADR 0055](0055-event-store-per-strategy-position-ledger.md) (strategy ledger), [`src/milodex/data/sessions.py`](../../src/milodex/data/sessions.py), [`src/milodex/strategies/runner.py`](../../src/milodex/strategies/runner.py)
 
 ## Context
 
@@ -12,30 +12,59 @@
 
 The paper runner enforces the lifecycle the strategy was promoted under. This is system enforcement: the strategy declares the lifecycle in its config, and the runner and the risk layer enforce it. The strategy has no say in when, or whether, the flatten happens.
 
-1. **Deadline.** For each ET session the flatten deadline is `min(table close, broker next_close) − 5 min`. The table is the committed XNYS calendar (`SessionCalendar.xnys()`). `next_close` is a new `BrokerClient.next_close()` read: Alpaca reads its clock, and other brokers return `None`, so the table alone decides. The earlier close wins, so an unscheduled early close is honoured. On a half-day the deadline is 12:55 ET.
+1. **Deadline.** For each ET session the flatten deadline is `min(table close, broker next_close) − 5 min`.
+   - The table is the committed XNYS calendar (`SessionCalendar.xnys()`).
+   - `next_close` is a new `BrokerClient.next_close()` read. Alpaca reads its clock; other brokers return `None`, and the table alone decides. A failed read is logged and treated as `None`: the table owns scheduled closes, and `is_market_open()` already covers unscheduled ones.
+   - The earlier close wins, so an unscheduled early close is honoured. On a half-day the deadline is 12:55 ET.
 2. **Flatten.** On every cycle where the broker reports the market open, and before any fetch, each open lot in the strategy's ledger is sold whole if it is due. A lot is due once now reaches the deadline, or when it is **overdue**, i.e. opened in an earlier ET session. The sale is a market DAY SELL submitted through `ExecutionService.submit_paper` with rule `paper.session_end_flatten`. It gets the full risk evaluation: no exemption, no override and no idempotency key.
 3. **Evaluation gate.** A `same_session` cycle fetches and evaluates only while the market is open and now is in `[session open, deadline)`. Evaluation sees only completed regular-hours bars (`SessionPolicy.visible`). It never evaluates a bar from a previous session: in the first bar-width after the open, the newest visible bar is yesterday's last one, which paper never evaluated.
-4. **Veto and failure.**
-   - The ledger closes a lot only when a SELL is submitted. A vetoed, rejected or raising flatten therefore leaves the lot open, and it is retried on every open-market cycle.
+4. **Outcomes.** The ledger closes a lot only when a SELL is submitted.
+   - **Not sent** — a risk veto, or a raise before any broker call (no attempt row). The lot stays open and is retried:
+     - inside the deadline window `[deadline, close)`, on every cycle (at most about 30 polls for a 5Min tempo), since a transient veto can clear there;
+     - for an `overdue` or `calendar_fail_closed` lot, at most once per bar (at most about 78 attempts per 5Min session). A persistent veto would otherwise write a blocked explanation and a blocked trade row on every ~10 s poll, all session.
+   - **Delivery unknown** — the result is REJECTED, or the submit raised after an order may have left. "May have left" means a pending, submitted or error SELL attempt, or a submitted SELL, is on record since the lot opened.
+     - Why REJECTED is not trusted: Alpaca reports a 5xx or 504 as a rejection even when the order landed (audit V9).
+     - Why the duplicate-order veto does not cover it: a rejected attempt is excluded from that veto, and an error attempt counts only inside its 60 s window.
+     - What happens: the lot is suspended and never auto-resubmitted by this runner process. One `session_end_flatten_delivery_unknown` alert (severity warning) asks the operator to verify the broker position and reconcile. Restarting the runner re-arms the flatten.
    - Nothing is submitted while the market is closed.
-   - Each lot raises one `session_end_flatten_blocked` operator alert (severity warning) per ET session. The alert is deduplicated in memory.
-   - A lot still open after the close is overdue, and it is sold at the next open, before evaluation.
-   - A kill-switch veto simply leaves the lot open and raises the alert.
-5. **Fail closed without a trustworthy deadline.** Today may fall outside the table's coverage, or the table may say today is closed while the broker reports the market open. In either case nothing evaluates, every open lot is flattened with basis `calendar_fail_closed`, and one `session_calendar_fail_closed` alert is written per ET day.
+   - Each lot that is not sent raises one `session_end_flatten_blocked` alert (severity warning) per ET session. The alert is deduplicated in memory.
+   - A lot still open after the close is overdue, and its flatten is attempted at the next open, before evaluation.
+5. **Fail closed without a trustworthy deadline.** Today may fall outside the table's coverage, or the table may say today is closed while the broker reports the market open. In either case nothing evaluates, a flatten is attempted for every open lot (basis `calendar_fail_closed`), and one `session_calendar_fail_closed` alert is written per ET day.
 
 Daily and `multi_session` runners are unchanged. They never read `next_close` and never load the calendar.
 
-## Residual basis vs the backtest
+## Vetoes that can block a flatten
 
-- **Flatten fill.** Paper flattens with a market SELL at about 15:55 ET. The backtest fills at the 16:00 close (the last regular-hours bar's close). This gap is accepted.
-- **Recorded basis.** Every flatten explanation records its basis in `triggering_values`:
+The flatten gets no exemption, so every check that does not exempt exposure-reducing orders can veto it:
+
+- **Kill switch:** `kill_switch_active`. The kill switch blocks reducing orders too.
+- **Daily loss:** `daily_loss_cap_exceeded`, `kill_switch_threshold_breached`.
+- **Manifest:** `manifest_drift`, `no_frozen_manifest`.
+- **Strategy and mode:** `strategy_disabled`, `strategy_stage_ineligible`, `paper_mode_required`.
+- **Disable conditions:** `disable_condition_active`.
+- **Trade count:** `max_trades_per_day_exceeded` (20 per day, account-wide).
+- **Data:** `stale_market_data` (the 300 s intraday budget), `no_latest_bar`.
+- **Reconciliation:** `reconciliation_drift`, `reconciliation_stale`, `reconciliation_incomplete` and `reconciliation_required`. These bind only when the SELL exceeds the broker-held quantity, e.g. when a sibling strategy nets the account flat (ADR 0055).
+- **Concurrent caps (V10):** `max_concurrent_positions_exceeded`, `max_strategy_positions_exceeded`.
+- **Order book:** `duplicate_order_window`, `opposite_side_order_open`.
+- **Execution:**
+  - `market_closed`, if the broker clock flips between the runner's read and the evaluator's;
+  - `submit_serialization_unavailable`, when the ADR 0056 lock times out;
+  - `risk_check_error`, when a check fails closed.
+
+Order value, single-position and total-exposure caps already exempt a covered reducing order. Exempting exits from any of the checks above, the daily-loss check included, is an owner decision under audit C3 and is not part of this ADR.
+
+## Residuals
+
+- **Flatten fill.** Paper flattens with a market SELL at about 15:55 ET; the backtest fills at the 16:00 close (the last regular-hours bar's close). This gap is accepted. Every flatten explanation records its basis in `triggering_values`, so the residual can be measured per config against the backtest's close:
   - `basis` (`deadline`, `overdue` or `calendar_fail_closed`);
   - `deadline_utc`, `table_close_utc` and `broker_next_close_utc`;
   - `flatten_lead_minutes`;
   - `opened_on`.
-
-  The residual can therefore be measured per config against the backtest's close.
 - **Boundary entries.** Paper never evaluates the bars that complete at or after the deadline: the 15:50 and 15:55 bars for 5Min tempos. Entries the backtest takes on those bars do not happen in paper. That includes the engine's boundary BUY, which fills at the next open and is an accepted residual of the engine itself.
+- **Half-days in the engine.** The engine's fixed 09:30–16:00 mask means the backtest evaluates and flattens through post-13:00 IEX bars on half-days. In the cached SPY 5Min data, the last masked bar is 13:05 on 2025-11-28 and 13:40 on 2025-07-03. Paper flattens at 12:55.
+- **Optimistic ledger.** An accepted flatten that later cancels or expires at the broker has already closed the ledger lot. The lot reopens only when `sync_local_only_orders` appends the corrective row (RISK_POLICY known limitation #5). That happens at a controlled or interrupted runner shutdown, or on an operator `reconcile sync-orders`. Until then the runner does not retry that lot.
+- **Broker clock lag.** A deadline flatten can go out at 16:00:0x while Alpaca still reports the market open. The broker clock is the acceptance authority, so there is deliberately no local-clock guard: host skew would skip valid flattens. Alpaca's handling of such an order is unverified.
 
 ## Out of scope
 
@@ -45,4 +74,5 @@ Daily and `multi_session` runners are unchanged. They never read `next_close` an
 ## Consequences
 
 - A carried `same_session` lot is flattened at the first open cycle after deploy.
-- **The flatten can be vetoed.** The V10 concurrent-cap exit deadlock (audit C3) can veto it, and so can the kill switch, which blocks reducing orders. Exempting exits from those checks is an owner decision, not part of this ADR. Until then, the result is an open lot, one alert per session, and a retry every cycle. Each retry writes a blocked explanation row.
+- A vetoed flatten leaves an open lot and one alert per session. The bounded retries above each write a blocked explanation and a blocked trade row.
+- A delivery-unknown flatten is never retried automatically. It waits for the operator to verify the position and restart the runner.

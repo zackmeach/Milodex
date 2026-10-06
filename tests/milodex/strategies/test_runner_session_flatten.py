@@ -4,6 +4,8 @@ A ``same_session`` runner sells every open lot through ``submit_paper`` at the f
 deadline (min(table close, broker next_close) - 5 min) or, for a carried lot, at the next
 open; it fetches and evaluates only inside ``[session open, deadline)`` while the market is
 open, sees only completed regular-hours bars, and never evaluates a previous session's bar.
+A flatten whose broker delivery is unknown is never resubmitted; one that was not sent is
+retried, every cycle in the deadline window and once per bar otherwise.
 
 The runner clock is faked at fixed ET instants; the session table is the real committed XNYS
 calendar (a literal one for the coverage path). Fixtures come from ``test_runner``.
@@ -18,6 +20,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
+from milodex.broker.exceptions import BrokerConnectionError, OrderRejectedError
 from milodex.broker.models import AccountInfo, OrderSide, OrderType, Position, TimeInForce
 from milodex.core.event_store import EventStore, ExplanationEvent, TradeEvent
 from milodex.data.models import BarSet
@@ -43,16 +46,30 @@ def et(day: date, hour: int, minute: int, second: int = 0) -> datetime:
 
 
 class ClockBroker(StubBroker):
-    """StubBroker plus the broker clock's ``next_close`` read (counted)."""
+    """StubBroker plus the broker clock's ``next_close`` read (counted).
 
-    def __init__(self, *, next_close: datetime | None = None, **kwargs) -> None:
+    ``next_close_value`` may be an exception: the read fails. ``submit_error``, when set, is
+    raised AFTER the order is recorded in ``submit_calls`` -- it landed at the broker, but
+    the client saw a failure (audit V9).
+    """
+
+    def __init__(self, *, next_close: datetime | Exception | None = None, **kwargs) -> None:
         super().__init__(**kwargs)
         self.next_close_value = next_close
         self.next_close_calls = 0
+        self.submit_error: Exception | None = None
 
     def next_close(self) -> datetime | None:
         self.next_close_calls += 1
+        if isinstance(self.next_close_value, Exception):
+            raise self.next_close_value
         return self.next_close_value
+
+    def submit_order(self, **kwargs):
+        order = super().submit_order(**kwargs)
+        if self.submit_error is not None:
+            raise self.submit_error
+        return order
 
 
 @dataclass
@@ -74,6 +91,36 @@ class Harness:
 
     def flatten_alerts(self) -> list:
         return self.event_store.list_operator_alerts(alert_type="session_end_flatten_blocked")
+
+    def unknown_alerts(self) -> list:
+        return self.event_store.list_operator_alerts(
+            alert_type="session_end_flatten_delivery_unknown"
+        )
+
+
+def _expired_calendar() -> SessionCalendar:
+    """A literal session table whose coverage ends before the test days."""
+    return SessionCalendar.from_rows(
+        {
+            "timezone": "America/New_York",
+            "window_start": "2026-01-02",
+            "window_end": "2026-06-30",
+            "sessions": [],
+        }
+    )
+
+
+def _age_attempts(event_store: EventStore, by: timedelta) -> None:
+    """Backdate every execution attempt: the real-clock duplicate-order window has passed."""
+    aged = (datetime.now(tz=UTC) - by).isoformat()
+    with event_store._connect() as connection:
+        connection.execute("UPDATE execution_attempts SET created_at = ?", (aged,))
+        connection.commit()
+
+
+def _attempt_statuses(event_store: EventStore) -> list[str]:
+    with event_store._connect() as connection:
+        return [row[0] for row in connection.execute("SELECT status FROM execution_attempts")]
 
 
 def _bars(*days: date) -> BarSet:
@@ -334,7 +381,7 @@ def test_vetoed_flatten_retries_every_open_cycle_but_never_after_the_close(harne
 
     for at in (et(EDT_DAY, 15, 55), et(EDT_DAY, 15, 57), et(EDT_DAY, 15, 59, 50)):
         h.cycle(at)
-    assert len(h.submits) == 3, "a vetoed flatten is retried on every open cycle"
+    assert len(h.submits) == 3, "in the deadline window a vetoed flatten retries every cycle"
     assert h.broker.submit_calls == []
     [alert] = h.flatten_alerts()
     assert (alert.severity, alert.symbol, alert.side) == ("warning", "SPY", "sell")
@@ -354,15 +401,57 @@ def test_vetoed_flatten_retries_every_open_cycle_but_never_after_the_close(harne
 
     h.kill_switch.reset()
     h.cycle(et(EDT_NEXT, 9, 30, 20))
+    assert len(h.submits) == 4, "an overdue flatten that was not sent waits a bar"
+    h.cycle(et(EDT_NEXT, 9, 35, 5))
     assert [call["side"] for call in h.broker.submit_calls] == [OrderSide.SELL]
     assert strategy_open_lots(STRATEGY_ID, h.event_store) == {}
     assert len(h.flatten_alerts()) == 2
 
 
-def test_a_raising_flatten_submit_alerts_once_and_is_retried(harness):
+def test_rejected_flatten_is_never_resubmitted(harness):
+    """A broker 5xx/504 is recorded REJECTED even when the order landed (audit V9)."""
+    h = harness(days=(EDT_DAY, EDT_NEXT), lot_opened_at=et(EDT_DAY, 10, 0))
+    h.broker.submit_error = OrderRejectedError("504 Gateway Time-out")
+
+    for at in (et(EDT_DAY, 15, 55), et(EDT_DAY, 15, 55, 10), et(EDT_DAY, 15, 59, 50)):
+        h.cycle(at)
+    h.cycle(et(EDT_DAY, 16, 0, 30), market_open=False)
+    for at in (et(EDT_NEXT, 9, 30, 5), et(EDT_NEXT, 9, 35, 5), et(EDT_NEXT, 12, 0)):
+        h.cycle(at)
+
+    assert len(h.broker.submit_calls) == 1, "one broker SELL, through the next open"
+    [alert] = h.unknown_alerts()
+    assert (alert.severity, alert.symbol, alert.side) == ("warning", "SPY", "sell")
+    assert "delivery unknown" in alert.summary
+    assert "verify the broker position and reconcile" in alert.summary
+    assert "restarting the runner re-arms the flatten" in alert.summary
+    assert h.flatten_alerts() == []
+    assert strategy_open_lots(STRATEGY_ID, h.event_store)["SPY"]["quantity"] == LOT_QTY
+
+
+def test_flatten_raising_after_the_broker_call_is_never_resubmitted(harness):
+    """A raise once the order left records an 'error' attempt: delivery is unknown."""
+    h = harness(days=(EDT_DAY,), lot_opened_at=et(EDT_DAY, 10, 0))
+    h.broker.submit_error = TimeoutError("read timed out after the broker accepted")
+
+    h.cycle(et(EDT_DAY, 15, 55))
+    assert len(h.broker.submit_calls) == 1
+    assert _attempt_statuses(h.event_store) == ["error"]
+    _age_attempts(h.event_store, timedelta(minutes=2))  # past the 60 s duplicate-order window
+    for at in (et(EDT_DAY, 15, 57), et(EDT_DAY, 15, 59, 50)):
+        h.cycle(at)
+
+    assert len(h.broker.submit_calls) == 1, "one broker SELL"
+    [alert] = h.unknown_alerts()
+    assert alert.context_json["reason"].startswith("submit_error")
+    assert h.flatten_alerts() == []
+
+
+def test_flatten_raising_before_the_broker_call_is_retried(harness):
+    """No attempt row means no order left: retried like a veto."""
     h = harness(days=(EDT_DAY,), lot_opened_at=et(EDT_DAY, 10, 0))
     real_submit = h.runner._execution_service.submit_paper
-    failures = [RuntimeError("broker connection reset mid-submit")] * 2
+    failures = [RuntimeError("event store locked before the broker call")] * 2
 
     def flaky(intent, **kwargs):
         if failures:
@@ -372,13 +461,69 @@ def test_a_raising_flatten_submit_alerts_once_and_is_retried(harness):
 
     h.runner._execution_service.submit_paper = flaky
 
-    for at in (et(EDT_DAY, 15, 55), et(EDT_DAY, 15, 55, 10), et(EDT_DAY, 15, 55, 20)):
+    h.cycle(et(EDT_DAY, 15, 55))
+    assert _attempt_statuses(h.event_store) == []
+    for at in (et(EDT_DAY, 15, 55, 10), et(EDT_DAY, 15, 55, 20)):
         h.cycle(at)
 
-    [alert] = h.flatten_alerts()
-    assert alert.context_json["reason"].startswith("submit_error")
     assert [call["side"] for call in h.broker.submit_calls] == [OrderSide.SELL]
     assert strategy_open_lots(STRATEGY_ID, h.event_store) == {}
+    [alert] = h.flatten_alerts()
+    assert alert.context_json["reason"].startswith("submit_error")
+    assert h.unknown_alerts() == []
+
+
+def test_deadline_window_retries_a_vetoed_flatten_every_cycle(harness):
+    """In [deadline, close) a transient veto can clear, so every ~10 s poll retries."""
+    h = harness(days=(EDT_DAY,), lot_opened_at=et(EDT_DAY, 10, 0))
+    h.kill_switch.activate("test: persistent veto")
+
+    for k in range(30):
+        h.cycle(et(EDT_DAY, 15, 55) + timedelta(seconds=10 * k))
+
+    assert len(h.submits) == 30
+    assert h.broker.submit_calls == []
+
+
+@pytest.mark.parametrize("basis", ["overdue", "calendar_fail_closed"])
+def test_overdue_and_fail_closed_retries_wait_one_bar(harness, basis):
+    """Outside the deadline window a vetoed flatten retries at most once per bar."""
+    if basis == "overdue":
+        h = harness(days=(EDT_DAY, EDT_NEXT), lot_opened_at=et(EDT_DAY, 10, 0))
+        start = et(EDT_NEXT, 9, 30, 5)
+    else:
+        h = harness(days=(EDT_DAY,), lot_opened_at=et(EDT_DAY, 10, 0))
+        h.runner._session_policy = replace(h.runner._session_policy, calendar=_expired_calendar())
+        start = et(EDT_DAY, 11, 0)
+    h.kill_switch.activate("test: persistent veto")
+
+    for k in range(61):  # ten minutes of ~10 s polls
+        h.cycle(start + timedelta(seconds=10 * k))
+
+    assert len(h.submits) == 3, "attempts at start, +5 min and +10 min only"
+    assert {kwargs["reasoning"].triggering_values["basis"] for _, kwargs in h.submits} == {basis}
+    assert h.broker.submit_calls == []
+
+
+def test_next_close_read_failure_falls_back_to_the_table(harness):
+    h = harness(
+        days=(EDT_DAY,),
+        lot_opened_at=et(EDT_DAY, 10, 0),
+        next_close=BrokerConnectionError("next_close could not reach the broker"),
+    )
+
+    h.cycle(et(EDT_DAY, 15, 54, 59))
+    assert h.submits == []
+    assert h.events == ["fetch", "evaluate"]
+
+    h.cycle(et(EDT_DAY, 15, 55))
+
+    [(intent, kwargs)] = h.submits
+    assert intent.side == OrderSide.SELL
+    triggering = kwargs["reasoning"].triggering_values
+    assert triggering["deadline_utc"] == et(EDT_DAY, 15, 55).isoformat()
+    assert triggering["broker_next_close_utc"] is None
+    assert h.broker.next_close_calls == 2
 
 
 def test_premarket_bars_and_the_previous_session_bar_are_never_evaluated(harness):
@@ -436,15 +581,7 @@ def test_earlier_broker_next_close_moves_the_deadline_earlier(harness):
 def test_no_trustworthy_deadline_fails_closed(harness, day, cause):
     h = harness(days=(day,), lot_opened_at=et(day, 10, 0))
     if cause == "outside_calendar_coverage":
-        expired = SessionCalendar.from_rows(
-            {
-                "timezone": "America/New_York",
-                "window_start": "2026-01-02",
-                "window_end": "2026-06-30",
-                "sessions": [],
-            }
-        )
-        h.runner._session_policy = replace(h.runner._session_policy, calendar=expired)
+        h.runner._session_policy = replace(h.runner._session_policy, calendar=_expired_calendar())
 
     for at in (et(day, 11, 0), et(day, 11, 5)):
         assert h.cycle(at) == []
