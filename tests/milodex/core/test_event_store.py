@@ -2145,6 +2145,46 @@ def test_count_recent_submitted_orders_filters_attempts_by_symbol_side_window(tm
     assert store.count_recent_submitted_orders(symbol="SPY", side="buy", since=since) == 0
 
 
+def test_unresolved_sell_attempt_ids_lists_only_unresolved_sells(tmp_path):
+    """ADR 0059 delivery freeze: a pending, error or rejected SELL attempt, or a submitted
+    one without its trade row, is unresolved. A submitted SELL with its trade row, a BUY,
+    another strategy's SELL and one created before ``since`` are not."""
+    store = EventStore(tmp_path / "milodex.db")
+    now = datetime(2026, 5, 7, 14, 0, tzinfo=UTC)
+    for client_order_id, status, broker_order_id in (
+        ("pending", "pending", None),
+        ("error", "error", None),
+        ("rejected", "rejected", None),
+        ("ghost", "submitted", "b-ghost"),
+        ("definitive", "submitted", "b-ok"),
+    ):
+        store.append_execution_attempt(
+            _attempt_event(
+                client_order_id=client_order_id,
+                side="sell",
+                status=status,
+                broker_order_id=broker_order_id,
+                created_at=now,
+            )
+        )
+    _append_dedup_trade(store, recorded_at=now, side="sell", broker_order_id="b-ok")
+    for client_order_id, overrides in (
+        ("buy", {"side": "buy"}),
+        ("sibling", {"side": "sell", "strategy_name": "beta"}),
+        ("before", {"side": "sell", "created_at": now - timedelta(days=1)}),
+    ):
+        store.append_execution_attempt(
+            _attempt_event(
+                **{"client_order_id": client_order_id, "status": "error", "created_at": now}
+                | overrides
+            )
+        )
+
+    assert store.unresolved_sell_attempt_ids(
+        symbol=" spy", strategy_name="alpha", since=now - timedelta(hours=1)
+    ) == ["pending", "error", "rejected", "ghost"]
+
+
 def test_list_stale_pending_execution_attempts(tmp_path):
     """Old 'pending' rows are listed; fresh pending and finalized rows are not."""
     store = EventStore(tmp_path / "milodex.db")

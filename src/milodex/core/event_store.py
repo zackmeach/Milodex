@@ -1489,6 +1489,52 @@ class EventStore:
             ).fetchone()
         return int(row[0])
 
+    def unresolved_sell_attempt_ids(
+        self, *, symbol: str, strategy_name: str, since: datetime
+    ) -> list[str]:
+        """``client_order_id`` of each unresolved SELL attempt (ADR 0059 delivery freeze).
+
+        Scope: ``strategy_name``'s SELL ``execution_attempts`` on ``symbol`` created at or
+        after ``since``. Unresolved: ``pending``, ``error`` or ``rejected`` -- a broker
+        5xx/504 is recorded rejected even when the order landed (audit V9) -- or
+        ``submitted`` with no submitted paper ``trades`` row carrying its
+        ``broker_order_id``. A risk-vetoed submit writes no attempt row, and a submitted
+        SELL with its trade row is definitive, so neither counts. Normalization mirrors the
+        attempt half of :meth:`count_recent_submitted_orders`.
+        """
+        since_utc = since.astimezone(UTC) if since.tzinfo else since.replace(tzinfo=UTC)
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT a.client_order_id
+                FROM execution_attempts a
+                WHERE a.symbol = :symbol AND lower(a.side) = 'sell'
+                  AND a.strategy_name = :strategy_name
+                  AND datetime(a.created_at) >= datetime(:since)
+                  AND (
+                      a.status IN ('pending', 'error', 'rejected')
+                      OR (
+                          a.status = 'submitted'
+                          AND (
+                              a.broker_order_id IS NULL
+                              OR NOT EXISTS (
+                                  SELECT 1 FROM trades t
+                                  WHERE t.broker_order_id = a.broker_order_id
+                                    AND t.status = 'submitted' AND t.source = 'paper'
+                              )
+                          )
+                      )
+                  )
+                ORDER BY a.id ASC
+                """,
+                {
+                    "symbol": symbol.strip().upper(),
+                    "strategy_name": strategy_name,
+                    "since": since_utc.isoformat(),
+                },
+            ).fetchall()
+        return [str(row[0]) for row in rows]
+
     def count_submitted_trades_today(self) -> int:
         """Count account-wide paper submitted trades since UTC midnight today.
 
