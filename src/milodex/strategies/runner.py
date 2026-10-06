@@ -15,9 +15,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
+
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient, BrokerConnectionError
-from milodex.broker.models import OrderSide
+from milodex.broker.models import OrderSide, OrderType, TimeInForce
 from milodex.core.event_store import (
     EventStore,
     ExplanationEvent,
@@ -27,6 +29,7 @@ from milodex.core.event_store import (
 )
 from milodex.data import DataConnectivityError, DataProvider
 from milodex.data.models import Bar, BarSet
+from milodex.data.sessions import CalendarCoverageError, SessionPolicy, session_day
 from milodex.data.timeframes import bar_size_minutes_from_timeframe, timeframe_from_bar_size
 from milodex.execution.config import load_strategy_execution_config
 from milodex.execution.models import ExecutionResult, ExecutionStatus, TradeIntent
@@ -148,6 +151,9 @@ class StrategyRunner:
         self._poll_interval_seconds = _resolve_poll_interval(
             self._loaded.config.tempo, poll_interval_seconds
         )
+        # Session rules for this run (#396, ADR 0059). Only a same_session policy carries
+        # the exchange calendar; daily and multi_session runs never touch it.
+        self._session_policy = SessionPolicy.for_tempo(self._loaded.config.tempo)
         # Snapshot the strategy's risk envelope at startup. Every TradeIntent
         # this runner emits carries these bound values; the risk evaluator
         # routes its policy decisions through them, closing the TOCTOU class
@@ -211,6 +217,11 @@ class StrategyRunner:
         # reset to None the moment a current-session bar is observed — a fresh
         # episode (even on the same date after a recovery) then re-alerts.
         self._stale_bar_alerted_for: date | None = None
+        # same_session alert dedup (in-memory, ADR 0059): one session_end_flatten_blocked
+        # alert per (symbol, lot opened_at, ET session day); one session_calendar_fail_closed
+        # alert per ET session day.
+        self._flatten_alerted: set[tuple[str, datetime, date]] = set()
+        self._calendar_alerted_day: date | None = None
         self._requested_shutdown: str | None = None
         # Monotonic timestamp of the first connectivity-classified failure
         # (BrokerConnectionError / DataConnectivityError) of the current
@@ -452,12 +463,21 @@ class StrategyRunner:
         the session's last completed bar is processed
         (``_intraday_session_drained``), later closed-market cycles skip the
         fetch until the next open.
+
+        ``same_session`` path (V5, ADR 0059): before any fetch, ``_same_session_gate``
+        flattens due lots and stops the cycle unless the market is open and the session's
+        evaluation window ``[open, deadline)`` contains now. Evaluation then sees only
+        completed regular-hours bars, and never a previous session's bar.
         """
         self._ensure_startup_reconciliation()
         self._maybe_rollover_reconciliation()
         self._sweep_expired_queued_intents()
         market_open = self._broker.is_market_open()
         is_daily_bar = self._is_daily_bar()
+        # One instant drives the same_session flatten, evaluation gate and bar visibility.
+        session_now = self._now() if self._session_policy.same_session else None
+        if session_now is not None and not self._same_session_gate(market_open, session_now):
+            return []
         if is_daily_bar and market_open:
             # Phase-3 (queue-at-open, ADR 0057): the post-close lock-in enqueued
             # today's intent; at the next open re-evaluate it against a fresh
@@ -482,12 +502,19 @@ class StrategyRunner:
 
         bars_by_symbol = self._fetch_bars_by_symbol()
         if not is_daily_bar:
-            bars_by_symbol = self._truncate_to_completed_bars(bars_by_symbol)
+            bars_by_symbol = self._truncate_to_completed_bars(bars_by_symbol, session_now)
             if len(bars_by_symbol[self._evaluation_symbol()]) == 0:
                 # Every fetched bar is still forming — nothing evaluable yet.
                 return []
         primary_bars = bars_by_symbol[self._evaluation_symbol()]
         latest_bar = primary_bars.latest()
+        if session_now is not None and session_day(latest_bar.timestamp) != session_day(
+            session_now
+        ):
+            # Previous-session guard (ADR 0059): until today's first bar completes, the
+            # newest visible bar is the prior session's last one, which was never evaluated
+            # live (it completes after the deadline). A fresh 09:31 start must not take it.
+            return []
         already_seen = (
             self._last_processed_bar_at is not None
             and latest_bar.timestamp <= self._last_processed_bar_at
@@ -961,6 +988,177 @@ class StrategyRunner:
             intent.normalized_symbol(),
             intent.side.value,
         )
+
+    # ------------------------------------------------------------------
+    # same_session enforcement (V5, ADR 0059)
+    # ------------------------------------------------------------------
+
+    def _same_session_gate(self, market_open: bool, now: datetime) -> bool:
+        """Flatten due ``same_session`` lots, then say whether this cycle may evaluate.
+
+        Runs before any fetch; nothing is submitted or evaluated while the market is
+        closed. A lot is due once ``now`` reaches the flatten deadline (min(table close,
+        broker ``next_close``) - lead) or when it is overdue (opened in an earlier ET
+        session). Each due lot is sold whole through ``submit_paper`` -- ordinary risk
+        evaluation, no exemption. A blocked or raising flatten leaves the lot open, so it
+        is retried every open cycle and, past the close, sold as overdue at the next open.
+        Without a trustworthy deadline -- today outside calendar coverage, or a day the
+        table says is closed while the broker reports open -- this fails closed: every lot
+        is due and nothing evaluates.
+        """
+        if not market_open:
+            return False
+        policy = self._session_policy
+        next_close = self._broker.next_close()
+        today = session_day(now)
+        try:
+            session = policy.calendar.session(today)
+            deadline = policy.flatten_deadline(today, next_close)
+            evaluation_open = policy.evaluation_open(now, next_close)
+            failure = None if deadline is not None else "table_closed_while_market_open"
+        except CalendarCoverageError as exc:
+            session = deadline = None
+            evaluation_open = False
+            failure = f"outside_calendar_coverage: {exc}"
+        if failure is not None:
+            self._alert_calendar_fail_closed(today, failure)
+            due_basis = "calendar_fail_closed"
+        else:
+            due_basis = "deadline" if now >= deadline else None
+        timing = {
+            "deadline_utc": deadline.isoformat() if deadline is not None else None,
+            "table_close_utc": session.close.isoformat() if session is not None else None,
+            "broker_next_close_utc": next_close.isoformat() if next_close is not None else None,
+            "flatten_lead_minutes": int(policy.flatten_lead / timedelta(minutes=1)),
+        }
+        for symbol, lot in strategy_open_lots(self._strategy_id, self._event_store).items():
+            basis = "overdue" if policy.overdue(lot["opened_at"], now) else due_basis
+            if basis is not None:
+                opened_on = session_day(lot["opened_at"]).isoformat()
+                triggering = {"basis": basis, **timing, "opened_on": opened_on}
+                self._flatten_session_lot(symbol, lot, today, triggering)
+        return evaluation_open
+
+    def _flatten_session_lot(
+        self, symbol: str, lot: dict[str, Any], day: date, triggering: dict[str, Any]
+    ) -> None:
+        """Sell one whole same_session lot through the chokepoint; alert if not submitted."""
+        intent = TradeIntent(
+            symbol=symbol,
+            side=OrderSide.SELL,
+            quantity=float(lot["quantity"]),
+            order_type=OrderType.MARKET,
+            time_in_force=TimeInForce.DAY,
+        )
+        reasoning = DecisionReasoning(
+            rule="paper.session_end_flatten",
+            narrative=(
+                f"Session-end flatten ({triggering['basis']}): selling the whole {symbol} lot "
+                f"opened {triggering['opened_on']} so no same_session position outlives its "
+                "session."
+            ),
+            triggering_values=triggering,
+        )
+        try:
+            result = self._execution_service.submit_paper(
+                self._runner_intent(intent), session_id=self._session_id, reasoning=reasoning
+            )
+        except Exception as exc:  # noqa: BLE001 — the lot stays open; retried next open cycle
+            logger.warning("Session-end flatten submit raised for %s: %s", symbol, exc)
+            self._alert_flatten_blocked(
+                symbol, lot, day, triggering, reason=f"submit_error: {exc!r}", codes=[]
+            )
+            return
+        if result.status != ExecutionStatus.SUBMITTED:
+            self._alert_flatten_blocked(
+                symbol,
+                lot,
+                day,
+                triggering,
+                reason=result.status.value,
+                codes=list(result.risk_decision.reason_codes),
+            )
+
+    def _alert_flatten_blocked(
+        self,
+        symbol: str,
+        lot: dict[str, Any],
+        day: date,
+        triggering: dict[str, Any],
+        *,
+        reason: str,
+        codes: list[str],
+    ) -> None:
+        """One durable ``session_end_flatten_blocked`` alert per lot per ET session.
+
+        The ledger only closes a lot on a submitted SELL, so a blocked flatten is retried
+        every open cycle; the in-memory key keeps those retries from re-alerting. Fail-soft:
+        an alert-write failure must not stop the retries, so the key is only recorded once
+        the row is written.
+        """
+        key = (symbol, lot["opened_at"], day)
+        if key in self._flatten_alerted:
+            return
+        logger.warning(
+            "Session-end flatten of %s not submitted (%s); the lot stays open and is retried "
+            "every open-market cycle.",
+            symbol,
+            reason,
+        )
+        try:
+            self._event_store.append_operator_alert(
+                OperatorAlertEvent(
+                    alert_type="session_end_flatten_blocked",
+                    severity="warning",
+                    summary=f"Session-end flatten of {symbol} not submitted: {reason}.",
+                    strategy_id=self._strategy_id,
+                    session_id=self._session_id,
+                    symbol=symbol,
+                    side=OrderSide.SELL.value,
+                    context_json={
+                        **triggering,
+                        "reason": reason,
+                        "reason_codes": codes,
+                        "quantity": float(lot["quantity"]),
+                        "session_day": day.isoformat(),
+                    },
+                    recorded_at=self._now(),
+                )
+            )
+        except Exception:  # noqa: BLE001 — alert write must never stop the flatten retries
+            logger.exception("Failed to record session_end_flatten_blocked for %s.", symbol)
+            return
+        self._flatten_alerted.add(key)
+
+    def _alert_calendar_fail_closed(self, day: date, cause: str) -> None:
+        """One alert per ET day while the session table cannot set today's deadline.
+
+        A same_session runner then evaluates nothing and flattens every open lot. Outside
+        coverage the fix is regenerating the table (``scripts/generate_xnys_calendar.py``).
+        Fail-soft: the day is only recorded once the row is written.
+        """
+        if self._calendar_alerted_day == day:
+            return
+        logger.error("same_session runner %s failing closed: %s", self._strategy_id, cause)
+        try:
+            self._event_store.append_operator_alert(
+                OperatorAlertEvent(
+                    alert_type="session_calendar_fail_closed",
+                    severity="warning",
+                    summary=(
+                        f"No trustworthy session deadline for {self._strategy_id} "
+                        f"({cause}): same_session evaluation halted, open lots flattened."
+                    ),
+                    strategy_id=self._strategy_id,
+                    session_id=self._session_id,
+                    context_json={"cause": cause, "session_day": day.isoformat()},
+                    recorded_at=self._now(),
+                )
+            )
+        except Exception:  # noqa: BLE001 — alert write must never break the poll loop
+            logger.exception("Failed to record session_calendar_fail_closed alert.")
+            return
+        self._calendar_alerted_day = day
 
     # ------------------------------------------------------------------
     # queue-at-open (Phase-1 persist, ADR 0057)
@@ -1759,7 +1957,9 @@ class StrategyRunner:
         timeframe = timeframe_from_bar_size(self._loaded.config.tempo["bar_size"])
         return timedelta(minutes=bar_size_minutes_from_timeframe(timeframe))
 
-    def _truncate_to_completed_bars(self, bars_by_symbol: dict[str, Any]) -> dict[str, Any]:
+    def _truncate_to_completed_bars(
+        self, bars_by_symbol: dict[str, Any], session_now: datetime | None = None
+    ) -> dict[str, Any]:
         """Drop bars whose window has not closed yet (HR-2 / R-P1-2).
 
         The provider re-fetches today on every call, so mid-window the latest
@@ -1768,12 +1968,20 @@ class StrategyRunner:
         on decides strictly on completed bars — decision_time = bar_ts +
         bar_size (backtesting/intraday_simulation.py) — so live evaluation
         keeps only bars with ``timestamp + bar_size <= now``.
+
+        ``same_session`` runs pass the cycle instant and apply the shared policy instead
+        (``SessionPolicy.visible``, ADR 0059): completed by ``session_now`` AND regular
+        hours, matching the engine's same_session mask.
         """
         cutoff = self._now() - self._bar_duration()
         truncated: dict[str, Any] = {}
         for symbol, bars in bars_by_symbol.items():
             frame = bars.to_dataframe()
-            truncated[symbol] = BarSet(frame.loc[frame["timestamp"] <= cutoff])
+            if session_now is None:
+                truncated[symbol] = BarSet(frame.loc[frame["timestamp"] <= cutoff])
+                continue
+            starts = pd.DatetimeIndex(pd.to_datetime(frame["timestamp"], utc=True))
+            truncated[symbol] = BarSet(frame.loc[self._session_policy.visible(starts, session_now)])
         return truncated
 
     def _evaluation_symbol(self) -> str:

@@ -88,6 +88,16 @@ class BrokerClient(ABC):
         """
         return None
 
+    def next_close(self) -> datetime | None:
+        """Return the broker clock's next market close (aware UTC), or ``None``.
+
+        Feeds the ``same_session`` flatten deadline (ADR 0059): the earlier of this and
+        the committed exchange table's close wins, so an unscheduled early close is
+        honoured. Not abstract: the base returns ``None`` and the table alone decides
+        then (``SimulatedBroker`` and other non-clock brokers inherit this).
+        """
+        return None
+
     def is_symbol_tradable(self, symbol: str) -> bool | None:
         """Whether ``symbol`` is currently tradable at this broker.
 
