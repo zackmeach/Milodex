@@ -51,6 +51,8 @@ def _engine_window(runner: StrategyRunner) -> int:
         ("gap.gap_continuation.intraday.spy.v1", 156, 249),  # ceil(156 * 1.4) + 30
         # Old rule: `seed` x 3 = 60,781,857 days, an OverflowError at ``end - timedelta(...)``.
         ("benchmark.random_matched_exposure.intraday.spy.v1", 78, 140),
+        # Old rule: entry_window_minutes (300) x 3 = 900 days of 5Min bars on every poll.
+        ("meanrev.rsi2.intraday.spy.v1", 78, 140),
     ],
 )
 def test_real_config_window_matches_the_engine(
