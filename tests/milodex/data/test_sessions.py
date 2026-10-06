@@ -24,6 +24,7 @@ from milodex.data.sessions import (
     _expand_table,
     held_days,
     regular_hours_mask,
+    session_day,
     warmup_calendar_days,
 )
 
@@ -133,6 +134,36 @@ def test_held_days_is_zero_when_as_of_does_not_follow_the_fill():
 
 
 # ---------------------------------------------------------------------------
+# session_day
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("stamp", "expected"),
+    [
+        (datetime(2026, 7, 1, 19, 55, tzinfo=UTC), date(2026, 7, 1)),  # 15:55 EDT
+        (datetime(2026, 7, 2, 0, 30, tzinfo=UTC), date(2026, 7, 1)),  # 20:30 EDT: UTC date is later
+        (datetime(2026, 1, 5, 21, 30, tzinfo=UTC), date(2026, 1, 5)),  # 16:30 EST
+        (datetime(2026, 7, 2, 3, 59, tzinfo=UTC), date(2026, 7, 1)),  # 23:59 EDT
+        (datetime(2026, 7, 2, 4, 0, tzinfo=UTC), date(2026, 7, 2)),  # 00:00 EDT
+        (datetime(2026, 1, 6, 4, 59, tzinfo=UTC), date(2026, 1, 5)),  # 23:59 EST
+        (datetime(2026, 1, 6, 5, 0, tzinfo=UTC), date(2026, 1, 6)),  # 00:00 EST
+        (_et(2026, 7, 1, 9, 30), date(2026, 7, 1)),
+        (pd.Timestamp("2026-07-02T00:30:00Z"), date(2026, 7, 1)),
+    ],
+)
+def test_session_day_is_the_et_calendar_date(stamp, expected):
+    assert session_day(stamp) == expected
+
+
+def test_session_day_rejects_a_naive_timestamp():
+    with pytest.raises(ValueError, match="timezone-aware"):
+        session_day(datetime(2026, 7, 1, 19, 55))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        session_day(pd.Timestamp("2026-07-01 19:55"))
+
+
+# ---------------------------------------------------------------------------
 # SessionPolicy.for_tempo
 # ---------------------------------------------------------------------------
 
@@ -222,11 +253,24 @@ def test_visible_combines_completion_and_regular_hours():
     ]
 
 
-def test_visible_daily_bar_completes_one_day_after_its_stamp():
+def test_visible_with_now_rejects_a_daily_policy():
     starts = pd.DatetimeIndex(["2025-07-15T04:00:00Z"])  # 00:00 ET daily stamp
-    assert _DAILY.visible(starts, datetime(2025, 7, 16, 4, 0, tzinfo=UTC)).tolist() == [True]
-    assert _DAILY.visible(starts, datetime(2025, 7, 16, 3, 59, 59, tzinfo=UTC)).tolist() == [False]
-    assert _DAILY.visible(starts).tolist() == [True]
+    # A 1D bar stamped at midnight would stay invisible until the next midnight: the runner's
+    # lock-in gate owns daily completion, so the mask refuses to guess.
+    with pytest.raises(ValueError, match="intraday-only"):
+        _DAILY.visible(starts, datetime(2025, 7, 15, 21, 0, tzinfo=UTC))
+    assert _DAILY.visible(starts).tolist() == [True]  # no `now`: still fine
+
+
+def test_visible_rejects_naive_timestamps():
+    naive_starts = pd.DatetimeIndex(["2025-07-15 09:30"])
+    for policy in (_SAME, _MULTI, _DAILY):
+        with pytest.raises(ValueError, match="timezone-aware"):
+            policy.visible(naive_starts)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _SAME.visible(_starts("2025-07-15 09:30"), datetime(2025, 7, 15, 10, 0))
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _MULTI.visible(_starts("2025-07-15 09:30"), datetime(2025, 7, 15, 10, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -277,11 +321,42 @@ def test_deadline_is_returned_in_utc():
 
 
 def test_broker_next_close_on_a_later_day_does_not_move_todays_deadline():
-    day = date(2025, 7, 15)
     tomorrows_close = _et(2025, 7, 16, 16, 0)
-    assert _SAME.flatten_deadline(day, tomorrows_close) == _et(2025, 7, 15, 15, 55)
-    assert _SAME.evaluation_open(_et(2025, 7, 15, 15, 54, 59), tomorrows_close)
-    assert not _SAME.evaluation_open(_et(2025, 7, 15, 17, 0), tomorrows_close)
+    assert _SAME.flatten_deadline(date(2025, 7, 15), tomorrows_close) == _et(2025, 7, 15, 15, 55)
+
+
+def test_evaluation_is_closed_when_the_broker_has_no_close_left_today():
+    tomorrows_close = _et(2025, 7, 16, 16, 0)
+    # The table says today is a full session open at 11:00, but the broker's next close is
+    # tomorrow's: an unscheduled closure.
+    assert not _SAME.evaluation_open(_et(2025, 7, 15, 11, 0), tomorrows_close)
+    # An unscheduled early close that has already passed (13:00 close, now 13:30).
+    assert not _SAME.evaluation_open(_et(2025, 7, 15, 13, 30), tomorrows_close)
+
+
+def test_evaluation_with_an_unscheduled_early_close_today():
+    early_close = _et(2025, 7, 15, 13, 0)  # the table says 16:00; deadline is 12:55
+    assert _SAME.evaluation_open(_et(2025, 7, 15, 12, 0), early_close)
+    assert _SAME.evaluation_open(_et(2025, 7, 15, 12, 54, 59), early_close)
+    assert not _SAME.evaluation_open(_et(2025, 7, 15, 12, 55, 0), early_close)
+    assert not _SAME.evaluation_open(_et(2025, 7, 15, 13, 30), early_close)
+
+
+def test_evaluation_in_a_normal_session_with_the_broker_close_today_is_unchanged():
+    todays_close = _et(2025, 7, 15, 16, 0)
+    assert _SAME.evaluation_open(_et(2025, 7, 15, 11, 0), todays_close)
+    assert _SAME.evaluation_open(_et(2025, 7, 15, 15, 54, 59), todays_close)
+    assert not _SAME.evaluation_open(_et(2025, 7, 15, 15, 55, 0), todays_close)
+    assert not _SAME.evaluation_open(_et(2025, 7, 15, 9, 29, 59), todays_close)
+
+
+def test_evaluation_judges_the_broker_close_by_its_et_day():
+    now = _et(2025, 7, 15, 11, 0)
+    # 00:30Z on 07-16 is 20:30 ET on 07-15: still today in New York, so the closure verdict
+    # must not fire (a UTC-date comparison would wrongly close the session).
+    assert _SAME.evaluation_open(now, datetime(2025, 7, 16, 0, 30, tzinfo=UTC))
+    # 04:00Z on 07-16 is 00:00 ET on 07-16: a later ET day.
+    assert not _SAME.evaluation_open(now, datetime(2025, 7, 16, 4, 0, tzinfo=UTC))
 
 
 def test_flatten_lead_is_configurable():
@@ -321,27 +396,39 @@ def test_non_same_session_has_no_deadline_and_always_evaluates(policy):
 
 
 def test_overdue_flags_a_lot_from_an_earlier_session():
-    assert _SAME.overdue(date(2025, 7, 14), _et(2025, 7, 15, 9, 0))
+    assert _SAME.overdue(_et(2025, 7, 14, 15, 0), _et(2025, 7, 15, 9, 0))
 
 
 def test_overdue_is_false_for_a_same_day_lot():
-    assert not _SAME.overdue(date(2025, 7, 15), _et(2025, 7, 15, 15, 0))
+    opened = _et(2025, 7, 15, 10, 0)
+    assert not _SAME.overdue(opened, _et(2025, 7, 15, 15, 0))
     # 00:30Z on 07-16 is still 07-15 in New York.
-    assert not _SAME.overdue(date(2025, 7, 15), datetime(2025, 7, 16, 0, 30, tzinfo=UTC))
-    assert _SAME.overdue(date(2025, 7, 15), datetime(2025, 7, 16, 4, 30, tzinfo=UTC))
+    assert not _SAME.overdue(opened, datetime(2025, 7, 16, 0, 30, tzinfo=UTC))
+    assert _SAME.overdue(opened, datetime(2025, 7, 16, 4, 30, tzinfo=UTC))
+
+
+def test_overdue_compares_et_days_of_utc_timestamps():
+    opened = datetime(2026, 7, 1, 19, 59, tzinfo=UTC)  # 15:59 ET, as the ledger records it
+    assert not _SAME.overdue(opened, datetime(2026, 7, 2, 0, 30, tzinfo=UTC))  # 20:30 ET, 07-01
+    assert _SAME.overdue(opened, datetime(2026, 7, 2, 13, 35, tzinfo=UTC))  # 09:35 ET, 07-02
+    # 00:30Z on 07-02 is 20:30 ET on 07-01: its UTC date is not its session day.
+    opened_after_the_bell = datetime(2026, 7, 2, 0, 30, tzinfo=UTC)
+    assert _SAME.overdue(opened_after_the_bell, datetime(2026, 7, 2, 13, 35, tzinfo=UTC))
 
 
 @pytest.mark.parametrize("policy", [_MULTI, _DAILY], ids=["multi_session", "daily"])
 def test_overdue_is_never_true_unless_same_session(policy):
-    assert not policy.overdue(date(2025, 7, 1), _et(2025, 7, 15, 9, 0))
+    assert not policy.overdue(_et(2025, 7, 1, 10, 0), _et(2025, 7, 15, 9, 0))
 
 
-def test_naive_now_is_rejected():
+def test_naive_timestamps_are_rejected():
     naive = datetime(2025, 7, 15, 10, 0)
     with pytest.raises(ValueError, match="timezone-aware"):
         _SAME.evaluation_open(naive, None)
     with pytest.raises(ValueError, match="timezone-aware"):
-        _SAME.overdue(date(2025, 7, 14), naive)
+        _SAME.overdue(_et(2025, 7, 14, 10, 0), naive)
+    with pytest.raises(ValueError, match="timezone-aware"):
+        _SAME.overdue(naive, _et(2025, 7, 15, 10, 0))
 
 
 def test_evaluation_outside_calendar_coverage_raises():
@@ -372,11 +459,12 @@ def test_non_same_session_policies_never_touch_xnys(monkeypatch):
     ):
         policy = SessionPolicy.for_tempo(tempo)
         assert policy.calendar is None
-        assert policy.visible(starts, now).shape == (2,)
+        if policy.bar < timedelta(days=1):  # `now` completion is intraday-only
+            assert policy.visible(starts, now).shape == (2,)
         assert policy.visible(starts).all()
         assert policy.flatten_deadline(date(2025, 7, 19), None) is None
         assert policy.evaluation_open(now, None)
-        assert not policy.overdue(date(2025, 7, 1), now)
+        assert not policy.overdue(_et(2025, 7, 1, 10, 0), now)
 
 
 # ---------------------------------------------------------------------------

@@ -48,10 +48,11 @@ def _utc(day: date, wall: time) -> datetime:
     return datetime.combine(day, wall, tzinfo=ET).astimezone(UTC)
 
 
-def _et_day(now: datetime) -> date:
-    if now.tzinfo is None:
-        raise ValueError("now must be timezone-aware")
-    return now.astimezone(ET).date()
+def session_day(ts: datetime | pd.Timestamp) -> date:
+    """ET calendar date of an aware bar timestamp: the session day the bar belongs to."""
+    if ts.tzinfo is None:
+        raise ValueError("timestamp must be timezone-aware")
+    return ts.astimezone(ET).date()
 
 
 class SessionCalendar:
@@ -155,10 +156,13 @@ def regular_hours_mask(ts_utc: pd.DatetimeIndex) -> np.ndarray:
 
 
 def held_days(bar_days: Iterable[date], opened_on: date, as_of: date) -> int:
-    """Trading sessions after ``opened_on`` up to and including ``as_of``.
+    """Trading days after ``opened_on`` up to and including ``as_of``.
 
     ``|{d in bar_days : opened_on < d <= as_of}|`` -- the backtest kernel's own definition
-    (it ticks once per outer bar day), in closed form. Duplicate days count once.
+    (it ticks once per outer bar day), in closed form. ``bar_days`` is the engine's
+    ``trading_days``: the UTC dates of bar stamps across all symbols
+    (``_trading_days_in_range`` in ``backtesting/engine.py``), not exchange sessions.
+    Duplicate days count once.
     """
     return sum(1 for day in set(bar_days) if opened_on < day <= as_of)
 
@@ -240,9 +244,21 @@ class SessionPolicy:
         return cls(same_session=True, bar=bar, calendar=calendar)
 
     def visible(self, bar_starts: pd.DatetimeIndex, now: datetime | None = None) -> np.ndarray:
-        """Mask of bars a run may see: completed by ``now``, and regular-hours if same_session."""
+        """Mask of bars a run may see: completed by ``now``, and regular-hours if same_session.
+
+        Completion is intraday-only: a daily bar's completion belongs to the runner's lock-in
+        gate, so ``now`` on a 1D policy raises. Naive ``bar_starts`` or ``now`` raise.
+        """
+        if bar_starts.tz is None:
+            raise ValueError("bar_starts must be timezone-aware")
         mask = np.ones(len(bar_starts), dtype=bool)
         if now is not None:
+            if now.tzinfo is None:
+                raise ValueError("now must be timezone-aware")
+            if self.bar >= timedelta(days=1):
+                raise ValueError(
+                    "visible(now=...) is intraday-only; the runner's lock-in gate owns 1D"
+                )
             mask &= np.asarray(bar_starts + self.bar <= now)
         if self.same_session:
             mask &= regular_hours_mask(bar_starts)
@@ -265,13 +281,26 @@ class SessionPolicy:
         return close.astimezone(UTC) - self.flatten_lead
 
     def evaluation_open(self, now: datetime, broker_next_close: datetime | None) -> bool:
-        """Whether a cycle may fetch and evaluate at ``now``; always True unless same_session."""
+        """Whether a cycle may fetch and evaluate at ``now``; always True unless same_session.
+
+        False on a closed day, outside ``[open, flatten_deadline)``, and once the broker's next
+        close falls on a later ET day (no close left today: an unscheduled closure, or an
+        unscheduled early close that has already passed).
+        """
         if not self.same_session:
             return True
-        today = _et_day(now)
+        today = session_day(now)
         deadline = self.flatten_deadline(today, broker_next_close)
-        return deadline is not None and self.calendar.session(today).open <= now < deadline
+        if deadline is None or (
+            broker_next_close is not None and session_day(broker_next_close) > today
+        ):
+            return False
+        return self.calendar.session(today).open <= now < deadline
 
-    def overdue(self, opened_on: date, now: datetime) -> bool:
-        """A same_session lot opened in an earlier ET session than ``now``'s."""
-        return self.same_session and opened_on < _et_day(now)
+    def overdue(self, opened_at: datetime, now: datetime) -> bool:
+        """A same_session lot opened in an earlier ET session than ``now``'s.
+
+        ``opened_at`` is the aware lot-open timestamp (the ledger's UTC ``recorded_at``); both
+        sides are compared as ET dates here, so no caller can pass a UTC ``.date()``.
+        """
+        return self.same_session and session_day(opened_at) < session_day(now)
