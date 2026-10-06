@@ -21,6 +21,10 @@ must satisfy ALL of the following — see ADR 0032 for the policy rationale:
 Anything recurring does not belong here — promote it to a named `milodex` maintenance command
 so it runs inside governed command surfaces.
 
+## Generated data
+
+- `generate_xnys_calendar.py` — rewrites `src/milodex/data/_xnys_calendar.py` from Alpaca's exchange calendar (one read-only GET; needs `.env` credentials). Re-run when `test_xnys_coverage_reaches_a_year_ahead` fails; review and commit the diff.
+
 ## Archive
 
 `scripts/archive/` holds executed one-shot governance backfills, retained for audit forensics.
