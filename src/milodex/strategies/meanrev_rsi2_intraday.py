@@ -89,6 +89,11 @@ class MeanrevRsi2IntradayStrategy(Strategy):
     )
     parameter_relations = (relation_less_than("rsi_entry_threshold", "rsi_exit_threshold"),)
 
+    def max_lookback_periods(self) -> int:
+        # ponytail: session-reset indicators only; one RTH session = 390min/5min = 78.
+        # Without it the warmup heuristic reads entry_window_minutes (300) as a lookback.
+        return 78
+
     def evaluate(self, bars: BarSet, context: StrategyContext) -> StrategyDecision:
         _ = bars
 
