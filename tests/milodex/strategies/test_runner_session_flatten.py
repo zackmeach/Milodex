@@ -473,7 +473,7 @@ def test_rejected_flatten_is_never_resubmitted(harness):
         EDT_DAY.isoformat(),
         EDT_NEXT.isoformat(),
     ], "one alert per ET session while frozen"
-    assert (alerts[0].severity, alerts[0].symbol, alerts[0].side) == ("warning", "SPY", "sell")
+    assert (alerts[0].severity, alerts[0].symbol, alerts[0].side) == ("error", "SPY", "sell")
     assert alerts[0].context_json["client_order_ids"] == [
         h.broker.submit_calls[0]["client_order_id"]
     ]
@@ -630,6 +630,41 @@ def test_a_prior_partial_submitted_sell_does_not_freeze(harness):
     assert h.sell_rules() == ["test.exit", "paper.session_end_flatten"]
     assert strategy_open_lots(STRATEGY_ID, h.event_store) == {}
     assert h.unknown_alerts() == []
+
+
+def test_the_freeze_survives_a_backward_clock_step(harness):
+    """A SELL attempt stamped just before the lot opened (host clock stepped back) freezes."""
+    h = harness(days=(EDT_DAY,), lot_opened_at=et(EDT_DAY, 10, 0))
+    h.exit_signal = True
+    h.broker.submit_error = OrderRejectedError("504 Gateway Time-out")
+    h.cycle(et(EDT_DAY, 15, 40, 5))  # the strategy's exit lands, recorded REJECTED
+    stepped_back = (et(EDT_DAY, 10, 0) - timedelta(minutes=3)).isoformat()
+    with h.event_store._connect() as connection:
+        connection.execute("UPDATE execution_attempts SET created_at = ?", (stepped_back,))
+        connection.commit()
+
+    h.cycle(et(EDT_DAY, 15, 55))
+
+    assert len(h.broker.submit_calls) == 1, "no flatten of a lot whose SELL may have landed"
+    assert len(h.unknown_alerts()) == 1
+    assert h.unknown_alerts()[0].severity == "error"
+
+
+def test_a_failing_freeze_check_halts_the_cycle_and_alerts_once_a_day(harness, monkeypatch):
+    """The cycle fails closed (no flatten, no evaluation) and the operator is told."""
+    h = harness(days=(EDT_DAY,), lot_opened_at=et(EDT_DAY, 10, 0))
+
+    def broken(**kwargs):
+        raise RuntimeError("no such table: execution_attempts")
+
+    monkeypatch.setattr(h.event_store, "unresolved_sell_attempt_ids", broken)
+    for at in (et(EDT_DAY, 15, 55), et(EDT_DAY, 15, 56)):
+        h.cycle(at)
+
+    assert h.broker.submit_calls == []
+    assert "evaluate" not in h.events
+    [alert] = h.event_store.list_operator_alerts(alert_type="session_delivery_check_failed")
+    assert alert.severity == "error"
 
 
 def test_flatten_raising_before_the_broker_call_is_retried(harness):

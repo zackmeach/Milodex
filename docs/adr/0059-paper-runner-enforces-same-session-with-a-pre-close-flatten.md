@@ -28,17 +28,17 @@ The paper runner enforces the lifecycle the strategy was promoted under. This is
    - Nothing is submitted while the broker reports the market closed.
    - A lot still open after the close is overdue, and its flatten is attempted at the next open, before evaluation.
 5. **Delivery freeze.** Before the flatten pass on every open-market cycle, each open lot is checked against `execution_attempts` (`EventStore.unresolved_sell_attempt_ids`).
-   - **What freezes.** A SELL attempt by this strategy on the lot's symbol, created since the lot opened, whose status is one of:
+   - **What freezes.** A SELL attempt by this strategy on the lot's symbol, created since the lot opened (less a five-minute margin for a backward host-clock step; widening the window can only freeze more), whose status is one of:
      - `pending`, `error` or `rejected`;
      - `submitted`, with no submitted paper `trades` row carrying its `broker_order_id`.
 
      Any of them may already have sold the lot, whichever of the flatten or the strategy sent it. Alpaca reports a 5xx or 504 as a rejection even when the order landed (audit V9). The duplicate-order veto does not cover these attempts: it counts an error attempt only for 60 s, and a rejected one never.
    - **What does not freeze.** A risk veto writes no attempt row. A submitted SELL with its trade row, such as a partial exit, is definitive.
-   - **Effect.** That lot is not flattened, and the cycle neither fetches nor evaluates, so the strategy cannot send its own SELL either. Lots in other symbols still flatten. If the check itself fails, the whole cycle is frozen: no flatten and no evaluation.
-   - **Alert.** One `session_end_flatten_delivery_unknown` alert (severity warning) is written per frozen lot per ET session. It lists the attempts' `client_order_id`s.
+   - **Effect.** That lot is not flattened, and the cycle neither fetches nor evaluates, so the strategy cannot send its own SELL either. Lots in other symbols still flatten. If the check itself fails, the whole cycle is frozen: no flatten and no evaluation, and one `session_delivery_check_failed` alert (severity error) is written per ET day.
+   - **Alert.** One `session_end_flatten_delivery_unknown` alert is written per frozen lot per ET session. It lists the attempts' `client_order_id`s. Its severity is error, because a frozen strategy has no automated exits, stop-loss included.
    - **Resolution is manual today.** Check each broker order by `client_order_id`, then record the truth in the strategy ledger:
      - a filled SELL becomes its submitted paper `trades` row, with the attempt `submitted` under that `broker_order_id`;
-     - an order that never reached the broker has its attempt moved out of the unresolved statuses.
+     - an order that never reached the broker has its attempt status set to `resolved_not_sent`, which is not an unresolved status.
 
      No tool converts a misclassified attempt; automating it is audit C5. Restarting does not clear the freeze, because it is read from the event store on every cycle.
 6. **Fail closed without a trustworthy deadline.** Today may fall outside the table's coverage, or the table may say today is closed while the broker reports the market open. In either case nothing evaluates, a flatten is attempted for every open lot (basis `calendar_fail_closed`), and one `session_calendar_fail_closed` alert is written per ET day.

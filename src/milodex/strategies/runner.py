@@ -59,6 +59,11 @@ _POLL_INTERVAL_BY_BAR_SIZE: dict[str, float] = {
     "1Min": 5.0,
 }
 
+# ponytail: fixed margin for a backward host-clock step between a lot's BUY and a later SELL
+# attempt (ADR 0059 delivery freeze); widening the window only ever freezes more. Compare
+# monotonic attempt ids against the opening BUY instead if a larger step is ever seen.
+_FREEZE_SKEW_MARGIN = timedelta(minutes=5)
+
 # Consecutive-connectivity-outage budget for the poll loop (R-OPS-005
 # "retry per a conservative policy"). A connectivity-classified error raised
 # by a poll cycle is treated as a failed poll and retried on the next cycle
@@ -225,6 +230,7 @@ class StrategyRunner:
         self._flatten_alerted: set[tuple[str, datetime, date]] = set()
         self._frozen_alerted: set[tuple[str, datetime, date]] = set()
         self._calendar_alerted_day: date | None = None
+        self._freeze_check_alerted_day: date | None = None
         self._flatten_retry_after: dict[tuple[str, datetime], datetime] = {}
         self._requested_shutdown: str | None = None
         # Monotonic timestamp of the first connectivity-classified failure
@@ -1018,6 +1024,7 @@ class StrategyRunner:
         lots = strategy_open_lots(self._strategy_id, self._event_store)
         frozen = self._delivery_frozen(lots, today)
         if frozen is None:
+            self._alert_freeze_check_failed(today)
             return False
         policy = self._session_policy
         try:
@@ -1120,7 +1127,9 @@ class StrategyRunner:
         for symbol, lot in lots.items():
             try:
                 client_order_ids = self._event_store.unresolved_sell_attempt_ids(
-                    symbol=symbol, strategy_name=self._strategy_id, since=lot["opened_at"]
+                    symbol=symbol,
+                    strategy_name=self._strategy_id,
+                    since=lot["opened_at"] - _FREEZE_SKEW_MARGIN,
                 )
             except Exception:  # noqa: BLE001 — delivery unprovable: fail closed this cycle
                 logger.exception(
@@ -1154,7 +1163,8 @@ class StrategyRunner:
             self._event_store.append_operator_alert(
                 OperatorAlertEvent(
                     alert_type="session_end_flatten_delivery_unknown",
-                    severity="warning",
+                    # error: a frozen strategy has no automated exits, stop-loss included.
+                    severity="error",
                     summary=(
                         f"Broker delivery of a SELL of {symbol} is unknown, so "
                         f"{self._strategy_id} is frozen: no evaluation and no flatten until "
@@ -1262,6 +1272,35 @@ class StrategyRunner:
             logger.exception("Failed to record session_calendar_fail_closed alert.")
             return
         self._calendar_alerted_day = day
+
+    def _alert_freeze_check_failed(self, day: date) -> None:
+        """One alert per ET day while the delivery-freeze check cannot run (ADR 0059).
+
+        The cycle fails closed -- no flatten, no evaluation -- so a persistent failure would
+        otherwise stop every same_session flatten with only a log line. Fail-soft: the day is
+        only recorded once the row is written.
+        """
+        if self._freeze_check_alerted_day == day:
+            return
+        try:
+            self._event_store.append_operator_alert(
+                OperatorAlertEvent(
+                    alert_type="session_delivery_check_failed",
+                    severity="error",
+                    summary=(
+                        f"The delivery-freeze check failed for {self._strategy_id}: same_session "
+                        "evaluation and flatten are halted until it succeeds."
+                    ),
+                    strategy_id=self._strategy_id,
+                    session_id=self._session_id,
+                    context_json={"session_day": day.isoformat()},
+                    recorded_at=self._now(),
+                )
+            )
+        except Exception:  # noqa: BLE001 — alert write must never break the poll loop
+            logger.exception("Failed to record session_delivery_check_failed alert.")
+            return
+        self._freeze_check_alerted_day = day
 
     # ------------------------------------------------------------------
     # queue-at-open (Phase-1 persist, ADR 0057)
