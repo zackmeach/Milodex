@@ -177,8 +177,8 @@ def test_backtest_complete_entries_reason_includes_sharpe_and_trade_count(
     entries = _backtest_complete_entries(conn)
     conn.close()
 
-    assert "Sharpe 0.72" in entries[0]["reason"]
-    assert "n=40" in entries[0]["reason"]
+    # max_drawdown_pct is already a percent (seeded 5.0) — rendered as-is, not ×100.
+    assert entries[0]["reason"] == "Sharpe 0.72 · max-dd 5.0% · n=40"
 
 
 # --------------------------------------------------------------------------- #

@@ -1129,6 +1129,13 @@ class EventStore:
         otherwise dominate ``ORDER BY id DESC`` and report a years-old bar
         as the freshness signal (same contamination family as R-P0-1).
 
+        Synthetic fault-injection rows (``decision_type =
+        'synthetic_fault_injection'``, R-PRM-004 criterion (c)) are excluded for
+        the same reason: their synthetic bar is stamped at the self-test's wall
+        clock, so one ``milodex promotion fault-check`` would otherwise report
+        market data as fresh that was never fetched. Literal shared with
+        :meth:`count_paper_rejections` (event_store must not import ``promotion``).
+
         Used by workflow-readiness data-freshness checks (bench.py) and the
         CLI trust report (report.py) to derive bar age without loading all rows.
         """
@@ -1139,6 +1146,7 @@ class EventStore:
                 FROM explanations
                 WHERE latest_bar_timestamp IS NOT NULL
                   AND backtest_run_id IS NULL
+                  AND decision_type != 'synthetic_fault_injection'
                 ORDER BY id DESC
                 LIMIT 1
                 """

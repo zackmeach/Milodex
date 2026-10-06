@@ -484,3 +484,23 @@ def test_tier3_fallback_used_when_risk_defaults_file_absent():
 
     msg = str(exc_info.value)
     assert "80.0%" in msg, f"Expected tier-3 fallback 80.0% in: {msg}"
+
+
+# ---------------------------------------------------------------------------
+# min_trades_required: present-but-null floor (regime config)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(("configured", "expected"), [(None, 30), (12, 12)])
+def test_min_trades_required_treats_null_floor_as_statistical_floor(configured, expected):
+    """``min_trades_required: null`` (the regime config) must not crash ``int(None)``.
+
+    Mirrors the orchestrator and backtest CLI: a present-but-null floor resolves
+    to the statistical floor of 30; an explicit integer is honoured.
+    """
+    loaded = _make_loaded_strategy(("SPY",))
+    loaded.config.backtest = {**loaded.config.backtest, "min_trades_required": configured}
+
+    engine = _make_engine(loaded, MagicMock())
+
+    assert engine.min_trades_required() == expected

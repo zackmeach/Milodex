@@ -205,7 +205,7 @@ def _backtest_detail(sharpe: float | None, max_dd: float | None, n: int | None) 
     if sharpe is not None:
         parts.append(f"Sharpe {sharpe:.2f}")
     if max_dd is not None:
-        parts.append(f"max-dd {abs(max_dd) * 100:.1f}%")
+        parts.append(f"max-dd {abs(max_dd):.1f}%")
     if n is not None:
         parts.append(f"n={n}")
     return " · ".join(parts) or "completed"

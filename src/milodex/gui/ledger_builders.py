@@ -202,7 +202,7 @@ def _backtest_complete_entries(conn: sqlite3.Connection) -> list[dict[str, Any]]
         if sharpe is not None:
             reason_parts.append(f"Sharpe {sharpe:.2f}")
         if metrics["max_drawdown_pct"] is not None:
-            reason_parts.append(f"max-dd {abs(metrics['max_drawdown_pct']) * 100:.1f}%")
+            reason_parts.append(f"max-dd {abs(metrics['max_drawdown_pct']):.1f}%")
         if metrics["trade_count"] is not None:
             reason_parts.append(f"n={metrics['trade_count']}")
         reason = " · ".join(reason_parts) or "completed"
