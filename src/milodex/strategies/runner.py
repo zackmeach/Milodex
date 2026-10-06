@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import pandas as pd
+
 from milodex.analytics.snapshots import record_daily_snapshot
 from milodex.broker import BrokerClient, BrokerConnectionError
 from milodex.broker.models import OrderSide
@@ -1789,32 +1791,27 @@ class StrategyRunner:
 
         ``held_days`` is the backtest kernel's count: bar days after the lot's fill, up to
         the evaluated bar's date ``as_of`` (``sessions.held_days``). Bar days are the UTC
-        dates of every bar of every symbol the strategy is about to see. Wall-clock time is
-        deliberately unused, so an evening lock-in and the next open's drain agree.
+        dates of every bar of every symbol the strategy is about to see, as in the engine's
+        ``_trading_days_in_range``; the lot's fill day is likewise its UTC date. Wall-clock
+        time is deliberately unused, so an evening lock-in and the next open's drain agree.
         """
         open_lots = strategy_open_lots(self._strategy_id, self._event_store)
         if not open_lots:
             return {}
 
-        # len() guard: a provider returns an untyped (object-dtype) empty BarSet for a
-        # symbol with no data, and ``.dt`` raises on it.
-        bar_days = {
-            day
-            for bars in bars_by_symbol.values()
-            if len(bars)
-            for day in bars.to_dataframe()["timestamp"].dt.normalize().unique().date
-        }
+        bar_days: set[date] = set()
+        for bars in bars_by_symbol.values():
+            stamps = pd.to_datetime(bars.to_dataframe()["timestamp"], utc=True)
+            bar_days.update(stamps.dt.normalize().unique().date)
         entry_state: dict[str, dict[str, Any]] = {}
         for sym, lot in open_lots.items():
             opened_at = lot["opened_at"]
-            entry_state[sym] = {
-                "entry_price": float(lot["avg_entry_price"]),
-                "held_days": (
-                    sessions.held_days(bar_days, opened_at.date(), as_of)
-                    if isinstance(opened_at, datetime)
-                    else 0
-                ),
-            }
+            held = 0  # legacy: a non-datetime opened_at
+            if isinstance(opened_at, datetime):
+                if opened_at.tzinfo is not None:  # a naive stamp is taken as UTC already
+                    opened_at = opened_at.astimezone(UTC)
+                held = sessions.held_days(bar_days, opened_at.date(), as_of)
+            entry_state[sym] = {"entry_price": float(lot["avg_entry_price"]), "held_days": held}
         return entry_state
 
     def _history_window_days(self) -> int:

@@ -14,6 +14,7 @@ import copy
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
@@ -30,9 +31,17 @@ from tests.milodex.strategies.test_runner import _build_lockin_runner, build_ses
 STRATEGY_ID = "regime.daily.sma200_rotation.spy_shy.v1"  # the strategy_config_dir fixture's id
 
 
-def _seed_fill(event_store: EventStore, *, symbol: str, side: str, day: date) -> None:
-    """Append a submitted paper fill at 13:30Z on ``day`` (the at-open drain's submit time)."""
-    at = datetime(day.year, day.month, day.day, 13, 30, tzinfo=UTC)
+def _seed_fill(
+    event_store: EventStore,
+    *,
+    symbol: str,
+    side: str,
+    day: date | None = None,
+    at: datetime | None = None,
+) -> None:
+    """Append a submitted paper fill at ``at``, default 13:30Z on ``day`` (the at-open drain)."""
+    if at is None:
+        at = datetime(day.year, day.month, day.day, 13, 30, tzinfo=UTC)
     explanation_id = event_store.append_explanation(
         ExplanationEvent(
             recorded_at=at,
@@ -238,6 +247,37 @@ def test_non_datetime_opened_at_keeps_the_legacy_zero(
     assert state == {"SPY": {"entry_price": 100.0, "held_days": 0}}
 
 
+def test_bar_days_and_fill_day_are_utc_dates_whatever_the_stamp_tz(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    """The kernel's days are UTC dates (``pd.to_datetime(utc=True)``): bars stamped in ET and a
+    fill recorded with an ET offset count as their UTC equivalents."""
+    runner, _, _, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+    )
+    # 20:00 ET stamps: Mon 7/6..Fri 7/10 in ET, but 00:00Z the next day, i.e. UTC days 7/7..7/11.
+    eastern = ZoneInfo("America/New_York")
+    frame = build_session_barset(date(2026, 7, 6), date(2026, 7, 10)).to_dataframe()
+    frame["timestamp"] = frame["timestamp"].dt.tz_convert(eastern) + pd.Timedelta(hours=20)
+    et_bars = BarSet(frame)
+    # SPY: recorded in UTC on Wed 7/8, so only the bar days are in play.
+    spy_fill = datetime(2026, 7, 8, 12, 0, tzinfo=UTC)
+    # SHY: Tue 7/7 20:30 ET is Wed 7/8 00:30Z -- UTC date 7/8, ET date 7/7.
+    shy_fill = datetime(2026, 7, 7, 20, 30, tzinfo=eastern)
+    _seed_fill(event_store, symbol="SPY", side="buy", at=spy_fill)
+    _seed_fill(event_store, symbol="SHY", side="buy", at=shy_fill)
+
+    state = runner._build_entry_state({"SPY": et_bars, "SHY": et_bars}, date(2026, 7, 11))
+
+    # UTC days 7/9, 7/10, 7/11 follow the 7/8 fill. ET bar days would give 2 (7/9, 7/10), and
+    # SHY's ET date (7/7) would add 7/8 to its count.
+    assert {sym: s["held_days"] for sym, s in state.items()} == {"SPY": 3, "SHY": 3}
+
+
 # ---------------------------------------------------------------------------
 # Call sites: run_cycle (lock-in) and the at-open drain
 # ---------------------------------------------------------------------------
@@ -321,6 +361,92 @@ def test_friday_lockin_and_monday_drain_count_the_same(
     friday = {"SPY": {"entry_price": 100.0, "held_days": 3}}  # Wed, Thu, Fri
     assert lockin_seen == [friday, friday]
     assert probe.seen == [friday]
+
+
+# The next two pin where ``as_of`` comes from. Every other fixture holds only bars dated <= the
+# evaluated one, so a clock-derived (or newest-bar-derived) ``as_of`` would pass. Here SHY, a
+# non-primary symbol, has a Friday 7/10 bar after SPY's latest (Thu 7/9), and the clock is
+# already on UTC 7/10: neither may extend the lot's count past the evaluated Thursday bar.
+
+
+def test_run_cycle_as_of_is_the_latest_primary_bar_not_the_clock_or_another_symbols_bar(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    runner, broker, _, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        initial_bars={
+            "SPY": build_session_barset(date(2026, 7, 6), date(2026, 7, 9)),
+            "SHY": build_session_barset(date(2026, 7, 6), date(2026, 7, 10)),
+        },
+    )
+    _broker_holds_spy(broker)
+    _seed_fill(event_store, symbol="SPY", side="buy", day=date(2026, 7, 7))  # Tue
+    probe = _EvalProbe()
+    runner._loaded.strategy.evaluate = probe
+    runner._now = lambda: datetime(2026, 7, 10, 0, 30, tzinfo=UTC)  # 20:30 ET Thu: still Thu
+
+    runner.run_cycle()
+
+    assert probe.seen == [{"SPY": {"entry_price": 100.0, "held_days": 2}}]  # Wed, Thu
+
+
+def test_drain_as_of_is_the_locked_bar_not_the_clock(
+    tmp_path: Path,
+    strategy_config_dir: Path,
+    risk_defaults_file: Path,
+):
+    runner, broker, provider, event_store = _build_lockin_runner(
+        tmp_path=tmp_path,
+        strategy_config_dir=strategy_config_dir,
+        risk_defaults_file=risk_defaults_file,
+        initial_bars={
+            "SPY": build_session_barset(date(2026, 7, 6), date(2026, 7, 9)),
+            "SHY": build_session_barset(date(2026, 7, 6), date(2026, 7, 9)),
+        },
+    )
+    _broker_holds_spy(broker)
+    _seed_fill(event_store, symbol="SPY", side="buy", day=date(2026, 7, 7))  # Tue
+    probe = _EvalProbe([_sell_spy()])
+    runner._loaded.strategy.evaluate = probe
+    # The drain truncates every symbol's bars to the locked bar, so a wrong ``as_of`` cannot
+    # change the count; capture the argument itself.
+    as_of_seen: list[date] = []
+    build_entry_state = runner._build_entry_state
+
+    def spying_build_entry_state(bars_by_symbol, as_of):
+        as_of_seen.append(as_of)
+        return build_entry_state(bars_by_symbol, as_of)
+
+    runner._build_entry_state = spying_build_entry_state
+
+    # Thursday post-close lock-in queues the exit.
+    thursday_close = datetime(2026, 7, 9, 21, 0, tzinfo=UTC)
+    runner._now = lambda: thursday_close
+    runner.run_cycle()
+    runner._now = lambda: thursday_close + timedelta(seconds=30)
+    runner.run_cycle()
+    queued = event_store.get_active_queued_intents(
+        runner._strategy_id, now=runner._now(), running_session_id=runner.session_id
+    )
+    assert len(queued) == 1
+    as_of_seen.clear()
+    probe.seen, probe.intents = [], []  # the drain's re-evaluation derives no exit: no submit
+
+    # Friday open, a later UTC day: SHY already has a Friday bar, SPY's latest is the locked bar.
+    provider._bars_by_symbol = {
+        "SPY": build_session_barset(date(2026, 7, 6), date(2026, 7, 9)),
+        "SHY": build_session_barset(date(2026, 7, 6), date(2026, 7, 10)),
+    }
+    broker._market_open = True
+    runner._now = lambda: datetime(2026, 7, 10, 13, 35, tzinfo=UTC)
+    runner.run_cycle()
+
+    assert as_of_seen == [date(2026, 7, 9)]
+    assert probe.seen == [{"SPY": {"entry_price": 100.0, "held_days": 2}}]  # Wed, Thu
 
 
 # ---------------------------------------------------------------------------
