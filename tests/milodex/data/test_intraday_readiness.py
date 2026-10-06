@@ -369,3 +369,19 @@ def test_2026_half_day_dec24_expected_count_is_42():
     assert sr.expected_bars == 42
     assert sr.coverage_pct == 100.0
     assert report.status == "pass"
+
+
+def test_half_days_outside_the_retired_hardcoded_set_expected_count_is_42():
+    # The retired US_MARKET_HALF_DAYS missed 2020-11-27 and ended at 2026-12-24, so those
+    # sessions scored as 390 minutes (42/78 = 53.8% coverage -> a spurious warning). The
+    # XNYS calendar table closes both at 13:00 (210 min / 5 = 42 bars).
+    for day in ("2020-11-27", "2027-11-26"):
+        report = _scan(
+            {"SPY": _session_5min(day, n_bars=42)},
+            start=date.fromisoformat(day),
+            end=date.fromisoformat(day),
+        )
+        sr = report.per_symbol[0]
+        assert sr.expected_bars == 42, day
+        assert sr.coverage_pct == 100.0, day
+        assert report.status == "pass", day

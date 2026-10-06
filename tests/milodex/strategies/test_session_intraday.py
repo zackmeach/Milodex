@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 
 import pandas as pd
+import pytest
 
+from milodex.data.sessions import ET, CalendarCoverageError, SessionCalendar
 from milodex.strategies._session_intraday import (
     MARKET_CLOSE_ET_FULL,
-    MARKET_CLOSE_ET_HALF,
     MARKET_OPEN_ET,
     in_entry_window,
     is_entry_signal_bar,
@@ -28,7 +29,6 @@ def test_market_open_constants() -> None:
     """Sanity: the open and close constants match the published US equities schedule."""
     assert MARKET_OPEN_ET.hour == 9 and MARKET_OPEN_ET.minute == 30
     assert MARKET_CLOSE_ET_FULL.hour == 16 and MARKET_CLOSE_ET_FULL.minute == 0
-    assert MARKET_CLOSE_ET_HALF.hour == 13 and MARKET_CLOSE_ET_HALF.minute == 0
 
 
 def test_to_eastern_handles_standard_time() -> None:
@@ -62,11 +62,80 @@ def test_session_date_et_uses_eastern_date() -> None:
     assert session_date_et(ts) == date(2024, 1, 15)
 
 
-def test_is_half_day_known_dates() -> None:
-    """Known US half-days return True."""
-    assert is_half_day(date(2024, 11, 29))  # Day after Thanksgiving
-    assert is_half_day(date(2024, 12, 24))  # Christmas Eve
-    assert is_half_day(date(2025, 7, 3))  # Day before July 4
+# NYSE's early closes (13:00 ET). The 2022-2026 dates are the ones the retired hardcoded
+# set held; it missed the three 2020-21 dates and ended at 2026-12-24 (#396, V6).
+_HALF_DAYS_2022_2026 = (
+    date(2022, 11, 25),
+    date(2023, 7, 3),
+    date(2023, 11, 24),
+    date(2024, 7, 3),
+    date(2024, 11, 29),
+    date(2024, 12, 24),
+    date(2025, 7, 3),
+    date(2025, 11, 28),
+    date(2025, 12, 24),
+    date(2026, 11, 27),
+    date(2026, 12, 24),
+)
+_HALF_DAYS_MISSED_2020_21 = (date(2020, 11, 27), date(2020, 12, 24), date(2021, 11, 26))
+_HALF_DAY_AFTER_2026 = date(2027, 11, 26)
+
+
+@pytest.mark.parametrize(
+    "day",
+    [*_HALF_DAYS_2022_2026, *_HALF_DAYS_MISSED_2020_21, _HALF_DAY_AFTER_2026],
+    ids=str,
+)
+def test_half_day_helpers_read_every_early_close_from_the_calendar(day: date) -> None:
+    """The retired set's dates and the ones it got wrong all close at 13:00 ET."""
+    assert is_half_day(day)
+    assert session_close_offset_minutes(day) == 210
+    assert is_time_stop_bar(datetime.combine(day, time(12, 55), tzinfo=ET), minutes_before_close=5)
+    assert not is_time_stop_bar(
+        datetime.combine(day, time(15, 55), tzinfo=ET), minutes_before_close=5
+    )
+
+
+def test_2022_to_2026_half_days_are_unchanged_from_the_retired_set() -> None:
+    """Behaviour for 2022-2026 is identical: exactly the same eleven early closes."""
+    first, last = date(2022, 1, 1), date(2026, 12, 31)
+    days = (first + timedelta(days=n) for n in range((last - first).days + 1))
+    assert {d for d in days if is_half_day(d)} == set(_HALF_DAYS_2022_2026)
+
+
+def test_helpers_agree_with_the_calendar_on_every_covered_day() -> None:
+    """Delegation is total: weekends and holidays included, no day answers differently."""
+    xnys = SessionCalendar.xnys()
+    first, last = xnys.coverage
+    for n in range((last - first).days + 1):
+        day = first + timedelta(days=n)
+        early = xnys.is_early_close(day)
+        assert is_half_day(day) is early, day
+        assert session_close_offset_minutes(day) == (210 if early else 390), day
+
+
+@pytest.mark.parametrize(
+    "day", [date(2024, 1, 13), date(2024, 11, 28)], ids=["saturday", "thanksgiving"]
+)
+def test_closed_day_keeps_the_full_day_answers(day: date) -> None:
+    """No session -> legacy full-day behaviour, so fixtures on closed days replay unchanged."""
+    assert SessionCalendar.xnys().session(day) is None
+    assert not is_half_day(day)
+    assert session_close_offset_minutes(day) == 390
+    assert is_time_stop_bar(datetime.combine(day, time(15, 55), tzinfo=ET), minutes_before_close=5)
+
+
+def test_dates_outside_the_calendar_raise_instead_of_guessing() -> None:
+    """A backtest never guesses a calendar: one day past either end of coverage is an error."""
+    first, last = SessionCalendar.xnys().coverage
+    for day in (first - timedelta(days=1), last + timedelta(days=1)):
+        stamp = datetime.combine(day, time(15, 55), tzinfo=ET)
+        with pytest.raises(CalendarCoverageError):
+            is_half_day(day)
+        with pytest.raises(CalendarCoverageError):
+            session_close_offset_minutes(day)
+        with pytest.raises(CalendarCoverageError):
+            is_time_stop_bar(stamp, minutes_before_close=5)
 
 
 def test_is_half_day_normal_dates() -> None:
@@ -130,6 +199,13 @@ def test_is_time_stop_bar_half_day() -> None:
     assert is_time_stop_bar(datetime(2024, 11, 29, 17, 55, tzinfo=UTC), minutes_before_close=5)
     # 15:55 EST on a half-day is NOT the time-stop bar (market already closed)
     assert not is_time_stop_bar(datetime(2024, 11, 29, 20, 55, tzinfo=UTC), minutes_before_close=5)
+
+
+def test_is_time_stop_bar_2027_half_day() -> None:
+    """The retired set ended 2026-12-24; the calendar still closes 2027-11-26 at 13:00 ET."""
+    # 12:55 EST = 17:55 UTC
+    assert is_time_stop_bar(datetime(2027, 11, 26, 17, 55, tzinfo=UTC), minutes_before_close=5)
+    assert not is_time_stop_bar(datetime(2027, 11, 26, 20, 55, tzinfo=UTC), minutes_before_close=5)
 
 
 def test_session_bars_et_filters_to_one_day() -> None:
