@@ -1815,13 +1815,10 @@ class StrategyRunner:
         return entry_state
 
     def _history_window_days(self) -> int:
-        integer_parameters = [
-            value
-            for value in self._loaded.config.parameters.values()
-            if isinstance(value, int) and value > 0
-        ]
-        largest_parameter = max(integer_parameters, default=30)
-        return max(365, largest_parameter * 3)
+        """The backtest engine's warmup rule, so paper fetches the history the evidence saw."""
+        return sessions.warmup_calendar_days(
+            self._loaded.strategy.max_lookback_periods(), self._loaded.config.parameters
+        )
 
     def _current_positions(self) -> dict[str, float]:
         return strategy_positions(self._strategy_id, self._event_store)
