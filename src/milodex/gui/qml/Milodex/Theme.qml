@@ -336,5 +336,13 @@ QtObject {
         deskTs: 80,           // desk activity timestamp column
         deskKind: 80,         // desk activity kind column
         deskSubject: 180,     // desk activity subject column (ts + kind + space[2] gap)
+        // Section III fleet table (2026-07-22): fixed right-side columns so
+        // header and rows can never negotiate different widths. Sized for the
+        // worst-case cell at data.xs mono: "PHANTOM" + dot, "999d", "23:59",
+        // 3-digit counts.
+        fleetState: 72,       // state cell (dot + word)
+        fleetHb: 36,          // heartbeat age ("999d")
+        fleetLast: 42,        // last-eval clock ("23:59")
+        fleetCount: 24,       // each of the E / V / S today-count columns
     })
 }

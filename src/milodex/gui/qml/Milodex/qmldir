@@ -27,7 +27,6 @@ SegmentedToggle 1.0 components/SegmentedToggle.qml
 FunnelRow 1.0 components/FunnelRow.qml
 RollupCell 1.0 components/RollupCell.qml
 TapeRow 1.0 components/TapeRow.qml
-RunnerSelect 1.0 components/RunnerSelect.qml
 ActivityTable 1.0 components/ActivityTable.qml
 RiskOfficeDrawer 1.0 components/RiskOfficeDrawer.qml
 KillSwitchResetModal 1.0 components/KillSwitchResetModal.qml

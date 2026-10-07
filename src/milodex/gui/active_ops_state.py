@@ -55,6 +55,7 @@ from milodex.gui._event_queries import (
     runner_lock_mtime_age,
 )
 from milodex.gui.polling_lifecycle import PollingReadModel
+from milodex.gui.row_formatters import _short_strategy_name
 from milodex.strategies.paper_runner_control import controlled_stop_request_path
 from milodex.strategies.runner_status import heartbeat_label
 
@@ -140,11 +141,40 @@ FROM (
 WHERE rn = 1
 """
 
-_SQL_LAST_EVAL = """
-SELECT session_id, MAX(recorded_at) AS last_eval
+# One aggregate pass per refresh (no N+1): lastEval plus the fleet-table
+# today-counts, keyed on the STRATEGY (explanations.strategy_name stores the
+# canonical strategy_id — runner.py sets strategy_name=self._strategy_id at
+# every write site), NOT the latest session.  Session-keying lost a relaunched
+# strategy's earlier same-day sessions from the Today columns (hard-kill +
+# relaunch is a real fleet path); strategy-keying sums across all of today's
+# sessions.  "Today" is the UTC calendar day — recorded_at is an ISO-8601 UTC
+# string, so the lexical >= compare against midnight matches the MAX()
+# ordering assumption above and RiskThroughputState's Today slice.
+# Classification mirrors the throughput funnel: a veto is `risk_allowed = 0`
+# (the risk layer said no), a submit is `status = 'submitted'` (an order
+# actually went to the broker — blocked `decision_type='submit'` rows do not
+# count).  Two scope guards (dual-ancestor model, migration 008):
+#   session_id IS NOT NULL      — excludes synthetic fault-injection rows
+#                                 (promotion/fault_injection.py writes
+#                                 session_id=None) and pre-session legacy rows
+#   backtest_run_id IS NULL     — the canonical live/backtest discriminator;
+#                                 backtest rows carry BOTH a session_id and a
+#                                 backtest_run_id (simulation_kernel.py), so a
+#                                 same-day backtest of a fleet strategy would
+#                                 otherwise flood the Today columns (the
+#                                 2026-05-29 benchmark-leak pattern)
+_SQL_STRATEGY_STATS = """
+SELECT
+    strategy_name,
+    MAX(recorded_at) AS last_eval,
+    SUM(CASE WHEN recorded_at >= ? THEN 1 ELSE 0 END) AS evals_today,
+    SUM(CASE WHEN recorded_at >= ? AND risk_allowed = 0 THEN 1 ELSE 0 END) AS vetoes_today,
+    SUM(CASE WHEN recorded_at >= ? AND status = 'submitted' THEN 1 ELSE 0 END) AS submits_today
 FROM explanations
-WHERE session_id IN ({placeholders})
-GROUP BY session_id
+WHERE strategy_name IN ({placeholders})
+  AND session_id IS NOT NULL
+  AND backtest_run_id IS NULL
+GROUP BY strategy_name
 """
 
 
@@ -165,29 +195,29 @@ def _query_active_ops(
         runs = conn.execute(_SQL_LATEST_RUNS).fetchall()
         if not runs:
             return []
-        session_ids = [r["session_id"] for r in runs]
-        placeholders = ",".join("?" * len(session_ids))
-        eval_rows = conn.execute(
-            _SQL_LAST_EVAL.format(placeholders=placeholders),
-            session_ids,
+        strategy_ids = [r["strategy_id"] for r in runs]
+        placeholders = ",".join("?" * len(strategy_ids))
+        today_start_iso = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        stat_rows = conn.execute(
+            _SQL_STRATEGY_STATS.format(placeholders=placeholders),
+            [today_start_iso, today_start_iso, today_start_iso, *strategy_ids],
         ).fetchall()
     finally:
         conn.close()
 
-    last_eval_by_session: dict[str, str | None] = {
-        r["session_id"]: r["last_eval"] for r in eval_rows
-    }
+    stats_by_strategy: dict[str, sqlite3.Row] = {r["strategy_name"]: r for r in stat_rows}
 
     result: list[dict[str, Any]] = []
     for run in runs:
         strategy_id: str = run["strategy_id"]
-        session_id: str = run["session_id"]
 
         config = _load_config(strategy_id, configs_dir)
         label = _cadence_label(config)
         cad_secs = _cadence_seconds(config)
+        display_name, family = _display_fields(strategy_id, config)
 
-        last_eval: str | None = last_eval_by_session.get(session_id)
+        stats = stats_by_strategy.get(strategy_id)
+        last_eval: str | None = stats["last_eval"] if stats is not None else None
 
         # One identity-verified lock check, two distinct consumers (PR6).
         # `runner_lock_live` returns False when locks_dir is None (cannot
@@ -235,15 +265,23 @@ def _query_active_ops(
         result.append(
             {
                 "strategyId": strategy_id,
+                "displayName": display_name,
+                "family": family,
                 "sessionState": session_state,
                 "cadence": label,
                 "lastEval": last_eval,
                 "heartbeat": _heartbeat(lock_age, cad_secs),
+                # Raw lock-mtime age for the fleet table's compact ticking
+                # column; None when unverifiable (same gating as heartbeat).
+                "heartbeatAgeSeconds": lock_age,
                 "runnerLock": runner_lock,
                 "stopRequested": stop_requested,
                 "sessionAge": _session_age(run["started_at"], now),
                 "startedAt": str(run["started_at"] or ""),
                 "endedAt": str(run["ended_at"] or ""),
+                "evalsToday": int(stats["evals_today"]) if stats is not None else 0,
+                "vetoesToday": int(stats["vetoes_today"]) if stats is not None else 0,
+                "submitsToday": int(stats["submits_today"]) if stats is not None else 0,
             }
         )
 
@@ -255,6 +293,35 @@ def _query_active_ops(
     result.sort(key=lambda r: (r["sessionState"] == "running", r["startedAt"]), reverse=True)
 
     return result
+
+
+def _display_fields(strategy_id: str, config: dict[str, Any] | None) -> tuple[str, str]:
+    """Return (displayName, family) for a runner row.
+
+    Same precedence as the Bench roster (row_formatters._display_name):
+    ``strategy.display_name`` from the YAML when present, else the derived
+    short name from the strategy id.  Family falls back to the id's first
+    dotted segment when no config resolves (the id grammar is
+    ``{family}.{template}.{variant}.v{version}``).
+    """
+    display_name = ""
+    family = ""
+    if config is not None:
+        try:
+            strategy = config.get("strategy") or {}
+            raw_name = strategy.get("display_name")
+            if isinstance(raw_name, str) and raw_name.strip():
+                display_name = raw_name.strip()
+            raw_family = strategy.get("family")
+            if isinstance(raw_family, str) and raw_family.strip():
+                family = raw_family.strip()
+        except AttributeError:
+            pass
+    if not display_name:
+        display_name = _short_strategy_name(strategy_id)
+    if not family:
+        family = strategy_id.split(".", 1)[0]
+    return display_name, family
 
 
 def _load_config(strategy_id: str, configs_dir: Path | None) -> dict[str, Any] | None:
